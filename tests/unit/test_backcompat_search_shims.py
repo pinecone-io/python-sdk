@@ -354,3 +354,95 @@ class TestSyncSearchLegacyQueryKwarg:
         idx = object.__new__(Index)
         with pytest.raises(ValidationError, match="top_k is required"):
             idx.search(namespace="ns", inputs={"text": "x"})
+
+
+class TestGrpcSearchLegacyQueryKwarg:
+    """v8 backcompat: GrpcIndex.search/search_records accept query=SearchQuery(...)."""
+
+    def test_search_records_with_legacy_query_kwarg(self) -> None:
+        import warnings
+        from unittest.mock import MagicMock, patch
+
+        from pinecone.grpc import GrpcIndex
+        from pinecone.models.vectors.search import SearchQuery, SearchRecordsResponse
+
+        idx = object.__new__(GrpcIndex)
+        mock_response = MagicMock(spec=SearchRecordsResponse)
+        with patch.object(GrpcIndex, "search", return_value=mock_response) as m:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                idx.search_records(
+                    namespace="ns",
+                    query=SearchQuery(inputs={"text": "hi"}, top_k=3),
+                )
+            assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+        m.assert_called_once()
+        kw = m.call_args.kwargs
+        assert kw["namespace"] == "ns"
+        assert kw["top_k"] == 3
+        assert kw["inputs"] == {"text": "hi"}
+        assert kw.get("query") is None  # already unpacked before forwarding
+
+    def test_search_with_legacy_query_dict(self) -> None:
+        import warnings
+        from unittest.mock import MagicMock, patch
+
+        from pinecone.grpc import GrpcIndex
+        from pinecone.models.vectors.search import SearchRecordsResponse
+
+        idx = object.__new__(GrpcIndex)
+        mock_response = MagicMock(spec=SearchRecordsResponse)
+        with patch.object(GrpcIndex, "search", return_value=mock_response) as m:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                idx.search_records(
+                    namespace="ns",
+                    query={"inputs": {"text": "x"}, "top_k": 2},
+                )
+            assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+        m.assert_called_once()
+        kw = m.call_args.kwargs
+        assert kw["top_k"] == 2
+        assert kw["inputs"] == {"text": "x"}
+
+    def test_search_query_and_top_k_both_provided_raises(self) -> None:
+        from pinecone.grpc import GrpcIndex
+        from pinecone.models.vectors.search import SearchQuery
+
+        idx = object.__new__(GrpcIndex)
+        with pytest.raises(TypeError, match="received both 'query='"):
+            idx.search(
+                namespace="ns",
+                top_k=5,
+                query=SearchQuery(inputs={"text": "x"}, top_k=3),
+            )
+
+    def test_search_query_invalid_type_raises(self) -> None:
+        from pinecone.grpc import GrpcIndex
+
+        idx = object.__new__(GrpcIndex)
+        with pytest.raises(TypeError, match="must be a SearchQuery or Mapping"):
+            idx.search(namespace="ns", query=12345)  # type: ignore[arg-type]
+
+    def test_search_without_top_k_or_query_raises(self) -> None:
+        from pinecone.errors.exceptions import ValidationError
+        from pinecone.grpc import GrpcIndex
+
+        idx = object.__new__(GrpcIndex)
+        with pytest.raises(ValidationError, match="top_k is required"):
+            idx.search(namespace="ns", inputs={"text": "x"})
+
+    def test_search_query_with_mapping_vector_raises(self) -> None:
+        from pinecone.grpc import GrpcIndex
+        from pinecone.models.vectors.search import SearchQuery
+
+        idx = object.__new__(GrpcIndex)
+        with pytest.raises(TypeError, match="does not accept a Mapping for 'vector'"):
+            idx.search(
+                namespace="ns",
+                query=SearchQuery(
+                    inputs={"text": "x"},
+                    top_k=1,
+                    vector={"values": [0.1, 0.2]},  # type: ignore[arg-type]
+                ),
+            )
