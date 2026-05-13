@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 class TestSearchQueryShim:
     def test_legacy_search_query_importable_from_old_path(self) -> None:
@@ -214,3 +216,64 @@ class TestDataclassesPackageExports:
 
         for name in pkg.__all__:
             assert hasattr(pkg, name), f"__all__ lists {name!r} but it is not an attribute"
+
+
+class TestAsyncSearchLegacyQueryKwarg:
+    """v8 backcompat: AsyncIndex.search/search_records accept query=SearchQuery(...)."""
+
+    @pytest.mark.asyncio
+    async def test_search_records_with_legacy_query_kwarg(self) -> None:
+        import warnings
+        from unittest.mock import AsyncMock, patch
+
+        from pinecone.async_client.async_index import AsyncIndex
+        from pinecone.models.vectors.search import SearchQuery, SearchRecordsResponse
+
+        idx = object.__new__(AsyncIndex)
+        mock_response = AsyncMock(spec=SearchRecordsResponse)
+        with patch.object(
+            AsyncIndex, "search", new_callable=AsyncMock, return_value=mock_response
+        ) as m:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                await idx.search_records(
+                    namespace="ns",
+                    query=SearchQuery(inputs={"text": "hi"}, top_k=3),
+                )
+            assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+        m.assert_awaited_once()
+        kw = m.await_args.kwargs
+        assert kw["namespace"] == "ns"
+        assert kw["top_k"] == 3
+        assert kw["inputs"] == {"text": "hi"}
+        assert kw["query"] is None  # already unpacked by search_records before forwarding
+
+    @pytest.mark.asyncio
+    async def test_search_query_and_top_k_both_provided_raises(self) -> None:
+        from pinecone.async_client.async_index import AsyncIndex
+        from pinecone.models.vectors.search import SearchQuery
+
+        idx = object.__new__(AsyncIndex)
+        with pytest.raises(TypeError, match="received both 'query='"):
+            await idx.search(
+                namespace="ns",
+                top_k=5,
+                query=SearchQuery(inputs={"text": "x"}, top_k=3),
+            )
+
+    @pytest.mark.asyncio
+    async def test_search_query_invalid_type_raises(self) -> None:
+        from pinecone.async_client.async_index import AsyncIndex
+
+        idx = object.__new__(AsyncIndex)
+        with pytest.raises(TypeError, match="must be a SearchQuery or Mapping"):
+            await idx.search(namespace="ns", query=12345)  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_search_without_top_k_or_query_raises(self) -> None:
+        from pinecone.async_client.async_index import AsyncIndex
+        from pinecone.errors.exceptions import ValidationError
+
+        idx = object.__new__(AsyncIndex)
+        with pytest.raises(ValidationError, match="top_k is required"):
+            await idx.search(namespace="ns", inputs={"text": "x"})

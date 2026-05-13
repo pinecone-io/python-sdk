@@ -28,6 +28,7 @@ async def test_search_records_delegates_to_search() -> None:
             fields=None,
             rerank=None,
             match_terms=None,
+            query=None,
             timeout=None,
         )
 
@@ -65,4 +66,4 @@ async def test_search_records_passes_all_params() -> None:
 
     with patch.object(AsyncIndex, "search", new_callable=AsyncMock, return_value=mock_response):
         await idx.search_records(**kwargs)
-        AsyncIndex.search.assert_awaited_once_with(**kwargs)  # type: ignore[attr-defined]
+        AsyncIndex.search.assert_awaited_once_with(**kwargs, query=None)  # type: ignore[attr-defined]
