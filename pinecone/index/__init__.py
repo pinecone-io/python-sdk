@@ -40,7 +40,12 @@ from pinecone.models.vectors.responses import (
     UpsertRecordsResponse,
     UpsertResponse,
 )
-from pinecone.models.vectors.search import RerankConfig, SearchInputs, SearchRecordsResponse
+from pinecone.models.vectors.search import (
+    RerankConfig,
+    SearchInputs,
+    SearchQuery,
+    SearchRecordsResponse,
+)
 from pinecone.models.vectors.sparse import SparseValues
 from pinecone.models.vectors.vector import Vector
 
@@ -1092,7 +1097,7 @@ class Index:
         self,
         *,
         namespace: str,
-        top_k: int,
+        top_k: int | None = None,
         inputs: SearchInputs | Mapping[str, Any] | None = None,
         vector: Sequence[float] | Mapping[str, Any] | None = None,
         id: str | None = None,
@@ -1100,6 +1105,7 @@ class Index:
         fields: Sequence[str] | None = None,
         rerank: RerankConfig | Mapping[str, Any] | None = None,
         match_terms: Mapping[str, Any] | None = None,
+        query: SearchQuery | Mapping[str, Any] | None = None,
         timeout: float | None = None,
     ) -> SearchRecordsResponse:
         """Search records by text, vector, or ID with optional reranking.
@@ -1180,6 +1186,23 @@ class Index:
            Use ``pc.inference.rerank()`` when reranking results from a different
            source or when you need to rerank without searching.
         """
+        if query is not None:
+            from pinecone._legacy.search_query_kwarg import unpack_legacy_query
+
+            top_k, inputs, vector, id, filter, match_terms = unpack_legacy_query(
+                method_name="Index.search",
+                query=query,
+                top_k=top_k,
+                inputs=inputs,
+                vector=vector,
+                id=id,
+                filter=filter,
+                match_terms=match_terms,
+            )
+        if top_k is None:
+            raise ValidationError(
+                "top_k is required (pass top_k=... or use the legacy query=SearchQuery(...) form)"
+            )
         if not isinstance(namespace, str):
             raise ValidationError("namespace must be a string")
         if not namespace or not namespace.strip():
@@ -1229,7 +1252,7 @@ class Index:
         self,
         *,
         namespace: str,
-        top_k: int,
+        top_k: int | None = None,
         inputs: SearchInputs | Mapping[str, Any] | None = None,
         vector: Sequence[float] | Mapping[str, Any] | None = None,
         id: str | None = None,
@@ -1237,12 +1260,26 @@ class Index:
         fields: Sequence[str] | None = None,
         rerank: RerankConfig | Mapping[str, Any] | None = None,
         match_terms: Mapping[str, Any] | None = None,
+        query: SearchQuery | Mapping[str, Any] | None = None,
         timeout: float | None = None,
     ) -> SearchRecordsResponse:
         """Alias for :meth:`search`.
 
         Prefer calling :meth:`search` directly — this alias exists for backwards compatibility.
         """
+        if query is not None:
+            from pinecone._legacy.search_query_kwarg import unpack_legacy_query
+
+            top_k, inputs, vector, id, filter, match_terms = unpack_legacy_query(
+                method_name="Index.search_records",
+                query=query,
+                top_k=top_k,
+                inputs=inputs,
+                vector=vector,
+                id=id,
+                filter=filter,
+                match_terms=match_terms,
+            )
         return self.search(
             namespace=namespace,
             top_k=top_k,
