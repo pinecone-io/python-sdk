@@ -3,24 +3,26 @@
 from __future__ import annotations
 
 import logging
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import orjson
 import pytest
 import respx
 
-from pinecone._internal.config import PineconeConfig
+from pinecone._internal.config import PineconeConfig, RetryConfig
 from pinecone._internal.constants import API_VERSION_HEADER
 from pinecone._internal.http_client import (
     AsyncHTTPClient,
     HTTPClient,
+    _AsyncRetryTransport,
     _build_headers,
     _encode_json,
     _log_curl,
     _prepare_json_kwargs,
     _raise_for_status,
     _redact_headers,
+    _RetryTransport,
 )
 from pinecone.errors.exceptions import (
     ApiError,
@@ -759,3 +761,101 @@ class TestLogCurlRedactsApiKey:
         with caplog.at_level(logging.DEBUG, logger="pinecone._internal.http_client"):
             _log_curl("GET", "https://api.pinecone.io/indexes", {"Api-Key": "secret"})
         assert "curl" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# _RetryTransport on_throttle callback
+# ---------------------------------------------------------------------------
+
+
+class _SequencedTransport(httpx.BaseTransport):
+    """Sync mock transport that yields pre-built responses in order."""
+
+    def __init__(self, responses: list[httpx.Response]) -> None:
+        self._responses = iter(responses)
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        return next(self._responses)
+
+
+class _AsyncSequencedTransport(httpx.AsyncBaseTransport):
+    """Async mock transport that yields pre-built responses in order."""
+
+    def __init__(self, responses: list[httpx.Response]) -> None:
+        self._responses = iter(responses)
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        return next(self._responses)
+
+
+class TestRetryTransportThrottle:
+    def test_on_throttle_called_on_429(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("pinecone._internal.http_client.time.sleep", lambda _: None)
+        mock_callback = MagicMock()
+        config = RetryConfig(max_retries=2, on_throttle=mock_callback)
+        inner = _SequencedTransport([httpx.Response(429), httpx.Response(200)])
+        transport = _RetryTransport(transport=inner, retry_config=config)  # type: ignore[arg-type]
+        request = httpx.Request("GET", "https://api.pinecone.io/indexes")
+
+        response = transport.handle_request(request)
+
+        assert response.status_code == 200
+        mock_callback.assert_called_once_with("api.pinecone.io")
+
+    def test_on_throttle_called_each_retry(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("pinecone._internal.http_client.time.sleep", lambda _: None)
+        mock_callback = MagicMock()
+        config = RetryConfig(max_retries=3, on_throttle=mock_callback)
+        inner = _SequencedTransport([httpx.Response(429), httpx.Response(429), httpx.Response(429)])
+        transport = _RetryTransport(transport=inner, retry_config=config)  # type: ignore[arg-type]
+        request = httpx.Request("GET", "https://api.pinecone.io/indexes")
+
+        response = transport.handle_request(request)
+
+        assert response.status_code == 429
+        assert mock_callback.call_count == 3
+        mock_callback.assert_called_with("api.pinecone.io")
+
+    def test_on_throttle_none_is_default_and_does_not_break(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("pinecone._internal.http_client.time.sleep", lambda _: None)
+        config = RetryConfig(max_retries=2)
+        inner = _SequencedTransport([httpx.Response(429), httpx.Response(200)])
+        transport = _RetryTransport(transport=inner, retry_config=config)  # type: ignore[arg-type]
+        request = httpx.Request("GET", "https://api.pinecone.io/indexes")
+
+        response = transport.handle_request(request)
+
+        assert response.status_code == 200
+
+    def test_on_throttle_exception_is_swallowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("pinecone._internal.http_client.time.sleep", lambda _: None)
+
+        def bad_callback(host: str) -> None:
+            raise RuntimeError("Limiter exploded!")
+
+        config = RetryConfig(max_retries=2, on_throttle=bad_callback)
+        inner = _SequencedTransport([httpx.Response(429), httpx.Response(200)])
+        transport = _RetryTransport(transport=inner, retry_config=config)  # type: ignore[arg-type]
+        request = httpx.Request("GET", "https://api.pinecone.io/indexes")
+
+        response = transport.handle_request(request)
+
+        assert response.status_code == 200
+
+
+class TestAsyncRetryTransportThrottle:
+    @pytest.mark.asyncio
+    async def test_on_throttle_called_on_429(self) -> None:
+        mock_callback = MagicMock()
+        config = RetryConfig(max_retries=2, on_throttle=mock_callback)
+        inner = _AsyncSequencedTransport([httpx.Response(429), httpx.Response(200)])
+        transport = _AsyncRetryTransport(transport=inner, retry_config=config)  # type: ignore[arg-type]
+        request = httpx.Request("GET", "https://api.pinecone.io/indexes")
+
+        with patch("asyncio.sleep", new=AsyncMock()):
+            response = await transport.handle_async_request(request)
+
+        assert response.status_code == 200
+        mock_callback.assert_called_once_with("api.pinecone.io")

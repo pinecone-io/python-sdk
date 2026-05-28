@@ -148,6 +148,7 @@ class _RetryTransport(httpx.BaseTransport):
             last_exc = None
             if response.status_code not in self._config.retryable_status_codes:
                 return response
+            self._notify_throttle(request)
             if attempt < self._config.max_retries - 1:
                 response.close()
                 retry_after = response.headers.get("retry-after")
@@ -172,6 +173,15 @@ class _RetryTransport(httpx.BaseTransport):
             self._config.max_wait,
         )
         return random.uniform(0.1 * base_delay, base_delay)
+
+    def _notify_throttle(self, request: httpx.Request) -> None:
+        cb = self._config.on_throttle
+        if cb is None:
+            return
+        try:
+            cb(request.url.host)
+        except Exception as exc:
+            logger.debug("on_throttle callback raised, ignoring: %s", exc)
 
     def close(self) -> None:
         self._transport.close()
@@ -208,6 +218,7 @@ class _AsyncRetryTransport(httpx.AsyncBaseTransport):
             last_exc = None
             if response.status_code not in self._config.retryable_status_codes:
                 return response
+            self._notify_throttle(request)
             if attempt < self._config.max_retries - 1:
                 await response.aclose()
                 retry_after = response.headers.get("retry-after")
@@ -232,6 +243,15 @@ class _AsyncRetryTransport(httpx.AsyncBaseTransport):
             self._config.max_wait,
         )
         return random.uniform(0.1 * base_delay, base_delay)
+
+    def _notify_throttle(self, request: httpx.Request) -> None:
+        cb = self._config.on_throttle
+        if cb is None:
+            return
+        try:
+            cb(request.url.host)
+        except Exception as exc:
+            logger.debug("on_throttle callback raised, ignoring: %s", exc)
 
     async def aclose(self) -> None:
         await self._transport.aclose()

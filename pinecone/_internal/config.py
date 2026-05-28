@@ -5,7 +5,10 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +84,9 @@ class RetryConfig:
         max_wait: Maximum backoff delay in seconds. Defaults to 60.0.
         retryable_status_codes: HTTP status codes that trigger a retry. Defaults to
             ``{408, 429, 500, 502, 503, 504}``.
+        on_throttle: Internal SDK callback invoked with the request URL host on every
+            retryable response (including ones that will be retried). Used by the SDK
+            to wire adaptive concurrency limiters; not intended for user configuration.
     """
 
     max_retries: int = 3
@@ -89,6 +95,7 @@ class RetryConfig:
     retryable_status_codes: frozenset[int] = field(
         default_factory=lambda: frozenset({408, 429, 500, 502, 503, 504})
     )
+    on_throttle: Callable[[str], None] | None = None
 
 
 @dataclass(frozen=True)
