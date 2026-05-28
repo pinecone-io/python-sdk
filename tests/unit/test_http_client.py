@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import random
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -860,3 +861,135 @@ class TestAsyncRetryTransportThrottle:
 
         assert response.status_code == 200
         mock_callback.assert_called_once_with("api.pinecone.io")
+
+
+# ---------------------------------------------------------------------------
+# Jitter distribution — helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_sync_retry_transport(retry_config: RetryConfig | None = None) -> _RetryTransport:
+    return _RetryTransport(
+        transport=httpx.HTTPTransport(),
+        retry_config=retry_config or RetryConfig(),
+    )
+
+
+def _make_async_retry_transport(
+    retry_config: RetryConfig | None = None,
+) -> _AsyncRetryTransport:
+    return _AsyncRetryTransport(
+        transport=httpx.AsyncHTTPTransport(),
+        retry_config=retry_config or RetryConfig(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Jitter distribution — sync
+# ---------------------------------------------------------------------------
+
+
+class TestRetryJitterDistribution:
+    def test_backoff_first_attempt_delay_range(self) -> None:
+        import statistics
+
+        random.seed(42)
+        t = _make_sync_retry_transport()
+        delays = [t._compute_backoff(0, None) for _ in range(200)]
+        assert all(0.25 <= d <= 0.75 for d in delays), (
+            f"out-of-range: {[d for d in delays if not (0.25 <= d <= 0.75)]}"
+        )
+        assert len({round(d, 6) for d in delays}) > 50, (
+            "delays are too clustered — RNG not actually random"
+        )
+        assert statistics.stdev(delays) > 0.1, (
+            "delay distribution too tight — smear may have regressed"
+        )
+
+    def test_backoff_evolves_with_prev_delay(self) -> None:
+        random.seed(42)
+        t = _make_sync_retry_transport()
+        cfg = RetryConfig(max_wait=60.0)
+        t._config = cfg
+        delays = [t._compute_backoff(2, 5.0) for _ in range(200)]
+        # Decorrelated jitter: uniform(0.25, min(60.0, 5.0*3)) = uniform(0.25, 15.0)
+        assert all(0.25 <= d <= 15.0 for d in delays)
+        assert any(d > 5.0 for d in delays), "upper bound did not expand with prev_delay"
+
+    def test_backoff_capped_at_max_wait(self) -> None:
+        random.seed(42)
+        t = _make_sync_retry_transport(RetryConfig(max_wait=10.0))
+        delays = [t._compute_backoff(0, 100.0) for _ in range(50)]
+        # prev_delay=100 would push upper to 300, but max_wait caps at 10.0
+        assert all(d <= 10.0 for d in delays)
+
+    def test_retry_after_smear_range(self) -> None:
+        random.seed(42)
+        t = _make_sync_retry_transport()
+        response = httpx.Response(429, headers={"retry-after": "60"})
+        delays = [t._compute_retry_after_delay(response, 0, None) for _ in range(200)]
+        # Smear: delay in [60, 60 + 0.5*60) = [60, 90)
+        assert all(60.0 <= d < 90.0 for d in delays), (
+            f"out-of-range delays: {[d for d in delays if not (60.0 <= d < 90.0)]}"
+        )
+        assert len({round(d, 6) for d in delays}) > 50
+        assert any(d > 60.5 for d in delays)
+
+    def test_retry_after_falls_back_to_backoff_when_invalid(self) -> None:
+        random.seed(42)
+        t = _make_sync_retry_transport()
+        response = httpx.Response(429, headers={"retry-after": "Fri, 31 Dec 2026 23:59:59 GMT"})
+        delays = [t._compute_retry_after_delay(response, 0, None) for _ in range(50)]
+        # HTTP-date is not parseable as float; falls back to backoff which is uniform(0.25, 0.75)
+        assert all(0.25 <= d <= 0.75 for d in delays)
+
+    def test_retry_after_falls_back_to_backoff_when_missing(self) -> None:
+        random.seed(42)
+        t = _make_sync_retry_transport()
+        response = httpx.Response(500)
+        delays = [t._compute_retry_after_delay(response, 0, None) for _ in range(50)]
+        # Falls back to backoff: uniform(0.25, 0.75)
+        assert all(0.25 <= d <= 0.75 for d in delays)
+
+    def test_negative_retry_after_falls_back_to_backoff(self) -> None:
+        random.seed(42)
+        t = _make_sync_retry_transport()
+        response = httpx.Response(429, headers={"retry-after": "-1"})
+        delays = [t._compute_retry_after_delay(response, 0, None) for _ in range(50)]
+        # Negative values are ignored; falls back to backoff: uniform(0.25, 0.75)
+        assert all(0.25 <= d <= 0.75 for d in delays)
+
+
+# ---------------------------------------------------------------------------
+# Jitter distribution — async parity
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncRetryJitterDistribution:
+    def test_backoff_first_attempt_delay_range(self) -> None:
+        import statistics
+
+        random.seed(42)
+        t = _make_async_retry_transport()
+        delays = [t._compute_backoff(0, None) for _ in range(200)]
+        assert all(0.25 <= d <= 0.75 for d in delays), (
+            f"out-of-range: {[d for d in delays if not (0.25 <= d <= 0.75)]}"
+        )
+        assert len({round(d, 6) for d in delays}) > 50, (
+            "delays are too clustered — RNG not actually random"
+        )
+        assert statistics.stdev(delays) > 0.1, (
+            "delay distribution too tight — smear may have regressed"
+        )
+
+    def test_retry_after_smear_range(self) -> None:
+        random.seed(42)
+        t = _make_async_retry_transport()
+        response = httpx.Response(429, headers={"retry-after": "60"})
+        delays = [t._compute_retry_after_delay(response, 0, None) for _ in range(200)]
+        # Smear: delay in [60, 60 + 0.5*60) = [60, 90)
+        assert all(60.0 <= d < 90.0 for d in delays), (
+            f"out-of-range delays: {[d for d in delays if not (60.0 <= d < 90.0)]}"
+        )
+        assert len({round(d, 6) for d in delays}) > 50
+        assert any(d > 60.5 for d in delays)
