@@ -8,6 +8,7 @@ parallel, collect errors, and optionally display a tqdm progress bar.
 from __future__ import annotations
 
 import asyncio
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -142,6 +143,8 @@ def batch_execute(
     show_progress: bool = True,
     desc: str = "Batches",
     executor: ThreadPoolExecutor | None = None,
+    limiter_registry: _AdaptiveLimiterRegistry | None = None,
+    host: str | None = None,
 ) -> BatchResult:
     """Execute *operation* on *items* in parallel batches.
 
@@ -163,6 +166,10 @@ def batch_execute(
             or torn down per call. Caller is responsible for ``shutdown()``.
             When ``None`` (default), a private executor is created and
             shut down at the end of this call.
+        limiter_registry (_AdaptiveLimiterRegistry | None): Optional registry
+            for adaptive concurrency. SDK-internal; not for user code.
+        host (str | None): Host key for the limiter registry lookup.
+            SDK-internal; not for user code.
 
     Returns:
         BatchResult with aggregated success/failure counts.
@@ -182,6 +189,37 @@ def batch_execute(
     lsn_reconciled_values: list[int] = []
     lsn_committed_values: list[int] = []
 
+    if limiter_registry is not None and host is not None:
+        limiter = limiter_registry.get(host, max_concurrency)
+    else:
+        limiter = None
+
+    condition = threading.Condition()
+    inflight = 0
+
+    def _acquire() -> None:
+        nonlocal inflight
+        if limiter is None:
+            return
+        with condition:
+            while inflight >= limiter.current_limit():
+                condition.wait()
+            inflight += 1
+
+    def _release() -> None:
+        nonlocal inflight
+        if limiter is None:
+            return
+        with condition:
+            inflight -= 1
+            condition.notify_all()
+
+    def _wrapped_op(batch: list[dict[str, Any]]) -> Any:
+        try:
+            return operation(batch)
+        finally:
+            _release()
+
     progress = _create_progress_bar(total_batches, desc, show_progress)
 
     own_executor = executor is None
@@ -189,9 +227,11 @@ def batch_execute(
         executor = ThreadPoolExecutor(max_workers=max_concurrency)
 
     try:
-        future_to_batch = {
-            executor.submit(operation, batch): (idx, batch) for idx, batch in enumerate(batches)
-        }
+        future_to_batch: dict[Any, tuple[int, list[dict[str, Any]]]] = {}
+        for idx, batch in enumerate(batches):
+            _acquire()
+            future = executor.submit(_wrapped_op, batch)
+            future_to_batch[future] = (idx, batch)
 
         for future in as_completed(future_to_batch):
             batch_idx, batch = future_to_batch[future]
