@@ -18,7 +18,9 @@ pub struct RetryConfig {
     pub initial_backoff: Duration,
     /// Maximum backoff duration cap.
     pub max_backoff: Duration,
-    /// Backoff multiplier applied each attempt.
+    /// Backoff multiplier (retained for API compatibility; no longer used in delay
+    /// computation since decorrelated jitter was adopted in DX-0153).
+    #[allow(dead_code)]
     pub multiplier: u32,
     /// gRPC status codes that trigger a retry. Defaults to UNAVAILABLE, RESOURCE_EXHAUSTED,
     /// ABORTED — Pinecone data-plane operations (upsert, query, fetch, delete-by-id, update)
@@ -88,10 +90,44 @@ pub fn parse_pushback(status: &Status) -> Option<Duration> {
     None
 }
 
+/// Add a uniform smear on top of the server-supplied pushback so concurrent
+/// clients don't all wake at the same instant.
+///
+/// Returns `min(max_backoff, pushback + uniform(0, pushback * 0.5))`.
+fn smear_pushback(pushback: Duration, max_backoff: Duration) -> Duration {
+    let pb_ms = pushback.as_millis() as u64;
+    let smear_max = pb_ms / 2;
+    let smear_ms = if smear_max == 0 {
+        0
+    } else {
+        rand::rng().random_range(0..=smear_max)
+    };
+    let total = Duration::from_millis(pb_ms.saturating_add(smear_ms));
+    std::cmp::min(total, max_backoff)
+}
+
+/// Decorrelated jitter (AWS-recommended pattern): uniform(base, prev*3)
+/// capped at max_backoff. Less self-correlation across retries than plain
+/// full jitter, which spreads fleet retries better.
+fn decorrelated_jitter(base: Duration, prev_delay: Duration, max_backoff: Duration) -> Duration {
+    let base_ms = base.as_millis() as u64;
+    let upper_unbounded = prev_delay
+        .as_millis()
+        .saturating_mul(3)
+        .min(u64::MAX as u128) as u64;
+    let upper_capped = std::cmp::min(upper_unbounded, max_backoff.as_millis() as u64);
+    let upper = std::cmp::max(base_ms, upper_capped); // guard against base > cap misconfig
+    if upper == base_ms {
+        return Duration::from_millis(base_ms);
+    }
+    let ms = rand::rng().random_range(base_ms..=upper);
+    Duration::from_millis(ms)
+}
+
 /// Execute an async gRPC operation with retry on transient error codes.
 ///
-/// Uses full-jitter exponential backoff:
-///   delay = random(0, min(max_backoff, initial_backoff * multiplier^attempt))
+/// Uses decorrelated jitter on the backoff path and smear on server-supplied
+/// pushback hints (`grpc-retry-pushback-ms` / `retry-after`).
 ///
 /// Retries on any code listed in `config.retryable_codes` (default: UNAVAILABLE,
 /// RESOURCE_EXHAUSTED, ABORTED). All other error codes are returned immediately without retry.
@@ -104,6 +140,7 @@ where
     Fut: Future<Output = Result<T, Status>>,
 {
     let mut attempt = 0u32;
+    let mut prev_delay = config.initial_backoff;
 
     loop {
         match operation().await {
@@ -116,25 +153,12 @@ where
                     return Err(status);
                 }
                 let delay = if let Some(pushback) = parse_pushback(&status) {
-                    let capped = std::cmp::min(pushback, config.max_backoff);
-                    tracing::debug!(
-                        "honoring server pushback of {:?} (capped at max_backoff)",
-                        capped
-                    );
-                    capped
+                    smear_pushback(pushback, config.max_backoff)
                 } else {
-                    // No pushback hint: existing jitter backoff
-                    let base = config
-                        .initial_backoff
-                        .saturating_mul(config.multiplier.saturating_pow(attempt));
-                    let capped = std::cmp::min(base, config.max_backoff);
-                    if capped.is_zero() {
-                        Duration::ZERO
-                    } else {
-                        let ms = rand::rng().random_range(0..=capped.as_millis() as u64);
-                        Duration::from_millis(ms)
-                    }
+                    decorrelated_jitter(config.initial_backoff, prev_delay, config.max_backoff)
                 };
+                tracing::debug!("retry attempt {} sleeping for {:?}", attempt + 1, delay);
+                prev_delay = delay;
                 tokio::time::sleep(delay).await;
                 attempt += 1;
             }
@@ -627,5 +651,74 @@ mod tests {
         .await;
         // NOT_FOUND is not retryable → callback never fires
         assert_eq!(call_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn smear_pushback_within_expected_range() {
+        let max = Duration::from_secs(120);
+        let pushback = Duration::from_secs(60);
+        for _ in 0..200 {
+            let d = smear_pushback(pushback, max);
+            assert!(d >= pushback, "delay {d:?} < pushback {pushback:?}");
+            assert!(d <= Duration::from_millis(60_000 + 30_000));
+        }
+    }
+
+    #[test]
+    fn smear_pushback_capped_at_max_backoff() {
+        let max = Duration::from_millis(70_000);
+        let pushback = Duration::from_secs(60);
+        for _ in 0..200 {
+            let d = smear_pushback(pushback, max);
+            assert!(d <= max);
+        }
+    }
+
+    #[test]
+    fn smear_pushback_zero_pushback_is_zero() {
+        assert_eq!(
+            smear_pushback(Duration::ZERO, Duration::from_secs(60)),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn decorrelated_jitter_within_expected_range() {
+        let base = Duration::from_millis(100);
+        let prev = Duration::from_millis(500);
+        let max = Duration::from_secs(60);
+        for _ in 0..200 {
+            let d = decorrelated_jitter(base, prev, max);
+            assert!(d >= base);
+            assert!(d <= Duration::from_millis(1500)); // 500 * 3
+        }
+    }
+
+    #[test]
+    fn decorrelated_jitter_capped_at_max_backoff() {
+        let base = Duration::from_millis(100);
+        let prev = Duration::from_secs(1000); // would push upper to 3000s
+        let max = Duration::from_secs(5);
+        for _ in 0..200 {
+            let d = decorrelated_jitter(base, prev, max);
+            assert!(d <= max);
+        }
+    }
+
+    #[test]
+    fn decorrelated_jitter_non_degenerate() {
+        let base = Duration::from_millis(100);
+        let prev = Duration::from_millis(500);
+        let max = Duration::from_secs(60);
+        let samples: Vec<u64> = (0..200)
+            .map(|_| decorrelated_jitter(base, prev, max).as_millis() as u64)
+            .collect();
+        let unique: std::collections::HashSet<_> = samples.iter().collect();
+        // Should have many distinct values across 200 samples
+        assert!(
+            unique.len() > 50,
+            "samples too clustered: {} unique",
+            unique.len()
+        );
     }
 }
