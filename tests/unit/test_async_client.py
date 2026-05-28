@@ -159,6 +159,7 @@ class TestAsyncIndexFactory:
             ssl_verify=False,
             source_tag="my_app",
             connection_pool_maxsize=10,
+            _limiter_registry=pc._limiter_registry,
         )
 
     @patch("pinecone._internal.http_client.AsyncHTTPClient")
@@ -190,6 +191,7 @@ class TestAsyncIndexFactory:
             ssl_verify=False,
             source_tag="my_app",
             connection_pool_maxsize=10,
+            _limiter_registry=pc._limiter_registry,
         )
 
     @patch("pinecone.async_client.async_index.AsyncIndex")
@@ -210,6 +212,7 @@ class TestAsyncIndexFactory:
             ssl_verify=True,
             source_tag="",
             connection_pool_maxsize=0,
+            _limiter_registry=pc._limiter_registry,
         )
 
 

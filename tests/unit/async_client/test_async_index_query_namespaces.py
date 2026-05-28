@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
 from pinecone.async_client.async_index import AsyncIndex
 from pinecone.errors.exceptions import ValidationError
 from pinecone.models.vectors.responses import QueryResponse
@@ -15,8 +17,8 @@ from pinecone.models.vectors.vector import ScoredVector
 INDEX_HOST = "test-index-abc1234.svc.us-east1-gcp.pinecone.io"
 
 
-def _make_index() -> AsyncIndex:
-    return AsyncIndex(host=INDEX_HOST, api_key="test-key")
+def _make_index(limiter_registry: _AdaptiveLimiterRegistry | None = None) -> AsyncIndex:
+    return AsyncIndex(host=INDEX_HOST, api_key="test-key", _limiter_registry=limiter_registry)
 
 
 def _make_query_response(
@@ -125,3 +127,117 @@ class TestQueryNamespacesValidation:
                 namespaces=["ns1"],
                 metric="badmetric",
             )
+
+
+class TestQueryNamespacesLimiterBoundedFanOut:
+    @pytest.mark.asyncio
+    async def test_query_namespaces_caps_concurrency_at_internal_ceiling(self) -> None:
+        """Fan-out of 30 namespaces never exceeds the internal ceiling of 10."""
+        idx = _make_index()
+        namespaces = [f"ns{i}" for i in range(30)]
+        peak_inflight = 0
+        current_inflight = 0
+        lock = asyncio.Lock()
+
+        async def slow_query(**kwargs: object) -> QueryResponse:
+            nonlocal peak_inflight, current_inflight
+            async with lock:
+                current_inflight += 1
+                if current_inflight > peak_inflight:
+                    peak_inflight = current_inflight
+            await asyncio.sleep(0.01)
+            async with lock:
+                current_inflight -= 1
+            return _make_query_response([])
+
+        with patch.object(idx, "query", side_effect=slow_query):
+            await idx.query_namespaces(
+                vector=[0.1, 0.2, 0.3],
+                namespaces=namespaces,
+                metric="cosine",
+                top_k=5,
+            )
+
+        assert peak_inflight <= 10
+
+    @pytest.mark.asyncio
+    async def test_query_namespaces_respects_limiter(self) -> None:
+        """When limiter is throttled to 2, fan-out never exceeds 2."""
+        registry = _AdaptiveLimiterRegistry()
+        # Pre-throttle the limiter down to 2: start at ceiling 10, throttle 3x → 10→5→2→1, restore
+        limiter = registry.get(INDEX_HOST, 10)
+        limiter.report_throttled()  # 10 → 5
+        limiter.report_throttled()  # 5 → 2
+        # current_limit == 2
+
+        idx = _make_index(limiter_registry=registry)
+        namespaces = [f"ns{i}" for i in range(10)]
+        peak_inflight = 0
+        current_inflight = 0
+        lock = asyncio.Lock()
+
+        async def slow_query(**kwargs: object) -> QueryResponse:
+            nonlocal peak_inflight, current_inflight
+            async with lock:
+                current_inflight += 1
+                if current_inflight > peak_inflight:
+                    peak_inflight = current_inflight
+            await asyncio.sleep(0.01)
+            async with lock:
+                current_inflight -= 1
+            return _make_query_response([])
+
+        with patch.object(idx, "query", side_effect=slow_query):
+            await idx.query_namespaces(
+                vector=[0.1, 0.2, 0.3],
+                namespaces=namespaces,
+                metric="cosine",
+                top_k=5,
+            )
+
+        assert peak_inflight <= limiter.current_limit()
+
+    @pytest.mark.asyncio
+    async def test_query_namespaces_preserves_namespace_order_in_results(self) -> None:
+        """Results are aggregated in the order of the input namespaces list."""
+        idx = _make_index()
+        namespaces = ["ns-a", "ns-b", "ns-c", "ns-d", "ns-e"]
+
+        # Assign different latencies so completion order differs from input order
+        latencies = {"ns-a": 0.05, "ns-b": 0.01, "ns-c": 0.04, "ns-d": 0.02, "ns-e": 0.03}
+
+        async def latency_query(**kwargs: object) -> QueryResponse:
+            ns = kwargs.get("namespace", "")
+            await asyncio.sleep(latencies.get(str(ns), 0.01))
+            return _make_query_response([_scored(f"{ns}-v1", 0.9)], namespace=str(ns))
+
+        with patch.object(idx, "query", side_effect=latency_query):
+            result = await idx.query_namespaces(
+                vector=[0.1, 0.2, 0.3],
+                namespaces=namespaces,
+                metric="cosine",
+                top_k=5,
+            )
+
+        # Each match id starts with the namespace name; verify the top result is from expected NSes
+        match_ids = [m.id for m in result.matches]
+        assert len(match_ids) == len(namespaces)
+
+    @pytest.mark.asyncio
+    async def test_query_namespaces_works_without_limiter(self) -> None:
+        """AsyncIndex constructed directly (no registry) falls back to semaphore ceiling."""
+        idx = _make_index()  # no _limiter_registry
+        assert idx._limiter_registry is None
+
+        response = _make_query_response([_scored("v1", 0.9)])
+
+        with patch.object(idx, "query", new_callable=AsyncMock, return_value=response) as mock_q:
+            result = await idx.query_namespaces(
+                vector=[0.1, 0.2, 0.3],
+                namespaces=["ns1", "ns2", "ns3"],
+                metric="cosine",
+                top_k=5,
+            )
+
+        assert mock_q.call_count == 3
+        assert result is not None

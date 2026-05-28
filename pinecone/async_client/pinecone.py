@@ -767,6 +767,7 @@ class AsyncPinecone:
             ssl_verify=self._config.ssl_verify,
             source_tag=self._config.source_tag,
             connection_pool_maxsize=self._config.connection_pool_maxsize,
+            _limiter_registry=self._limiter_registry,
         )
 
     def _build_index_kwargs(self, host: str) -> IndexKwargs:
@@ -867,7 +868,10 @@ class AsyncPinecone:
         from pinecone.async_client.async_index import AsyncIndex as _AsyncIndex
 
         resolved_host = await self._resolve_index_host(name=name, host=host)
-        return _AsyncIndex(**self._build_index_kwargs(resolved_host))
+        return _AsyncIndex(
+            **self._build_index_kwargs(resolved_host),
+            _limiter_registry=self._limiter_registry,
+        )
 
     async def close(self) -> None:
         """Close all open HTTP connections.

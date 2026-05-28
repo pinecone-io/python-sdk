@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
 from pinecone._internal.adapters.imports_adapter import ImportsAdapter
 from pinecone._internal.adapters.vectors_adapter import VectorsAdapter, extract_response_info
+from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
 from pinecone._internal.batch import async_batch_execute
 from pinecone._internal.batching import validate_batch_size
 from pinecone._internal.config import PineconeConfig
@@ -91,6 +92,7 @@ class AsyncIndex:
         ssl_verify: bool = True,
         source_tag: str | None = None,
         connection_pool_maxsize: int = 0,
+        _limiter_registry: _AdaptiveLimiterRegistry | None = None,
     ) -> None:
         # Resolve API key: explicit arg > env var (check BEFORE host per unified-ord-0001)
         resolved_key = api_key or os.environ.get("PINECONE_API_KEY", "")
@@ -116,6 +118,7 @@ class AsyncIndex:
             connection_pool_maxsize=connection_pool_maxsize,
         )
         self._config = config
+        self._limiter_registry = _limiter_registry
 
         from pinecone._internal.http_client import AsyncHTTPClient
 
@@ -655,8 +658,47 @@ class AsyncIndex:
             result = await self.query(namespace=ns, **query_kwargs)
             return (ns, result)
 
-        results = await asyncio.gather(*[_query_ns(ns) for ns in namespaces])
-        for ns, response in results:
+        # Limiter-bounded fan-out. Internal ceiling = 10 (hardcoded by design;
+        # users hitting this limit can split their call across multiple invocations).
+        _internal_concurrency_ceiling = 10
+        limiter = (
+            self._limiter_registry.get(self._host, _internal_concurrency_ceiling)
+            if self._limiter_registry is not None
+            else None
+        )
+
+        if limiter is None:
+            sem = asyncio.Semaphore(_internal_concurrency_ceiling)
+
+            async def _gated_sem(idx: int, ns: str) -> tuple[int, str, QueryResponse]:
+                async with sem:
+                    ns_back, resp = await _query_ns(ns)
+                    return idx, ns_back, resp
+
+            indexed = await asyncio.gather(*[_gated_sem(i, ns) for i, ns in enumerate(namespaces)])
+        else:
+            inflight = 0
+            inflight_lock = asyncio.Lock()
+
+            async def _gated_lim(idx: int, ns: str) -> tuple[int, str, QueryResponse]:
+                nonlocal inflight
+                while True:
+                    async with inflight_lock:
+                        if inflight < limiter.current_limit():
+                            inflight += 1
+                            break
+                    await asyncio.sleep(0.05)
+                try:
+                    ns_back, resp = await _query_ns(ns)
+                    return idx, ns_back, resp
+                finally:
+                    async with inflight_lock:
+                        inflight -= 1
+
+            indexed = await asyncio.gather(*[_gated_lim(i, ns) for i, ns in enumerate(namespaces)])
+
+        indexed.sort(key=lambda t: t[0])
+        for _idx, ns, response in indexed:
             aggregator.add_results(ns, response)
 
         return aggregator.get_results()
