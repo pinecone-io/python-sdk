@@ -15,6 +15,7 @@ prost-types = "0.13"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 uuid = { version = "1", features = ["v4"] }
 rand = "0.9"
+tracing = "0.1"
 http = "1"
 hyper-util = { version = "0.1", features = ["client-legacy"] }
 

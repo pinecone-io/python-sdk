@@ -40,6 +40,41 @@ impl Default for RetryConfig {
     }
 }
 
+/// Parse a server-supplied retry pushback hint from a tonic Status's trailers.
+///
+/// Looks for `grpc-retry-pushback-ms` first (gRPC-native, milliseconds), then
+/// `retry-after` (HTTP-style, seconds) as a fallback. Returns `None` if neither
+/// is present or the value cannot be parsed as a non-negative number.
+///
+/// HTTP-date values in `retry-after` are not parsed and return `None`.
+pub fn parse_pushback(status: &Status) -> Option<Duration> {
+    let metadata = status.metadata();
+
+    // gRPC-native: milliseconds
+    if let Some(v) = metadata.get("grpc-retry-pushback-ms") {
+        if let Ok(s) = v.to_str() {
+            if let Ok(ms) = s.trim().parse::<f64>() {
+                if ms >= 0.0 && ms.is_finite() {
+                    return Some(Duration::from_millis(ms as u64));
+                }
+            }
+        }
+    }
+
+    // HTTP fallback: seconds (delta-seconds form only; HTTP-date returns None)
+    if let Some(v) = metadata.get("retry-after") {
+        if let Ok(s) = v.to_str() {
+            if let Ok(secs) = s.trim().parse::<f64>() {
+                if secs >= 0.0 && secs.is_finite() {
+                    return Some(Duration::from_secs_f64(secs));
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// Execute an async gRPC operation with retry on transient error codes.
 ///
 /// Uses full-jitter exponential backoff:
@@ -64,19 +99,27 @@ where
                 if attempt >= config.max_retries {
                     return Err(status);
                 }
-                let base = config
-                    .initial_backoff
-                    .saturating_mul(config.multiplier.saturating_pow(attempt));
-                let capped = std::cmp::min(base, config.max_backoff);
-                let jittered = if capped.is_zero() {
-                    Duration::ZERO
+                let delay = if let Some(pushback) = parse_pushback(&status) {
+                    let capped = std::cmp::min(pushback, config.max_backoff);
+                    tracing::debug!(
+                        "honoring server pushback of {:?} (capped at max_backoff)",
+                        capped
+                    );
+                    capped
                 } else {
-                    let ms = rand::rng().random_range(0..=capped.as_millis() as u64);
-                    Duration::from_millis(ms)
+                    // No pushback hint: existing jitter backoff
+                    let base = config
+                        .initial_backoff
+                        .saturating_mul(config.multiplier.saturating_pow(attempt));
+                    let capped = std::cmp::min(base, config.max_backoff);
+                    if capped.is_zero() {
+                        Duration::ZERO
+                    } else {
+                        let ms = rand::rng().random_range(0..=capped.as_millis() as u64);
+                        Duration::from_millis(ms)
+                    }
                 };
-                // TODO: honor server-supplied pushback hints (grpc-retry-pushback-ms trailer
-                // or Retry-After in trailers) before falling back to computed jitter backoff.
-                tokio::time::sleep(jittered).await;
+                tokio::time::sleep(delay).await;
                 attempt += 1;
             }
             Err(status) => return Err(status),
@@ -332,5 +375,164 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "immediate");
+    }
+
+    #[test]
+    fn parse_pushback_grpc_native_milliseconds() {
+        let mut status = Status::resource_exhausted("limited");
+        status
+            .metadata_mut()
+            .insert("grpc-retry-pushback-ms", "1500".parse().unwrap());
+        assert_eq!(parse_pushback(&status), Some(Duration::from_millis(1500)));
+    }
+
+    #[test]
+    fn parse_pushback_retry_after_seconds_fallback() {
+        let mut status = Status::resource_exhausted("limited");
+        status
+            .metadata_mut()
+            .insert("retry-after", "30".parse().unwrap());
+        assert_eq!(parse_pushback(&status), Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn parse_pushback_grpc_native_takes_precedence_over_retry_after() {
+        let mut status = Status::resource_exhausted("limited");
+        status
+            .metadata_mut()
+            .insert("grpc-retry-pushback-ms", "500".parse().unwrap());
+        status
+            .metadata_mut()
+            .insert("retry-after", "30".parse().unwrap());
+        assert_eq!(parse_pushback(&status), Some(Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn parse_pushback_returns_none_when_absent() {
+        let status = Status::resource_exhausted("limited");
+        assert_eq!(parse_pushback(&status), None);
+    }
+
+    #[test]
+    fn parse_pushback_returns_none_for_negative_value() {
+        let mut status = Status::resource_exhausted("limited");
+        status
+            .metadata_mut()
+            .insert("grpc-retry-pushback-ms", "-100".parse().unwrap());
+        assert_eq!(parse_pushback(&status), None);
+    }
+
+    #[test]
+    fn parse_pushback_returns_none_for_http_date() {
+        let mut status = Status::resource_exhausted("limited");
+        status.metadata_mut().insert(
+            "retry-after",
+            "Fri, 31 Dec 2026 23:59:59 GMT".parse().unwrap(),
+        );
+        assert_eq!(parse_pushback(&status), None);
+    }
+
+    #[test]
+    fn parse_pushback_handles_float_milliseconds() {
+        let mut status = Status::resource_exhausted("limited");
+        status
+            .metadata_mut()
+            .insert("grpc-retry-pushback-ms", "1500.5".parse().unwrap());
+        // Truncates to 1500 ms (Duration::from_millis takes u64)
+        assert_eq!(parse_pushback(&status), Some(Duration::from_millis(1500)));
+    }
+
+    #[test]
+    fn parse_pushback_returns_none_for_nan() {
+        let mut status = Status::resource_exhausted("limited");
+        status
+            .metadata_mut()
+            .insert("grpc-retry-pushback-ms", "nan".parse().unwrap());
+        assert_eq!(parse_pushback(&status), None);
+    }
+
+    #[test]
+    fn parse_pushback_returns_none_for_invalid_string() {
+        let mut status = Status::resource_exhausted("limited");
+        status
+            .metadata_mut()
+            .insert("grpc-retry-pushback-ms", "not-a-number".parse().unwrap());
+        assert_eq!(parse_pushback(&status), None);
+    }
+
+    #[tokio::test]
+    async fn pushback_honored_on_resource_exhausted() {
+        let call_count = Arc::new(AtomicU32::new(0));
+        let count = call_count.clone();
+
+        let config = test_config(5);
+        let result = retry_on_transient(&config, || {
+            let count = count.clone();
+            async move {
+                let n = count.fetch_add(1, Ordering::SeqCst);
+                if n < 2 {
+                    let mut s = Status::resource_exhausted("limited");
+                    // 1ms pushback so the test runs fast
+                    s.metadata_mut()
+                        .insert("grpc-retry-pushback-ms", "1".parse().unwrap());
+                    Err(s)
+                } else {
+                    Ok::<&str, Status>("ok")
+                }
+            }
+        })
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(call_count.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn pushback_capped_at_max_backoff() {
+        // Build a config with a tight cap and a giant pushback; assert the call returns quickly.
+        let config = RetryConfig {
+            max_retries: 1,
+            initial_backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(5),
+            multiplier: 2,
+            ..Default::default()
+        };
+        let start = std::time::Instant::now();
+        let _ = retry_on_transient(&config, || async {
+            let mut s = Status::resource_exhausted("limited");
+            // 1 hour in milliseconds — would block forever if not capped
+            s.metadata_mut()
+                .insert("grpc-retry-pushback-ms", "3600000".parse().unwrap());
+            Err::<(), Status>(s)
+        })
+        .await;
+        // With max_backoff=5ms, the single retry sleeps at most 5ms;
+        // total elapsed must be well under 100ms.
+        assert!(
+            start.elapsed() < Duration::from_millis(100),
+            "elapsed={:?} — pushback not capped",
+            start.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn no_pushback_falls_back_to_jitter() {
+        // No pushback header → uses jitter backoff (existing behavior).
+        let call_count = Arc::new(AtomicU32::new(0));
+        let count = call_count.clone();
+        let config = test_config(3);
+        let result = retry_on_transient(&config, || {
+            let count = count.clone();
+            async move {
+                let n = count.fetch_add(1, Ordering::SeqCst);
+                if n < 1 {
+                    Err(Status::resource_exhausted("limited"))
+                } else {
+                    Ok::<(), Status>(())
+                }
+            }
+        })
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
     }
 }
