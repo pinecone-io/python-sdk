@@ -75,6 +75,10 @@ include = ["LICENSE"]
 strict = true
 python_version = "3.10"
 
+[[tool.mypy.overrides]]
+module = "tests.unit.grpc.test_retry_callback"
+warn_unused_ignores = false
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"

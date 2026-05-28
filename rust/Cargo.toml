@@ -5,7 +5,7 @@ edition = "2021"
 
 [lib]
 name = "pinecone_grpc"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 pyo3 = { version = "0.24", features = ["extension-module", "abi3-py310"] }
