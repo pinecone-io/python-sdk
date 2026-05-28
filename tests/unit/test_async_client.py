@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
+from pinecone._internal.config import RetryConfig
 from pinecone.async_client.async_index import AsyncIndex
 from pinecone.async_client.pinecone import AsyncPinecone
 from pinecone.errors.exceptions import ValidationError
@@ -285,3 +287,39 @@ class TestAsyncClientLifecycle:
             inference = pc.inference
             inference.close = AsyncMock()  # type: ignore[method-assign]
         inference.close.assert_awaited_once()
+
+
+class TestAsyncPineconeLimiterWiring:
+    """Test that _AdaptiveLimiterRegistry is wired into RetryConfig on_throttle for AsyncPinecone."""
+
+    def test_async_pinecone_has_limiter_registry(self) -> None:
+        pc = AsyncPinecone(api_key="test-key")
+        assert pc._limiter_registry is not None
+        assert isinstance(pc._limiter_registry, _AdaptiveLimiterRegistry)
+        pc._limiter_registry.report_throttled("nonexistent-host")  # no-op, no error
+
+    def test_async_pinecone_retry_config_has_on_throttle_wired(self) -> None:
+        pc = AsyncPinecone(api_key="test-key")
+        assert pc._config.retry_config.on_throttle is not None
+        pc._config.retry_config.on_throttle("test-host")
+
+    def test_on_throttle_forwards_to_registry(self) -> None:
+        pc = AsyncPinecone(api_key="test-key")
+        registry = pc._limiter_registry
+        limiter = registry.get("test-host", 8)
+        assert limiter.current_limit() == 8
+        pc._config.retry_config.on_throttle("test-host")  # type: ignore[misc]
+        assert limiter.current_limit() == 4
+
+    def test_user_retry_config_is_preserved(self) -> None:
+        user_cfg = RetryConfig(max_retries=10, backoff_factor=3.0)
+        pc = AsyncPinecone(api_key="test-key", retry_config=user_cfg)
+        applied = pc._config.retry_config
+        assert applied.max_retries == 10
+        assert applied.backoff_factor == 3.0
+        assert applied.on_throttle is not None  # injected by client
+
+    def test_each_async_client_gets_independent_registry(self) -> None:
+        pc1 = AsyncPinecone(api_key="test-key")
+        pc2 = AsyncPinecone(api_key="test-key")
+        assert pc1._limiter_registry is not pc2._limiter_registry

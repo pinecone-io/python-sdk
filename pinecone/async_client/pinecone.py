@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
 from pinecone._internal.config import PineconeConfig, RetryConfig
 from pinecone._internal.constants import CONTROL_PLANE_API_VERSION, DEFAULT_BASE_URL
 from pinecone._internal.indexes_helpers import IndexKwargs, async_poll_index_until_ready
@@ -124,6 +125,11 @@ class AsyncPinecone:
         if proxy_headers:
             raise NotImplementedError("proxy_headers is not yet supported for the async client")
 
+        self._limiter_registry = _AdaptiveLimiterRegistry()
+        augmented_retry_config = replace(
+            retry_config or RetryConfig(),
+            on_throttle=self._limiter_registry.report_throttled,
+        )
         config = PineconeConfig(
             api_key=api_key or "",
             host=host or "",
@@ -134,7 +140,7 @@ class AsyncPinecone:
             ssl_ca_certs=ssl_ca_certs,
             ssl_verify=ssl_verify,
             connection_pool_maxsize=connection_pool_maxsize,
-            retry_config=retry_config or RetryConfig(),
+            retry_config=augmented_retry_config,
         )
 
         if not config.api_key:
