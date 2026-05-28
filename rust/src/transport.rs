@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use hyper_util::client::legacy::connect::{proxy::Tunnel, HttpConnector};
@@ -9,7 +10,7 @@ use tonic::transport::{Channel, ClientTlsConfig};
 
 use crate::proto;
 use crate::proto::vector_service_client::VectorServiceClient;
-use crate::retry::{retry_on_transient, RetryConfig};
+use crate::retry::{retry_on_transient, RetryConfig, ThrottleCallback};
 
 /// Maximum gRPC message size for both send and receive (128 MB).
 const MAX_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
@@ -43,6 +44,27 @@ fn build_grpc_user_agent(version: &str, source_tag: Option<&str>) -> String {
         }
     }
     ua
+}
+
+/// Parse the host component from an endpoint URL.
+///
+/// Strips the scheme (`https://`), then returns the portion before the first `:` or `/`.
+/// Returns `None` if the result is empty.
+///
+/// Examples:
+/// - `"https://my-index.svc.pinecone.io:443"` → `Some("my-index.svc.pinecone.io")`
+/// - `"https://my-index.svc.pinecone.io"` → `Some("my-index.svc.pinecone.io")`
+fn parse_host_from_endpoint(endpoint: &str) -> Option<String> {
+    let after_scheme = endpoint
+        .split_once("://")
+        .map(|(_, r)| r)
+        .unwrap_or(endpoint);
+    let host = after_scheme.split([':', '/']).next()?.to_string();
+    if host.is_empty() {
+        None
+    } else {
+        Some(host)
+    }
 }
 
 /// Ensure the endpoint URL has a port; append `:443` if none is specified.
@@ -538,8 +560,12 @@ impl GrpcChannel {
     ///     source_tag: Optional source tag appended to the User-Agent string.
     ///     proxy_url: Optional HTTP proxy URL (e.g. "http://proxy.example.com:8080").
     ///                When set, gRPC traffic is tunnelled through the proxy via HTTP CONNECT.
+    ///     on_throttle: Optional Python callable invoked with the host string on every
+    ///                  retryable error. Signature: ``(host: str) -> None``. Used by the
+    ///                  SDK's adaptive concurrency limiter to self-tune bulk-operation
+    ///                  concurrency in response to throttling.
     #[new]
-    #[pyo3(signature = (endpoint, api_key, api_version, version, secure=true, timeout_s=None, connect_timeout_s=None, max_retries=None, source_tag=None, proxy_url=None))]
+    #[pyo3(signature = (endpoint, api_key, api_version, version, secure=true, timeout_s=None, connect_timeout_s=None, max_retries=None, source_tag=None, proxy_url=None, on_throttle=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -553,6 +579,7 @@ impl GrpcChannel {
         max_retries: Option<u32>,
         source_tag: Option<&str>,
         proxy_url: Option<&str>,
+        on_throttle: Option<Py<PyAny>>,
     ) -> PyResult<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -606,8 +633,21 @@ impl GrpcChannel {
         let interceptor = MetadataInterceptor::new(api_key, api_version)
             .map_err(|e| pinecone_value_error(py, &format!("Invalid metadata value: {e}")))?;
 
+        let host = parse_host_from_endpoint(endpoint).unwrap_or_else(|| endpoint.to_string());
+        let on_throttle_cb: Option<ThrottleCallback> = on_throttle.map(|py_cb| {
+            let cb: ThrottleCallback = Arc::new(move |h: String| {
+                Python::with_gil(|py| {
+                    if let Err(e) = py_cb.call1(py, (h,)) {
+                        tracing::debug!("on_throttle callback raised, ignoring: {:?}", e);
+                    }
+                });
+            });
+            cb
+        });
         let retry_config = RetryConfig {
             max_retries: max_retries.unwrap_or(5),
+            on_throttle: on_throttle_cb,
+            host,
             ..RetryConfig::default()
         };
 

@@ -1,12 +1,16 @@
 use std::collections::HashSet;
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rand::Rng;
 use tonic::Status;
 
+/// Callback type invoked on every retryable error. Receives the host string.
+pub type ThrottleCallback = Arc<dyn Fn(String) + Send + Sync>;
+
 /// Configuration for retry behavior on gRPC calls.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RetryConfig {
     /// Maximum number of retry attempts (0 = no retries, just the initial call).
     pub max_retries: u32,
@@ -20,6 +24,13 @@ pub struct RetryConfig {
     /// ABORTED — Pinecone data-plane operations (upsert, query, fetch, delete-by-id, update)
     /// are idempotent and safe to retry on these transient codes.
     pub retryable_codes: HashSet<i32>,
+    /// Optional callback invoked with the host string on every retryable error.
+    /// Receives the host string (e.g. "my-index-abc123.svc.pinecone.io") on each
+    /// retryable failure so the caller can update per-host rate-limit state.
+    /// In transport.rs this wraps a Python ``Py<PyAny>`` callable under `Python::with_gil`.
+    pub on_throttle: Option<ThrottleCallback>,
+    /// Host string passed to `on_throttle` callback (parsed from endpoint at construction).
+    pub host: String,
 }
 
 impl Default for RetryConfig {
@@ -36,6 +47,8 @@ impl Default for RetryConfig {
             ]
             .into_iter()
             .collect(),
+            on_throttle: None,
+            host: String::new(),
         }
     }
 }
@@ -96,6 +109,9 @@ where
         match operation().await {
             Ok(val) => return Ok(val),
             Err(status) if config.retryable_codes.contains(&(status.code() as i32)) => {
+                if let Some(cb) = &config.on_throttle {
+                    cb(config.host.clone());
+                }
                 if attempt >= config.max_retries {
                     return Err(status);
                 }
@@ -268,6 +284,7 @@ mod tests {
             max_backoff: Duration::from_millis(10),
             multiplier: 2,
             retryable_codes: HashSet::from([tonic::Code::DeadlineExceeded as i32]),
+            ..RetryConfig::default()
         };
         let result = retry_on_transient(&config, || {
             let count = count.clone();
@@ -534,5 +551,81 @@ mod tests {
         .await;
         assert!(result.is_ok());
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn on_throttle_defaults_to_none() {
+        let config = RetryConfig::default();
+        assert!(config.on_throttle.is_none());
+    }
+
+    #[test]
+    fn host_defaults_to_empty_string() {
+        let config = RetryConfig::default();
+        assert_eq!(config.host, "");
+    }
+
+    #[test]
+    fn host_can_be_set_via_struct_literal() {
+        let config = RetryConfig {
+            host: "my-index.svc.pinecone.io".into(),
+            on_throttle: None,
+            ..RetryConfig::default()
+        };
+        assert_eq!(config.host, "my-index.svc.pinecone.io");
+        assert!(config.on_throttle.is_none());
+    }
+
+    #[tokio::test]
+    async fn callback_invoked_on_every_retryable_error() {
+        // Verify callback fires for every retryable error, including the final one
+        // that exceeds max_retries. Uses a pure Rust closure — the Python wrapper
+        // in transport.rs is tested via Python integration tests.
+        let call_count = Arc::new(AtomicU32::new(0));
+        let received_hosts: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(vec![]));
+        let count_clone = call_count.clone();
+        let hosts_clone = received_hosts.clone();
+        let config = RetryConfig {
+            max_retries: 2,
+            initial_backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(5),
+            on_throttle: Some(Arc::new(move |host: String| {
+                count_clone.fetch_add(1, Ordering::SeqCst);
+                hosts_clone.lock().unwrap().push(host);
+            })),
+            host: "my-index.svc.pinecone.io".into(),
+            ..RetryConfig::default()
+        };
+        let _ = retry_on_transient(&config, || async {
+            Err::<(), Status>(Status::resource_exhausted("limited"))
+        })
+        .await;
+        // 1 initial + 2 retries = 3 attempts; callback fires on all 3
+        assert_eq!(call_count.load(Ordering::SeqCst), 3);
+        let hosts = received_hosts.lock().unwrap();
+        assert!(hosts.iter().all(|h| h == "my-index.svc.pinecone.io"));
+    }
+
+    #[tokio::test]
+    async fn callback_not_invoked_on_non_retryable_error() {
+        let call_count = Arc::new(AtomicU32::new(0));
+        let count_clone = call_count.clone();
+        let config = RetryConfig {
+            max_retries: 3,
+            initial_backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(5),
+            on_throttle: Some(Arc::new(move |_host: String| {
+                count_clone.fetch_add(1, Ordering::SeqCst);
+            })),
+            host: "test-host".into(),
+            ..RetryConfig::default()
+        };
+        let _ = retry_on_transient(&config, || async {
+            Err::<(), Status>(Status::not_found("missing"))
+        })
+        .await;
+        // NOT_FOUND is not retryable → callback never fires
+        assert_eq!(call_count.load(Ordering::SeqCst), 0);
     }
 }

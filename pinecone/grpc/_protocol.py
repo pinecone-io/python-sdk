@@ -7,13 +7,28 @@ built.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Protocol, runtime_checkable
 
 
 @runtime_checkable
 class GrpcChannelProtocol(Protocol):
     """Structural type for the Rust-backed ``GrpcChannel``."""
+
+    def __init__(
+        self,
+        endpoint: str,
+        api_key: str,
+        api_version: str,
+        version: str,
+        secure: bool = True,
+        timeout_s: float | None = None,
+        connect_timeout_s: float | None = None,
+        max_retries: int | None = None,
+        source_tag: str | None = None,
+        proxy_url: str | None = None,
+        on_throttle: Callable[[str], None] | None = None,
+    ) -> None: ...
 
     def upsert(
         self,
