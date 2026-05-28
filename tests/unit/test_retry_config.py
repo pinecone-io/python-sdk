@@ -104,7 +104,7 @@ class TestRetryConfigDefaults:
 class TestCustomRetryConfigSync:
     @patch("pinecone._internal.http_client.time.sleep")
     def test_custom_retry_config_max_retries(self, mock_sleep: Any) -> None:
-        """Custom RetryConfig with max_retries=2 only retries once."""
+        """Custom RetryConfig with max_retries=1 only retries once (2 total attempts)."""
         fake = _FakeTransport(
             [
                 httpx.Response(500, json={"message": "error"}),
@@ -114,7 +114,8 @@ class TestCustomRetryConfigSync:
         )
         transport = _RetryTransport(
             transport=fake,  # type: ignore[arg-type]
-            retry_config=RetryConfig(max_retries=2, max_wait=0.01),
+            # max_retries=1 → 2 total attempts (initial + 1 retry)
+            retry_config=RetryConfig(max_retries=1, max_wait=0.01),
         )
         response = transport.handle_request(_get_request())
         assert response.status_code == 500
@@ -203,7 +204,7 @@ class TestCustomRetryConfigAsync:
     @patch("pinecone._internal.http_client.asyncio.sleep")
     @pytest.mark.asyncio
     async def test_custom_retry_config_max_retries(self, mock_sleep: Any) -> None:
-        """Custom RetryConfig with max_retries=2 only retries once."""
+        """Custom RetryConfig with max_retries=1 only retries once (2 total attempts)."""
         fake = _FakeAsyncTransport(
             [
                 httpx.Response(500, json={"message": "error"}),
@@ -213,7 +214,8 @@ class TestCustomRetryConfigAsync:
         )
         transport = _AsyncRetryTransport(
             transport=fake,  # type: ignore[arg-type]
-            retry_config=RetryConfig(max_retries=2, max_wait=0.01),
+            # max_retries=1 → 2 total attempts (initial + 1 retry)
+            retry_config=RetryConfig(max_retries=1, max_wait=0.01),
         )
         response = await transport.handle_async_request(_get_request())
         assert response.status_code == 500

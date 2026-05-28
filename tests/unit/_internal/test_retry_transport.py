@@ -33,7 +33,8 @@ def test_connection_error_is_retried_and_succeeds() -> None:
 
 
 def test_connection_error_exhausts_retries_and_raises() -> None:
-    rt, inner = _transport(max_retries=2)
+    # max_retries=1 → 2 total attempts (initial + 1 retry)
+    rt, inner = _transport(max_retries=1)
     inner.handle_request.side_effect = [
         httpx.RemoteProtocolError("peer closed connection"),
         httpx.RemoteProtocolError("peer closed connection"),
@@ -80,7 +81,8 @@ async def test_async_connection_error_is_retried_and_succeeds() -> None:
 
 @pytest.mark.asyncio
 async def test_async_connection_error_exhausts_retries_and_raises() -> None:
-    rt, inner = _async_transport(max_retries=2)
+    # max_retries=1 → 2 total attempts (initial + 1 retry)
+    rt, inner = _async_transport(max_retries=1)
     inner.handle_async_request.side_effect = [
         httpx.RemoteProtocolError("peer closed connection"),
         httpx.RemoteProtocolError("peer closed connection"),
@@ -158,7 +160,8 @@ def test_post_not_retried_on_400() -> None:
 
 
 def test_post_exhausts_retries_then_returns_503() -> None:
-    rt, inner = _transport(max_retries=3)
+    # max_retries=2 → 3 total attempts (initial + 2 retries)
+    rt, inner = _transport(max_retries=2)
     inner.handle_request.side_effect = [
         httpx.Response(503),
         httpx.Response(503),
@@ -170,7 +173,8 @@ def test_post_exhausts_retries_then_returns_503() -> None:
 
 
 def test_post_exhausts_retries_then_raises_transport_error() -> None:
-    rt, inner = _transport(max_retries=3)
+    # max_retries=2 → 3 total attempts (initial + 2 retries)
+    rt, inner = _transport(max_retries=2)
     inner.handle_request.side_effect = [
         httpx.ConnectError("fail"),
         httpx.ConnectError("fail"),

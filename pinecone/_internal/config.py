@@ -79,7 +79,7 @@ class RetryConfig:
     """Configuration for HTTP retry behavior.
 
     Args:
-        max_retries: Total number of request attempts (initial + retries). Defaults to 3.
+        max_retries: Number of retries after the initial attempt. Defaults to 3 (4 total attempts).
         backoff_factor: Exponential backoff base multiplier in seconds. Defaults to 2.0.
         max_wait: Maximum backoff delay in seconds. Defaults to 60.0.
         retryable_status_codes: HTTP status codes that trigger a retry. Defaults to

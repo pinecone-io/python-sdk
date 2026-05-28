@@ -131,16 +131,16 @@ class _RetryTransport(httpx.BaseTransport):
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         last_exc: httpx.TransportError | None = None
-        for attempt in range(self._config.max_retries):
+        for attempt in range(self._config.max_retries + 1):
             try:
                 response = self._transport.handle_request(request)
             except httpx.TransportError as exc:
                 last_exc = exc
-                if attempt < self._config.max_retries - 1:
+                if attempt < self._config.max_retries:
                     logger.debug(
                         "Connection error on attempt %d/%d, retrying: %s",
                         attempt + 1,
-                        self._config.max_retries,
+                        self._config.max_retries + 1,
                         exc,
                     )
                     time.sleep(self._compute_backoff(attempt))
@@ -149,7 +149,7 @@ class _RetryTransport(httpx.BaseTransport):
             if response.status_code not in self._config.retryable_status_codes:
                 return response
             self._notify_throttle(request)
-            if attempt < self._config.max_retries - 1:
+            if attempt < self._config.max_retries:
                 response.close()
                 retry_after = response.headers.get("retry-after")
                 if retry_after is not None:
@@ -201,16 +201,16 @@ class _AsyncRetryTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         last_exc: httpx.TransportError | None = None
-        for attempt in range(self._config.max_retries):
+        for attempt in range(self._config.max_retries + 1):
             try:
                 response = await self._transport.handle_async_request(request)
             except httpx.TransportError as exc:
                 last_exc = exc
-                if attempt < self._config.max_retries - 1:
+                if attempt < self._config.max_retries:
                     logger.debug(
                         "Connection error on attempt %d/%d, retrying: %s",
                         attempt + 1,
-                        self._config.max_retries,
+                        self._config.max_retries + 1,
                         exc,
                     )
                     await asyncio.sleep(self._compute_backoff(attempt))
@@ -219,7 +219,7 @@ class _AsyncRetryTransport(httpx.AsyncBaseTransport):
             if response.status_code not in self._config.retryable_status_codes:
                 return response
             self._notify_throttle(request)
-            if attempt < self._config.max_retries - 1:
+            if attempt < self._config.max_retries:
                 await response.aclose()
                 retry_after = response.headers.get("retry-after")
                 if retry_after is not None:

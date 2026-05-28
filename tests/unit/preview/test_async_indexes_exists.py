@@ -45,7 +45,7 @@ def indexes() -> AsyncPreviewIndexes:
     config = PineconeConfig(
         api_key="test-key",
         host=BASE_URL,
-        retry_config=RetryConfig(max_retries=1),
+        retry_config=RetryConfig(max_retries=0),
     )
     return AsyncPreviewIndexes(config=config)
 

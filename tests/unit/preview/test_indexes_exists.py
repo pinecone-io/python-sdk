@@ -44,7 +44,7 @@ def indexes() -> PreviewIndexes:
     config = PineconeConfig(
         api_key="test-key",
         host=BASE_URL,
-        retry_config=RetryConfig(max_retries=1),
+        retry_config=RetryConfig(max_retries=0),
     )
     return PreviewIndexes(config=config)
 

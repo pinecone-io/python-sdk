@@ -204,10 +204,10 @@ class TestSyncRetryTransport:
         )
         transport = _RetryTransport(
             transport=fake,  # type: ignore[arg-type]
-            retry_config=RetryConfig(max_retries=5, backoff_factor=2.0, max_wait=0.01),
+            # max_retries=4 → 5 total attempts (initial + 4 retries)
+            retry_config=RetryConfig(max_retries=4, backoff_factor=2.0, max_wait=0.01),
         )
         response = transport.handle_request(_make_request())
-        # max_retries=5 total, so 5 calls
         assert response.status_code == 503
         assert fake.call_count == 5
         assert mock_sleep.call_count == 4
@@ -327,8 +327,9 @@ class TestSyncRetryTransport:
         )
         transport = _RetryTransport(
             transport=fake,  # type: ignore[arg-type]
+            # max_retries=4 → 5 total attempts (initial + 4 retries) = 4 sleeps
             retry_config=RetryConfig(
-                max_retries=5,
+                max_retries=4,
                 backoff_factor=2.0,
                 max_wait=3.0,
             ),
@@ -516,7 +517,8 @@ class TestSyncRetryTransport:
         fake = _TrackingTransport(responses)
         transport = _RetryTransport(
             transport=fake,  # type: ignore[arg-type]
-            retry_config=RetryConfig(max_retries=3, backoff_factor=2.0, max_wait=0.01),
+            # max_retries=2 → 3 total attempts (initial + 2 retries)
+            retry_config=RetryConfig(max_retries=2, backoff_factor=2.0, max_wait=0.01),
         )
         result = transport.handle_request(_make_request())
         assert result.status_code == 500
@@ -597,10 +599,10 @@ class TestAsyncRetryTransport:
         )
         transport = _AsyncRetryTransport(
             transport=fake,  # type: ignore[arg-type]
-            retry_config=RetryConfig(max_retries=5, backoff_factor=2.0, max_wait=0.01),
+            # max_retries=4 → 5 total attempts (initial + 4 retries)
+            retry_config=RetryConfig(max_retries=4, backoff_factor=2.0, max_wait=0.01),
         )
         response = await transport.handle_async_request(_make_request())
-        # max_retries=5 total, so 5 calls
         assert response.status_code == 502
         assert fake.call_count == 5
         assert mock_sleep.call_count == 4
@@ -659,8 +661,9 @@ class TestAsyncRetryTransport:
         )
         transport = _AsyncRetryTransport(
             transport=fake,  # type: ignore[arg-type]
+            # max_retries=4 → 5 total attempts (initial + 4 retries) = 4 sleeps
             retry_config=RetryConfig(
-                max_retries=5,
+                max_retries=4,
                 backoff_factor=2.0,
                 max_wait=3.0,
             ),
@@ -704,7 +707,8 @@ class TestAsyncRetryTransport:
         fake = _TrackingAsyncTransport(responses)
         transport = _AsyncRetryTransport(
             transport=fake,  # type: ignore[arg-type]
-            retry_config=RetryConfig(max_retries=3, backoff_factor=2.0, max_wait=0.01),
+            # max_retries=2 → 3 total attempts (initial + 2 retries)
+            retry_config=RetryConfig(max_retries=2, backoff_factor=2.0, max_wait=0.01),
         )
         result = await transport.handle_async_request(_make_request())
         assert result.status_code == 503
@@ -781,14 +785,14 @@ class TestHTTPClientRetryIntegration:
         )
         retry_transport = _RetryTransport(
             transport=fake,  # type: ignore[arg-type]
-            retry_config=RetryConfig(max_retries=3, backoff_factor=2.0, max_wait=0.01),
+            # max_retries=2 → 3 total attempts (initial + 2 retries)
+            retry_config=RetryConfig(max_retries=2, backoff_factor=2.0, max_wait=0.01),
         )
         client._client._transport = retry_transport  # type: ignore[assignment]
 
         with pytest.raises(ApiError) as exc_info:
             client.get("/indexes")
         assert exc_info.value.status_code == 500
-        # max_retries=3 total
         assert fake.call_count == 3
 
     @patch("pinecone._internal.http_client.time.sleep")
