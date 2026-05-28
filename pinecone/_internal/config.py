@@ -80,7 +80,10 @@ class RetryConfig:
 
     Args:
         max_retries: Number of retries after the initial attempt. Defaults to 3 (4 total attempts).
-        backoff_factor: Exponential backoff base multiplier in seconds. Defaults to 2.0.
+        backoff_factor: Minimum delay floor in seconds between retries. The
+            decorrelated-jitter algorithm samples from
+            ``uniform(backoff_factor, prev_delay * 3)`` capped at ``max_wait``.
+            Defaults to 0.25.
         max_wait: Maximum backoff delay in seconds. Defaults to 60.0.
         retryable_status_codes: HTTP status codes that trigger a retry. Defaults to
             ``{408, 429, 500, 502, 503, 504}``.
@@ -90,7 +93,7 @@ class RetryConfig:
     """
 
     max_retries: int = 3
-    backoff_factor: float = 2.0
+    backoff_factor: float = 0.25
     max_wait: float = 60.0
     retryable_status_codes: frozenset[int] = field(
         default_factory=lambda: frozenset({408, 429, 500, 502, 503, 504})

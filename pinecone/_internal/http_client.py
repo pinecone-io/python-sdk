@@ -131,6 +131,7 @@ class _RetryTransport(httpx.BaseTransport):
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         last_exc: httpx.TransportError | None = None
+        prev_delay: float | None = None
         for attempt in range(self._config.max_retries + 1):
             try:
                 response = self._transport.handle_request(request)
@@ -143,7 +144,9 @@ class _RetryTransport(httpx.BaseTransport):
                         self._config.max_retries + 1,
                         exc,
                     )
-                    time.sleep(self._compute_backoff(attempt))
+                    delay = self._compute_backoff(attempt, prev_delay)
+                    prev_delay = delay
+                    time.sleep(delay)
                 continue
             last_exc = None
             if response.status_code not in self._config.retryable_status_codes:
@@ -151,28 +154,39 @@ class _RetryTransport(httpx.BaseTransport):
             self._notify_throttle(request)
             if attempt < self._config.max_retries:
                 response.close()
-                retry_after = response.headers.get("retry-after")
-                if retry_after is not None:
-                    try:
-                        delay = float(retry_after)
-                    except ValueError:
-                        delay = self._compute_backoff(attempt)
-                else:
-                    delay = self._compute_backoff(attempt)
+                delay = self._compute_retry_after_delay(response, attempt, prev_delay)
+                prev_delay = delay
                 time.sleep(delay)
             else:
                 return response
         if last_exc is not None:
             raise last_exc
-        raise RuntimeError("max_retries must be positive")
+        raise RuntimeError("max_retries must be non-negative")
 
-    def _compute_backoff(self, attempt: int) -> float:
-        """Floored full jitter: uniform in [10%, 100%] of exponential base."""
-        base_delay = min(
-            self._config.backoff_factor**attempt,
-            self._config.max_wait,
-        )
-        return random.uniform(0.1 * base_delay, base_delay)
+    def _compute_backoff(self, attempt: int, prev_delay: float | None) -> float:
+        """Decorrelated jitter: uniform(base, prev*3), capped at max_wait."""
+        base_delay = self._config.backoff_factor
+        if prev_delay is None:
+            prev_delay = base_delay
+        upper = min(self._config.max_wait, prev_delay * 3.0)
+        return random.uniform(base_delay, max(base_delay, upper))
+
+    def _compute_retry_after_delay(
+        self,
+        response: httpx.Response,
+        attempt: int,
+        prev_delay: float | None,
+    ) -> float:
+        retry_after = response.headers.get("retry-after")
+        if retry_after is not None:
+            try:
+                ra = float(retry_after)
+                if ra >= 0:
+                    smear = random.uniform(0.0, ra * 0.5)
+                    return ra + smear
+            except (ValueError, TypeError):
+                pass
+        return self._compute_backoff(attempt, prev_delay)
 
     def _notify_throttle(self, request: httpx.Request) -> None:
         cb = self._config.on_throttle
@@ -201,6 +215,7 @@ class _AsyncRetryTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         last_exc: httpx.TransportError | None = None
+        prev_delay: float | None = None
         for attempt in range(self._config.max_retries + 1):
             try:
                 response = await self._transport.handle_async_request(request)
@@ -213,7 +228,9 @@ class _AsyncRetryTransport(httpx.AsyncBaseTransport):
                         self._config.max_retries + 1,
                         exc,
                     )
-                    await asyncio.sleep(self._compute_backoff(attempt))
+                    delay = self._compute_backoff(attempt, prev_delay)
+                    prev_delay = delay
+                    await asyncio.sleep(delay)
                 continue
             last_exc = None
             if response.status_code not in self._config.retryable_status_codes:
@@ -221,28 +238,39 @@ class _AsyncRetryTransport(httpx.AsyncBaseTransport):
             self._notify_throttle(request)
             if attempt < self._config.max_retries:
                 await response.aclose()
-                retry_after = response.headers.get("retry-after")
-                if retry_after is not None:
-                    try:
-                        delay = float(retry_after)
-                    except ValueError:
-                        delay = self._compute_backoff(attempt)
-                else:
-                    delay = self._compute_backoff(attempt)
+                delay = self._compute_retry_after_delay(response, attempt, prev_delay)
+                prev_delay = delay
                 await asyncio.sleep(delay)
             else:
                 return response
         if last_exc is not None:
             raise last_exc
-        raise RuntimeError("max_retries must be positive")
+        raise RuntimeError("max_retries must be non-negative")
 
-    def _compute_backoff(self, attempt: int) -> float:
-        """Floored full jitter: uniform in [10%, 100%] of exponential base."""
-        base_delay = min(
-            self._config.backoff_factor**attempt,
-            self._config.max_wait,
-        )
-        return random.uniform(0.1 * base_delay, base_delay)
+    def _compute_backoff(self, attempt: int, prev_delay: float | None) -> float:
+        """Decorrelated jitter: uniform(base, prev*3), capped at max_wait."""
+        base_delay = self._config.backoff_factor
+        if prev_delay is None:
+            prev_delay = base_delay
+        upper = min(self._config.max_wait, prev_delay * 3.0)
+        return random.uniform(base_delay, max(base_delay, upper))
+
+    def _compute_retry_after_delay(
+        self,
+        response: httpx.Response,
+        attempt: int,
+        prev_delay: float | None,
+    ) -> float:
+        retry_after = response.headers.get("retry-after")
+        if retry_after is not None:
+            try:
+                ra = float(retry_after)
+                if ra >= 0:
+                    smear = random.uniform(0.0, ra * 0.5)
+                    return ra + smear
+            except (ValueError, TypeError):
+                pass
+        return self._compute_backoff(attempt, prev_delay)
 
     def _notify_throttle(self, request: httpx.Request) -> None:
         cb = self._config.on_throttle
