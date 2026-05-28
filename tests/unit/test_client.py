@@ -413,11 +413,15 @@ class TestIndexFactoryGrpc:
         result = pc.index(host="foo.svc.pinecone.io", grpc=True)
 
         assert result is mock_grpc_idx
-        mock_grpc_cls.assert_called_once_with(
-            host="foo.svc.pinecone.io",
-            api_key="test-key",
-            source_tag=None,
-        )
+        mock_grpc_cls.assert_called_once()
+        _, call_kwargs = mock_grpc_cls.call_args
+        assert call_kwargs["host"] == "foo.svc.pinecone.io"
+        assert call_kwargs["api_key"] == "test-key"
+        assert call_kwargs["source_tag"] is None
+        # on_throttle must be wired to the registry's report_throttled method
+        on_throttle = call_kwargs["on_throttle"]
+        assert callable(on_throttle)
+        assert on_throttle.__self__ is pc._limiter_registry
 
     @patch("pinecone.grpc.GrpcIndex")
     def test_grpc_true_passes_source_tag(self, mock_grpc_cls: MagicMock) -> None:
@@ -426,11 +430,12 @@ class TestIndexFactoryGrpc:
 
         pc.index(host="foo.svc.pinecone.io", grpc=True)
 
-        mock_grpc_cls.assert_called_once_with(
-            host="foo.svc.pinecone.io",
-            api_key="test-key",
-            source_tag="my_app",
-        )
+        mock_grpc_cls.assert_called_once()
+        _, call_kwargs = mock_grpc_cls.call_args
+        assert call_kwargs["host"] == "foo.svc.pinecone.io"
+        assert call_kwargs["api_key"] == "test-key"
+        assert call_kwargs["source_tag"] == "my_app"
+        assert callable(call_kwargs["on_throttle"])
 
     @patch("pinecone.grpc.GrpcIndex")
     def test_grpc_true_with_name_cached(self, mock_grpc_cls: MagicMock) -> None:
@@ -440,11 +445,12 @@ class TestIndexFactoryGrpc:
 
         pc.index(name="my-index", grpc=True)
 
-        mock_grpc_cls.assert_called_once_with(
-            host="cached.host.pinecone.io",
-            api_key="test-key",
-            source_tag=None,
-        )
+        mock_grpc_cls.assert_called_once()
+        _, call_kwargs = mock_grpc_cls.call_args
+        assert call_kwargs["host"] == "cached.host.pinecone.io"
+        assert call_kwargs["api_key"] == "test-key"
+        assert call_kwargs["source_tag"] is None
+        assert callable(call_kwargs["on_throttle"])
 
     @patch("pinecone.grpc.GrpcIndex")
     def test_grpc_true_with_name_describe(self, mock_grpc_cls: MagicMock) -> None:
@@ -461,11 +467,12 @@ class TestIndexFactoryGrpc:
 
         mock_indexes.describe.assert_called_once_with("my-index")
         assert pc._host_cache["my-index"] == "resolved.host.pinecone.io"
-        mock_grpc_cls.assert_called_once_with(
-            host="resolved.host.pinecone.io",
-            api_key="test-key",
-            source_tag=None,
-        )
+        mock_grpc_cls.assert_called_once()
+        _, call_kwargs = mock_grpc_cls.call_args
+        assert call_kwargs["host"] == "resolved.host.pinecone.io"
+        assert call_kwargs["api_key"] == "test-key"
+        assert call_kwargs["source_tag"] is None
+        assert callable(call_kwargs["on_throttle"])
 
     @patch("pinecone.index.Index")
     def test_grpc_false_default_returns_http_index(self, mock_index_cls: MagicMock) -> None:

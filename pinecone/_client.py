@@ -394,6 +394,7 @@ class Pinecone:
                 host=resolved_host,
                 api_key=self._config.api_key,
                 source_tag=self._config.source_tag or None,
+                on_throttle=self._limiter_registry.report_throttled,
             )
 
         from pinecone.index import Index as _Index

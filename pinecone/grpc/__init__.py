@@ -5,7 +5,7 @@ from __future__ import annotations
 import builtins
 import logging
 import os
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
@@ -185,6 +185,7 @@ class GrpcIndex:
         secure: bool = True,
         timeout: float = 20.0,
         connect_timeout: float = 1.0,
+        on_throttle: Callable[[str], None] | None = None,
     ) -> None:
         # Resolve API key: explicit arg > env var
         resolved_key = api_key or os.environ.get("PINECONE_API_KEY", "")
@@ -213,6 +214,7 @@ class GrpcIndex:
             timeout,
             connect_timeout,
             source_tag=source_tag,
+            on_throttle=on_throttle,
         )
 
         self._executor = ThreadPoolExecutor()
