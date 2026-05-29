@@ -1279,6 +1279,39 @@ class GrpcIndex:
             )
         )
 
+    def query_namespaces_async(
+        self,
+        *,
+        vector: Sequence[float] | None = None,
+        namespaces: Sequence[str],
+        metric: str,
+        top_k: int | None = None,
+        filter: Mapping[str, Any] | None = None,
+        include_values: bool = False,
+        include_metadata: bool = False,
+        sparse_vector: SparseValues | Mapping[str, Any] | None = None,
+        scan_factor: float | None = None,
+        max_candidates: int | None = None,
+        timeout: float | None = None,
+    ) -> PineconeFuture[QueryNamespacesResults]:
+        """Submit a query_namespaces call and return a :class:`PineconeFuture`."""
+        return PineconeFuture(
+            self._executor.submit(
+                self.query_namespaces,
+                vector=vector,
+                namespaces=namespaces,
+                metric=metric,
+                top_k=top_k,
+                filter=filter,
+                include_values=include_values,
+                include_metadata=include_metadata,
+                sparse_vector=sparse_vector,
+                scan_factor=scan_factor,
+                max_candidates=max_candidates,
+                timeout=timeout,
+            )
+        )
+
     def upsert_records(
         self,
         *,

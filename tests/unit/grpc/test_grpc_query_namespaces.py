@@ -1,4 +1,4 @@
-"""Unit tests for GrpcIndex.query_namespaces() — fan-out and validation."""
+"""Unit tests for GrpcIndex.query_namespaces() and query_namespaces_async()."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import pytest
 
 from pinecone.errors.exceptions import ValidationError
 from pinecone.grpc import GrpcIndex
+from pinecone.grpc.future import PineconeFuture
 from pinecone.models.vectors.query_aggregator import QueryNamespacesResults
 from pinecone.models.vectors.responses import QueryResponse
 from pinecone.models.vectors.vector import ScoredVector
@@ -101,3 +102,20 @@ def test_query_namespaces_deduplicates_namespaces() -> None:
     )
 
     assert mock_channel.query.call_count == 1
+
+
+def test_query_namespaces_async_returns_future() -> None:
+    """query_namespaces_async returns a PineconeFuture wrapping QueryNamespacesResults."""
+    idx, mock_channel = _make_grpc_index()
+    mock_channel.query.return_value = {"matches": [{"id": "v1", "score": 0.9}], "namespace": "ns1"}
+
+    future = idx.query_namespaces_async(
+        vector=[0.1, 0.2, 0.3],
+        namespaces=["ns1"],
+        metric="cosine",
+        top_k=5,
+    )
+
+    assert isinstance(future, PineconeFuture)
+    result = future.result()
+    assert isinstance(result, QueryNamespacesResults)
