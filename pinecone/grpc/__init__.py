@@ -33,6 +33,7 @@ from pinecone.models.namespaces.models import (
     NamespaceFieldConfig,
     NamespaceSchema,
 )
+from pinecone.models.vectors.query_aggregator import QueryNamespacesResults, QueryResultsAggregator
 from pinecone.models.vectors.responses import (
     DescribeIndexStatsResponse,
     FetchByMetadataResponse,
@@ -475,6 +476,117 @@ class GrpcIndex:
             namespace=result.get("namespace", ""),
             usage=usage,
         )
+
+    def query_namespaces(
+        self,
+        *,
+        vector: Sequence[float] | None = None,
+        namespaces: Sequence[str],
+        metric: str,
+        top_k: int | None = None,
+        filter: Mapping[str, Any] | None = None,
+        include_values: bool = False,
+        include_metadata: bool = False,
+        sparse_vector: SparseValues | Mapping[str, Any] | None = None,
+        scan_factor: float | None = None,
+        max_candidates: int | None = None,
+        timeout: float | None = None,
+    ) -> QueryNamespacesResults:
+        """Query multiple namespaces in parallel and return merged top results.
+
+        Fans out individual ``query()`` calls across all given namespaces
+        using a thread pool, then merges results via a heap-based aggregator
+        that returns the overall top-k matches ranked by the specified metric.
+
+        Args:
+            vector: Dense query vector values. Required for dense and hybrid
+                indexes; omit for sparse-only indexes (use *sparse_vector* instead).
+            namespaces: Namespaces to query (must be non-empty). Duplicates
+                are removed while preserving order.
+            metric: Distance metric — ``"cosine"``, ``"euclidean"``, or
+                ``"dotproduct"``.
+            top_k: Maximum number of results to return. Defaults to 10.
+            filter: Metadata filter expression applied to every namespace.
+            include_values: Whether to include vector values in results.
+            include_metadata: Whether to include metadata in results.
+            sparse_vector: Sparse query vector with indices and values.
+                Required for sparse-only indexes when *vector* is omitted.
+            scan_factor: DRN performance tuning — controls how much of the
+                index is scanned during a query. Higher values scan more
+                data and may improve recall at the cost of latency.
+            max_candidates: DRN performance tuning — maximum number of
+                candidate vectors to consider during the search phase.
+
+        Returns:
+            :class:`QueryNamespacesResults` with the merged top-k matches, total
+            usage, and per-namespace usage.
+
+        Raises:
+            :exc:`PineconeValueError`: If *namespaces* is empty, or if both
+                *vector* and *sparse_vector* are absent/empty.
+            :exc:`ValueError`: If *metric* is not a recognized value.
+            :exc:`ApiError`: If any individual namespace query fails.
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
+
+        Examples:
+
+            .. code-block:: python
+
+                # Dense query
+                results = idx.query_namespaces(
+                    vector=[0.012, -0.087, 0.153],  # truncated; use your actual dimension
+                    namespaces=["articles-en", "articles-fr", "articles-de"],
+                    metric="cosine",
+                    top_k=10,
+                )
+
+                # Sparse-only query (sparse index)
+                results = idx.query_namespaces(
+                    sparse_vector={"indices": [0, 1, 2], "values": [0.1, 0.2, 0.3]},
+                    namespaces=["docs-en", "docs-fr"],
+                    metric="dotproduct",
+                    top_k=10,
+                )
+
+                for match in results.matches:
+                    print(match.id, match.score)
+        """
+        if not namespaces:
+            raise ValidationError("namespaces must be a non-empty list")
+        if not vector and not sparse_vector:
+            raise ValidationError("at least one of 'vector' or 'sparse_vector' must be provided")
+
+        valid_metrics = {"cosine", "euclidean", "dotproduct"}
+        if metric not in valid_metrics:
+            raise ValidationError(
+                f"Invalid metric {metric!r}. Must be one of: {', '.join(sorted(valid_metrics))}"
+            )
+
+        namespaces = list(dict.fromkeys(namespaces))
+        effective_top_k = top_k if top_k is not None else 10
+        aggregator = QueryResultsAggregator(metric=metric, top_k=effective_top_k)
+
+        query_kwargs: dict[str, Any] = {
+            "top_k": effective_top_k,
+            "filter": filter,
+            "include_values": include_values,
+            "include_metadata": include_metadata,
+            "sparse_vector": sparse_vector,
+            "scan_factor": scan_factor,
+            "max_candidates": max_candidates,
+            "timeout": timeout,
+        }
+        if vector is not None:
+            query_kwargs["vector"] = vector
+
+        with ThreadPoolExecutor(max_workers=min(len(namespaces), 32)) as pool:
+            futures = [pool.submit(self.query, namespace=ns, **query_kwargs) for ns in namespaces]
+            for ns, future in zip(namespaces, futures, strict=True):
+                aggregator.add_results(ns, future.result())
+
+        return aggregator.get_results()
 
     def fetch(
         self,
