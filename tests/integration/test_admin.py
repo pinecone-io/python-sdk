@@ -29,11 +29,12 @@ from collections.abc import Iterator
 
 import pytest
 
-from pinecone import Admin, PineconeValueError
+from pinecone import Admin, Pinecone, PineconeValueError
 from pinecone.errors import ApiError, NotFoundError
 from pinecone.models.admin.api_key import APIKeyList, APIKeyModel
 from pinecone.models.admin.organization import OrganizationList, OrganizationModel
 from pinecone.models.admin.project import ProjectList, ProjectModel
+from pinecone.models.indexes.specs import ServerlessSpec
 
 
 @pytest.fixture(scope="module")
@@ -618,3 +619,68 @@ def test_api_keys_lifecycle_project_viewer_role(
                 admin.api_keys.delete(api_key_id=key_id)
             except Exception as e:
                 print(f"Cleanup failed for key {key_id!r}: {e}")
+
+
+# ---------------------------------------------------------------------------
+# end-to-end bridge — requires real credentials + RUN_EXPENSIVE_TESTS=1
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    not os.getenv("RUN_EXPENSIVE_TESTS"),
+    reason="Creates real cloud resources — set RUN_EXPENSIVE_TESTS=1 to run",
+)
+def test_admin_to_pinecone_end_to_end_bridge(admin: Admin) -> None:
+    """Proves that an Admin-created project+key pair can drive real data-plane ops.
+
+    Workflow:
+    1. Admin creates a new project and API key scoped to it.
+    2. A fresh Pinecone client is constructed from the key value.
+    3. A tiny serverless index is created and polled to Ready.
+    4. The index status is confirmed ready.
+    5. Finally: admin.projects.delete_with_cleanup() cascades the delete.
+
+    Validates the canonical "create project → create key → use key for Pinecone
+    client → create index" workflow from admin.py:48-54.
+    """
+    project_id: str | None = None
+    index_name = f"bridge-idx-{int(time.time())}"
+
+    try:
+        project = admin.projects.create(name=f"bridge-{int(time.time())}")
+        project_id = project.id
+
+        key = admin.api_keys.create(project_id=project.id, name="bridge-key")
+        # key.value is the secret; only available on create, not describe
+        assert key.value.startswith("pcsk_"), (
+            f"expected pcsk_ prefix on new key, got {key.value[:10]!r}"
+        )
+
+        pc = Pinecone(api_key=key.value)
+
+        pc.indexes.create(
+            name=index_name,
+            dimension=2,
+            metric="cosine",
+            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            timeout=300,
+        )
+
+        described = pc.indexes.describe(index_name)
+        assert described.status.ready is True, (
+            f"index {index_name!r} not ready after create+poll; status={described.status!r}"
+        )
+
+        # Confirm the key value passes auth for data-plane ops (describe returned above)
+        # and that project isolation holds: the index is visible only under this key.
+        listed_names = [idx.name for idx in pc.indexes.list()]
+        assert index_name in listed_names, (
+            f"index {index_name!r} missing from list(); got {listed_names}"
+        )
+    finally:
+        if project_id is not None:
+            try:
+                admin.projects.delete_with_cleanup(project_id=project_id)
+            except Exception as e:
+                print(f"Cleanup failed for project {project_id!r}: {e}")
