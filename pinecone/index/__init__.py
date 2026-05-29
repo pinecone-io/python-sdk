@@ -1601,7 +1601,7 @@ class Index:
                 ``"s3://my-bucket/vectors/"`` or ``"gs://my-bucket/vectors/"``).
             error_mode (str | None): How to handle errors during import. Must be
                 ``"continue"`` or ``"abort"`` when supplied. Case-insensitive.
-                Optional; when omitted the backend default (abort) applies.
+                Optional; when omitted the backend default (``"continue"``) applies.
             integration_id (str | None): Optional integration ID for the import.
 
         Returns:
