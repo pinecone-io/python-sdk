@@ -13,6 +13,7 @@ PineconeError (base)
 │   ├── ConflictError           # 409
 │   ├── UnauthorizedError       # 401
 │   ├── ForbiddenError          # 403
+│   ├── RateLimitError          # 429
 │   └── ServiceError            # 5xx
 ├── PineconeConnectionError     # Network-level failure (DNS, refused, transport)
 ├── PineconeTimeoutError        # Operation exceeded its timeout
@@ -31,6 +32,7 @@ from pinecone.errors import (
     ConflictError,
     UnauthorizedError,
     ForbiddenError,
+    RateLimitError,
     ServiceError,
     PineconeConnectionError,
     PineconeTimeoutError,
@@ -48,6 +50,9 @@ except UnauthorizedError:
     print("Invalid or missing API key")
 except ForbiddenError:
     print("API key lacks permission for this operation")
+except RateLimitError as exc:
+    # exc.retry_after is the parsed Retry-After header in seconds, or None
+    print(f"Rate limited; retry after {exc.retry_after}s")
 except ServiceError as exc:
     print(f"Server error {exc.status_code}: {exc.message}")
 except PineconeConnectionError:
@@ -148,6 +153,12 @@ To disable retries entirely, set `max_retries=1`:
 ```python
 pc = Pinecone(retry_config=RetryConfig(max_retries=1))
 ```
+
+A 429 response triggers a retry by default (with the `Retry-After` header honored if
+present). If retries are exhausted, the SDK raises `RateLimitError` with the parsed
+`Retry-After` value on `exc.retry_after`. To handle rate limits without relying on
+retries, set `retryable_status_codes=frozenset()` excluding 429 and catch
+`RateLimitError` directly.
 
 ## Timeouts
 

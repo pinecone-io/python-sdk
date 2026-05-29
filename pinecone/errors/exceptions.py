@@ -177,6 +177,38 @@ class ForbiddenError(ApiError):
         )
 
 
+class RateLimitError(ApiError):
+    """429 Too Many Requests.
+
+    ``retry_after`` is parsed from the ``Retry-After`` response header when present
+    and expressible as a non-negative number of seconds. HTTP-date values are not
+    parsed and result in ``retry_after = None``.
+    """
+
+    def __init__(
+        self,
+        message: str = "Rate limit exceeded",
+        status_code: int = 429,
+        body: dict[str, Any] | None = None,
+        *,
+        reason: str | None = None,
+        headers: dict[str, str] | None = None,
+        error_code: str | None = None,
+        request_id: str | None = None,
+        retry_after: float | None = None,
+    ) -> None:
+        self.retry_after = retry_after
+        super().__init__(
+            message=message,
+            status_code=status_code,
+            body=body,
+            reason=reason,
+            headers=headers,
+            error_code=error_code,
+            request_id=request_id,
+        )
+
+
 class ServiceError(ApiError):
     """5xx server error."""
 
@@ -322,6 +354,8 @@ UnauthorizedException = UnauthorizedError
 ForbiddenException = ForbiddenError
 # Backcompat alias, :meta private:
 ServiceException = ServiceError
+# Backcompat alias, :meta private:
+RateLimitException = RateLimitError
 # Backcompat alias, :meta private:
 PineconeConfigurationError = PineconeValueError
 # Backcompat alias, :meta private:

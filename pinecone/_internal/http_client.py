@@ -28,6 +28,7 @@ from pinecone.errors.exceptions import (
     NotFoundError,
     PineconeConnectionError,
     PineconeTimeoutError,
+    RateLimitError,
     ServiceError,
     UnauthorizedError,
 )
@@ -388,6 +389,26 @@ def _raise_for_status(response: httpx.Response) -> None:
             headers=headers,
             error_code=error_code,
             request_id=request_id,
+        )
+    if status == 429:
+        retry_after_raw = response.headers.get("retry-after")
+        retry_after: float | None
+        if retry_after_raw is None:
+            retry_after = None
+        else:
+            try:
+                retry_after = float(retry_after_raw)
+            except (ValueError, TypeError):
+                retry_after = None
+        raise RateLimitError(
+            message=message,
+            status_code=status,
+            body=body,
+            reason=reason,
+            headers=headers,
+            error_code=error_code,
+            request_id=request_id,
+            retry_after=retry_after,
         )
     if status == 409:
         raise ConflictError(

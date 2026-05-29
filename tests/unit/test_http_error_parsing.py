@@ -14,6 +14,7 @@ from pinecone._internal.http_client import (
 from pinecone.errors.exceptions import (
     ApiError,
     NotFoundError,
+    RateLimitError,
     ServiceError,
 )
 
@@ -183,6 +184,50 @@ class TestRaiseForStatus:
         err = exc_info.value
         assert err.message  # non-empty, sensible
         assert err.error_code is None
+
+
+class TestRateLimitError:
+    def test_429_maps_to_rate_limit_error(self) -> None:
+        response = _make_response(
+            429,
+            json={
+                "error": {"code": "RATE_LIMIT_EXCEEDED", "message": "Too many requests"},
+                "status": 429,
+            },
+            headers={"x-pinecone-request-id": "req-rl-1"},
+        )
+        with pytest.raises(RateLimitError) as exc_info:
+            _raise_for_status(response)
+        err = exc_info.value
+        assert err.status_code == 429
+        assert err.error_code == "RATE_LIMIT_EXCEEDED"
+        assert err.request_id == "req-rl-1"
+
+    def test_429_parses_retry_after_integer(self) -> None:
+        response = _make_response(
+            429,
+            body=b"",
+            headers={"retry-after": "60"},
+        )
+        with pytest.raises(RateLimitError) as exc_info:
+            _raise_for_status(response)
+        assert exc_info.value.retry_after == 60.0
+
+    def test_429_handles_missing_retry_after(self) -> None:
+        response = _make_response(429, body=b"")
+        with pytest.raises(RateLimitError) as exc_info:
+            _raise_for_status(response)
+        assert exc_info.value.retry_after is None
+
+    def test_429_handles_http_date_retry_after(self) -> None:
+        response = _make_response(
+            429,
+            body=b"",
+            headers={"retry-after": "Fri, 31 Dec 2026 23:59:59 GMT"},
+        )
+        with pytest.raises(RateLimitError) as exc_info:
+            _raise_for_status(response)
+        assert exc_info.value.retry_after is None
 
 
 class TestExtractionResilience:
