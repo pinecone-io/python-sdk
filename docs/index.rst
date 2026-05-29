@@ -16,6 +16,7 @@ Pinecone Python SDK
    guides/concepts
    guides/sync-vs-async
    guides/error-handling
+   guides/retries
    guides/pagination
    guides/performance
 
