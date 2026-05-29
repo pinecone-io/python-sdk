@@ -18,7 +18,7 @@ from pinecone._internal.batching import chunked, validate_batch_size, with_progr
 from pinecone._internal.config import PineconeConfig
 from pinecone._internal.constants import DATA_PLANE_API_VERSION
 from pinecone._internal.data_plane_helpers import _build_search_records_body, _validate_host
-from pinecone._internal.validation import require_in_range
+from pinecone._internal.validation import require_in_range, require_positive
 from pinecone._internal.vector_factory import VectorFactory
 from pinecone.errors.exceptions import (
     PineconeValueError,
@@ -35,6 +35,7 @@ from pinecone.models.namespaces.models import (
 )
 from pinecone.models.vectors.responses import (
     DescribeIndexStatsResponse,
+    FetchByMetadataResponse,
     FetchResponse,
     ListItem,
     ListResponse,
@@ -522,6 +523,51 @@ class GrpcIndex:
             namespace=result.get("namespace", ""),
             usage=usage,
         )
+
+    def fetch_by_metadata(
+        self,
+        *,
+        filter: Mapping[str, Any],
+        namespace: str = "",
+        limit: int | None = None,
+        pagination_token: str | None = None,
+        timeout: float | None = None,
+    ) -> FetchByMetadataResponse:
+        """Fetch vectors matching a metadata filter expression.
+
+        Delegates to the REST endpoint because the Pinecone gRPC API does not
+        expose a fetch-by-metadata operation.
+
+        Args:
+            filter: Metadata filter expression (required).
+            namespace: Namespace to fetch from. Defaults to the default namespace.
+            limit: Maximum number of vectors to return per page. When ``None``,
+                the server default (100) is used.
+            pagination_token: Token from a previous response to fetch the next page.
+            timeout (float | None): Per-call timeout in seconds.
+
+        Returns:
+            :class:`FetchByMetadataResponse` with matched vectors, namespace, usage,
+            and pagination token for the next page (if any).
+
+        Raises:
+            :exc:`ApiError`: If the API returns an error response.
+        """
+        if limit is not None:
+            require_positive("limit", limit)
+        body: dict[str, Any] = {"filter": filter}
+        if namespace:
+            body["namespace"] = namespace
+        if limit is not None:
+            body["limit"] = limit
+        if pagination_token is not None:
+            body["paginationToken"] = pagination_token
+
+        logger.info("Fetching vectors by metadata (via REST)")
+        response = self._http.post("/vectors/fetch_by_metadata", timeout=timeout, json=body)
+        result = self._adapter.to_fetch_by_metadata_response(response.content)
+        result.response_info = extract_response_info(response)
+        return result
 
     def delete(
         self,
