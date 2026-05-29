@@ -622,6 +622,103 @@ def test_api_keys_lifecycle_project_viewer_role(
 
 
 # ---------------------------------------------------------------------------
+# api_keys — update (name only / roles only / both)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_api_keys_update_name_only(admin: Admin, ephemeral_project: ProjectModel) -> None:
+    """Update only the name of an API key; verify roles are unchanged (PATCH semantics)."""
+    key_name = f"key-upd-name-{int(time.time())}"
+    key_id: str | None = None
+
+    try:
+        created = admin.api_keys.create(
+            project_id=ephemeral_project.id, name=key_name, roles=["ProjectEditor"]
+        )
+        key_id = created.key.id
+
+        updated = admin.api_keys.update(api_key_id=key_id, name="new-name")
+        assert isinstance(updated, APIKeyModel)
+        assert updated.name == "new-name", f"expected 'new-name', got {updated.name!r}"
+        assert updated.roles == ["ProjectEditor"], (
+            f"PATCH should not wipe roles; got {updated.roles!r}"
+        )
+
+        described = admin.api_keys.describe(api_key_id=key_id)
+        assert described.name == "new-name"
+        assert described.roles == ["ProjectEditor"]
+    finally:
+        if key_id is not None:
+            try:
+                admin.api_keys.delete(api_key_id=key_id)
+            except Exception as e:
+                print(f"Cleanup failed for key {key_id!r}: {e}")
+
+
+@pytest.mark.integration
+def test_api_keys_update_roles_only(admin: Admin, ephemeral_project: ProjectModel) -> None:
+    """Update only the roles of an API key; verify name is unchanged (PATCH semantics)."""
+    key_name = f"key-upd-roles-{int(time.time())}"
+    key_id: str | None = None
+
+    try:
+        created = admin.api_keys.create(
+            project_id=ephemeral_project.id, name=key_name, roles=["ProjectEditor"]
+        )
+        key_id = created.key.id
+
+        updated = admin.api_keys.update(api_key_id=key_id, roles=["ProjectViewer"])
+        assert isinstance(updated, APIKeyModel)
+        assert updated.roles == ["ProjectViewer"], (
+            f"expected ['ProjectViewer'], got {updated.roles!r}"
+        )
+        assert updated.name == key_name, f"PATCH should not wipe name; got {updated.name!r}"
+
+        described = admin.api_keys.describe(api_key_id=key_id)
+        assert described.roles == ["ProjectViewer"]
+        assert described.name == key_name
+    finally:
+        if key_id is not None:
+            try:
+                admin.api_keys.delete(api_key_id=key_id)
+            except Exception as e:
+                print(f"Cleanup failed for key {key_id!r}: {e}")
+
+
+@pytest.mark.integration
+def test_api_keys_update_both_name_and_roles(admin: Admin, ephemeral_project: ProjectModel) -> None:
+    """Update both name and roles in a single call; verify both changes persist."""
+    key_name = f"key-upd-both-{int(time.time())}"
+    key_id: str | None = None
+
+    try:
+        created = admin.api_keys.create(
+            project_id=ephemeral_project.id, name=key_name, roles=["ProjectEditor"]
+        )
+        key_id = created.key.id
+
+        updated = admin.api_keys.update(
+            api_key_id=key_id, name="both-updated", roles=["ProjectViewer"]
+        )
+        assert isinstance(updated, APIKeyModel)
+        assert updated.name == "both-updated", f"expected 'both-updated', got {updated.name!r}"
+        assert updated.roles == ["ProjectViewer"], (
+            f"expected ['ProjectViewer'], got {updated.roles!r}"
+        )
+
+        described = admin.api_keys.describe(api_key_id=key_id)
+        assert described.name == "both-updated"
+        assert described.roles == ["ProjectViewer"]
+    finally:
+        if key_id is not None:
+            try:
+                admin.api_keys.delete(api_key_id=key_id)
+            except Exception as e:
+                print(f"Cleanup failed for key {key_id!r}: {e}")
+
+
+# ---------------------------------------------------------------------------
 # projects — delete_with_cleanup nukes indexes then project
 # ---------------------------------------------------------------------------
 
