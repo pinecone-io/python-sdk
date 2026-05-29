@@ -118,6 +118,43 @@ def _log_curl(
     logger.debug("curl equivalent:\n%s", curl_cmd)
 
 
+def _compute_backoff(config: RetryConfig, attempt: int, prev_delay: float | None) -> float:
+    """Decorrelated jitter: uniform(base, prev*3), capped at max_wait."""
+    base_delay = config.backoff_factor
+    if prev_delay is None:
+        prev_delay = base_delay
+    upper = min(config.max_wait, prev_delay * 3.0)
+    return random.uniform(base_delay, max(base_delay, upper))
+
+
+def _compute_retry_after_delay(
+    config: RetryConfig,
+    response: httpx.Response,
+    attempt: int,
+    prev_delay: float | None,
+) -> float:
+    retry_after = response.headers.get("retry-after")
+    if retry_after is not None:
+        try:
+            ra = float(retry_after)
+            if ra >= 0:
+                smear = random.uniform(0.0, ra * 0.5)
+                return ra + smear
+        except (ValueError, TypeError):
+            pass
+    return _compute_backoff(config, attempt, prev_delay)
+
+
+def _notify_throttle(config: RetryConfig, request: httpx.Request) -> None:
+    cb = config.on_throttle
+    if cb is None:
+        return
+    try:
+        cb(request.url.host)
+    except Exception as exc:
+        logger.debug("on_throttle callback raised, ignoring: %s", exc)
+
+
 class _RetryTransport(httpx.BaseTransport):
     """Sync transport wrapper that retries on transient server errors."""
 
@@ -145,17 +182,17 @@ class _RetryTransport(httpx.BaseTransport):
                         self._config.max_retries + 1,
                         exc,
                     )
-                    delay = self._compute_backoff(attempt, prev_delay)
+                    delay = _compute_backoff(self._config, attempt, prev_delay)
                     prev_delay = delay
                     time.sleep(delay)
                 continue
             last_exc = None
             if response.status_code not in self._config.retryable_status_codes:
                 return response
-            self._notify_throttle(request)
+            _notify_throttle(self._config, request)
             if attempt < self._config.max_retries:
                 response.close()
-                delay = self._compute_retry_after_delay(response, attempt, prev_delay)
+                delay = _compute_retry_after_delay(self._config, response, attempt, prev_delay)
                 prev_delay = delay
                 time.sleep(delay)
             else:
@@ -163,40 +200,6 @@ class _RetryTransport(httpx.BaseTransport):
         if last_exc is not None:
             raise last_exc
         raise RuntimeError("max_retries must be non-negative")
-
-    def _compute_backoff(self, attempt: int, prev_delay: float | None) -> float:
-        """Decorrelated jitter: uniform(base, prev*3), capped at max_wait."""
-        base_delay = self._config.backoff_factor
-        if prev_delay is None:
-            prev_delay = base_delay
-        upper = min(self._config.max_wait, prev_delay * 3.0)
-        return random.uniform(base_delay, max(base_delay, upper))
-
-    def _compute_retry_after_delay(
-        self,
-        response: httpx.Response,
-        attempt: int,
-        prev_delay: float | None,
-    ) -> float:
-        retry_after = response.headers.get("retry-after")
-        if retry_after is not None:
-            try:
-                ra = float(retry_after)
-                if ra >= 0:
-                    smear = random.uniform(0.0, ra * 0.5)
-                    return ra + smear
-            except (ValueError, TypeError):
-                pass
-        return self._compute_backoff(attempt, prev_delay)
-
-    def _notify_throttle(self, request: httpx.Request) -> None:
-        cb = self._config.on_throttle
-        if cb is None:
-            return
-        try:
-            cb(request.url.host)
-        except Exception as exc:
-            logger.debug("on_throttle callback raised, ignoring: %s", exc)
 
     def close(self) -> None:
         self._transport.close()
@@ -229,17 +232,17 @@ class _AsyncRetryTransport(httpx.AsyncBaseTransport):
                         self._config.max_retries + 1,
                         exc,
                     )
-                    delay = self._compute_backoff(attempt, prev_delay)
+                    delay = _compute_backoff(self._config, attempt, prev_delay)
                     prev_delay = delay
                     await asyncio.sleep(delay)
                 continue
             last_exc = None
             if response.status_code not in self._config.retryable_status_codes:
                 return response
-            self._notify_throttle(request)
+            _notify_throttle(self._config, request)
             if attempt < self._config.max_retries:
                 await response.aclose()
-                delay = self._compute_retry_after_delay(response, attempt, prev_delay)
+                delay = _compute_retry_after_delay(self._config, response, attempt, prev_delay)
                 prev_delay = delay
                 await asyncio.sleep(delay)
             else:
@@ -247,40 +250,6 @@ class _AsyncRetryTransport(httpx.AsyncBaseTransport):
         if last_exc is not None:
             raise last_exc
         raise RuntimeError("max_retries must be non-negative")
-
-    def _compute_backoff(self, attempt: int, prev_delay: float | None) -> float:
-        """Decorrelated jitter: uniform(base, prev*3), capped at max_wait."""
-        base_delay = self._config.backoff_factor
-        if prev_delay is None:
-            prev_delay = base_delay
-        upper = min(self._config.max_wait, prev_delay * 3.0)
-        return random.uniform(base_delay, max(base_delay, upper))
-
-    def _compute_retry_after_delay(
-        self,
-        response: httpx.Response,
-        attempt: int,
-        prev_delay: float | None,
-    ) -> float:
-        retry_after = response.headers.get("retry-after")
-        if retry_after is not None:
-            try:
-                ra = float(retry_after)
-                if ra >= 0:
-                    smear = random.uniform(0.0, ra * 0.5)
-                    return ra + smear
-            except (ValueError, TypeError):
-                pass
-        return self._compute_backoff(attempt, prev_delay)
-
-    def _notify_throttle(self, request: httpx.Request) -> None:
-        cb = self._config.on_throttle
-        if cb is None:
-            return
-        try:
-            cb(request.url.host)
-        except Exception as exc:
-            logger.debug("on_throttle callback raised, ignoring: %s", exc)
 
     async def aclose(self) -> None:
         await self._transport.aclose()
