@@ -1047,6 +1047,7 @@ class AsyncIndex:
         if not namespace or not namespace.strip():
             raise ValidationError("namespace must be a non-empty string")
         body = _build_search_records_body(
+            method_name="AsyncIndex.search",
             top_k=top_k,
             inputs=inputs,
             vector=vector,

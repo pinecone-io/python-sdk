@@ -8,7 +8,7 @@ import respx
 
 from pinecone.async_client.async_index import AsyncIndex
 from pinecone.errors.exceptions import PineconeValueError, ValidationError
-from pinecone.models.vectors.search import SearchRecordsResponse
+from pinecone.models.vectors.search import SearchQuery, SearchRecordsResponse
 
 INDEX_HOST = "my-index-abc123.svc.pinecone.io"
 INDEX_HOST_HTTPS = f"https://{INDEX_HOST}"
@@ -125,7 +125,8 @@ class TestAsyncSearch:
             "top_k": 10,
             "filter": {"genre": {"$eq": "sci-fi"}},
         }
-        await idx.search(namespace="test-ns", query=query, fields=["chunk_text", "title"])
+        with pytest.warns(DeprecationWarning, match="v8 compatibility shim"):
+            await idx.search(namespace="test-ns", query=query, fields=["chunk_text", "title"])
 
         import orjson
 
@@ -136,7 +137,7 @@ class TestAsyncSearch:
     @pytest.mark.anyio
     async def test_async_search_query_body_cannot_mix_direct_query_params(self) -> None:
         idx = _make_async_index()
-        with pytest.raises(ValidationError, match="query cannot be combined"):
+        with pytest.raises(TypeError, match="received both 'query='"):
             await idx.search(
                 namespace="test-ns",
                 query={"inputs": {"text": "hello"}, "top_k": 10},
@@ -328,3 +329,54 @@ class TestAsyncSearch:
             "sparse_indices": [10],
             "sparse_values": [0.9],
         }
+
+    @respx.mock
+    @pytest.mark.anyio
+    async def test_async_search_accepts_legacy_query_searchquery_struct(self) -> None:
+        route = respx.post(SEARCH_URL_NS).mock(
+            return_value=httpx.Response(200, json=SEARCH_RESPONSE),
+        )
+        idx = _make_async_index()
+        with pytest.warns(DeprecationWarning, match="v8 compatibility shim"):
+            await idx.search(
+                namespace="test-ns",
+                query=SearchQuery(inputs={"text": "hello"}, top_k=10),
+            )
+        import orjson
+
+        body = orjson.loads(route.calls.last.request.content)
+        assert body["query"] == {"inputs": {"text": "hello"}, "top_k": 10}
+
+    @pytest.mark.anyio
+    async def test_async_search_legacy_query_emits_deprecation_warning(self) -> None:
+        idx = _make_async_index()
+        with respx.mock:
+            respx.post(SEARCH_URL_NS).mock(
+                return_value=httpx.Response(200, json=SEARCH_RESPONSE),
+            )
+            with pytest.warns(DeprecationWarning, match="AsyncIndex.search"):
+                await idx.search(namespace="test-ns", query={"inputs": {"text": "x"}, "top_k": 5})
+
+    @pytest.mark.anyio
+    async def test_async_search_legacy_query_conflict_raises_typeerror_with_kwarg_names(
+        self,
+    ) -> None:
+        idx = _make_async_index()
+        with pytest.raises(TypeError, match=r"received both 'query=' and \['top_k'\]"):
+            await idx.search(
+                namespace="test-ns",
+                query={"inputs": {"text": "x"}, "top_k": 5},
+                top_k=5,
+            )
+
+    @pytest.mark.anyio
+    async def test_async_search_legacy_query_wrong_type_raises_typeerror(self) -> None:
+        idx = _make_async_index()
+        with pytest.raises(TypeError, match="must be a SearchQuery or Mapping, got int"):
+            await idx.search(namespace="test-ns", query=42)  # type: ignore[arg-type]
+
+    @pytest.mark.anyio
+    async def test_async_search_missing_top_k_anywhere_raises(self) -> None:
+        idx = _make_async_index()
+        with pytest.raises(ValidationError, match="top_k is required"):
+            await idx.search(namespace="test-ns", inputs={"text": "x"})

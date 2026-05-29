@@ -33,7 +33,7 @@ from pinecone.models.vectors.responses import (
     UpsertRecordsResponse,
     UpsertResponse,
 )
-from pinecone.models.vectors.search import SearchRecordsResponse
+from pinecone.models.vectors.search import SearchQuery, SearchRecordsResponse
 from pinecone.models.vectors.vector import Vector
 
 # The GrpcChannel import is a lazy import inside __init__, so we need to
@@ -1220,11 +1220,58 @@ class TestGrpcIndexSearch:
         )
         idx = _make_grpc_index(mock_channel, host=_INDEX_HOST)
         query = {"inputs": {"text": "q"}, "top_k": 5, "filter": {"topic": {"$eq": "ai"}}}
-        idx.search(namespace="test-ns", query=query, fields=["text", "title"])
+        with pytest.warns(DeprecationWarning, match="v8 compatibility shim"):
+            idx.search(namespace="test-ns", query=query, fields=["text", "title"])
 
         body = orjson.loads(route.calls.last.request.content)
         assert body["query"] == query
         assert body["fields"] == ["text", "title"]
+
+    @respx.mock
+    def test_search_accepts_legacy_query_searchquery_struct(self, mock_channel: MagicMock) -> None:
+        import orjson
+
+        route = respx.post(_SEARCH_URL).mock(
+            return_value=httpx.Response(200, json=_SEARCH_RESPONSE)
+        )
+        idx = _make_grpc_index(mock_channel, host=_INDEX_HOST)
+        with pytest.warns(DeprecationWarning, match="v8 compatibility shim"):
+            idx.search(
+                namespace="test-ns",
+                query=SearchQuery(inputs={"text": "hello"}, top_k=10),
+            )
+        body = orjson.loads(route.calls.last.request.content)
+        assert body["query"] == {"inputs": {"text": "hello"}, "top_k": 10}
+
+    def test_search_legacy_query_emits_deprecation_warning(self, mock_channel: MagicMock) -> None:
+        idx = _make_grpc_index(mock_channel, host=_INDEX_HOST)
+        with respx.mock:
+            respx.post(_SEARCH_URL).mock(
+                return_value=httpx.Response(200, json=_SEARCH_RESPONSE),
+            )
+            with pytest.warns(DeprecationWarning, match="GrpcIndex.search"):
+                idx.search(namespace="test-ns", query={"inputs": {"text": "x"}, "top_k": 5})
+
+    def test_search_legacy_query_conflict_raises_typeerror_with_kwarg_names(
+        self, mock_channel: MagicMock
+    ) -> None:
+        idx = _make_grpc_index(mock_channel, host=_INDEX_HOST)
+        with pytest.raises(TypeError, match=r"received both 'query=' and \['top_k'\]"):
+            idx.search(
+                namespace="test-ns",
+                query={"inputs": {"text": "x"}, "top_k": 5},
+                top_k=5,
+            )
+
+    def test_search_legacy_query_wrong_type_raises_typeerror(self, mock_channel: MagicMock) -> None:
+        idx = _make_grpc_index(mock_channel, host=_INDEX_HOST)
+        with pytest.raises(TypeError, match="must be a SearchQuery or Mapping, got int"):
+            idx.search(namespace="test-ns", query=42)  # type: ignore[arg-type]
+
+    def test_search_missing_top_k_anywhere_raises(self, mock_channel: MagicMock) -> None:
+        idx = _make_grpc_index(mock_channel, host=_INDEX_HOST)
+        with pytest.raises(ValidationError, match="top_k is required"):
+            idx.search(namespace="test-ns", inputs={"text": "x"})
 
     @respx.mock
     def test_search_records_alias(self, mock_channel: MagicMock) -> None:

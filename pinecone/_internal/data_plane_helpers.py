@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from pinecone._internal.config import normalize_host
 from pinecone.errors.exceptions import PineconeValueError, ValidationError
+from pinecone.models.vectors.search import SearchQuery
 from pinecone.models.vectors.vector import Vector
 
 
@@ -72,6 +74,7 @@ def _legacy_search_query_to_dict(query: Any) -> dict[str, Any]:
 
 def _build_search_records_body(
     *,
+    method_name: str = "search",
     top_k: int | None,
     inputs: Mapping[str, Any] | None,
     vector: Sequence[float] | Mapping[str, Any] | None,
@@ -90,10 +93,36 @@ def _build_search_records_body(
             raise ValidationError("rerank requires 'rank_fields' to be specified")
 
     if query is not None:
-        if any(value is not None for value in (top_k, inputs, vector, id, filter, match_terms)):
-            raise ValidationError(
-                "query cannot be combined with top_k, inputs, vector, id, filter, or match_terms"
+        conflicting = [
+            name
+            for name, value in (
+                ("top_k", top_k),
+                ("inputs", inputs),
+                ("vector", vector),
+                ("id", id),
+                ("filter", filter),
+                ("match_terms", match_terms),
             )
+            if value is not None
+        ]
+        if conflicting:
+            raise TypeError(
+                f"{method_name}() received both 'query=' and {conflicting!r}. "
+                "Pass either the legacy 'query=SearchQuery(...)' form OR the new "
+                "flat keyword arguments, not both."
+            )
+        if not isinstance(query, (SearchQuery, Mapping)):
+            raise TypeError(
+                f"{method_name}() 'query=' must be a SearchQuery or Mapping, "
+                f"got {type(query).__name__}"
+            )
+        warnings.warn(
+            f"Passing 'query=...' to {method_name}() is a v8 compatibility shim. "
+            "Pass top_k, inputs, vector, id, filter, and match_terms as separate "
+            "keyword arguments instead.",
+            DeprecationWarning,
+            stacklevel=4,
+        )
         query_body = _legacy_search_query_to_dict(query)
         if "vector" in query_body and query_body["vector"] is not None:
             query_vector = query_body["vector"]
