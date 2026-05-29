@@ -368,7 +368,8 @@ class AsyncPinecone:
 
         Args:
             name (str): Name for the new index.
-            backup_id (str): Identifier of the backup to restore from.
+            backup_id (str): Identifier of the backup to restore from.  Obtain this
+                from :meth:`AsyncPinecone.backups.create` or :meth:`AsyncPinecone.backups.list`.
             deletion_protection (DeletionProtection | str | None): ``"enabled"`` or
                 ``"disabled"``. Defaults to ``"disabled"`` server-side when omitted.
             tags (Mapping[str, str] | None): Optional key-value tags for the new index.
