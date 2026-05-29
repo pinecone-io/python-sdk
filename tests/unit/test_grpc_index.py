@@ -1212,6 +1212,21 @@ class TestGrpcIndexSearch:
         assert "fields" not in body["query"]
 
     @respx.mock
+    def test_search_accepts_legacy_query_body(self, mock_channel: MagicMock) -> None:
+        import orjson
+
+        route = respx.post(_SEARCH_URL).mock(
+            return_value=httpx.Response(200, json=_SEARCH_RESPONSE)
+        )
+        idx = _make_grpc_index(mock_channel, host=_INDEX_HOST)
+        query = {"inputs": {"text": "q"}, "top_k": 5, "filter": {"topic": {"$eq": "ai"}}}
+        idx.search(namespace="test-ns", query=query, fields=["text", "title"])
+
+        body = orjson.loads(route.calls.last.request.content)
+        assert body["query"] == query
+        assert body["fields"] == ["text", "title"]
+
+    @respx.mock
     def test_search_records_alias(self, mock_channel: MagicMock) -> None:
         """search_records() is an alias for search() and produces the same result."""
         respx.post(_SEARCH_URL).mock(return_value=httpx.Response(200, json=_SEARCH_RESPONSE))

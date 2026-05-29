@@ -109,6 +109,34 @@ class TestSearch:
         assert body["fields"] == ["chunk_text", "title"]
 
     @respx.mock
+    def test_search_accepts_legacy_query_body(self) -> None:
+        route = respx.post(SEARCH_URL_NS).mock(
+            return_value=httpx.Response(200, json=SEARCH_RESPONSE),
+        )
+        idx = _make_index()
+        query = {
+            "inputs": {"text": "hello"},
+            "top_k": 10,
+            "filter": {"genre": {"$eq": "sci-fi"}},
+        }
+        idx.search(namespace="test-ns", query=query, fields=["chunk_text", "title"])
+
+        import orjson
+
+        body = orjson.loads(route.calls.last.request.content)
+        assert body["query"] == query
+        assert body["fields"] == ["chunk_text", "title"]
+
+    def test_search_query_body_cannot_mix_direct_query_params(self) -> None:
+        idx = _make_index()
+        with pytest.raises(ValidationError, match="query cannot be combined"):
+            idx.search(
+                namespace="test-ns",
+                query={"inputs": {"text": "hello"}, "top_k": 10},
+                top_k=10,
+            )
+
+    @respx.mock
     def test_search_with_rerank(self) -> None:
         route = respx.post(SEARCH_URL_NS).mock(
             return_value=httpx.Response(200, json=SEARCH_RESPONSE),

@@ -18,7 +18,7 @@ from pinecone._internal.batching import validate_batch_size
 from pinecone._internal.config import PineconeConfig
 from pinecone._internal.constants import DATA_PLANE_API_VERSION
 from pinecone._internal.data_plane_helpers import (
-    _normalize_search_vector_dict,
+    _build_search_records_body,
     _validate_host,
     _vector_to_dict,
 )
@@ -40,7 +40,12 @@ from pinecone.models.vectors.responses import (
     UpsertRecordsResponse,
     UpsertResponse,
 )
-from pinecone.models.vectors.search import RerankConfig, SearchInputs, SearchRecordsResponse
+from pinecone.models.vectors.search import (
+    RerankConfig,
+    SearchInputs,
+    SearchQuery,
+    SearchRecordsResponse,
+)
 from pinecone.models.vectors.sparse import SparseValues
 from pinecone.models.vectors.vector import Vector
 
@@ -1092,7 +1097,7 @@ class Index:
         self,
         *,
         namespace: str,
-        top_k: int,
+        top_k: int | None = None,
         inputs: SearchInputs | Mapping[str, Any] | None = None,
         vector: Sequence[float] | Mapping[str, Any] | None = None,
         id: str | None = None,
@@ -1100,6 +1105,7 @@ class Index:
         fields: Sequence[str] | None = None,
         rerank: RerankConfig | Mapping[str, Any] | None = None,
         match_terms: Mapping[str, Any] | None = None,
+        query: SearchQuery | Mapping[str, Any] | None = None,
         timeout: float | None = None,
     ) -> SearchRecordsResponse:
         """Search records by text, vector, or ID with optional reranking.
@@ -1137,6 +1143,9 @@ class Index:
                 ``"all"``) and ``"terms"`` (list of strings). Only supported
                 for sparse indexes using ``pinecone-sparse-english-v0``.
                 ``None`` disables term matching.
+            query (dict[str, Any] | None): Legacy query body containing
+                ``top_k`` plus one of ``inputs``, ``vector``, or ``id``. Prefer
+                passing these fields directly.
 
         Returns:
             :class:`SearchRecordsResponse` with hits and usage statistics.
@@ -1184,40 +1193,19 @@ class Index:
             raise ValidationError("namespace must be a string")
         if not namespace or not namespace.strip():
             raise ValidationError("namespace must be a non-empty string")
-        if top_k < 1:
-            raise ValidationError(f"top_k must be a positive integer, got {top_k}")
-        if rerank is not None:
-            if "model" not in rerank:
-                raise ValidationError("rerank requires 'model' to be specified")
-            if "rank_fields" not in rerank:
-                raise ValidationError("rerank requires 'rank_fields' to be specified")
-        if inputs is None and vector is None and id is None:
-            raise ValidationError(
-                "At least one of inputs, vector, or id must be provided as a query source"
-            )
+        body = _build_search_records_body(
+            top_k=top_k,
+            inputs=inputs,
+            vector=vector,
+            id=id,
+            filter=filter,
+            fields=fields,
+            rerank=rerank,
+            match_terms=match_terms,
+            query=query,
+        )
 
-        query_body: dict[str, Any] = {"top_k": top_k}
-        if inputs is not None:
-            query_body["inputs"] = inputs
-        if vector is not None:
-            if isinstance(vector, Mapping):
-                query_body["vector"] = _normalize_search_vector_dict(vector)
-            else:
-                query_body["vector"] = {"values": list(vector)}
-        if id is not None:
-            query_body["id"] = id
-        if filter is not None:
-            query_body["filter"] = filter
-        if match_terms is not None:
-            query_body["match_terms"] = match_terms
-
-        body: dict[str, Any] = {"query": query_body}
-        if fields is not None:
-            body["fields"] = fields
-        if rerank is not None:
-            body["rerank"] = rerank
-
-        logger.info("Searching namespace %r with top_k=%d", namespace, top_k)
+        logger.info("Searching namespace %r with top_k=%d", namespace, body["query"]["top_k"])
         response = self._http.post(
             f"/records/namespaces/{namespace}/search", timeout=timeout, json=body
         )
@@ -1229,7 +1217,7 @@ class Index:
         self,
         *,
         namespace: str,
-        top_k: int,
+        top_k: int | None = None,
         inputs: SearchInputs | Mapping[str, Any] | None = None,
         vector: Sequence[float] | Mapping[str, Any] | None = None,
         id: str | None = None,
@@ -1237,6 +1225,7 @@ class Index:
         fields: Sequence[str] | None = None,
         rerank: RerankConfig | Mapping[str, Any] | None = None,
         match_terms: Mapping[str, Any] | None = None,
+        query: SearchQuery | Mapping[str, Any] | None = None,
         timeout: float | None = None,
     ) -> SearchRecordsResponse:
         """Alias for :meth:`search`.
@@ -1253,6 +1242,7 @@ class Index:
             fields=fields,
             rerank=rerank,
             match_terms=match_terms,
+            query=query,
             timeout=timeout,
         )
 

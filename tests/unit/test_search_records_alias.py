@@ -46,6 +46,7 @@ class TestSearchRecordsAlias:
                 fields=None,
                 rerank=None,
                 match_terms=None,
+                query=None,
                 timeout=None,
             )
 
@@ -69,6 +70,7 @@ class TestSearchRecordsAlias:
             "fields": ["title", "genre"],
             "rerank": {"model": "bge-reranker", "rank_fields": ["text"]},
             "match_terms": {"strategy": "all", "terms": ["animal", "duck"]},
+            "query": None,
             "timeout": None,
         }
         with patch.object(idx, "search", return_value=expected) as mock_search:
