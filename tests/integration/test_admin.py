@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Iterator
 
 import pytest
 
@@ -493,3 +494,127 @@ def test_api_key_list_name_optional(admin: Admin) -> None:
                 admin.api_keys.delete(api_key_id=key_id)
             except Exception as e:
                 print(f"Cleanup failed for api key {key_id!r}: {e}")
+
+
+# ---------------------------------------------------------------------------
+# api_keys — full lifecycle (requires real credentials)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def ephemeral_project(admin: Admin) -> Iterator[ProjectModel]:
+    """Create and yield an ephemeral project; teardown via delete_with_cleanup.
+
+    Module-scoped to share the same project across all api_keys lifecycle tests.
+    """
+    name = f"inttest-apikeys-{int(time.time())}"
+    project = admin.projects.create(name=name)
+    try:
+        yield project
+    finally:
+        try:
+            admin.projects.delete_with_cleanup(project_id=project.id)
+        except Exception as e:
+            print(f"Cleanup failed for project {project.id!r}: {e}")
+
+
+@pytest.mark.integration
+def test_api_keys_lifecycle_default_role(admin: Admin, ephemeral_project: ProjectModel) -> None:
+    """Full lifecycle for API keys with default role (ProjectEditor): create / list / describe / delete.
+
+    Creates a key without explicit roles (should default to ["ProjectEditor"]),
+    exercises list and describe, then deletes and verifies the key is gone.
+    """
+    key_name = f"key-default-{int(time.time())}"
+    key_id: str | None = None
+
+    try:
+        created = admin.api_keys.create(project_id=ephemeral_project.id, name=key_name)
+        key_id = created.key.id
+        assert created.value.startswith("pcsk_"), (
+            f"expected pcsk_ prefix, got {created.value[:10]!r}"
+        )
+        assert created.key.id, "key id must be non-empty"
+        assert created.key.name == key_name
+        assert created.key.roles == ["ProjectEditor"]
+
+        listed = admin.api_keys.list(project_id=ephemeral_project.id)
+        assert isinstance(listed, APIKeyList)
+        assert any(k.id == key_id for k in listed)
+        assert len(listed) >= 1
+
+        described = admin.api_keys.describe(api_key_id=key_id)
+        assert isinstance(described, APIKeyModel)
+        assert described.id == key_id
+        assert described.name == key_name
+        assert described.roles == ["ProjectEditor"]
+        assert not hasattr(described, "value"), "describe() must not expose the secret value"
+
+        admin.api_keys.delete(api_key_id=key_id)
+
+        listed_after = admin.api_keys.list(project_id=ephemeral_project.id)
+        assert not any(k.id == key_id for k in listed_after)
+
+        with pytest.raises(NotFoundError):
+            admin.api_keys.describe(api_key_id=key_id)
+
+        key_id = None
+    finally:
+        if key_id is not None:
+            try:
+                admin.api_keys.delete(api_key_id=key_id)
+            except Exception as e:
+                print(f"Cleanup failed for key {key_id!r}: {e}")
+
+
+@pytest.mark.integration
+def test_api_keys_lifecycle_project_viewer_role(
+    admin: Admin, ephemeral_project: ProjectModel
+) -> None:
+    """Full lifecycle for API keys with ProjectViewer role: create / list / describe / delete.
+
+    Same shape as test_api_keys_lifecycle_default_role but uses roles=["ProjectViewer"]
+    to verify non-default roles are accepted and round-trip correctly.
+    """
+    key_name = f"key-viewer-{int(time.time())}"
+    key_id: str | None = None
+
+    try:
+        created = admin.api_keys.create(
+            project_id=ephemeral_project.id, name=key_name, roles=["ProjectViewer"]
+        )
+        key_id = created.key.id
+        assert created.value.startswith("pcsk_"), (
+            f"expected pcsk_ prefix, got {created.value[:10]!r}"
+        )
+        assert created.key.id, "key id must be non-empty"
+        assert created.key.name == key_name
+        assert created.key.roles == ["ProjectViewer"]
+
+        listed = admin.api_keys.list(project_id=ephemeral_project.id)
+        assert isinstance(listed, APIKeyList)
+        assert any(k.id == key_id for k in listed)
+        assert len(listed) >= 1
+
+        described = admin.api_keys.describe(api_key_id=key_id)
+        assert isinstance(described, APIKeyModel)
+        assert described.id == key_id
+        assert described.name == key_name
+        assert described.roles == ["ProjectViewer"]
+        assert not hasattr(described, "value"), "describe() must not expose the secret value"
+
+        admin.api_keys.delete(api_key_id=key_id)
+
+        listed_after = admin.api_keys.list(project_id=ephemeral_project.id)
+        assert not any(k.id == key_id for k in listed_after)
+
+        with pytest.raises(NotFoundError):
+            admin.api_keys.describe(api_key_id=key_id)
+
+        key_id = None
+    finally:
+        if key_id is not None:
+            try:
+                admin.api_keys.delete(api_key_id=key_id)
+            except Exception as e:
+                print(f"Cleanup failed for key {key_id!r}: {e}")
