@@ -622,6 +622,73 @@ def test_api_keys_lifecycle_project_viewer_role(
 
 
 # ---------------------------------------------------------------------------
+# projects — delete_with_cleanup nukes indexes then project
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    not os.getenv("RUN_EXPENSIVE_TESTS"),
+    reason="Creates real cloud resources and waits for index ready — set RUN_EXPENSIVE_TESTS=1 to run",
+)
+def test_project_delete_with_cleanup_nukes_indexes_and_project(admin: Admin) -> None:
+    """admin.projects.delete_with_cleanup() deletes all indexes, then deletes the project.
+
+    Workflow:
+    1. Create an ephemeral project.
+    2. Create an API key scoped to that project.
+    3. Use the key to create a tiny serverless index and poll until Ready.
+    4. Call delete_with_cleanup() — must return None.
+    5. Assert the project no longer exists (NotFoundError on describe).
+
+    This verifies the core contract: a regular delete() would fail while indexes exist,
+    but delete_with_cleanup() nukes them first and then deletes the project.
+    """
+    project: ProjectModel | None = None
+    index_name = f"nuke-idx-{int(time.time())}"
+    project_name = f"inttest-nuke-{int(time.time())}"
+
+    try:
+        # Setup: create ephemeral project, API key scoped to it, and a tiny index.
+        project = admin.projects.create(name=project_name)
+        assert isinstance(project, ProjectModel)
+
+        key = admin.api_keys.create(project_id=project.id, name="nuke-key")
+        assert key.value.startswith("pcsk_"), (
+            f"expected pcsk_ prefix on new key, got {key.value[:10]!r}"
+        )
+
+        pc = Pinecone(api_key=key.value)
+        pc.indexes.create(
+            name=index_name,
+            dimension=2,
+            metric="cosine",
+            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            timeout=300,
+        )
+
+        project_id = project.id
+
+        # Exercise: delete_with_cleanup() must nuke all resources and delete the project.
+        # The return type is None (enforced by the type signature); no assignment needed.
+        admin.projects.delete_with_cleanup(project_id=project_id)
+
+        # Assert the project is gone.
+        with pytest.raises(NotFoundError):
+            admin.projects.describe(project_id=project_id)
+
+        project = None  # cleanup handled by delete_with_cleanup
+
+    finally:
+        if project is not None:
+            # Best-effort cleanup when the test failed before delete_with_cleanup ran.
+            try:
+                admin.projects.delete_with_cleanup(project_id=project.id)
+            except Exception as e:
+                print(f"Cleanup failed for project {project.id!r}: {e}")
+
+
+# ---------------------------------------------------------------------------
 # end-to-end bridge — requires real credentials + RUN_EXPENSIVE_TESTS=1
 # ---------------------------------------------------------------------------
 
