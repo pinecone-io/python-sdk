@@ -129,36 +129,13 @@ except ConflictError:
 
 ## Retries
 
-The SDK retries failed requests automatically. The default `RetryConfig` retries up to
-**3 attempts total** (1 initial + 2 retries) with exponential backoff for status codes
-`408`, `429`, `500`, `502`, `503`, and `504`.
+The SDK retries failed requests automatically with decorrelated jitter on
+the backoff path and smearing on top of server-supplied `Retry-After` /
+`grpc-retry-pushback-ms` hints. Bulk operations also self-tune effective
+concurrency in response to throttling.
 
-Customize retry behavior by passing a `RetryConfig` to `Pinecone()`:
-
-```python
-from pinecone import Pinecone, RetryConfig
-
-pc = Pinecone(
-    retry_config=RetryConfig(
-        max_retries=5,
-        backoff_factor=1.0,
-        max_wait=30.0,
-        retryable_status_codes=frozenset({429, 500, 503}),
-    )
-)
-```
-
-To disable retries entirely, set `max_retries=1`:
-
-```python
-pc = Pinecone(retry_config=RetryConfig(max_retries=1))
-```
-
-A 429 response triggers a retry by default (with the `Retry-After` header honored if
-present). If retries are exhausted, the SDK raises `RateLimitError` with the parsed
-`Retry-After` value on `exc.retry_after`. To handle rate limits without relying on
-retries, set `retryable_status_codes=frozenset()` excluding 429 and catch
-`RateLimitError` directly.
+Full retry behavior, configuration, and multi-process guidance:
+{doc}`/guides/retries`.
 
 ## Timeouts
 
