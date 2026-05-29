@@ -548,6 +548,8 @@ class Pinecone:
             >>> cfg = pc.config
             >>> cfg.timeout
             30.0
+
+        :meta private:
         """
         return self._config
 

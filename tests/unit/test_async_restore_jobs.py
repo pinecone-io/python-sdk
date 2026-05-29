@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
 import httpx
+import orjson
 import pytest
 import respx
 
