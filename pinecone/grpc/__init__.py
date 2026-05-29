@@ -1352,7 +1352,6 @@ class GrpcIndex:
             rerank=rerank,
             match_terms=match_terms,
             query=query,
-            wrap_dense_vector=False,
         )
 
         logger.info(

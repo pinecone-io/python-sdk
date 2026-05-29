@@ -1096,7 +1096,7 @@ class TestGrpcIndexSearch:
         import orjson
 
         body = orjson.loads(route.calls.last.request.content)
-        assert body["query"]["vector"] == [0.1, 0.2, 0.3]
+        assert body["query"]["vector"] == {"values": [0.1, 0.2, 0.3]}
 
     @respx.mock
     def test_search_with_rerank(self, mock_channel: MagicMock) -> None:
