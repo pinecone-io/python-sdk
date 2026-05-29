@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import pandas as pd  # type: ignore[import-untyped]
 
+from pinecone._internal.adapters.imports_adapter import ImportsAdapter
 from pinecone._internal.adapters.vectors_adapter import VectorsAdapter, extract_response_info
 from pinecone._internal.batch import batch_execute
 from pinecone._internal.batching import chunked, validate_batch_size, with_progress
@@ -26,6 +27,8 @@ from pinecone.errors.exceptions import (
 )
 from pinecone.grpc._protocol import GrpcChannelProtocol
 from pinecone.grpc.future import PineconeFuture
+from pinecone.models.imports.list import ImportList
+from pinecone.models.imports.model import ImportModel, StartImportResponse
 from pinecone.models.namespaces.models import (
     IndexedFields,
     ListNamespacesResponse,
@@ -241,6 +244,7 @@ class GrpcIndex:
         )
         self._http = HTTPClient(rest_config, DATA_PLANE_API_VERSION)
         self._adapter = VectorsAdapter()
+        self._imports_adapter = ImportsAdapter()
 
         logger.info("GrpcIndex client created for host %s", self._host)
 
@@ -1701,6 +1705,247 @@ class GrpcIndex:
 
         logger.info("Deleting namespace %r via gRPC", effective)
         self._channel.delete_namespace(effective, timeout_s=timeout)
+
+    def _validate_import_id(self, id: str | int) -> str:
+        """Validate and normalize an import operation ID.
+
+        Args:
+            id: Import operation ID. If int, converted to str silently.
+
+        Returns:
+            The validated string ID.
+
+        Raises:
+            :exc:`PineconeValueError`: If the ID is empty or exceeds 1000 characters.
+        """
+        str_id = str(id) if isinstance(id, int) else id
+        if not str_id or len(str_id) > 1000:
+            raise ValidationError(
+                "import id must be between 1 and 1000 characters, "
+                f"got {len(str_id) if str_id else 0}"
+            )
+        return str_id
+
+    def start_import(
+        self,
+        uri: str,
+        *,
+        error_mode: str | None = None,
+        integration_id: str | None = None,
+    ) -> StartImportResponse:
+        """Start a bulk import operation from an external data source.
+
+        Initiates an asynchronous bulk import of vectors from cloud storage
+        into the index. The import runs server-side; use :meth:`describe_import`
+        to poll for progress and completion.
+
+        .. note::
+           The import URI must point to a directory of Parquet files in cloud
+           storage (``s3://`` or ``gs://``). Each Parquet file must follow the
+           Pinecone-required schema. See
+           `Pinecone import docs <https://docs.pinecone.io/guides/data/understanding-imports>`_
+           for the required Parquet schema and supported storage formats.
+
+        Args:
+            uri (str): Source URI for the import data (e.g.
+                ``"s3://my-bucket/vectors/"`` or ``"gs://my-bucket/vectors/"``).
+            error_mode (str | None): How to handle errors during import. Must be
+                ``"continue"`` or ``"abort"`` when supplied. Case-insensitive.
+                Optional; when omitted the backend default (``"continue"``) applies.
+            integration_id (str | None): Optional integration ID for the import.
+
+        Returns:
+            :class:`StartImportResponse` with the ID of the created import
+            operation.
+
+        Raises:
+            :exc:`PineconeValueError`: If ``error_mode`` is supplied but not
+                ``"continue"`` or ``"abort"``.
+            :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
+
+        Examples:
+            .. code-block:: python
+
+                # Start an import and poll until complete
+                import time
+                response = idx.start_import(uri="s3://my-bucket/vectors/")
+                import_id = response.id
+
+                # Poll until the import finishes
+                import_op = idx.describe_import(import_id)
+                while import_op.status not in ("Completed", "Failed", "Cancelled"):
+                    time.sleep(10)
+                    import_op = idx.describe_import(import_id)
+                print(f"Status: {import_op.status}, records imported: {import_op.records_imported}")
+
+                # Abort on first error instead of continuing
+                response = idx.start_import(
+                    uri="s3://my-bucket/vectors/",
+                    error_mode="abort",
+                )
+
+        .. seealso::
+           - :meth:`upsert` — for upserting vectors directly in small
+             batches (single request per call).
+           - :meth:`upsert_records` — for indexes with integrated inference
+             (text in, server-side embedding).
+           - :meth:`upsert_from_dataframe` — for loading vectors from a
+             pandas DataFrame with automatic batching.
+        """
+        if error_mode is not None:
+            error_mode = error_mode.lower()
+            if error_mode not in ("continue", "abort"):
+                raise ValidationError(
+                    f"error_mode must be 'continue' or 'abort', got {error_mode!r}"
+                )
+
+        body: dict[str, Any] = {"uri": uri}
+        if error_mode is not None:
+            body["errorMode"] = {"onError": error_mode}
+        if integration_id is not None:
+            body["integrationId"] = integration_id
+
+        logger.info("Starting bulk import from %s", uri)
+        response = self._http.post("/bulk/imports", json=body)
+        return self._imports_adapter.to_start_import_response(response.content)
+
+    def describe_import(self, id: str | int) -> ImportModel:
+        """Describe a bulk import operation by ID.
+
+        Args:
+            id: Import operation ID. Integers are converted to strings silently.
+
+        Returns:
+            :class:`ImportModel` with the import operation details.
+
+        Raises:
+            :exc:`PineconeValueError`: If the ID is empty or exceeds 1000 characters.
+            :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
+
+        Examples:
+            .. code-block:: python
+
+                import_op = idx.describe_import("import-123")
+                print(import_op.status, import_op.percent_complete)
+        """
+        str_id = self._validate_import_id(id)
+        logger.info("Describing import %s", str_id)
+        response = self._http.get(f"/bulk/imports/{str_id}")
+        return self._imports_adapter.to_import_model(response.content)
+
+    def cancel_import(self, id: str | int) -> None:
+        """Cancel a bulk import operation by ID.
+
+        Args:
+            id: Import operation ID. Integers are converted to strings silently.
+
+        Returns:
+            None — a successful cancellation returns no payload.
+
+        Raises:
+            :exc:`PineconeValueError`: If the ID is empty or exceeds 1000 characters.
+            :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
+
+        Examples:
+            .. code-block:: python
+
+                idx.cancel_import("import-123")
+        """
+        str_id = self._validate_import_id(id)
+        logger.info("Cancelling import %s", str_id)
+        self._http.delete(f"/bulk/imports/{str_id}")
+
+    def list_imports(
+        self,
+        *,
+        limit: int | None = None,
+        pagination_token: str | None = None,
+    ) -> Iterator[ImportModel]:
+        """List bulk import operations, automatically following pagination.
+
+        Yields individual :class:`ImportModel` objects, fetching additional
+        pages transparently until all results have been returned.
+
+        Args:
+            limit (int | None): Maximum number of imports per page
+                (max 100, server default 100).
+            pagination_token (str | None): Token to resume pagination
+                from a previous call.
+
+        Yields:
+            :class:`ImportModel` for each import operation.
+
+        Raises:
+            :exc:`ApiError`: If the API returns an error response.
+
+        Examples:
+            .. code-block:: python
+
+                for imp in idx.list_imports():
+                    print(imp.id, imp.status)
+        """
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if pagination_token is not None:
+            params["paginationToken"] = pagination_token
+
+        while True:
+            response = self._http.get("/bulk/imports", params=params)
+            import_list = self._imports_adapter.to_import_list(response.content)
+            yield from import_list
+            next_token = import_list.pagination.next if import_list.pagination else None
+            if next_token is None:
+                break
+            params["paginationToken"] = next_token
+
+    def list_imports_paginated(
+        self,
+        *,
+        limit: int | None = None,
+        pagination_token: str | None = None,
+    ) -> ImportList:
+        """Fetch a single page of bulk import operations.
+
+        Returns an :class:`ImportList` for one page. The caller is responsible
+        for managing the pagination token.
+
+        Args:
+            limit (int | None): Maximum number of imports to return in this page.
+            pagination_token (str | None): Token from a previous response to
+                fetch the next page.
+
+        Returns:
+            :class:`ImportList` with the import operations for the requested page.
+
+        Raises:
+            :exc:`ApiError`: If the API returns an error response.
+
+        Examples:
+
+            .. code-block:: python
+
+                page = idx.list_imports_paginated(limit=10)
+                for imp in page:
+                    print(imp.id, imp.status)
+        """
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if pagination_token is not None:
+            params["paginationToken"] = pagination_token
+
+        response = self._http.get("/bulk/imports", params=params)
+        return self._imports_adapter.to_import_list(response.content)
 
     def close(self) -> None:
         """Close the underlying gRPC channel, REST client, and release resources."""
