@@ -11,11 +11,10 @@ for multi-process guidance.
 
 from __future__ import annotations
 
+import logging
 import threading
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    pass
+logger = logging.getLogger(__name__)
 
 
 class _AdaptiveLimiter:
@@ -48,16 +47,33 @@ class _AdaptiveLimiter:
     def report_throttled(self) -> None:
         """Halve the limit (floored at 1) and reset the success streak."""
         with self._lock:
+            before = self._limit
             self._limit = max(1, self._limit // 2)
             self._success_streak = 0
+        if before != self._limit:
+            logger.debug(
+                "AIMD limiter decreased: before=%d after=%d ceiling=%d",
+                before,
+                self._limit,
+                self._ceiling,
+            )
 
     def report_success(self) -> None:
         """Increment the success streak; bump limit by 1 if streak hits current limit."""
         with self._lock:
             self._success_streak += 1
+            increased = False
             if self._success_streak >= self._limit:
-                self._limit = min(self._ceiling, self._limit + 1)
+                if self._limit < self._ceiling:
+                    self._limit = self._limit + 1
+                    increased = True
                 self._success_streak = 0
+        if increased:
+            logger.debug(
+                "AIMD limiter increased: now=%d ceiling=%d",
+                self._limit,
+                self._ceiling,
+            )
 
     def update_ceiling(self, ceiling: int) -> None:
         """Re-anchor the ceiling (e.g., a later bulk call uses a different max_concurrency).
@@ -82,11 +98,12 @@ class _AdaptiveLimiterRegistry:
     each batch dispatch.
     """
 
-    __slots__ = ("_limiters", "_lock")
+    __slots__ = ("_ever_throttled", "_limiters", "_lock")
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._limiters: dict[str, _AdaptiveLimiter] = {}
+        self._ever_throttled: set[str] = set()
 
     def get(self, host: str, ceiling: int) -> _AdaptiveLimiter:
         """Return the limiter for ``host``, creating one with ``ceiling`` if absent.
@@ -113,5 +130,13 @@ class _AdaptiveLimiterRegistry:
         """
         with self._lock:
             limiter = self._limiters.get(host)
+            first_time = host not in self._ever_throttled
+            self._ever_throttled.add(host)
         if limiter is not None:
             limiter.report_throttled()
+        if first_time:
+            logger.info(
+                "Rate limited by host=%s. Adaptive concurrency will reduce in-flight requests. "
+                "See https://docs.pinecone.io/python/retries for details.",
+                host,
+            )

@@ -312,6 +312,68 @@ this matters.
 
 ---
 
+## Observability
+
+The SDK emits structured log records so you can diagnose retry storms and throttling
+pressure without adding instrumentation yourself.
+
+### Log namespaces
+
+| Logger | Events |
+|--------|--------|
+| `pinecone._internal.http_client` | Throttled HTTP response received; retry delay computed |
+| `pinecone._internal.adaptive` | AIMD concurrency limit transitions |
+
+### INFO messages
+
+An INFO-level record is emitted the **first time** a given host rate-limits a client
+instance:
+
+```
+Rate limited by host=<host>. Adaptive concurrency will reduce in-flight requests.
+See https://docs.pinecone.io/python/retries for details.
+```
+
+This fires once per host per `Pinecone` / `AsyncPinecone` object, so it surfaces in your
+logs without flooding them on repeated throttling.
+
+### DEBUG messages
+
+Enable DEBUG-level logging on the two namespaces above to see granular retry events:
+
+```python
+import logging
+logging.getLogger("pinecone._internal.http_client").setLevel(logging.DEBUG)
+logging.getLogger("pinecone._internal.adaptive").setLevel(logging.DEBUG)
+```
+
+**Throttle record** (emitted once per retry attempt that receives a retryable response):
+
+```
+Throttled response: status=429 host=my-index.svc.pinecone.io attempt=1/4 delay=0.531s retry_after=absent
+```
+
+Fields: `status` (HTTP status code), `host`, `attempt` (N of total attempts),
+`delay` (computed wait in seconds), `retry_after` (parsed `Retry-After` header value or
+`absent`).
+
+**AIMD limit decrease** (emitted when the adaptive limiter reduces concurrency):
+
+```
+AIMD limiter decreased: before=8 after=4 ceiling=8
+```
+
+**AIMD limit increase** (emitted when the limiter recovers a concurrency slot):
+
+```
+AIMD limiter increased: now=5 ceiling=8
+```
+
+Increase records only fire on actual transitions — not on every successful request —
+so the volume is proportional to recovery events, not request throughput.
+
+---
+
 ## See Also
 
 - {doc}`/guides/error-handling` — Exception hierarchy, `RateLimitError.retry_after`, and how to catch specific errors

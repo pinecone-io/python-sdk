@@ -194,6 +194,16 @@ class _RetryTransport(httpx.BaseTransport):
                 response.close()
                 delay = _compute_retry_after_delay(self._config, response, attempt, prev_delay)
                 prev_delay = delay
+                logger.debug(
+                    "Throttled response: status=%d host=%s attempt=%d/%d"
+                    " delay=%.3fs retry_after=%s",
+                    response.status_code,
+                    request.url.host,
+                    attempt + 1,
+                    self._config.max_retries + 1,
+                    delay,
+                    response.headers.get("retry-after", "absent"),
+                )
                 time.sleep(delay)
             else:
                 return response
@@ -244,6 +254,16 @@ class _AsyncRetryTransport(httpx.AsyncBaseTransport):
                 await response.aclose()
                 delay = _compute_retry_after_delay(self._config, response, attempt, prev_delay)
                 prev_delay = delay
+                logger.debug(
+                    "Throttled response: status=%d host=%s attempt=%d/%d"
+                    " delay=%.3fs retry_after=%s",
+                    response.status_code,
+                    request.url.host,
+                    attempt + 1,
+                    self._config.max_retries + 1,
+                    delay,
+                    response.headers.get("retry-after", "absent"),
+                )
                 await asyncio.sleep(delay)
             else:
                 return response
