@@ -15,7 +15,7 @@ import threading
 import time
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import httpx
@@ -42,25 +42,79 @@ class StormConfig:
     seed: int = 0xC0FFEE
 
 
-class _FaultInjectionTransport(httpx.BaseTransport):
-    """Sync httpx transport that returns 429 + Retry-After during a window, 200 after."""
+@dataclass
+class QuotaConfig:
+    """Config for in-flight-quota-based fault injection.
 
-    def __init__(self, config: StormConfig) -> None:
+    The transport throttles when concurrent in-flight requests exceed
+    ``max_concurrent_requests``, returning 429 + Retry-After immediately.
+    Allowed requests sleep for ``request_delay_seconds`` then return 200
+    with ``success_content`` as the response body.
+    """
+
+    max_concurrent_requests: int
+    retry_after_seconds: float = 0.1
+    request_delay_seconds: float = 0.01
+    success_content: bytes = field(default=b"{}")
+
+
+class _FaultInjectionTransport(httpx.BaseTransport):
+    """Sync httpx transport — storm-window mode or in-flight-quota mode."""
+
+    def __init__(self, config: StormConfig | QuotaConfig) -> None:
         self._config = config
         self._lock = threading.Lock()
         self._records: list[RequestRecord] = []
         self._attempt_counters: dict[tuple[str, int], int] = {}
         self.start_time: float = time.monotonic()
+        # Quota-mode state
+        self._in_flight: int = 0
+        self._peak_in_flight: int = 0
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
+        if isinstance(self._config, QuotaConfig):
+            return self._handle_quota_request(request)
+        return self._handle_storm_request(request)
+
+    def _handle_quota_request(self, request: httpx.Request) -> httpx.Response:
+        cfg: QuotaConfig = self._config  # type: ignore[assignment]
+        host = request.url.host
+        with self._lock:
+            if self._in_flight >= cfg.max_concurrent_requests:
+                record = RequestRecord(
+                    timestamp=time.monotonic(), host=host, attempt_index=0, outcome="429"
+                )
+                self._records.append(record)
+                return httpx.Response(
+                    429,
+                    headers={"Retry-After": str(cfg.retry_after_seconds)},
+                    request=request,
+                )
+            self._in_flight += 1
+            if self._in_flight > self._peak_in_flight:
+                self._peak_in_flight = self._in_flight
+
+        time.sleep(cfg.request_delay_seconds)
+
+        with self._lock:
+            self._in_flight -= 1
+            record = RequestRecord(
+                timestamp=time.monotonic(), host=host, attempt_index=0, outcome="200"
+            )
+            self._records.append(record)
+
+        return httpx.Response(200, content=cfg.success_content, request=request)
+
+    def _handle_storm_request(self, request: httpx.Request) -> httpx.Response:
         elapsed = time.monotonic() - self.start_time
         host = request.url.host
         ident = threading.get_ident()
         key = (host, ident)
+        storm_cfg: StormConfig = self._config  # type: ignore[assignment]
         with self._lock:
             idx = self._attempt_counters.get(key, 0)
             self._attempt_counters[key] = idx + 1
-            if elapsed < self._config.throttle_window_seconds:
+            if elapsed < storm_cfg.throttle_window_seconds:
                 outcome: Literal["429", "200", "503"] = "429"
                 record = RequestRecord(
                     timestamp=time.monotonic(),
@@ -71,7 +125,7 @@ class _FaultInjectionTransport(httpx.BaseTransport):
                 self._records.append(record)
                 return httpx.Response(
                     429,
-                    headers={"Retry-After": str(self._config.retry_after_seconds)},
+                    headers={"Retry-After": str(storm_cfg.retry_after_seconds)},
                     request=request,
                 )
             outcome = "200"
@@ -89,18 +143,61 @@ class _FaultInjectionTransport(httpx.BaseTransport):
         with self._lock:
             return list(self._records)
 
+    @property
+    def peak_in_flight(self) -> int:
+        """Peak concurrent in-flight count (quota mode only)."""
+        with self._lock:
+            return self._peak_in_flight
+
 
 class _AsyncFaultInjectionTransport(httpx.AsyncBaseTransport):
-    """Async counterpart of _FaultInjectionTransport."""
+    """Async counterpart of _FaultInjectionTransport — storm-window or quota mode."""
 
-    def __init__(self, config: StormConfig) -> None:
+    def __init__(self, config: StormConfig | QuotaConfig) -> None:
         self._config = config
         self._lock = asyncio.Lock()
         self._records: list[RequestRecord] = []
         self._attempt_counters: dict[tuple[str, int], int] = {}
         self.start_time: float = time.monotonic()
+        # Quota-mode state
+        self._in_flight: int = 0
+        self._peak_in_flight: int = 0
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if isinstance(self._config, QuotaConfig):
+            return await self._handle_quota_request(request)
+        return await self._handle_storm_request(request)
+
+    async def _handle_quota_request(self, request: httpx.Request) -> httpx.Response:
+        cfg: QuotaConfig = self._config  # type: ignore[assignment]
+        host = request.url.host
+        async with self._lock:
+            if self._in_flight >= cfg.max_concurrent_requests:
+                record = RequestRecord(
+                    timestamp=time.monotonic(), host=host, attempt_index=0, outcome="429"
+                )
+                self._records.append(record)
+                return httpx.Response(
+                    429,
+                    headers={"Retry-After": str(cfg.retry_after_seconds)},
+                    request=request,
+                )
+            self._in_flight += 1
+            if self._in_flight > self._peak_in_flight:
+                self._peak_in_flight = self._in_flight
+
+        await asyncio.sleep(cfg.request_delay_seconds)
+
+        async with self._lock:
+            self._in_flight -= 1
+            record = RequestRecord(
+                timestamp=time.monotonic(), host=host, attempt_index=0, outcome="200"
+            )
+            self._records.append(record)
+
+        return httpx.Response(200, content=cfg.success_content, request=request)
+
+    async def _handle_storm_request(self, request: httpx.Request) -> httpx.Response:
         elapsed = time.monotonic() - self.start_time
         host = request.url.host
         task = asyncio.current_task()
@@ -109,7 +206,8 @@ class _AsyncFaultInjectionTransport(httpx.AsyncBaseTransport):
         async with self._lock:
             idx = self._attempt_counters.get(key, 0)
             self._attempt_counters[key] = idx + 1
-            if elapsed < self._config.throttle_window_seconds:
+            storm_cfg: StormConfig = self._config  # type: ignore[assignment]
+            if elapsed < storm_cfg.throttle_window_seconds:
                 outcome: Literal["429", "200", "503"] = "429"
                 record = RequestRecord(
                     timestamp=time.monotonic(),
@@ -120,7 +218,7 @@ class _AsyncFaultInjectionTransport(httpx.AsyncBaseTransport):
                 self._records.append(record)
                 return httpx.Response(
                     429,
-                    headers={"Retry-After": str(self._config.retry_after_seconds)},
+                    headers={"Retry-After": str(storm_cfg.retry_after_seconds)},
                     request=request,
                 )
             outcome = "200"
@@ -136,6 +234,11 @@ class _AsyncFaultInjectionTransport(httpx.AsyncBaseTransport):
     @property
     def records(self) -> list[RequestRecord]:
         return list(self._records)
+
+    @property
+    def peak_in_flight(self) -> int:
+        """Peak concurrent in-flight count (quota mode only)."""
+        return self._peak_in_flight
 
 
 class StormScenario:
