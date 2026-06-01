@@ -29,7 +29,7 @@ def _load(path: pathlib.Path) -> dict[str, object]:
     return data
 
 
-@pytest.mark.xfail(reason="DX-0167 (async) and DX-0168 (bulk) not yet landed")
+@pytest.mark.xfail(reason="DX-0168 (bulk) not yet landed")
 def test_dispersion_widths_within_2x() -> None:
     sync_m = _load(_SYNC_PATH)
     async_m = _load(_ASYNC_PATH)
@@ -45,7 +45,7 @@ def test_dispersion_widths_within_2x() -> None:
     assert sync_w <= bulk_w * 2.0, f"sync dispersion {sync_w:.3f} > 2x bulk {bulk_w:.3f}"
 
 
-@pytest.mark.xfail(reason="DX-0167 (async) and DX-0168 (bulk) not yet landed")
+@pytest.mark.xfail(reason="DX-0168 (bulk) not yet landed")
 def test_amplifications_within_1_5x() -> None:
     sync_m = _load(_SYNC_PATH)
     async_m = _load(_ASYNC_PATH)
