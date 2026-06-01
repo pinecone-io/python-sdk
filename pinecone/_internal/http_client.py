@@ -138,6 +138,7 @@ def _compute_retry_after_delay(
         try:
             ra = float(retry_after)
             if ra >= 0:
+                ra = min(ra, config.max_wait)  # cap: prevents unbounded delays
                 smear = random.uniform(0.0, ra * 0.5)
                 return ra + smear
         except (ValueError, TypeError):
@@ -386,7 +387,9 @@ def _raise_for_status(response: httpx.Response) -> None:
             retry_after = None
         else:
             try:
-                retry_after = float(retry_after_raw)
+                parsed = float(retry_after_raw)
+                # reject negative values; NaN is also filtered since nan >= 0 is False
+                retry_after = parsed if parsed >= 0 else None
             except (ValueError, TypeError):
                 retry_after = None
         raise RateLimitError(

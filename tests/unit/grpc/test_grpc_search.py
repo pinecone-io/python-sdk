@@ -9,8 +9,8 @@ import httpx
 import pytest
 import respx
 
-from pinecone.grpc import GrpcIndex
 from pinecone.errors.exceptions import ValidationError
+from pinecone.grpc import GrpcIndex
 from pinecone.models.vectors.search import SearchRecordsResponse
 
 _MOCK_GRPC_MODULE_PATH = "pinecone._grpc"
@@ -108,9 +108,7 @@ class TestGrpcSearchDenseVectorWrapped:
         assert body["query"]["top_k"] == 10
 
     @respx.mock
-    def test_grpc_search_returns_search_records_response(
-        self, grpc_index: GrpcIndex
-    ) -> None:
+    def test_grpc_search_returns_search_records_response(self, grpc_index: GrpcIndex) -> None:
         """search() returns a SearchRecordsResponse."""
         respx.post(_SEARCH_URL).mock(
             return_value=httpx.Response(200, json=_SEARCH_RESPONSE),

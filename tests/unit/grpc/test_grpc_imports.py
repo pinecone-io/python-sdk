@@ -135,9 +135,7 @@ class TestDescribeImport:
     @respx.mock
     def test_describe_import(self, mock_channel: MagicMock) -> None:
         respx.get(f"{_IMPORTS_URL}/101").mock(
-            return_value=httpx.Response(
-                200, json=_import_payload(id="101", status="InProgress")
-            ),
+            return_value=httpx.Response(200, json=_import_payload(id="101", status="InProgress")),
         )
         idx = _make_grpc_index(mock_channel)
         result = idx.describe_import("101")
