@@ -136,6 +136,34 @@ uv sync
 uv run pytest tests/unit/ -x -v
 ```
 
+#### Retry/throttle smoke tests (opt-in)
+
+A suite of live-API smoke tests verifies that the retry stack and AIMD adaptive concurrency
+hold up against real Pinecone rate limits. These are **not** run in normal CI because they
+require real credentials, create a live serverless index, and take 1–3 minutes per run.
+
+**Required environment variables:**
+
+| Variable | Description |
+|---|---|
+| `PINECONE_API_KEY` | A valid Pinecone API key |
+| `PINECONE_RETRY_SMOKE` | Set to `1` to enable the smoke tests |
+
+**Running the smoke tests:**
+
+```bash
+PINECONE_API_KEY=your-api-key PINECONE_RETRY_SMOKE=1 \
+  uv run pytest tests/integration/test_retry_smoke.py -x -v -s
+```
+
+**Cost:** Each run creates three serverless indexes, upserts ~100K vectors per index, then
+deletes all indexes. Total cost is under $3 per run.
+
+**When to run:** Before any release that touches retry logic, HTTP transport, the AIMD
+adaptive-concurrency limiter (`pinecone._internal.adaptive`), or the batch-upsert path.
+The unit tests mock HTTP responses; this test catches divergence between the synthetic
+model and real API behavior (e.g., 503 instead of 429, missing `Retry-After` headers).
+
 ### Type checking
 
 ```bash
