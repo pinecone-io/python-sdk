@@ -261,6 +261,10 @@ out across multiple Lambda invocations, Cloud Run instances, or Kubernetes pods,
 process runs its own independent retry loop. There is no shared state, no cross-process
 coordination, and no distributed rate-limit awareness.
 
+The per-client adaptive-limiter registry is capped at 256 hosts with LRU eviction; long-running
+services that rotate through more than 256 distinct hosts will see infrequently-used hosts'
+adaptive state reset on next use, which is harmless.
+
 This means:
 
 - N simultaneously throttled invocations each independently back off and retry. Without

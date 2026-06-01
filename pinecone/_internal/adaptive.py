@@ -13,8 +13,16 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections import OrderedDict
 
 logger = logging.getLogger(__name__)
+
+# Cap on the per-client _AdaptiveLimiter registry. Realistic Pinecone projects
+# have far fewer than this many distinct hosts, so a bound mostly protects
+# long-running services that rotate through many indexes. LRU eviction is
+# safe because evicted limiters' AIMD state is just an optimization; a
+# fresh limiter rebuilds correctly from throttle/success signals.
+_MAX_REGISTRY_SIZE = 256
 
 
 class _AdaptiveLimiter:
@@ -90,19 +98,23 @@ class _AdaptiveLimiter:
 
 
 class _AdaptiveLimiterRegistry:
-    """Per-client ``dict[host, _AdaptiveLimiter]`` with on-demand creation.
+    """Per-client registry of ``_AdaptiveLimiter`` instances, one per host.
 
     One instance lives on each ``Pinecone`` / ``AsyncPinecone`` client. The
     transport's ``on_throttle`` callback calls ``report_throttled(host)``;
     the bulk path calls ``get(host, ceiling).current_limit()`` before
     each batch dispatch.
+
+    Capped at ``_MAX_REGISTRY_SIZE`` entries with LRU eviction on overflow.
+    Evicted limiters lose their AIMD state, which is safe — a fresh limiter
+    rebuilds correctly from subsequent throttle/success signals.
     """
 
     __slots__ = ("_ever_throttled", "_limiters", "_lock")
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._limiters: dict[str, _AdaptiveLimiter] = {}
+        self._limiters: OrderedDict[str, _AdaptiveLimiter] = OrderedDict()
         self._ever_throttled: set[str] = set()
 
     def get(self, host: str, ceiling: int) -> _AdaptiveLimiter:
@@ -116,9 +128,14 @@ class _AdaptiveLimiterRegistry:
             limiter = self._limiters.get(host)
             if limiter is None:
                 limiter = _AdaptiveLimiter(ceiling)
+                if len(self._limiters) >= _MAX_REGISTRY_SIZE:
+                    evicted_host, _ = self._limiters.popitem(last=False)
+                    self._ever_throttled.discard(evicted_host)
                 self._limiters[host] = limiter
-            elif limiter.ceiling != ceiling:
-                limiter.update_ceiling(ceiling)
+            else:
+                if limiter.ceiling != ceiling:
+                    limiter.update_ceiling(ceiling)
+                self._limiters.move_to_end(host)
             return limiter
 
     def report_throttled(self, host: str) -> None:
@@ -130,6 +147,8 @@ class _AdaptiveLimiterRegistry:
         """
         with self._lock:
             limiter = self._limiters.get(host)
+            if limiter is not None:
+                self._limiters.move_to_end(host)
             first_time = host not in self._ever_throttled
             self._ever_throttled.add(host)
         if limiter is not None:

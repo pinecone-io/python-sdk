@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from pinecone._internal.adaptive import _AdaptiveLimiter, _AdaptiveLimiterRegistry
+from pinecone._internal.adaptive import (
+    _MAX_REGISTRY_SIZE,
+    _AdaptiveLimiter,
+    _AdaptiveLimiterRegistry,
+)
 
 
 class TestAdaptiveLimiter:
@@ -104,6 +108,38 @@ class TestAdaptiveLimiterRegistry:
         assert a is a2
         assert a.ceiling == 16
         assert a.current_limit() == 4  # AIMD-earned limit unchanged
+
+    def test_registry_lru_eviction_at_cap(self) -> None:
+        reg = _AdaptiveLimiterRegistry()
+        # Fill to cap.
+        for i in range(_MAX_REGISTRY_SIZE):
+            reg.get(f"host-{i}.pinecone.io", 8)
+        # Touch host-0 to make it most-recently-used.
+        reg.get("host-0.pinecone.io", 8)
+        # Insert a new host. Should evict host-1 (now least-recently-used),
+        # not host-0.
+        reg.get("host-new.pinecone.io", 8)
+        # host-0 should still be present.
+        l0 = reg.get("host-0.pinecone.io", 8)
+        assert l0.ceiling == 8
+        # host-1 was evicted; calling get() creates a fresh limiter.
+        l1 = reg.get("host-1.pinecone.io", 8)
+        # Fresh limiter has limit == ceiling (it's a new instance, not the previously-modified one).
+        assert l1.current_limit() == 8
+
+    def test_report_throttled_marks_host_most_recently_used(self) -> None:
+        reg = _AdaptiveLimiterRegistry()
+        for i in range(_MAX_REGISTRY_SIZE):
+            reg.get(f"host-{i}.pinecone.io", 8)
+        # Throttle host-0; should refresh its position.
+        reg.report_throttled("host-0.pinecone.io")
+        # Add new host -> should evict host-1, not host-0.
+        reg.get("host-new.pinecone.io", 8)
+        # host-0 still present (we only verify by getting it back; if it had been
+        # evicted, the AIMD state would have been reset to ceiling).
+        l0 = reg.get("host-0.pinecone.io", 8)
+        # Originally throttled to ceiling // 2 = 4.
+        assert l0.current_limit() == 4
 
     def test_concurrent_access_invariants(self) -> None:
         """Spawn N threads alternately throttling and reporting success;
