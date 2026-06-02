@@ -125,8 +125,7 @@ class TestAsyncSearch:
             "top_k": 10,
             "filter": {"genre": {"$eq": "sci-fi"}},
         }
-        with pytest.warns(DeprecationWarning, match="v8 compatibility shim"):
-            await idx.search(namespace="test-ns", query=query, fields=["chunk_text", "title"])
+        await idx.search(namespace="test-ns", query=query, fields=["chunk_text", "title"])
 
         import orjson
 
@@ -337,25 +336,14 @@ class TestAsyncSearch:
             return_value=httpx.Response(200, json=SEARCH_RESPONSE),
         )
         idx = _make_async_index()
-        with pytest.warns(DeprecationWarning, match="v8 compatibility shim"):
-            await idx.search(
-                namespace="test-ns",
-                query=SearchQuery(inputs={"text": "hello"}, top_k=10),
-            )
+        await idx.search(
+            namespace="test-ns",
+            query=SearchQuery(inputs={"text": "hello"}, top_k=10),
+        )
         import orjson
 
         body = orjson.loads(route.calls.last.request.content)
         assert body["query"] == {"inputs": {"text": "hello"}, "top_k": 10}
-
-    @pytest.mark.anyio
-    async def test_async_search_legacy_query_emits_deprecation_warning(self) -> None:
-        idx = _make_async_index()
-        with respx.mock:
-            respx.post(SEARCH_URL_NS).mock(
-                return_value=httpx.Response(200, json=SEARCH_RESPONSE),
-            )
-            with pytest.warns(DeprecationWarning, match="AsyncIndex.search"):
-                await idx.search(namespace="test-ns", query={"inputs": {"text": "x"}, "top_k": 5})
 
     @pytest.mark.anyio
     async def test_async_search_legacy_query_conflict_raises_typeerror_with_kwarg_names(

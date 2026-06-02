@@ -1220,8 +1220,7 @@ class TestGrpcIndexSearch:
         )
         idx = _make_grpc_index(mock_channel, host=_INDEX_HOST)
         query = {"inputs": {"text": "q"}, "top_k": 5, "filter": {"topic": {"$eq": "ai"}}}
-        with pytest.warns(DeprecationWarning, match="v8 compatibility shim"):
-            idx.search(namespace="test-ns", query=query, fields=["text", "title"])
+        idx.search(namespace="test-ns", query=query, fields=["text", "title"])
 
         body = orjson.loads(route.calls.last.request.content)
         assert body["query"] == query
@@ -1235,22 +1234,12 @@ class TestGrpcIndexSearch:
             return_value=httpx.Response(200, json=_SEARCH_RESPONSE)
         )
         idx = _make_grpc_index(mock_channel, host=_INDEX_HOST)
-        with pytest.warns(DeprecationWarning, match="v8 compatibility shim"):
-            idx.search(
-                namespace="test-ns",
-                query=SearchQuery(inputs={"text": "hello"}, top_k=10),
-            )
+        idx.search(
+            namespace="test-ns",
+            query=SearchQuery(inputs={"text": "hello"}, top_k=10),
+        )
         body = orjson.loads(route.calls.last.request.content)
         assert body["query"] == {"inputs": {"text": "hello"}, "top_k": 10}
-
-    def test_search_legacy_query_emits_deprecation_warning(self, mock_channel: MagicMock) -> None:
-        idx = _make_grpc_index(mock_channel, host=_INDEX_HOST)
-        with respx.mock:
-            respx.post(_SEARCH_URL).mock(
-                return_value=httpx.Response(200, json=_SEARCH_RESPONSE),
-            )
-            with pytest.warns(DeprecationWarning, match="GrpcIndex.search"):
-                idx.search(namespace="test-ns", query={"inputs": {"text": "x"}, "top_k": 5})
 
     def test_search_legacy_query_conflict_raises_typeerror_with_kwarg_names(
         self, mock_channel: MagicMock

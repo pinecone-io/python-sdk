@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -116,13 +115,6 @@ def _build_search_records_body(
                 f"{method_name}() 'query=' must be a SearchQuery or Mapping, "
                 f"got {type(query).__name__}"
             )
-        warnings.warn(
-            f"Passing 'query=...' to {method_name}() is a v8 compatibility shim. "
-            "Pass top_k, inputs, vector, id, filter, and match_terms as separate "
-            "keyword arguments instead.",
-            DeprecationWarning,
-            stacklevel=4,
-        )
         query_body = _legacy_search_query_to_dict(query)
         if "vector" in query_body and query_body["vector"] is not None:
             query_vector = query_body["vector"]

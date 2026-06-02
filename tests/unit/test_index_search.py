@@ -119,8 +119,7 @@ class TestSearch:
             "top_k": 10,
             "filter": {"genre": {"$eq": "sci-fi"}},
         }
-        with pytest.warns(DeprecationWarning, match="v8 compatibility shim"):
-            idx.search(namespace="test-ns", query=query, fields=["chunk_text", "title"])
+        idx.search(namespace="test-ns", query=query, fields=["chunk_text", "title"])
 
         import orjson
 
@@ -362,24 +361,14 @@ class TestSearch:
             return_value=httpx.Response(200, json=SEARCH_RESPONSE),
         )
         idx = _make_index()
-        with pytest.warns(DeprecationWarning, match="v8 compatibility shim"):
-            idx.search(
-                namespace="test-ns",
-                query=SearchQuery(inputs={"text": "hello"}, top_k=10),
-            )
+        idx.search(
+            namespace="test-ns",
+            query=SearchQuery(inputs={"text": "hello"}, top_k=10),
+        )
         import orjson
 
         body = orjson.loads(route.calls.last.request.content)
         assert body["query"] == {"inputs": {"text": "hello"}, "top_k": 10}
-
-    def test_search_legacy_query_emits_deprecation_warning(self) -> None:
-        idx = _make_index()
-        with respx.mock:
-            respx.post(SEARCH_URL_NS).mock(
-                return_value=httpx.Response(200, json=SEARCH_RESPONSE),
-            )
-            with pytest.warns(DeprecationWarning, match="Index.search"):
-                idx.search(namespace="test-ns", query={"inputs": {"text": "x"}, "top_k": 5})
 
     def test_search_legacy_query_conflict_raises_typeerror_with_kwarg_names(self) -> None:
         idx = _make_index()
