@@ -257,8 +257,9 @@ the more this matters.
 
 ## Observability
 
-The SDK emits structured log records so you can diagnose retry storms and throttling
-pressure without adding instrumentation yourself.
+The SDK emits namespaced log records with consistent `key=value` fields in each message,
+so you can diagnose retry storms and throttling pressure without adding instrumentation
+yourself.
 
 ### Log namespaces
 
