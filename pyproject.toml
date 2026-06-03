@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pinecone"
-version = "9.0.1"
+version = "9.1.0"
 description = "Pinecone Python SDK"
 readme = "README.md"
 license = "Apache-2.0"

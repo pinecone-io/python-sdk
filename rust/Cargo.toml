@@ -1,6 +1,6 @@
 [package]
 name = "pinecone-grpc"
-version = "9.0.1"
+version = "9.1.0"
 edition = "2021"
 
 [lib]
