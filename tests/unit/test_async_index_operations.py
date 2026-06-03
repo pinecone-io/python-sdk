@@ -426,6 +426,12 @@ class TestAsyncUpdate:
         with pytest.raises(ValidationError, match="not both"):
             await idx.update(id="vec1", filter={"x": 1})
 
+    @pytest.mark.asyncio
+    async def test_update_dry_run_with_id_raises(self) -> None:
+        idx = _make_async_index()
+        with pytest.raises(ValidationError, match="dry_run is only supported"):
+            await idx.update(id="vec1", set_metadata={"genre": "comedy"}, dry_run=True)
+
     @respx.mock
     @pytest.mark.asyncio
     async def test_update_dry_run(self) -> None:
