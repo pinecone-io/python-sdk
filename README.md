@@ -162,7 +162,7 @@ deletes all indexes. Total cost is under $3 per run.
 **When to run:** Before any release that touches retry logic, HTTP transport, the AIMD
 adaptive-concurrency limiter (`pinecone._internal.adaptive`), or the batch-upsert path.
 The unit tests mock HTTP responses; this test catches divergence between the synthetic
-model and real API behavior (e.g., 503 instead of 429, missing `Retry-After` headers).
+model and real API behavior (e.g., 503 instead of 429).
 
 ### Type checking
 

@@ -1,9 +1,9 @@
 # Retries and Resilience
 
 The SDK retries failed requests automatically using multiple layers of resilience: per-request
-backoff with decorrelated jitter, server-driven delay hints, and adaptive concurrency for bulk
-operations. This page covers everything you need to know to tune that behavior or to decide when
-to hand retry control back to your orchestrator.
+backoff with decorrelated jitter and adaptive concurrency for bulk operations. This page covers
+everything you need to know to tune that behavior or to decide when to hand retry control back to
+your orchestrator.
 
 For the exceptions the SDK raises when retries are exhausted, see {doc}`/guides/error-handling`.
 
@@ -19,7 +19,6 @@ Out of the box — no configuration needed:
 | Retryable HTTP status codes | 408, 429, 500, 502, 503, 504 |
 | Retryable gRPC status codes | UNAVAILABLE, RESOURCE\_EXHAUSTED, ABORTED |
 | Backoff algorithm | Decorrelated jitter — random walk bounded by `backoff_factor` floor and `max_wait` cap |
-| `Retry-After` / `grpc-retry-pushback-ms` | Honored as the floor on the next delay, plus a random smear up to 50% |
 | Adaptive concurrency (bulk paths) | Self-tunes downward on throttling; `max_concurrency` is a ceiling, not a constant |
 
 ---
@@ -82,10 +81,8 @@ pc = Pinecone(
 
 try:
     index.upsert(vectors=[...])
-except RateLimitError as exc:
-    # exc.retry_after is the parsed Retry-After value in seconds, or None
-    wait = exc.retry_after or 30.0
-    time.sleep(wait)
+except RateLimitError:
+    time.sleep(30.0)
     index.upsert(vectors=[...])
 ```
 
@@ -127,62 +124,6 @@ the same delay even when they start at the same time.
 | 1st retry | [0.25, 0.75] | ~0.5 s |
 | 2nd retry | [0.25, ~1.5] | ~0.9 s |
 | 3rd retry | [0.25, ~4.5] | ~2.4 s |
-
-### `Retry-After` smear (server-hint path)
-
-When a 429 response carries a `Retry-After` header, the SDK uses that value as a floor
-and adds a random smear of up to 50%:
-
-```
-smear = uniform(0.0, retry_after * 0.5)
-delay = retry_after + smear
-```
-
-**Why this matters at scale.** If 1,000 SDK clients all receive `Retry-After: 60` at the
-same moment, naive honor-exactly behavior causes all 1,000 to retry at second 60 — a
-thundering herd. With the 50% smear, they spread randomly across `[60, 90)`, reducing
-peak re-collision pressure by roughly 3×.
-
----
-
-## Server-Driven Retry Hints
-
-The SDK checks for server-supplied delay hints and uses them as the floor for the next
-retry delay.
-
-### REST: `Retry-After` header
-
-When a retryable response (most commonly a 429) includes a `Retry-After` header, the SDK
-parses it as a non-negative number of seconds. Values that cannot be parsed as a float
-(such as HTTP-date strings) are ignored, and the SDK falls back to decorrelated jitter.
-
-```
-Retry-After: 30
-```
-
-With `Retry-After: 30`, the SDK waits at least 30 seconds and adds a random smear up to
-15 seconds (50% of 30), so the actual delay is in `[30, 45)`.
-
-When retries are exhausted, the SDK raises `RateLimitError` with the parsed
-`Retry-After` value on `exc.retry_after` (or `None` if the header was absent or
-unparseable):
-
-```python
-from pinecone.errors import RateLimitError
-
-try:
-    index.upsert(vectors=[...])
-except RateLimitError as exc:
-    print(exc.retry_after)   # float seconds, or None
-```
-
-### gRPC: `grpc-retry-pushback-ms`
-
-The gRPC transport (Rust-backed) checks for `grpc-retry-pushback-ms` in response
-trailers. This header carries the suggested delay in milliseconds. The SDK treats it as a
-floor and applies the same ±50% smear. If the trailer is absent or invalid, the gRPC
-transport falls back to its own decorrelated jitter backoff (`initial_backoff=100 ms`,
-`max_backoff=1600 ms`).
 
 ---
 
@@ -241,7 +182,6 @@ The retry plan goal is parity across REST and gRPC. The remaining differences ar
 | Default `max_retries` | 3 (4 total attempts) | 5 (6 total attempts) |
 | Configured via | `RetryConfig` passed to `Pinecone()` | Fixed in transport (not user-configurable) |
 | Retryable codes | `{408, 429, 500, 502, 503, 504}` | UNAVAILABLE, RESOURCE\_EXHAUSTED, ABORTED |
-| Server-hint header | `Retry-After` (seconds, float) | `grpc-retry-pushback-ms` (milliseconds, int) |
 | Jitter algorithm | Decorrelated jitter (Python) | Decorrelated jitter (Rust) |
 | Async support | Yes (`AsyncIndex`) | No — gRPC transport is sync-only |
 | Adaptive concurrency | Yes (REST + gRPC share the same per-host limiter registry) | Yes |
@@ -292,17 +232,16 @@ try:
     response = index.upsert(vectors=batch, batch_size=100, max_concurrency=4)
 except RateLimitError as exc:
     # Re-raise so the orchestrator sees a task failure and schedules a retry
-    # after the visibility timeout expires — which is already longer than
-    # Pinecone's Retry-After window in most configurations.
+    # after the visibility timeout expires.
     raise
 ```
 
-### Why `Retry-After` smear still helps
+### Why jitter still helps across processes
 
-Even without coordination, the SDK's 50% smear on `Retry-After` provides statistical
-relief. If N independent Lambda invocations all receive `Retry-After: 60`, they don't all
-retry at second 60 — the smear spreads them across `[60, 90)`. The larger N is, the more
-this matters.
+Even without coordination, the SDK's decorrelated jitter provides statistical relief. If N
+independent Lambda invocations are all throttled at once, they don't all retry at the same
+instant — each draws its own delay, spreading the retries across a window. The larger N is,
+the more this matters.
 
 ### Summary: when to trust the SDK vs. the orchestrator
 
@@ -354,12 +293,11 @@ logging.getLogger("pinecone._internal.adaptive").setLevel(logging.DEBUG)
 **Throttle record** (emitted once per retry attempt that receives a retryable response):
 
 ```
-Throttled response: status=429 host=my-index.svc.pinecone.io attempt=1/4 delay=0.531s retry_after=absent
+Throttled response: status=429 host=my-index.svc.pinecone.io attempt=1/4 delay=0.531s
 ```
 
 Fields: `status` (HTTP status code), `host`, `attempt` (N of total attempts),
-`delay` (computed wait in seconds), `retry_after` (parsed `Retry-After` header value or
-`absent`).
+`delay` (computed wait in seconds).
 
 **AIMD limit decrease** (emitted when the adaptive limiter reduces concurrency):
 
@@ -380,6 +318,6 @@ so the volume is proportional to recovery events, not request throughput.
 
 ## See Also
 
-- {doc}`/guides/error-handling` — Exception hierarchy, `RateLimitError.retry_after`, and how to catch specific errors
+- {doc}`/guides/error-handling` — Exception hierarchy and how to catch specific errors
 - {doc}`/guides/performance` — Bulk upsert patterns, `max_concurrency` tuning, and transport selection
 - {doc}`/guides/sync-vs-async` — When to use the async client and how to manage concurrency with `asyncio`

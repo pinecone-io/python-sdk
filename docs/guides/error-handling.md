@@ -50,9 +50,8 @@ except UnauthorizedError:
     print("Invalid or missing API key")
 except ForbiddenError:
     print("API key lacks permission for this operation")
-except RateLimitError as exc:
-    # exc.retry_after is the parsed Retry-After header in seconds, or None
-    print(f"Rate limited; retry after {exc.retry_after}s")
+except RateLimitError:
+    print("Rate limited; backing off before retrying")
 except ServiceError as exc:
     print(f"Server error {exc.status_code}: {exc.message}")
 except PineconeConnectionError:
@@ -130,9 +129,8 @@ except ConflictError:
 ## Retries
 
 The SDK retries failed requests automatically with decorrelated jitter on
-the backoff path and smearing on top of server-supplied `Retry-After` /
-`grpc-retry-pushback-ms` hints. Bulk operations also self-tune effective
-concurrency in response to throttling.
+the backoff path, and bulk operations self-tune effective concurrency in
+response to throttling.
 
 Full retry behavior, configuration, and multi-process guidance:
 {doc}`/guides/retries`.
