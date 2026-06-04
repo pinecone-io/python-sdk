@@ -168,6 +168,11 @@ class TestUpdateValidation:
         with pytest.raises(ValidationError, match="got neither"):
             idx.update(values=[0.1])
 
+    def test_dry_run_with_id_raises(self) -> None:
+        idx = _make_index()
+        with pytest.raises(ValidationError, match="dry_run is only supported"):
+            idx.update(id="vec1", set_metadata={"genre": "comedy"}, dry_run=True)
+
     @respx.mock
     def test_dry_run_not_in_body_when_false(self) -> None:
         route = respx.post(UPDATE_URL).mock(

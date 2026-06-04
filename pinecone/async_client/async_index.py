@@ -910,7 +910,8 @@ class AsyncIndex:
             namespace (str): Namespace to target. Defaults to the default namespace.
             filter (dict[str, Any] | None): Metadata filter expression selecting vectors to update.
             dry_run (bool): If True, return the count of records that would be
-                affected without applying changes.
+                affected without applying changes. Only applies to filter-based
+                updates.
 
         Returns:
             :class:`UpdateResponse` with matched_records count (when available).
@@ -942,6 +943,8 @@ class AsyncIndex:
             raise ValidationError("Exactly one of id or filter must be provided, not both")
         if not has_id and not has_filter:
             raise ValidationError("Exactly one of id or filter must be provided, got neither")
+        if dry_run and has_id:
+            raise ValidationError("dry_run is only supported for filter-based updates")
 
         body: dict[str, Any] = {"namespace": namespace}
         if id is not None:

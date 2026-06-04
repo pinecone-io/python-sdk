@@ -500,6 +500,10 @@ class TestUpdate:
         with pytest.raises(ValidationError, match="got neither"):
             grpc_index.update(values=[0.1])
 
+    def test_update_validates_dry_run_with_id(self, grpc_index: GrpcIndex) -> None:
+        with pytest.raises(ValidationError, match="dry_run is only supported"):
+            grpc_index.update(id="v1", set_metadata={"key": "new_val"}, dry_run=True)
+
     def test_update_by_filter_with_dry_run(
         self, grpc_index: GrpcIndex, mock_channel: MagicMock
     ) -> None:

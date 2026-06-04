@@ -1018,6 +1018,8 @@ class Index:
             raise ValidationError("Exactly one of id or filter must be provided, not both")
         if not has_id and not has_filter:
             raise ValidationError("Exactly one of id or filter must be provided, got neither")
+        if dry_run and has_id:
+            raise ValidationError("dry_run is only supported for filter-based updates")
 
         body: dict[str, Any] = {"namespace": namespace}
         if id is not None:
