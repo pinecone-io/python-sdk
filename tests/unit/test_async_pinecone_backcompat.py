@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from pinecone.async_client.pinecone import AsyncPinecone
 from pinecone.inference.models.index_embed import IndexEmbed
 from pinecone.models.enums import CloudProvider
@@ -331,6 +333,22 @@ def test_async_index_asyncio_delegate_returns_async_index() -> None:
     pc = AsyncPinecone(api_key="test-key")
     idx = pc.IndexAsyncio(host="my-index.svc.pinecone.io")
     assert isinstance(idx, AsyncIndex)
+
+
+def test_async_index_asyncio_delegate_forwards_explicit_ssl_verify() -> None:
+    from unittest.mock import patch
+
+    pc = AsyncPinecone(api_key="test-key", ssl_verify=True)
+    with patch("pinecone.async_client.async_index.AsyncIndex") as mock_async_index:
+        pc.IndexAsyncio(host="my-index.svc.pinecone.io", ssl_verify=False)
+    _, kwargs = mock_async_index.call_args
+    assert kwargs["ssl_verify"] is False
+
+
+def test_async_index_asyncio_delegate_rejects_unknown_kwargs() -> None:
+    pc = AsyncPinecone(api_key="test-key")
+    with pytest.raises(TypeError, match="unexpected keyword arguments"):
+        pc.IndexAsyncio(host="my-index.svc.pinecone.io", bogus=True)
 
 
 # ---------------------------------------------------------------------------

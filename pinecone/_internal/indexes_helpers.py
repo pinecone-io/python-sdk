@@ -60,6 +60,34 @@ class _LegacyIndexKwargs(IndexKwargs):
     pool_threads: NotRequired[int]
 
 
+_INDEX_KWARG_KEYS = frozenset(IndexKwargs.__annotations__)
+
+
+def apply_index_kwargs_overrides(
+    base: IndexKwargs, overrides: Mapping[str, Any], *, caller: str
+) -> IndexKwargs:
+    """Apply explicit data-plane client kwargs to factory defaults."""
+    allowed = _INDEX_KWARG_KEYS - {"host"}
+    unexpected = sorted(set(overrides) - allowed)
+    if unexpected:
+        raise TypeError(f"{caller} got unexpected keyword arguments: {unexpected!r}")
+
+    return IndexKwargs(
+        host=base["host"],
+        api_key=overrides.get("api_key", base["api_key"]),
+        additional_headers=dict(overrides.get("additional_headers", base["additional_headers"])),
+        timeout=overrides.get("timeout", base["timeout"]),
+        proxy_url=overrides.get("proxy_url", base["proxy_url"]),
+        proxy_headers=dict(overrides.get("proxy_headers", base["proxy_headers"])),
+        ssl_ca_certs=overrides.get("ssl_ca_certs", base["ssl_ca_certs"]),
+        ssl_verify=overrides.get("ssl_verify", base["ssl_verify"]),
+        source_tag=overrides.get("source_tag", base["source_tag"]),
+        connection_pool_maxsize=overrides.get(
+            "connection_pool_maxsize", base["connection_pool_maxsize"]
+        ),
+    )
+
+
 def resolve_enum_value(value: Any) -> Any:
     """Extract ``.value`` from enum-like objects, pass through otherwise."""
     return value.value if hasattr(value, "value") else value

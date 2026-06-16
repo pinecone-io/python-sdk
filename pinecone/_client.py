@@ -9,7 +9,12 @@ from typing import TYPE_CHECKING, Any, cast
 from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
 from pinecone._internal.config import PineconeConfig, RetryConfig
 from pinecone._internal.constants import CONTROL_PLANE_API_VERSION, DEFAULT_BASE_URL
-from pinecone._internal.indexes_helpers import _LegacyIndexKwargs, poll_index_until_ready
+from pinecone._internal.indexes_helpers import (
+    IndexKwargs,
+    _LegacyIndexKwargs,
+    apply_index_kwargs_overrides,
+    poll_index_until_ready,
+)
 from pinecone._internal.validation import require_non_empty
 from pinecone.errors.exceptions import ValidationError
 
@@ -882,7 +887,7 @@ class Pinecone:
         """
         from pinecone.async_client.async_index import AsyncIndex as _AsyncIndex
 
-        return _AsyncIndex(
+        index_kwargs = IndexKwargs(
             host=host,
             api_key=self._config.api_key,
             additional_headers=dict(self._config.additional_headers),
@@ -894,6 +899,10 @@ class Pinecone:
             source_tag=self._config.source_tag,
             connection_pool_maxsize=self._config.connection_pool_maxsize,
         )
+        index_kwargs = apply_index_kwargs_overrides(
+            index_kwargs, kwargs, caller="Pinecone.IndexAsyncio()"
+        )
+        return _AsyncIndex(**index_kwargs)
 
     def close(self) -> None:
         """Close all open HTTP connections.

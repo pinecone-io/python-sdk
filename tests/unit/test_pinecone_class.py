@@ -470,6 +470,18 @@ class TestPineconeIndexAsyncioDelegate:
         _, kwargs = mock_async_index.call_args
         assert kwargs["host"] == "my-index.svc.pinecone.io"
 
+    def test_forwards_explicit_ssl_verify(self) -> None:
+        pc = Pinecone(api_key="test-key", ssl_verify=True)
+        with patch("pinecone.async_client.async_index.AsyncIndex") as mock_async_index:
+            pc.IndexAsyncio(host="my-index.svc.pinecone.io", ssl_verify=False)
+        _, kwargs = mock_async_index.call_args
+        assert kwargs["ssl_verify"] is False
+
+    def test_rejects_unknown_kwargs(self) -> None:
+        pc = Pinecone(api_key="test-key")
+        with pytest.raises(TypeError, match="unexpected keyword arguments"):
+            pc.IndexAsyncio(host="my-index.svc.pinecone.io", bogus=True)
+
 
 # ---------------------------------------------------------------------------
 # Lazy namespace property first-access and caching
