@@ -482,18 +482,35 @@ def test_create_name_valid_boundary(indexes: Indexes) -> None:
     assert isinstance(result, IndexModel)
 
 
-def test_create_sparse_with_dimension_raises(indexes: Indexes) -> None:
-    """Sparse index with explicit dimension raises ValidationError."""
-    with pytest.raises(ValidationError) as exc_info:
-        indexes.create(
-            name="test",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-            vector_type="sparse",
-            dimension=384,
-        )
+@respx.mock
+def test_create_sparse_with_dimension_allowed(indexes: Indexes) -> None:
+    """Sparse index accepts an explicit dimension so Pinecone Local can be targeted.
 
-    assert "dimension" in str(exc_info.value)
-    assert "sparse" in str(exc_info.value)
+    Pinecone Local requires a ``dimension`` field in the POST body even for sparse
+    indexes.  The SDK no longer rejects this combination at the client-side validation
+    layer; the field is forwarded to the server and the server decides whether it is
+    valid for the target environment.
+    """
+    route = respx.post(f"{BASE_URL}/indexes").mock(
+        return_value=httpx.Response(
+            201, json=make_index_response(vector_type="sparse", dimension=1)
+        ),
+    )
+
+    result = indexes.create(
+        name="sparse-local",
+        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+        vector_type="sparse",
+        dimension=1,
+        timeout=-1,
+    )
+
+    assert result.vector_type == "sparse"
+
+    request = route.calls.last.request
+    body = json.loads(request.content)
+    assert body["vector_type"] == "sparse"
+    assert body["dimension"] == 1
 
 
 def test_create_with_unrecognized_dict_spec_raises(indexes: Indexes) -> None:

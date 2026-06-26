@@ -116,8 +116,6 @@ def validate_create_inputs(
         raise PineconeTypeError(f"dimension must be an integer, got {type(dimension).__name__!r}")
 
     resolved_vt = resolve_enum_value(vector_type)
-    if resolved_vt == "sparse" and dimension is not None:
-        raise ValidationError("dimension must not be provided for sparse indexes")
     if resolved_vt != "sparse" and dimension is None:
         raise ValidationError("dimension is required for dense indexes")
 

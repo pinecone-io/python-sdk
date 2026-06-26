@@ -147,6 +147,8 @@ class Preview:
                         "the index may still be initializing. "
                         "Wait until the index status is 'Ready' before connecting."
                     )
+                if not self._config.ssl_verify and described_host.startswith("https://"):
+                    described_host = "http://" + described_host[len("https://"):]
                 self._host_cache[name] = described_host
             resolved_host = self._host_cache[name]
         else:
@@ -326,6 +328,7 @@ class AsyncPreview:
 
         host_cache = self._host_cache
         indexes = self.indexes
+        ssl_verify = self._config.ssl_verify
 
         async def _resolve() -> str:
             if name not in host_cache:
@@ -336,7 +339,10 @@ class AsyncPreview:
                         "the index may still be initializing. "
                         "Wait until the index status is 'Ready' before connecting."
                     )
-                host_cache[name] = desc.host
+                resolved = desc.host
+                if not ssl_verify and resolved.startswith("https://"):
+                    resolved = "http://" + resolved[len("https://"):]
+                host_cache[name] = resolved
             return host_cache[name]
 
         return AsyncPreviewIndex(config=self._config, _host_provider=_resolve)

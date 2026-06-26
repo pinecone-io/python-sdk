@@ -553,3 +553,44 @@ class TestPineconeLimiterWiring:
         pc1 = Pinecone(api_key="test-key")
         pc2 = Pinecone(api_key="test-key")
         assert pc1._limiter_registry is not pc2._limiter_registry
+
+
+class TestResolveIndexHostSslVerify:
+    """Test that ssl_verify=False rewrites https:// to http:// when resolving via describe."""
+
+    def test_ssl_verify_false_rewrites_https_to_http_on_describe(self) -> None:
+        """When ssl_verify=False the host resolved from describe() uses http://.
+
+        Pinecone Local serves plain HTTP only.  A bare hostname returned by the
+        server is normalised to https:// by IndexModel.__post_init__, which then
+        causes a TLS handshake against a server that does not speak TLS.
+        Setting ssl_verify=False signals intent to skip TLS entirely, so the
+        SDK downgrades the scheme to http:// for the data-plane host.
+        """
+        pc = Pinecone(api_key="pclocal", host="http://localhost:5080", ssl_verify=False)
+
+        mock_desc = MagicMock()
+        mock_desc.host = "https://localhost:5081"
+
+        with patch.object(pc.indexes, "describe", return_value=mock_desc):
+            resolved = pc._resolve_index_host(name="my-index", host="")
+
+        assert resolved == "http://localhost:5081"
+
+    def test_ssl_verify_true_preserves_https_on_describe(self) -> None:
+        """When ssl_verify=True the https:// scheme on the resolved host is kept."""
+        pc = Pinecone(api_key="test-key")
+
+        mock_desc = MagicMock()
+        mock_desc.host = "https://my-index-abc.svc.pinecone.io"
+
+        with patch.object(pc.indexes, "describe", return_value=mock_desc):
+            resolved = pc._resolve_index_host(name="my-index", host="")
+
+        assert resolved == "https://my-index-abc.svc.pinecone.io"
+
+    def test_explicit_host_not_rewritten(self) -> None:
+        """An explicit host= argument is returned as-is regardless of ssl_verify."""
+        pc = Pinecone(api_key="pclocal", host="http://localhost:5080", ssl_verify=False)
+        resolved = pc._resolve_index_host(name="", host="http://localhost:5081")
+        assert resolved == "http://localhost:5081"

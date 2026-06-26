@@ -453,8 +453,11 @@ class Pinecone:
                     "the index may still be initializing. "
                     "Wait until the index status is 'Ready' before connecting."
                 )
-            self._host_cache[name] = desc.host
-            return desc.host
+            resolved = desc.host
+            if not self._config.ssl_verify and resolved.startswith("https://"):
+                resolved = "http://" + resolved[len("https://"):]
+            self._host_cache[name] = resolved
+            return resolved
 
         raise ValidationError("Either name or host must be provided to create an Index client.")
 
