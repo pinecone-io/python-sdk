@@ -104,7 +104,14 @@ def _log_curl(
     headers: dict[str, str],
     body: bytes | None = None,
 ) -> None:
-    """Log a curl-equivalent command for debugging when PINECONE_DEBUG_CURL is set."""
+    """Log a curl-equivalent command for debugging when PINECONE_DEBUG_CURL is set.
+
+    Sensitive header values (see ``_SENSITIVE_HEADERS``) are redacted. The
+    request body is intentionally *not* logged verbatim: Pinecone request bodies
+    carry user vector and metadata payloads that may contain sensitive data
+    (e.g. PII embedded in metadata). Only the body size is emitted, and a
+    ``--data-binary @body.json`` placeholder shows where to supply it manually.
+    """
     if not os.environ.get("PINECONE_DEBUG_CURL"):
         return
     safe_headers = _redact_headers(headers)
@@ -112,7 +119,7 @@ def _log_curl(
     for key, value in safe_headers.items():
         parts.append(f"-H '{key}: {value}'")
     if body is not None:
-        parts.append(f"-d '{body.decode('utf-8', errors='replace')}'")
+        parts.append(f"--data-binary @body.json  # {len(body)} byte body omitted")
     curl_cmd = " ".join(parts)
     logger.debug("curl equivalent:\n%s", curl_cmd)
 
