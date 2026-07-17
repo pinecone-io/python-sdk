@@ -33,7 +33,7 @@ class TestAdaptiveBatchExecute:
             assert result.successful_item_count == 6
             assert result.failed_item_count == 0
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_uses_limiter_when_provided(self) -> None:
         """When a limiter is pre-throttled, observed max concurrency must not exceed it."""
@@ -73,7 +73,7 @@ class TestAdaptiveBatchExecute:
                 f"observed max concurrency {max_observed[0]} exceeds limiter cap"
             )
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_recovers_when_limiter_increases(self) -> None:
         """After throttle, limiter recovers as successes are reported externally."""
@@ -112,7 +112,7 @@ class TestAdaptiveBatchExecute:
             # Later batches should have run at a higher concurrency ceiling
             assert max(max_observed) > 1, "limiter should have recovered above 1"
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_returns_all_items_counted(self) -> None:
         """All items are processed and counted even when limiter is active."""
@@ -137,7 +137,7 @@ class TestAdaptiveBatchExecute:
             assert result.failed_item_count == 0
             assert result.total_item_count == 15
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     def test_errors_collected_with_limiter(self) -> None:
         """Errors are captured per-batch even when limiter is active."""
@@ -167,7 +167,7 @@ class TestAdaptiveBatchExecute:
             assert result.successful_batch_count > 0
             assert result.total_batch_count == 4
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
     @pytest.mark.asyncio
     async def test_uses_limiter_when_provided_async(self) -> None:

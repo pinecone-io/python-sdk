@@ -324,7 +324,7 @@ def test_async_transport_calls_module_level_compute_backoff() -> None:
     ]
 
     with patch("pinecone._internal.http_client._compute_backoff", return_value=0.001) as mock_cb:
-        asyncio.get_event_loop().run_until_complete(rt.handle_async_request(_req()))
+        asyncio.run(rt.handle_async_request(_req()))
     mock_cb.assert_called_once()
     args = mock_cb.call_args[0]
     assert isinstance(args[0], RetryConfig)
