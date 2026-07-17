@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 
 import httpx
@@ -9,7 +10,7 @@ import pytest
 import respx
 
 from pinecone import Index
-from pinecone.errors.exceptions import ValidationError
+from pinecone.errors.exceptions import PineconeTypeError, ValidationError
 from pinecone.models.vectors.responses import UpsertRecordsResponse
 
 INDEX_HOST = "my-index-abc123.svc.pinecone.io"
@@ -168,6 +169,20 @@ class TestUpsertRecords:
         idx = _make_index()
         with pytest.raises(TypeError):
             idx.upsert_records([{"_id": "r1"}], "test-ns")  # type: ignore[misc]
+
+    def test_upsert_records_positional_args_raise_teaching_error(self) -> None:
+        """Positional misuse names the keyword-only call shape, not a bare TypeError."""
+        idx = _make_index()
+        with pytest.raises(PineconeTypeError) as excinfo:
+            idx.upsert_records("test-ns", [{"_id": "r1", "text": "hello"}])  # type: ignore[misc]
+        message = str(excinfo.value)
+        assert "keyword arguments only" in message
+        assert 'upsert_records(namespace="...", records=[...])' in message
+
+    def test_upsert_records_signature_reports_keyword_only_params(self) -> None:
+        params = inspect.signature(Index.upsert_records).parameters
+        assert params["records"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert params["namespace"].kind is inspect.Parameter.KEYWORD_ONLY
 
     @respx.mock
     def test_upsert_records_preserves_metadata_fields(self) -> None:

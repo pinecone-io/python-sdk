@@ -2,10 +2,54 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Any, overload
+import functools
+import inspect
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Any, ParamSpec, TypeVar, cast, overload
 
-from pinecone.errors.exceptions import ValidationError
+from pinecone.errors.exceptions import PineconeTypeError, ValidationError
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def reject_positional_args(example: str) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
+    """Give a keyword-only instance method a teaching error on positional misuse.
+
+    The interpreter's own failure ("takes 1 positional argument but N were
+    given") names neither the parameters nor the fix. This guard raises
+    :class:`PineconeTypeError` (a ``TypeError`` subclass) carrying *example*,
+    the exact call shape to use instead. ``inspect.signature`` still reports
+    the wrapped method's real keyword-only signature via ``__wrapped__``.
+    The bound ``self`` is the only positional argument allowed through.
+    """
+
+    def decorate(fn: Callable[_P, _R]) -> Callable[_P, _R]:
+        message = (
+            f"{fn.__name__}() accepts keyword arguments only: {example}. "
+            "Positional arguments are rejected because the parameter order "
+            "changed across SDK generations."
+        )
+        if inspect.iscoroutinefunction(fn):
+            async_fn = cast("Callable[_P, Awaitable[_R]]", fn)
+
+            @functools.wraps(fn)
+            async def async_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+                if len(args) > 1:
+                    raise PineconeTypeError(message)
+                return await async_fn(*args, **kwargs)
+
+            return cast("Callable[_P, _R]", async_wrapper)
+
+        @functools.wraps(fn)
+        def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+            if len(args) > 1:
+                raise PineconeTypeError(message)
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorate
 
 
 @overload

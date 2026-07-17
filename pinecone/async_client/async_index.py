@@ -23,7 +23,11 @@ from pinecone._internal.data_plane_helpers import (
     _validate_host,
     _vector_to_dict,
 )
-from pinecone._internal.validation import require_in_range, require_positive
+from pinecone._internal.validation import (
+    reject_positional_args,
+    require_in_range,
+    require_positive,
+)
 from pinecone._internal.vector_factory import VectorFactory
 from pinecone.errors.exceptions import PineconeValueError, ValidationError
 from pinecone.models.imports.list import ImportList
@@ -138,6 +142,7 @@ class AsyncIndex:
         """The data plane host URL for this index."""
         return self._host
 
+    @reject_positional_args('upsert_records(namespace="...", records=[...])')
     async def upsert_records(
         self,
         *,

@@ -22,7 +22,11 @@ from pinecone._internal.data_plane_helpers import (
     _validate_host,
     _vector_to_dict,
 )
-from pinecone._internal.validation import require_in_range, require_positive
+from pinecone._internal.validation import (
+    reject_positional_args,
+    require_in_range,
+    require_positive,
+)
 from pinecone._internal.vector_factory import VectorFactory
 from pinecone.errors.exceptions import PineconeValueError, ValidationError
 from pinecone.models.imports.list import ImportList
@@ -465,6 +469,7 @@ class Index:
             timeout=timeout,
         )
 
+    @reject_positional_args('upsert_records(namespace="...", records=[...])')
     def upsert_records(
         self,
         *,
