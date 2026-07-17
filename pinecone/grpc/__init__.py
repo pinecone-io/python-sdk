@@ -19,7 +19,11 @@ from pinecone._internal.batching import chunked, validate_batch_size, with_progr
 from pinecone._internal.config import PineconeConfig
 from pinecone._internal.constants import DATA_PLANE_API_VERSION
 from pinecone._internal.data_plane_helpers import _build_search_records_body, _validate_host
-from pinecone._internal.validation import require_in_range, require_positive
+from pinecone._internal.validation import (
+    reject_positional_args,
+    require_in_range,
+    require_positive,
+)
 from pinecone._internal.vector_factory import VectorFactory
 from pinecone.errors.exceptions import (
     PineconeValueError,
@@ -1312,6 +1316,7 @@ class GrpcIndex:
             )
         )
 
+    @reject_positional_args('upsert_records(namespace="...", records=[...])')
     def upsert_records(
         self,
         *,

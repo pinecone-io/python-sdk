@@ -2,10 +2,52 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Any, overload
+import functools
+import inspect
+import sys
+from collections.abc import Callable, Sequence
+from typing import Any, ParamSpec, TypeVar, overload
 
-from pinecone.errors.exceptions import ValidationError
+from pinecone.errors.exceptions import PineconeTypeError, ValidationError
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def reject_positional_args(example: str) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
+    """Give a keyword-only instance method a teaching error on positional misuse.
+
+    The interpreter's own failure ("takes 1 positional argument but N were
+    given") names neither the parameters nor the fix. This guard raises
+    :class:`PineconeTypeError` (a ``TypeError`` subclass) carrying *example*,
+    the exact call shape to use instead. The wrapper is a plain function even
+    for async methods, so the check runs at call time — before the coroutine
+    is created — matching native keyword-only binding rather than deferring
+    the error to await. ``inspect.signature`` still reports the wrapped
+    method's real keyword-only signature via ``__wrapped__``; on Python 3.12+
+    an async method's wrapper is also marked for
+    ``inspect.iscoroutinefunction``. The bound ``self`` is the only
+    positional argument allowed through.
+    """
+
+    def decorate(fn: Callable[_P, _R]) -> Callable[_P, _R]:
+        message = (
+            f"{fn.__name__}() accepts keyword arguments only: {example}. "
+            "Positional arguments are rejected because the parameter order "
+            "changed across SDK generations."
+        )
+
+        @functools.wraps(fn)
+        def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+            if len(args) > 1:
+                raise PineconeTypeError(message)
+            return fn(*args, **kwargs)
+
+        if sys.version_info >= (3, 12) and inspect.iscoroutinefunction(fn):
+            inspect.markcoroutinefunction(wrapper)
+        return wrapper
+
+    return decorate
 
 
 @overload

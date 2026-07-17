@@ -18,6 +18,7 @@ from pinecone.errors.exceptions import (
     NotFoundError,
     PineconeConnectionError,
     PineconeTimeoutError,
+    PineconeTypeError,
     ServiceError,
     UnauthorizedError,
     ValidationError,
@@ -985,6 +986,17 @@ _SEARCH_RESPONSE: dict[str, object] = {
 
 class TestGrpcIndexUpsertRecords:
     """GrpcIndex.upsert_records() delegates to REST (NDJSON) endpoint."""
+
+    def test_upsert_records_positional_args_raise_teaching_error(
+        self, mock_channel: MagicMock
+    ) -> None:
+        """Positional misuse names the keyword-only call shape, not a bare TypeError."""
+        idx = _make_grpc_index(mock_channel, host=_INDEX_HOST)
+        with pytest.raises(PineconeTypeError) as excinfo:
+            idx.upsert_records("test-ns", [{"_id": "r1", "text": "hello"}])  # type: ignore[misc]
+        message = str(excinfo.value)
+        assert "keyword arguments only" in message
+        assert 'upsert_records(namespace="...", records=[...])' in message
 
     @respx.mock
     def test_upsert_records_basic(self, mock_channel: MagicMock) -> None:
