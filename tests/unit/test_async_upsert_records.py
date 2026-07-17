@@ -150,3 +150,13 @@ class TestAsyncUpsertRecords:
         message = str(excinfo.value)
         assert "keyword arguments only" in message
         assert 'upsert_records(namespace="...", records=[...])' in message
+
+    def test_async_upsert_records_positional_error_raises_at_call_time(self) -> None:
+        """The guard fires at the call, before any coroutine is created.
+
+        A deferred (await-time) error would hand back a coroutine and a
+        'never awaited' warning instead of the teaching message.
+        """
+        idx = _make_async_index()
+        with pytest.raises(PineconeTypeError):
+            idx.upsert_records("test-ns", [{"_id": "r1"}])  # type: ignore[misc]
