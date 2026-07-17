@@ -9,12 +9,17 @@ from __future__ import annotations
 
 import asyncio
 import re
+import sys
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any, TypedDict
 
 import msgspec
-from typing_extensions import NotRequired
+
+if sys.version_info >= (3, 11):
+    from typing import NotRequired
+else:
+    from typing_extensions import NotRequired
 
 from pinecone._internal.validation import require_non_empty
 
