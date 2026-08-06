@@ -237,7 +237,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Multi-Python install verify: exercises the abi3 promise on every supported
-  # Python version (3.10–3.13). The published wheel is cp310-abi3, so it must
+  # Python version (3.10–3.14). The published wheel is cp310-abi3, so it must
   # install and load the Rust extension on each Python we claim to support.
   # ---------------------------------------------------------------------------
   multi-python-install-verify:
@@ -251,7 +251,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     env:
       GCP_REGION: ${{ vars.GCP_REGION }}
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
