@@ -29,7 +29,7 @@ pub struct RetryConfig {
     /// Optional callback invoked with the host string on every retryable error.
     /// Receives the host string (e.g. "my-index-abc123.svc.pinecone.io") on each
     /// retryable failure so the caller can update per-host rate-limit state.
-    /// In transport.rs this wraps a Python ``Py<PyAny>`` callable under `Python::with_gil`.
+    /// In transport.rs this wraps a Python ``Py<PyAny>`` callable under `Python::attach`.
     pub on_throttle: Option<ThrottleCallback>,
     /// Host string passed to `on_throttle` callback (parsed from endpoint at construction).
     pub host: String,
