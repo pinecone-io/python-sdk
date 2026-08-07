@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: "uv"      # Python deps (uv.lock)
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+  - package-ecosystem: "cargo"   # Rust deps (Cargo.toml / rust/Cargo.toml)
+    directories:
+      - "/"
+      - "/rust"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
