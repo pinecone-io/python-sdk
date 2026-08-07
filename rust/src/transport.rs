@@ -186,7 +186,7 @@ fn status_to_py_err(status: tonic::Status) -> PyErr {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
 
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let errors_mod = match py.import("pinecone.errors") {
             Ok(m) => m,
             Err(_) => return PyRuntimeError::new_err(msg),
@@ -353,7 +353,7 @@ fn struct_to_py_dict(py: Python<'_>, s: &prost_types::Struct) -> PyResult<Py<PyD
 }
 
 /// Convert a `prost_types::Value` to a Python object.
-fn prost_value_to_py(py: Python<'_>, value: &prost_types::Value) -> PyResult<PyObject> {
+fn prost_value_to_py(py: Python<'_>, value: &prost_types::Value) -> PyResult<Py<PyAny>> {
     use prost_types::value::Kind;
     match &value.kind {
         Some(Kind::NullValue(_)) => Ok(py.None()),
@@ -362,7 +362,7 @@ fn prost_value_to_py(py: Python<'_>, value: &prost_types::Value) -> PyResult<PyO
         Some(Kind::BoolValue(b)) => Ok(b.into_pyobject(py)?.to_owned().into_any().unbind()),
         Some(Kind::StructValue(s)) => Ok(struct_to_py_dict(py, s)?.into_any()),
         Some(Kind::ListValue(list)) => {
-            let items: Vec<PyObject> = list
+            let items: Vec<Py<PyAny>> = list
                 .values
                 .iter()
                 .map(|v| prost_value_to_py(py, v))
@@ -397,12 +397,12 @@ fn py_to_prost_value(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<prost_types::Valu
             kind: Some(Kind::StringValue(s)),
         });
     }
-    if let Ok(dict) = obj.downcast::<PyDict>() {
+    if let Ok(dict) = obj.cast::<PyDict>() {
         return Ok(prost_types::Value {
             kind: Some(Kind::StructValue(py_dict_to_struct(dict)?)),
         });
     }
-    if let Ok(list) = obj.downcast::<pyo3::types::PyList>() {
+    if let Ok(list) = obj.cast::<pyo3::types::PyList>() {
         let values: Vec<prost_types::Value> = list
             .iter()
             .map(|item| py_to_prost_value(&item))
@@ -413,7 +413,7 @@ fn py_to_prost_value(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<prost_types::Valu
     }
 
     let type_name = obj.get_type().name()?;
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         Err(pinecone_value_error(
             py,
             &format!("Unsupported metadata value type: {type_name}"),
@@ -522,11 +522,11 @@ fn py_dict_to_metadata_schema(dict: &Bound<'_, PyDict>) -> PyResult<proto::Metad
     let fields_obj = dict
         .get_item("fields")?
         .ok_or_else(|| response_parsing_error(py, "schema missing 'fields'"))?;
-    let fields_dict = fields_obj.downcast::<PyDict>()?;
+    let fields_dict = fields_obj.cast::<PyDict>()?;
     let mut fields = std::collections::HashMap::new();
     for (key, value) in fields_dict.iter() {
         let key_str: String = key.extract()?;
-        let props_dict = value.downcast::<PyDict>()?;
+        let props_dict = value.cast::<PyDict>()?;
         let filterable: bool = props_dict
             .get_item("filterable")?
             .ok_or_else(|| response_parsing_error(py, "field properties missing 'filterable'"))?
@@ -636,7 +636,7 @@ impl GrpcChannel {
         let host = parse_host_from_endpoint(endpoint).unwrap_or_else(|| endpoint.to_string());
         let on_throttle_cb: Option<ThrottleCallback> = on_throttle.map(|py_cb| {
             let cb: ThrottleCallback = Arc::new(move |h: String| {
-                Python::with_gil(|py| {
+                Python::attach(|py| {
                     if let Err(e) = py_cb.call1(py, (h,)) {
                         tracing::debug!("on_throttle callback raised, ignoring: {:?}", e);
                     }
@@ -687,11 +687,11 @@ impl GrpcChannel {
                 .ok_or_else(|| response_parsing_error(py, "vector missing 'values'"))?
                 .extract()?;
             let sparse_values = match v.get_item("sparse_values")? {
-                Some(sv) => Some(py_dict_to_sparse_values(&sv.downcast_into::<PyDict>()?)?),
+                Some(sv) => Some(py_dict_to_sparse_values(&sv.cast_into::<PyDict>()?)?),
                 None => None,
             };
             let metadata = match v.get_item("metadata")? {
-                Some(md) => Some(py_dict_to_struct(&md.downcast_into::<PyDict>()?)?),
+                Some(md) => Some(py_dict_to_struct(&md.cast_into::<PyDict>()?)?),
                 None => None,
             };
             proto_vectors.push(proto::Vector {
@@ -714,7 +714,7 @@ impl GrpcChannel {
         let retry_config = self.retry_config.clone();
         #[allow(clippy::result_large_err)]
         let response = py
-            .allow_threads(|| {
+            .detach(|| {
                 self.runtime.block_on(retry_on_transient(&retry_config, || {
                     let mut c = client.clone();
                     let r = request.clone();
@@ -798,7 +798,7 @@ impl GrpcChannel {
         let retry_config = self.retry_config.clone();
         #[allow(clippy::result_large_err)]
         let response = py
-            .allow_threads(|| {
+            .detach(|| {
                 self.runtime.block_on(retry_on_transient(&retry_config, || {
                     let mut c = client.clone();
                     let r = request.clone();
@@ -859,7 +859,7 @@ impl GrpcChannel {
         let retry_config = self.retry_config.clone();
         #[allow(clippy::result_large_err)]
         let response = py
-            .allow_threads(|| {
+            .detach(|| {
                 self.runtime.block_on(retry_on_transient(&retry_config, || {
                     let mut c = client.clone();
                     let r = request.clone();
@@ -924,7 +924,7 @@ impl GrpcChannel {
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
         #[allow(clippy::result_large_err)]
-        py.allow_threads(|| {
+        py.detach(|| {
             self.runtime.block_on(retry_on_transient(&retry_config, || {
                 let mut c = client.clone();
                 let r = request.clone();
@@ -989,7 +989,7 @@ impl GrpcChannel {
         let retry_config = self.retry_config.clone();
         #[allow(clippy::result_large_err)]
         let response = py
-            .allow_threads(|| {
+            .detach(|| {
                 self.runtime.block_on(retry_on_transient(&retry_config, || {
                     let mut c = client.clone();
                     let r = request.clone();
@@ -1047,7 +1047,7 @@ impl GrpcChannel {
         let retry_config = self.retry_config.clone();
         #[allow(clippy::result_large_err)]
         let response = py
-            .allow_threads(|| {
+            .detach(|| {
                 self.runtime.block_on(retry_on_transient(&retry_config, || {
                     let mut c = client.clone();
                     let r = request.clone();
@@ -1118,7 +1118,7 @@ impl GrpcChannel {
         let retry_config = self.retry_config.clone();
         #[allow(clippy::result_large_err)]
         let response = py
-            .allow_threads(|| {
+            .detach(|| {
                 self.runtime.block_on(retry_on_transient(&retry_config, || {
                     let mut c = client.clone();
                     let r = request.clone();
@@ -1196,7 +1196,7 @@ impl GrpcChannel {
         let retry_config = self.retry_config.clone();
         #[allow(clippy::result_large_err)]
         let response = py
-            .allow_threads(|| {
+            .detach(|| {
                 self.runtime.block_on(retry_on_transient(&retry_config, || {
                     let mut c = client.clone();
                     let r = request.clone();
@@ -1255,7 +1255,7 @@ impl GrpcChannel {
         let retry_config = self.retry_config.clone();
         #[allow(clippy::result_large_err)]
         let response = py
-            .allow_threads(|| {
+            .detach(|| {
                 self.runtime.block_on(retry_on_transient(&retry_config, || {
                     let mut c = client.clone();
                     let r = request.clone();
@@ -1299,7 +1299,7 @@ impl GrpcChannel {
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
         #[allow(clippy::result_large_err)]
-        py.allow_threads(|| {
+        py.detach(|| {
             self.runtime.block_on(retry_on_transient(&retry_config, || {
                 let mut c = client.clone();
                 let r = request.clone();
@@ -1350,7 +1350,7 @@ impl GrpcChannel {
         let retry_config = self.retry_config.clone();
         #[allow(clippy::result_large_err)]
         let response = py
-            .allow_threads(|| {
+            .detach(|| {
                 self.runtime.block_on(retry_on_transient(&retry_config, || {
                     let mut c = client.clone();
                     let r = request.clone();
@@ -1405,7 +1405,7 @@ impl GrpcChannel {
         let retry_config = self.retry_config.clone();
         #[allow(clippy::result_large_err)]
         let response = py
-            .allow_threads(|| {
+            .detach(|| {
                 self.runtime.block_on(retry_on_transient(&retry_config, || {
                     let mut c = client.clone();
                     let r = request.clone();
