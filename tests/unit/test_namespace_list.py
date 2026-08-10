@@ -7,6 +7,7 @@ import pytest
 import respx
 
 from pinecone import Index
+from pinecone.errors.exceptions import PineconeValueError
 from pinecone.models.namespaces.models import ListNamespacesResponse
 
 INDEX_HOST = "my-index-abc123.svc.pinecone.io"
@@ -214,10 +215,10 @@ class TestKeywordOnly:
 
     def test_list_namespaces_paginated_keyword_only(self) -> None:
         idx = _make_index()
-        with pytest.raises(TypeError):
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             idx.list_namespaces_paginated("prod-")  # type: ignore[misc]
 
     def test_list_namespaces_keyword_only(self) -> None:
         idx = _make_index()
-        with pytest.raises(TypeError):
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             idx.list_namespaces("prod-")  # type: ignore[misc]

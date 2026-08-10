@@ -9,7 +9,7 @@ import pytest
 import respx
 
 from pinecone.async_client.async_index import AsyncIndex
-from pinecone.errors.exceptions import ValidationError
+from pinecone.errors.exceptions import PineconeValueError, ValidationError
 from pinecone.models.vectors.responses import UpsertRecordsResponse
 
 INDEX_HOST = "my-index-abc123.svc.pinecone.io"
@@ -113,7 +113,7 @@ class TestAsyncUpsertRecords:
     @pytest.mark.anyio
     async def test_async_upsert_records_keyword_only(self) -> None:
         idx = _make_async_index()
-        with pytest.raises(TypeError):
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             await idx.upsert_records([{"_id": "r1"}], "ns")  # type: ignore[misc]
 
     @respx.mock

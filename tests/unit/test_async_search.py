@@ -220,10 +220,11 @@ class TestAsyncSearch:
         with pytest.raises(ValidationError, match="At least one of inputs, vector, or id"):
             await idx.search(namespace="test-ns", top_k=5)
 
-    def test_async_search_keyword_only(self) -> None:
+    @pytest.mark.anyio
+    async def test_async_search_keyword_only(self) -> None:
         idx = _make_async_index()
-        with pytest.raises(TypeError):
-            idx.search("ns", 10)  # type: ignore[misc]
+        with pytest.raises(PineconeValueError, match="keyword-only"):
+            await idx.search("ns", 10)  # type: ignore[misc]
 
     @respx.mock
     @pytest.mark.anyio

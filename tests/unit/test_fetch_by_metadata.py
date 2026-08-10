@@ -9,6 +9,7 @@ import pytest
 import respx
 
 from pinecone import Index
+from pinecone.errors.exceptions import PineconeValueError
 from pinecone.models.vectors.responses import FetchByMetadataResponse
 
 INDEX_HOST = "test-index-abc1234.svc.us-east1-gcp.pinecone.io"
@@ -190,7 +191,7 @@ class TestFetchByMetadataResponsePagination:
     def test_positional_args_rejected(self) -> None:
         """All params must be keyword-only."""
         idx = _make_index()
-        with pytest.raises(TypeError):
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             idx.fetch_by_metadata({"a": 1})  # type: ignore[misc]
 
 

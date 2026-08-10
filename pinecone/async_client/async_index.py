@@ -23,6 +23,7 @@ from pinecone._internal.data_plane_helpers import (
     _validate_host,
     _vector_to_dict,
 )
+from pinecone._internal.keyword_only import keyword_only_methods
 from pinecone._internal.validation import require_in_range, require_positive
 from pinecone._internal.vector_factory import VectorFactory
 from pinecone.errors.exceptions import PineconeValueError, ValidationError
@@ -53,6 +54,7 @@ from pinecone.models.vectors.vector import Vector
 logger = logging.getLogger(__name__)
 
 
+@keyword_only_methods
 class AsyncIndex:
     """Asynchronous data plane client targeting a specific Pinecone index.
 

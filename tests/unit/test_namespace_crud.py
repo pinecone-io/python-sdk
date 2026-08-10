@@ -7,7 +7,7 @@ import pytest
 import respx
 
 from pinecone import Index
-from pinecone.errors.exceptions import ValidationError
+from pinecone.errors.exceptions import PineconeValueError, ValidationError
 from pinecone.models.namespaces.models import NamespaceDescription
 
 INDEX_HOST = "my-index-abc123.svc.pinecone.io"
@@ -241,15 +241,15 @@ class TestKeywordOnly:
 
     def test_create_namespace_keyword_only(self) -> None:
         idx = _make_index()
-        with pytest.raises(TypeError):
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             idx.create_namespace("ns1")  # type: ignore[misc]
 
     def test_describe_namespace_keyword_only(self) -> None:
         idx = _make_index()
-        with pytest.raises(TypeError):
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             idx.describe_namespace("ns1")  # type: ignore[misc]
 
     def test_delete_namespace_keyword_only(self) -> None:
         idx = _make_index()
-        with pytest.raises(TypeError):
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             idx.delete_namespace("ns1")  # type: ignore[misc]

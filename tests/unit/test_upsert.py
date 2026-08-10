@@ -7,6 +7,7 @@ import pytest
 import respx
 
 from pinecone import Index
+from pinecone.errors.exceptions import PineconeValueError
 from pinecone.models.vectors.responses import UpsertResponse
 from pinecone.models.vectors.sparse import SparseValues
 from pinecone.models.vectors.vector import Vector
@@ -237,7 +238,7 @@ class TestUpsertKeywordOnly:
 
     def test_positional_args_rejected(self) -> None:
         idx = _make_index()
-        with pytest.raises(TypeError):
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             idx.upsert([("v1", [0.1])])  # type: ignore[misc]
 
 

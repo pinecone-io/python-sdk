@@ -167,10 +167,12 @@ class TestGrpcCreateNamespace:
         assert result.schema.fields["genre"].filterable is True
 
     def test_grpc_create_namespace_positional_name_raises(self) -> None:
+        from pinecone.errors.exceptions import PineconeValueError
+
         mock_channel = MagicMock()
         idx = _make_grpc_index(mock_channel)
 
-        with pytest.raises(TypeError):
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             idx.create_namespace("my-ns")  # type: ignore[misc]
 
     def test_grpc_create_namespace_empty_name_raises(self) -> None:
@@ -235,10 +237,12 @@ class TestGrpcDeleteNamespace:
             idx.delete_namespace(name="movies", namespace="movies")  # type: ignore[call-arg]
 
     def test_grpc_delete_namespace_positional_name_raises(self) -> None:
+        from pinecone.errors.exceptions import PineconeValueError
+
         mock_channel = MagicMock()
         idx = _make_grpc_index(mock_channel)
 
-        with pytest.raises(TypeError):
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             idx.delete_namespace("my-ns")  # type: ignore[misc]
 
     def test_grpc_delete_namespace_empty_name_raises(self) -> None:

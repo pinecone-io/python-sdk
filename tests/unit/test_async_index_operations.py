@@ -10,7 +10,7 @@ import pytest
 import respx
 
 from pinecone import AsyncIndex
-from pinecone.errors.exceptions import ValidationError
+from pinecone.errors.exceptions import PineconeValueError, ValidationError
 from pinecone.models.vectors.responses import (
     DescribeIndexStatsResponse,
     FetchResponse,
@@ -240,7 +240,7 @@ class TestAsyncQuery:
     @pytest.mark.asyncio
     async def test_query_keyword_only(self) -> None:
         idx = _make_async_index()
-        with pytest.raises(TypeError):
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             await idx.query(10, [0.1])  # type: ignore[misc]
 
 
@@ -358,7 +358,7 @@ class TestAsyncDelete:
     @pytest.mark.asyncio
     async def test_delete_keyword_only(self) -> None:
         idx = _make_async_index()
-        with pytest.raises(TypeError):
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             await idx.delete(["vec1"])  # type: ignore[misc]
 
 
@@ -456,7 +456,7 @@ class TestAsyncUpdate:
     @pytest.mark.asyncio
     async def test_update_keyword_only(self) -> None:
         idx = _make_async_index()
-        with pytest.raises(TypeError):
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             await idx.update("vec1")  # type: ignore[misc]
 
 
@@ -532,7 +532,7 @@ class TestAsyncListPaginated:
     @pytest.mark.asyncio
     async def test_list_paginated_keyword_only(self) -> None:
         idx = _make_async_index()
-        with pytest.raises(TypeError):
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             await idx.list_paginated("prefix")  # type: ignore[misc]
 
 
@@ -719,5 +719,5 @@ class TestAsyncDescribeIndexStats:
     @pytest.mark.asyncio
     async def test_stats_keyword_only(self) -> None:
         idx = _make_async_index()
-        with pytest.raises(TypeError):
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             await idx.describe_index_stats({"genre": {"$eq": "drama"}})  # type: ignore[misc]

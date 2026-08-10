@@ -10,6 +10,7 @@ from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
 from pinecone._internal.config import PineconeConfig, RetryConfig
 from pinecone._internal.constants import CONTROL_PLANE_API_VERSION, DEFAULT_BASE_URL
 from pinecone._internal.indexes_helpers import _LegacyIndexKwargs, poll_index_until_ready
+from pinecone._internal.keyword_only import keyword_only_methods
 from pinecone._internal.validation import require_non_empty
 from pinecone.errors.exceptions import ValidationError
 
@@ -53,6 +54,7 @@ if TYPE_CHECKING:
     from pinecone.preview import Preview
 
 
+@keyword_only_methods
 class Pinecone:
     """Synchronous Pinecone client for control-plane operations.
 

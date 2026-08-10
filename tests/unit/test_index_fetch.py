@@ -9,7 +9,7 @@ import pytest
 import respx
 
 from pinecone import Index
-from pinecone.errors.exceptions import ValidationError
+from pinecone.errors.exceptions import PineconeValueError, ValidationError
 from pinecone.models.vectors.responses import FetchResponse
 
 INDEX_HOST = "test-index-abc1234.svc.us-east1-gcp.pinecone.io"
@@ -178,5 +178,5 @@ class TestFetchValidation:
     def test_positional_args_rejected(self) -> None:
         """All params must be keyword-only."""
         idx = _make_index()
-        with pytest.raises(TypeError):
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             idx.fetch(["vec1"])  # type: ignore[misc]

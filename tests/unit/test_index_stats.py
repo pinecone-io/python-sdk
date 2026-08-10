@@ -9,6 +9,7 @@ import pytest
 import respx
 
 from pinecone import Index
+from pinecone.errors.exceptions import PineconeValueError
 from pinecone.models.vectors.responses import DescribeIndexStatsResponse
 
 INDEX_HOST = "test-index-abc1234.svc.us-east1-gcp.pinecone.io"
@@ -262,7 +263,7 @@ class TestDescribeIndexStatsKeywordOnly:
 
     def test_positional_args_rejected(self) -> None:
         idx = _make_index()
-        with pytest.raises(TypeError):
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             idx.describe_index_stats({"genre": {"$eq": "drama"}})  # type: ignore[misc]
 
 

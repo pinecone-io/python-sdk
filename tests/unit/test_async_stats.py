@@ -10,6 +10,7 @@ import pytest
 import respx
 
 from pinecone.async_client.async_index import AsyncIndex
+from pinecone.errors.exceptions import PineconeValueError
 from pinecone.models.vectors.responses import DescribeIndexStatsResponse
 
 INDEX_HOST = "my-index-abc123.svc.pinecone.io"
@@ -109,10 +110,11 @@ class TestAsyncDescribeIndexStats:
         body = json.loads(request.content)
         assert body == {}
 
-    def test_async_describe_index_stats_keyword_only(self) -> None:
+    @pytest.mark.anyio
+    async def test_async_describe_index_stats_keyword_only(self) -> None:
         idx = _make_async_index()
-        with pytest.raises(TypeError):
-            idx.describe_index_stats({"genre": {"$eq": "sci-fi"}})  # type: ignore[misc]
+        with pytest.raises(PineconeValueError, match="keyword-only"):
+            await idx.describe_index_stats({"genre": {"$eq": "sci-fi"}})  # type: ignore[misc]
 
     @respx.mock
     @pytest.mark.anyio

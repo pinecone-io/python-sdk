@@ -7,7 +7,7 @@ import pytest
 import respx
 
 from pinecone import Index
-from pinecone.errors.exceptions import ValidationError
+from pinecone.errors.exceptions import PineconeValueError, ValidationError
 
 INDEX_HOST = "test-index-abc1234.svc.us-east1-gcp.pinecone.io"
 INDEX_HOST_HTTPS = f"https://{INDEX_HOST}"
@@ -171,7 +171,7 @@ class TestDeleteValidation:
 
     def test_positional_args_rejected(self) -> None:
         idx = _make_index()
-        with pytest.raises(TypeError):
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             idx.delete(["vec1"])  # type: ignore[misc]
 
 

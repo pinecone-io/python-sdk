@@ -9,7 +9,7 @@ import pytest
 import respx
 
 from pinecone import Index
-from pinecone.errors.exceptions import ValidationError
+from pinecone.errors.exceptions import PineconeValueError, ValidationError
 from pinecone.models.vectors.responses import UpsertRecordsResponse
 
 INDEX_HOST = "my-index-abc123.svc.pinecone.io"
@@ -166,7 +166,7 @@ class TestUpsertRecords:
 
     def test_upsert_records_keyword_only(self) -> None:
         idx = _make_index()
-        with pytest.raises(TypeError):
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             idx.upsert_records([{"_id": "r1"}], "test-ns")  # type: ignore[misc]
 
     @respx.mock
