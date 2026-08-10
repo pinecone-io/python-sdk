@@ -309,7 +309,7 @@ async def test_query_input_validation_async() -> None:
     - unified-vec-0038: top_k < 1 is rejected
     - unified-vec-0039: both vector and id supplied is rejected
     - unified-vec-0039: neither vector nor id is rejected
-    - unified-vec-0040: positional arguments raise TypeError
+    - unified-vec-0040: positional arguments raise PineconeValueError
     """
     index = AsyncIndex(host="fake-index.svc.pinecone.io", api_key="testkey")
     try:
@@ -329,8 +329,8 @@ async def test_query_input_validation_async() -> None:
         with pytest.raises(PineconeValueError):
             await index.query(top_k=5)
 
-        # unified-vec-0040: positional arguments rejected by Python (keyword-only)
-        with pytest.raises(TypeError):
+        # unified-vec-0040: positional arguments raise a clear PineconeValueError
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             await index.query([0.1, 0.2], 5)  # type: ignore[misc]
     finally:
         await index.close()
@@ -347,7 +347,7 @@ async def test_update_input_validation_async() -> None:
     Verifies:
     - unified-vec-0042: both id and filter rejected
     - unified-vec-0042: neither id nor filter rejected
-    - update() uses keyword-only params (TypeError on positional args)
+    - update() uses keyword-only params (PineconeValueError on positional args)
     """
     index = AsyncIndex(host="fake-index.svc.pinecone.io", api_key="testkey")
     try:
@@ -361,8 +361,8 @@ async def test_update_input_validation_async() -> None:
         with pytest.raises(PineconeValueError):
             await index.update(set_metadata={"x": 1})
 
-        # update() uses keyword-only params — positional call raises TypeError
-        with pytest.raises(TypeError):
+        # update() uses keyword-only params — positional call raises a clear PineconeValueError
+        with pytest.raises(PineconeValueError, match="keyword-only"):
             await index.update("some-id")  # type: ignore[misc]
     finally:
         await index.close()
