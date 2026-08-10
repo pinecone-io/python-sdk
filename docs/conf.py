@@ -60,7 +60,6 @@ napoleon_use_ivar = True
 
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
-    "msgspec": ("https://jcristharif.com/msgspec/", None),
     "pandas": ("https://pandas.pydata.org/docs/", None),
 }
 
