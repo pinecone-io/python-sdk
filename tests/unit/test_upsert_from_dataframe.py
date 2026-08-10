@@ -150,6 +150,16 @@ class TestUpsertFromDataframeDefaults:
         sig = inspect.signature(Index.upsert_from_dataframe)
         assert sig.parameters["batch_size"].default == 500
 
+    def test_upsert_from_dataframe_timeout_defaults_to_none(self) -> None:
+        sig = inspect.signature(Index.upsert_from_dataframe)
+        assert sig.parameters["timeout"].default is None
+
+    def test_signature_parity_across_transports(self) -> None:
+        """All three variants expose the same parameter names in the same order."""
+        sync_params = list(inspect.signature(Index.upsert_from_dataframe).parameters)
+        async_params = list(inspect.signature(AsyncIndex.upsert_from_dataframe).parameters)
+        assert sync_params == async_params
+
     def test_upsert_from_dataframe_aggregates_count(self) -> None:
         pd = pytest.importorskip("pandas")
         df = pd.DataFrame(
@@ -232,6 +242,14 @@ class TestAsyncUpsertFromDataframe:
 
         with pytest.raises(NotImplementedError, match="not supported for async"):
             await async_idx.upsert_from_dataframe("dummy")
+
+    @pytest.mark.asyncio
+    async def test_async_upsert_from_dataframe_timeout_still_raises(self) -> None:
+        """Passing timeout hits NotImplementedError, not a TypeError on the kwarg."""
+        async_idx = AsyncIndex(host=INDEX_HOST, api_key="test-key")
+
+        with pytest.raises(NotImplementedError, match="not supported for async"):
+            await async_idx.upsert_from_dataframe("dummy", timeout=30.0)
 
     @pytest.mark.asyncio
     async def test_async_upsert_from_dataframe_batch_size_zero(self) -> None:

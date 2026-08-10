@@ -9,6 +9,7 @@ import pytest
 
 from pinecone.errors.exceptions import PineconeValueError
 from pinecone.grpc import GrpcIndex
+from pinecone.grpc.future import PineconeFuture
 from pinecone.models.vectors.responses import UpsertResponse
 
 _MOCK_GRPC_MODULE_PATH = "pinecone._grpc"
@@ -163,6 +164,64 @@ class TestGrpcDataframeUpsert:
         df = pd.DataFrame({"id": ["v1"], "values": [[0.1]]})
         with pytest.raises(PineconeValueError, match="batch_size must be a positive integer"):
             grpc_index.upsert_from_dataframe(df, batch_size=-1)
+
+    def test_timeout_defaults_to_none(self) -> None:
+        """The timeout parameter should default to None."""
+        sig = inspect.signature(GrpcIndex.upsert_from_dataframe)
+        assert sig.parameters["timeout"].default is None
+
+    def test_timeout_forwarded_to_each_batch(
+        self, grpc_index: GrpcIndex, mock_channel: MagicMock
+    ) -> None:
+        """timeout should be threaded through to every channel upsert call."""
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame(
+            {
+                "id": [f"v{i}" for i in range(5)],
+                "values": [[float(i)] for i in range(5)],
+            }
+        )
+        mock_channel.upsert.return_value = {"upserted_count": 2}
+
+        grpc_index.upsert_from_dataframe(df, batch_size=2, timeout=42.0, show_progress=False)
+
+        assert mock_channel.upsert.call_count == 3
+        for call in mock_channel.upsert.call_args_list:
+            assert call.kwargs["timeout_s"] == 42.0
+
+    def test_default_timeout_none_forwarded_to_channel(
+        self, grpc_index: GrpcIndex, mock_channel: MagicMock
+    ) -> None:
+        """With no timeout, None is forwarded so the channel applies its default."""
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame({"id": ["v1", "v2"], "values": [[0.1], [0.2]]})
+        mock_channel.upsert.return_value = {"upserted_count": 2}
+
+        grpc_index.upsert_from_dataframe(df, show_progress=False)
+
+        assert mock_channel.upsert.call_args.kwargs["timeout_s"] is None
+
+    def test_client_side_wait_is_unbounded(
+        self, grpc_index: GrpcIndex, mock_channel: MagicMock
+    ) -> None:
+        """Result collection should wait indefinitely, not the 5s result() default.
+
+        This is what lets a batch slower than 5s succeed instead of raising
+        PineconeTimeoutError from the client-side wait.
+        """
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame({"id": ["v1", "v2"], "values": [[0.1], [0.2]]})
+        mock_channel.upsert.return_value = {"upserted_count": 1}
+
+        with patch.object(
+            PineconeFuture, "result", autospec=True, return_value=_upsert_response(1)
+        ) as mock_result:
+            grpc_index.upsert_from_dataframe(df, batch_size=1, show_progress=False)
+
+        assert mock_result.call_count == 2
+        for call in mock_result.call_args_list:
+            assert "timeout" in call.kwargs, "result() must be called with an explicit timeout"
+            assert call.kwargs["timeout"] is None
 
     def test_metadata_and_sparse_values_forwarded(
         self, grpc_index: GrpcIndex, mock_channel: MagicMock

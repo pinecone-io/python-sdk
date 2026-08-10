@@ -383,6 +383,10 @@ class Index:
             show_progress: If ``True`` and ``tqdm`` is installed, display a
                 progress bar. If ``tqdm`` is not installed, silently falls
                 back to no progress bar.
+            timeout: Client-side request timeout in seconds applied to *each
+                batch's* upsert request — not to the DataFrame as a whole.
+                ``None`` (default) uses the client-level default. Raise it to
+                accommodate large or slow batches.
 
         Returns:
             :class:`UpsertResponse` with the total count of vectors upserted across
@@ -392,6 +396,7 @@ class Index:
             :exc:`RuntimeError`: If ``pandas`` is not installed.
             :exc:`PineconeValueError`: If *df* is not a ``pandas.DataFrame``.
             :exc:`PineconeValueError`: If *batch_size* is not a positive integer.
+            :exc:`PineconeTimeoutError`: If a batch exceeds *timeout*.
 
         Examples:
             .. code-block:: python

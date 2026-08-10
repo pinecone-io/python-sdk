@@ -986,6 +986,7 @@ class GrpcIndex:
         namespace: str = "",
         batch_size: int = 500,
         show_progress: bool = True,
+        timeout: float | None = None,
     ) -> UpsertResponse:
         """Upsert vectors from a pandas DataFrame using async batching.
 
@@ -1002,6 +1003,16 @@ class GrpcIndex:
             show_progress: If ``True`` and ``tqdm`` is installed, display a
                 progress bar. If ``tqdm`` is not installed, silently falls
                 back to no progress bar.
+            timeout: Server-side deadline in seconds applied to *each batch's*
+                upsert request — not to the DataFrame as a whole. ``None``
+                (default) uses the client's configured request timeout: the
+                ``timeout`` passed to :class:`GrpcIndex` (``20.0s`` unless you
+                override it). Each attempt of a batch is bounded by this
+                deadline (transient errors may be retried, so a batch's total
+                wall-clock can exceed it). Result collection then waits for the
+                server, so a large ingest is bounded only by these per-batch
+                deadlines rather than failing prematurely. Raise *timeout* to
+                give slow batches more time on the server.
 
         Returns:
             :class:`UpsertResponse` with the total count of vectors upserted across
@@ -1011,6 +1022,14 @@ class GrpcIndex:
             :exc:`RuntimeError`: If ``pandas`` is not installed.
             :exc:`PineconeValueError`: If *df* is not a ``pandas.DataFrame``.
             :exc:`PineconeValueError`: If *batch_size* is not a positive integer.
+            :exc:`PineconeTimeoutError`: If a batch exceeds *timeout* on the server.
+
+        Note:
+            If any batch fails, this method raises that batch's error and does
+            **not** report a partial count — unlike :meth:`upsert` with
+            ``batch_size``, which aggregates per-batch failures without raising.
+            Because upserts are idempotent by vector ID, re-running the whole
+            DataFrame after a failure is safe.
 
         Examples:
 
@@ -1049,6 +1068,17 @@ class GrpcIndex:
                     namespace="articles-en",
                     batch_size=100,
                 )
+
+            Give each batch a longer server-side deadline for large or slow
+            ingests:
+
+            .. code-block:: python
+
+                response = idx.upsert_from_dataframe(
+                    df,
+                    batch_size=200,
+                    timeout=120.0,
+                )
         """
         try:
             import pandas as pd
@@ -1076,13 +1106,16 @@ class GrpcIndex:
 
         batches = chunked(records, batch_size)
         futures: builtins.list[PineconeFuture[UpsertResponse]] = [
-            self.upsert_async(vectors=batch, namespace=namespace)
+            self.upsert_async(vectors=batch, namespace=namespace, timeout=timeout)
             for batch in with_progress(batches, show_progress=show_progress)
         ]
 
         total_count = 0
         for future in futures:
-            result = future.result()
+            # Each batch is bounded by the server-side deadline (*timeout*), so
+            # wait indefinitely here rather than letting result()'s fixed 5s
+            # default spuriously fail large ingests.
+            result = future.result(timeout=None)
             total_count += result.upserted_count
 
         return UpsertResponse(upserted_count=total_count)

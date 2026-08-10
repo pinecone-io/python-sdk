@@ -118,6 +118,19 @@ with GrpcIndex(host="product-search-abc123.svc.pinecone.io") as index:
     print(response.upserted_count)
 ```
 
+For large or slow ingests, pass `timeout` to raise the server-side deadline
+applied to each batch (it bounds each batch, not the whole DataFrame). `None`,
+the default, uses the client's configured request timeout (20s unless you set
+`GrpcIndex(..., timeout=...)`):
+
+```python
+with GrpcIndex(host="product-search-abc123.svc.pinecone.io") as index:
+    response = index.upsert_from_dataframe(
+        df, namespace="catalog", batch_size=200, timeout=120.0
+    )
+    print(response.upserted_count)
+```
+
 ## When to Prefer gRPC
 
 | Scenario | Recommendation |

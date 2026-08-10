@@ -425,12 +425,16 @@ class AsyncIndex:
         namespace: str | None = None,
         batch_size: int = 500,
         show_progress: bool = True,
+        timeout: float | None = None,
     ) -> UpsertResponse:
         """Not supported for async clients.
 
         This method is a known limitation of the async client. Instead, batch your data
         and call upsert() in a loop. For very large datasets, use start_import() for
         bulk loading from cloud storage.
+
+        The *timeout* parameter exists only for signature parity with the sync
+        and gRPC clients; it is unused because this method always raises.
 
         Raises:
             :exc:`NotImplementedError`: Always.
