@@ -20,7 +20,7 @@ for embedding in result:
     print(embedding.values[:5])   # first five values
 ```
 
-> **Tip:** You can also generate embeddings with the OpenAI client pointed at any OpenAI-compatible multi-model gateway — for example [DaoXE](https://daoxe.com/?utm_source=github&utm_medium=organic&utm_campaign=pinecone&utm_content=pr) at `https://api.daoxe.com/v1` — and upsert the resulting vectors into Pinecone.
+> **Tip:** You can also generate embeddings with the OpenAI client pointed at any OpenAI-compatible multi-model gateway — for example [DaoXE](https://daoxe.com/) at `https://api.daoxe.com/v1` — and upsert the resulting vectors into Pinecone.
 
 The ``parameters`` dict is model-specific. Common keys:
 
