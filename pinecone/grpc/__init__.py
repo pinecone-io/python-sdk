@@ -19,6 +19,7 @@ from pinecone._internal.batching import chunked, validate_batch_size, with_progr
 from pinecone._internal.config import PineconeConfig, RetryConfig
 from pinecone._internal.constants import DATA_PLANE_API_VERSION
 from pinecone._internal.data_plane_helpers import _build_search_records_body, _validate_host
+from pinecone._internal.dataframe import extract_records
 from pinecone._internal.keyword_only import keyword_only_methods
 from pinecone._internal.validation import require_in_range, require_positive
 from pinecone._internal.vector_factory import VectorFactory
@@ -1154,17 +1155,7 @@ class GrpcIndex:
 
         validate_batch_size(batch_size)
 
-        has_sparse = "sparse_values" in df.columns
-        has_metadata = "metadata" in df.columns
-
-        records: builtins.list[dict[str, Any]] = []
-        for _, row in df.iterrows():
-            record: dict[str, Any] = {"id": row["id"], "values": row["values"]}
-            if has_sparse and row["sparse_values"] is not None:
-                record["sparse_values"] = row["sparse_values"]
-            if has_metadata and row["metadata"] is not None:
-                record["metadata"] = row["metadata"]
-            records.append(record)
+        records: builtins.list[dict[str, Any]] = extract_records(df)
 
         batches = chunked(records, batch_size)
         futures: builtins.list[PineconeFuture[UpsertResponse]] = [

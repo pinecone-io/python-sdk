@@ -86,6 +86,46 @@ class TestUpsertFromDataframeBasic:
         assert call_kwargs["vectors"][0]["sparse_values"] == sparse
 
 
+class TestUpsertFromDataframeMissingCells:
+    """Rows that omit an optional key leave NaN behind, not None."""
+
+    def test_nan_metadata_is_treated_as_absent(self) -> None:
+        """A NaN metadata cell used to surface as `metadata must be a dict, got float`."""
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame(
+            [
+                {"id": "v1", "values": [0.1], "metadata": {"genre": "rock"}},
+                {"id": "v2", "values": [0.2]},
+            ]
+        )
+        idx = _make_index()
+        idx.upsert = MagicMock(return_value=_make_upsert_response(upserted_count=2))  # type: ignore[method-assign]
+
+        idx.upsert_from_dataframe(df, show_progress=False)
+
+        first, second = idx.upsert.call_args[1]["vectors"]
+        assert first["metadata"] == {"genre": "rock"}
+        assert "metadata" not in second
+
+    def test_nan_sparse_values_is_treated_as_absent(self) -> None:
+        pd = pytest.importorskip("pandas")
+        sparse = {"indices": [1], "values": [0.5]}
+        df = pd.DataFrame(
+            [
+                {"id": "v1", "values": [0.1], "sparse_values": sparse},
+                {"id": "v2", "values": [0.2]},
+            ]
+        )
+        idx = _make_index()
+        idx.upsert = MagicMock(return_value=_make_upsert_response(upserted_count=2))  # type: ignore[method-assign]
+
+        idx.upsert_from_dataframe(df, show_progress=False)
+
+        first, second = idx.upsert.call_args[1]["vectors"]
+        assert first["sparse_values"] == sparse
+        assert "sparse_values" not in second
+
+
 class TestUpsertFromDataframeBatching:
     """Batching behavior."""
 

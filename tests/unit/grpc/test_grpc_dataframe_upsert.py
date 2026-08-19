@@ -281,3 +281,45 @@ class TestGrpcDataframePandasMissing:
         message = str(excinfo.value)
         assert "pandas is required" in message
         assert "not a dependency of this SDK" in message
+
+
+class TestGrpcDataframeMissingCells:
+    """Rows that omit an optional key leave NaN behind, not None."""
+
+    def test_nan_metadata_does_not_reach_the_channel(
+        self, grpc_index: GrpcIndex, mock_channel: MagicMock
+    ) -> None:
+        """A NaN metadata cell used to surface as `metadata must be a dict, got float`."""
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame(
+            [
+                {"id": "v1", "values": [0.1], "metadata": {"genre": "rock"}},
+                {"id": "v2", "values": [0.2]},
+            ]
+        )
+        mock_channel.upsert.return_value = {"upserted_count": 2}
+
+        grpc_index.upsert_from_dataframe(df, show_progress=False)
+
+        sent = {v["id"]: v for v in mock_channel.upsert.call_args[0][0]}
+        assert sent["v1"]["metadata"] == {"genre": "rock"}
+        assert "metadata" not in sent["v2"]
+
+    def test_nan_sparse_values_does_not_reach_the_channel(
+        self, grpc_index: GrpcIndex, mock_channel: MagicMock
+    ) -> None:
+        pd = pytest.importorskip("pandas")
+        sparse = {"indices": [1], "values": [0.5]}
+        df = pd.DataFrame(
+            [
+                {"id": "v1", "values": [0.1], "sparse_values": sparse},
+                {"id": "v2", "values": [0.2]},
+            ]
+        )
+        mock_channel.upsert.return_value = {"upserted_count": 2}
+
+        grpc_index.upsert_from_dataframe(df, show_progress=False)
+
+        sent = {v["id"]: v for v in mock_channel.upsert.call_args[0][0]}
+        assert sent["v1"]["sparse_values"] == sparse
+        assert "sparse_values" not in sent["v2"]

@@ -22,6 +22,7 @@ from pinecone._internal.data_plane_helpers import (
     _validate_host,
     _vector_to_dict,
 )
+from pinecone._internal.dataframe import extract_records
 from pinecone._internal.keyword_only import keyword_only_methods
 from pinecone._internal.validation import require_in_range, require_positive
 from pinecone._internal.vector_factory import VectorFactory
@@ -454,17 +455,7 @@ class Index:
         if not isinstance(df, pd.DataFrame):
             raise PineconeValueError("df must be a pandas DataFrame")
 
-        has_sparse = "sparse_values" in df.columns
-        has_metadata = "metadata" in df.columns
-
-        records: list[dict[str, Any]] = []
-        for _, row in df.iterrows():
-            record: dict[str, Any] = {"id": row["id"], "values": row["values"]}
-            if has_sparse and row["sparse_values"] is not None:
-                record["sparse_values"] = row["sparse_values"]
-            if has_metadata and row["metadata"] is not None:
-                record["metadata"] = row["metadata"]
-            records.append(record)
+        records: list[dict[str, Any]] = extract_records(df)
 
         ns = namespace or ""
         return self.upsert(
