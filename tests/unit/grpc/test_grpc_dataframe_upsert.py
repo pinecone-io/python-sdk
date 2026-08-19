@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import builtins
 import inspect
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -256,3 +258,26 @@ class TestGrpcDataframeUpsert:
         vec = mock_channel.upsert.call_args[0][0][0]
         assert vec["sparse_values"] == sparse
         assert vec["metadata"] == {"genre": "rock"}
+
+
+class TestGrpcDataframePandasMissing:
+    """The pandas-missing path must point at the installable extra."""
+
+    def test_missing_pandas_names_the_extra(
+        self, grpc_index: GrpcIndex, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real_import = builtins.__import__
+
+        def _fake_import(name: str, *args: object, **kwargs: object) -> ModuleType:
+            if name == "pandas":
+                raise ImportError("No module named 'pandas'")
+            return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(builtins, "__import__", _fake_import)
+
+        with pytest.raises(RuntimeError, match="pip install pandas") as excinfo:
+            grpc_index.upsert_from_dataframe("not-a-df")
+
+        message = str(excinfo.value)
+        assert "pandas is required" in message
+        assert "not a dependency of this SDK" in message

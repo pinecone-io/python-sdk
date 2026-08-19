@@ -231,8 +231,12 @@ class TestUpsertFromDataframeErrors:
 
         monkeypatch.setattr("builtins.__import__", _fake_import)
 
-        with pytest.raises(RuntimeError, match="pandas is required"):
+        with pytest.raises(RuntimeError, match="pip install pandas") as excinfo:
             idx.upsert_from_dataframe("not-a-df")
+
+        message = str(excinfo.value)
+        assert "pandas is required" in message
+        assert "not a dependency of this SDK" in message
 
 
 class TestAsyncUpsertFromDataframe:

@@ -1019,7 +1019,8 @@ class GrpcIndex:
             all batches.
 
         Raises:
-            :exc:`RuntimeError`: If ``pandas`` is not installed.
+            :exc:`RuntimeError`: If ``pandas`` is not installed. It is not an SDK
+                dependency; install it yourself with ``pip install pandas``.
             :exc:`PineconeValueError`: If *df* is not a ``pandas.DataFrame``.
             :exc:`PineconeValueError`: If *batch_size* is not a positive integer.
             :exc:`PineconeTimeoutError`: If a batch exceeds *timeout* on the server.
@@ -1084,7 +1085,9 @@ class GrpcIndex:
             import pandas as pd
         except ImportError:
             raise RuntimeError(
-                "pandas is required for upsert_from_dataframe. Install it with: pip install pandas"
+                "pandas is required for upsert_from_dataframe, and is not a "
+                "dependency of this SDK — it is only needed by this one method. "
+                "Install it in your own environment: pip install pandas"
             ) from None
 
         if not isinstance(df, pd.DataFrame):
