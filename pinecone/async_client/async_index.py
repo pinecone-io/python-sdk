@@ -20,6 +20,7 @@ from pinecone._internal.config import PineconeConfig
 from pinecone._internal.constants import DATA_PLANE_API_VERSION
 from pinecone._internal.data_plane_helpers import (
     _build_search_records_body,
+    _limiter_host_key,
     _validate_host,
     _vector_to_dict,
 )
@@ -676,7 +677,7 @@ class AsyncIndex:
         # users hitting this limit can split their call across multiple invocations).
         _internal_concurrency_ceiling = 10
         limiter = (
-            self._limiter_registry.get(self._host, _internal_concurrency_ceiling)
+            self._limiter_registry.get(_limiter_host_key(self._host), _internal_concurrency_ceiling)
             if self._limiter_registry is not None
             else None
         )

@@ -20,7 +20,7 @@ def _no_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     """Skip real sleeps inside _RetryTransport and _AsyncRetryTransport.
 
     Tests that assert on sleep call counts (test_retry.py) layer their
-    own @patch("pinecone._internal.http_client.time.sleep") on top of
+    own @patch("pinecone._internal.http_client._retry_sleep") on top of
     this autouse fixture; pytest applies the test-local patch last so
     those Mock assertions remain valid.
     """
@@ -29,10 +29,10 @@ def _no_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
         return None
 
     monkeypatch.setattr(
-        "pinecone._internal.http_client.time.sleep",
+        "pinecone._internal.http_client._retry_sleep",
         lambda *_a, **_kw: None,
     )
     monkeypatch.setattr(
-        "pinecone._internal.http_client.asyncio.sleep",
+        "pinecone._internal.http_client._async_retry_sleep",
         _noop_async,
     )

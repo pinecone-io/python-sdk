@@ -131,7 +131,11 @@ required-imports = ["from __future__ import annotations"]
 
 [tool.pytest.ini_options]
 anyio_mode = "auto"
-timeout = 5
+# 60s bounds a HUNG test — the point of pytest-timeout — without failing suites
+# that are legitimately slow: the DataFrame partition property test runs 200
+# Hypothesis examples (~1.4s locally, >5s on CI runners under py3.10), and the
+# retry-storm tests sit in the same band.
+timeout = 60
 markers = [
     "smoke: end-to-end smoke tests that hit a real Pinecone backend (see tests/smoke/README.md)",
     "integration: real-API integration tests against a live Pinecone backend",
@@ -153,6 +157,7 @@ dev = [
     "python-dotenv>=1.2.2",
     "pytest-benchmark>=5.0.0",
     "pytest-xdist>=3.6",
+    "pytest-timeout>=2.3",
     "respx>=0.22.0",
     "mypy>=1.20.0",
     "ruff>=0.15.9",

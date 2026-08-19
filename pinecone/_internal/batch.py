@@ -426,15 +426,22 @@ async def async_batch_execute(
     progress = _create_progress_bar(total_batches, desc, show_progress)
 
     async def _acquire() -> None:
+        nonlocal inflight
         if semaphore is not None:
             await semaphore.acquire()
             return
-        # Limiter path: spin until inflight < current_limit
+        # Limiter path: spin until inflight < current_limit. The increment
+        # happens under the SAME lock acquisition as the check: between a
+        # passed check and a deferred increment, every other waiter would
+        # pass the same check and the cap would not hold (found when issue
+        # #45's global sleep no-op was fixed and this path saw real timing;
+        # the busy-poll itself is replaced by the bulk rewrite, #73).
         if limiter is None:
             return
         while True:
             async with inflight_lock:
                 if inflight < limiter.current_limit():
+                    inflight += 1
                     return
             await asyncio.sleep(0.05)
 
@@ -447,9 +454,6 @@ async def async_batch_execute(
         # so += and .append() cannot interleave between await points.
         nonlocal successful_item_count, inflight
         await _acquire()
-        if use_limiter:
-            async with inflight_lock:
-                inflight += 1
         try:
             try:
                 batch_result = await operation(batch)

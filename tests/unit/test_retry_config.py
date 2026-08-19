@@ -102,7 +102,7 @@ class TestRetryConfigDefaults:
 
 
 class TestCustomRetryConfigSync:
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_custom_retry_config_max_retries(self, mock_sleep: Any) -> None:
         """Custom RetryConfig with max_retries=1 only retries once (2 total attempts)."""
         fake = _FakeTransport(
@@ -121,7 +121,7 @@ class TestCustomRetryConfigSync:
         assert response.status_code == 500
         assert fake.call_count == 2
 
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_custom_retry_config_status_codes(self, mock_sleep: Any) -> None:
         """Custom retryable_status_codes enables retry on specified codes."""
         fake = _FakeTransport(
@@ -141,7 +141,7 @@ class TestCustomRetryConfigSync:
         assert response.status_code == 200
         assert fake.call_count == 2
 
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_post_method_is_retried(self, mock_sleep: Any) -> None:
         """POST requests are retried on retryable status codes."""
         fake = _FakeTransport(
@@ -159,7 +159,7 @@ class TestCustomRetryConfigSync:
         assert response.status_code == 200
         assert fake.call_count == 2
 
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_put_method_is_retried(self, mock_sleep: Any) -> None:
         """PUT requests are retried on retryable status codes."""
         fake = _FakeTransport(
@@ -177,7 +177,7 @@ class TestCustomRetryConfigSync:
         assert response.status_code == 200
         assert fake.call_count == 2
 
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_default_config_used_when_none(self, mock_sleep: Any) -> None:
         """When retry_config=None, default RetryConfig is used."""
         fake = _FakeTransport(
@@ -201,7 +201,7 @@ class TestCustomRetryConfigSync:
 
 
 class TestCustomRetryConfigAsync:
-    @patch("pinecone._internal.http_client.asyncio.sleep")
+    @patch("pinecone._internal.http_client._async_retry_sleep")
     @pytest.mark.asyncio
     async def test_custom_retry_config_max_retries(self, mock_sleep: Any) -> None:
         """Custom RetryConfig with max_retries=1 only retries once (2 total attempts)."""
@@ -221,7 +221,7 @@ class TestCustomRetryConfigAsync:
         assert response.status_code == 500
         assert fake.call_count == 2
 
-    @patch("pinecone._internal.http_client.asyncio.sleep")
+    @patch("pinecone._internal.http_client._async_retry_sleep")
     @pytest.mark.asyncio
     async def test_custom_retry_config_status_codes(self, mock_sleep: Any) -> None:
         """Custom retryable_status_codes enables retry on specified codes."""
@@ -242,7 +242,7 @@ class TestCustomRetryConfigAsync:
         assert response.status_code == 200
         assert fake.call_count == 2
 
-    @patch("pinecone._internal.http_client.asyncio.sleep")
+    @patch("pinecone._internal.http_client._async_retry_sleep")
     @pytest.mark.asyncio
     async def test_post_method_is_retried(self, mock_sleep: Any) -> None:
         """POST requests are retried on retryable status codes."""
@@ -261,7 +261,7 @@ class TestCustomRetryConfigAsync:
         assert response.status_code == 200
         assert fake.call_count == 2
 
-    @patch("pinecone._internal.http_client.asyncio.sleep")
+    @patch("pinecone._internal.http_client._async_retry_sleep")
     @pytest.mark.asyncio
     async def test_put_method_is_retried(self, mock_sleep: Any) -> None:
         """PUT requests are retried on retryable status codes."""

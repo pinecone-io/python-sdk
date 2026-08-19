@@ -150,7 +150,7 @@ def test_post_retried_on_429_with_retry_after() -> None:
         httpx.Response(429, headers={"Retry-After": "0"}),
         httpx.Response(200),
     ]
-    with patch("pinecone._internal.http_client.time.sleep") as mock_sleep:
+    with patch("pinecone._internal.http_client._retry_sleep") as mock_sleep:
         result = rt.handle_request(httpx.Request("POST", "https://example.com/query"))
     assert result.status_code == 200
     assert inner.handle_request.call_count == 2

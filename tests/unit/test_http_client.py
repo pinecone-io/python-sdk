@@ -793,7 +793,7 @@ class _AsyncSequencedTransport(httpx.AsyncBaseTransport):
 
 class TestRetryTransportThrottle:
     def test_on_throttle_called_on_429(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("pinecone._internal.http_client.time.sleep", lambda _: None)
+        monkeypatch.setattr("pinecone._internal.http_client._retry_sleep", lambda _: None)
         mock_callback = MagicMock()
         config = RetryConfig(max_retries=2, on_throttle=mock_callback)
         inner = _SequencedTransport([httpx.Response(429), httpx.Response(200)])
@@ -806,7 +806,7 @@ class TestRetryTransportThrottle:
         mock_callback.assert_called_once_with("api.pinecone.io")
 
     def test_on_throttle_called_each_retry(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("pinecone._internal.http_client.time.sleep", lambda _: None)
+        monkeypatch.setattr("pinecone._internal.http_client._retry_sleep", lambda _: None)
         mock_callback = MagicMock()
         # max_retries=2 → 3 total attempts (initial + 2 retries)
         config = RetryConfig(max_retries=2, on_throttle=mock_callback)
@@ -823,7 +823,7 @@ class TestRetryTransportThrottle:
     def test_on_throttle_none_is_default_and_does_not_break(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr("pinecone._internal.http_client.time.sleep", lambda _: None)
+        monkeypatch.setattr("pinecone._internal.http_client._retry_sleep", lambda _: None)
         config = RetryConfig(max_retries=2)
         inner = _SequencedTransport([httpx.Response(429), httpx.Response(200)])
         transport = _RetryTransport(transport=inner, retry_config=config)  # type: ignore[arg-type]
@@ -834,7 +834,7 @@ class TestRetryTransportThrottle:
         assert response.status_code == 200
 
     def test_on_throttle_exception_is_swallowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("pinecone._internal.http_client.time.sleep", lambda _: None)
+        monkeypatch.setattr("pinecone._internal.http_client._retry_sleep", lambda _: None)
 
         def bad_callback(host: str) -> None:
             raise RuntimeError("Limiter exploded!")

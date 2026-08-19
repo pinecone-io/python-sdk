@@ -33,6 +33,12 @@ from pinecone.errors.exceptions import (
     UnauthorizedError,
 )
 
+# Patchable seams for the retry backoff sleeps. Unit tests no-op these two
+# names; binding them here keeps the patch scoped to this transport instead
+# of mutating time.sleep / asyncio.sleep for the whole process (issue #45).
+_retry_sleep = time.sleep
+_async_retry_sleep = asyncio.sleep
+
 logger = logging.getLogger(__name__)
 
 
@@ -185,7 +191,7 @@ class _RetryTransport(httpx.BaseTransport):
                     )
                     delay = _compute_backoff(self._config, attempt, prev_delay)
                     prev_delay = delay
-                    time.sleep(delay)
+                    _retry_sleep(delay)
                 continue
             last_exc = None
             if response.status_code not in self._config.retryable_status_codes:
@@ -205,7 +211,7 @@ class _RetryTransport(httpx.BaseTransport):
                     delay,
                     response.headers.get("retry-after", "absent"),
                 )
-                time.sleep(delay)
+                _retry_sleep(delay)
             else:
                 return response
         if last_exc is not None:
@@ -245,7 +251,7 @@ class _AsyncRetryTransport(httpx.AsyncBaseTransport):
                     )
                     delay = _compute_backoff(self._config, attempt, prev_delay)
                     prev_delay = delay
-                    await asyncio.sleep(delay)
+                    await _async_retry_sleep(delay)
                 continue
             last_exc = None
             if response.status_code not in self._config.retryable_status_codes:
@@ -265,7 +271,7 @@ class _AsyncRetryTransport(httpx.AsyncBaseTransport):
                     delay,
                     response.headers.get("retry-after", "absent"),
                 )
-                await asyncio.sleep(delay)
+                await _async_retry_sleep(delay)
             else:
                 return response
         if last_exc is not None:
