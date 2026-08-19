@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as _FuturesTimeoutError
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
@@ -87,6 +89,43 @@ def _create_progress_bar(
         return _NoOpProgressBar()
 
 
+class _Deadline:
+    """A monotonic budget for a whole batch operation.
+
+    On expiry, batches that have not started are cancelled and batches already
+    running are left to settle: dropping a running one client-side would not stop
+    the server from applying it, so the caller would be told less landed than did.
+    """
+
+    __slots__ = ("_expires_at",)
+
+    def __init__(self, total_timeout: float | None) -> None:
+        self._expires_at = None if total_timeout is None else time.monotonic() + total_timeout
+
+    def expired(self) -> bool:
+        return self._expires_at is not None and time.monotonic() >= self._expires_at
+
+    def remaining(self) -> float | None:
+        if self._expires_at is None:
+            return None
+        return max(0.0, self._expires_at - time.monotonic())
+
+
+def _abandoned_error(batch_index: int, batch: list[dict[str, Any]], total_timeout: float) -> Any:
+    from pinecone.errors.exceptions import PineconeTimeoutError
+
+    message = (
+        f"total_timeout of {total_timeout}s expired before this batch was submitted; "
+        f"{len(batch)} items in batch {batch_index} were not sent"
+    )
+    return BatchError(
+        batch_index=batch_index,
+        items=batch,
+        error=PineconeTimeoutError(message),
+        error_message=message,
+    )
+
+
 def _empty_result() -> BatchResult:
     """Return a zero-count result for empty input."""
     return BatchResult(
@@ -145,6 +184,7 @@ def batch_execute(
     executor: ThreadPoolExecutor | None = None,
     limiter_registry: _AdaptiveLimiterRegistry | None = None,
     host: str | None = None,
+    total_timeout: float | None = None,
 ) -> BatchResult:
     """Execute *operation* on *items* in parallel batches.
 
@@ -170,6 +210,14 @@ def batch_execute(
             for adaptive concurrency. SDK-internal; not for user code.
         host (str | None): Host key for the limiter registry lookup.
             SDK-internal; not for user code.
+        total_timeout (float | None): Deadline in seconds for the whole
+            operation. On expiry no further batches are submitted, batches
+            already in flight are awaited, and the un-submitted ones are
+            reported as errors so ``failed_items`` is what remains to be sent.
+            ``timed_out`` is set only when something was actually left unsent —
+            if the in-flight batches were the last ones and all landed, the
+            operation succeeded late rather than failing. ``None`` (default)
+            means no deadline.
 
     Returns:
         BatchResult with aggregated success/failure counts.
@@ -197,14 +245,20 @@ def batch_execute(
     condition = threading.Condition()
     inflight = 0
 
-    def _acquire() -> None:
+    def _acquire(deadline: _Deadline) -> bool:
+        """Take an in-flight slot, or report that the budget ran out waiting for one."""
         nonlocal inflight
         if limiter is None:
-            return
+            return not deadline.expired()
         with condition:
             while inflight >= limiter.current_limit():
-                condition.wait()
+                if deadline.expired():
+                    return False
+                condition.wait(timeout=deadline.remaining())
+            if deadline.expired():
+                return False
             inflight += 1
+        return True
 
     def _release() -> None:
         nonlocal inflight
@@ -225,36 +279,74 @@ def batch_execute(
             limiter.report_success()
         return result
 
+    deadline = _Deadline(total_timeout)
+
     progress = _create_progress_bar(total_batches, desc, show_progress)
 
     own_executor = executor is None
     if executor is None:
         executor = ThreadPoolExecutor(max_workers=max_concurrency)
 
-    try:
-        future_to_batch: dict[Any, tuple[int, list[dict[str, Any]]]] = {}
-        for idx, batch in enumerate(batches):
-            _acquire()
-            future = executor.submit(_wrapped_op, batch)
-            future_to_batch[future] = (idx, batch)
+    timed_out = False
 
-        for future in as_completed(future_to_batch):
-            batch_idx, batch = future_to_batch[future]
-            try:
-                batch_result = future.result()
-            except Exception as exc:
-                errors.append(
-                    BatchError(
-                        batch_index=batch_idx,
-                        items=batch,
-                        error=exc,
-                        error_message=str(exc),
-                    )
+    budget = total_timeout if total_timeout is not None else 0.0
+
+    def _collect(future: Future[Any]) -> None:
+        nonlocal successful_item_count
+        batch_idx, batch = future_to_batch[future]
+        try:
+            batch_result = future.result()
+        except Exception as exc:
+            errors.append(
+                BatchError(
+                    batch_index=batch_idx,
+                    items=batch,
+                    error=exc,
+                    error_message=str(exc),
                 )
-            else:
-                successful_item_count += len(batch)
-                _collect_lsn(batch_result, lsn_reconciled_values, lsn_committed_values)
-            progress.update(1)
+            )
+        else:
+            successful_item_count += len(batch)
+            _collect_lsn(batch_result, lsn_reconciled_values, lsn_committed_values)
+        progress.update(1)
+
+    try:
+        future_to_batch: dict[Future[Any], tuple[int, list[dict[str, Any]]]] = {}
+        for idx, batch in enumerate(batches):
+            # The check lives inside _acquire too: waiting for a limiter slot can
+            # itself outlast the budget, and submitting after that would put work
+            # in flight the caller has already been told will not happen.
+            if not _acquire(deadline):
+                timed_out = True
+                errors.extend(
+                    _abandoned_error(i, b, budget) for i, b in enumerate(batches[idx:], start=idx)
+                )
+                progress.update(total_batches - idx)
+                break
+            future_to_batch[executor.submit(_wrapped_op, batch)] = (idx, batch)
+
+        outstanding = set(future_to_batch)
+        try:
+            for future in as_completed(future_to_batch, timeout=deadline.remaining()):
+                outstanding.discard(future)
+                _collect(future)
+        except _FuturesTimeoutError:
+            # cancel() only succeeds for batches that have not started, which is
+            # exactly the set that can be dropped without leaving work applied
+            # server-side. Whatever is already running is awaited below.
+            cancelled = {future for future in outstanding if future.cancel()}
+            # The deadline elapsing is not itself a failure. If every outstanding
+            # batch was already running and all of them land, the work is done —
+            # late, but done — and reporting a timeout would hand the caller an
+            # empty set of items to retry.
+            timed_out = timed_out or bool(cancelled)
+            for future in cancelled:
+                _release()
+                batch_idx, batch = future_to_batch[future]
+                errors.append(_abandoned_error(batch_idx, batch, budget))
+                progress.update(1)
+            for future in as_completed(outstanding - cancelled):
+                _collect(future)
     finally:
         progress.close()
         if own_executor:
@@ -270,8 +362,9 @@ def batch_execute(
         total_batch_count=total_batches,
         successful_batch_count=total_batches - len(errors),
         failed_batch_count=len(errors),
-        errors=errors,
+        errors=sorted(errors, key=lambda err: err.batch_index),
         response_info=response_info,
+        timed_out=timed_out,
     )
 
 

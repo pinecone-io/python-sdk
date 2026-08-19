@@ -26,11 +26,13 @@ from pinecone._internal.keyword_only import keyword_only_methods
 from pinecone._internal.validation import require_in_range, require_positive
 from pinecone._internal.vector_factory import VectorFactory, validate_vector_dict
 from pinecone.errors.exceptions import (
+    PineconeTimeoutError,
     PineconeValueError,
     ValidationError,
 )
 from pinecone.grpc._protocol import GrpcChannelProtocol
 from pinecone.grpc.future import PineconeFuture
+from pinecone.models.batch import BatchResult
 from pinecone.models.imports.list import ImportList
 from pinecone.models.imports.model import ImportModel, StartImportResponse
 from pinecone.models.namespaces.models import (
@@ -167,6 +169,19 @@ def _dict_to_namespace_description(data: dict[str, Any]) -> NamespaceDescription
 _GRPC_DEFAULT_MAX_RETRIES = 5
 _GRPC_DEFAULT_BACKOFF_FACTOR = 0.1
 _GRPC_DEFAULT_MAX_WAIT = 60.0
+
+
+def _upsert_response_from(batch_result: BatchResult) -> UpsertResponse:
+    """Project a BatchResult onto the response shape callers already handle."""
+    return UpsertResponse(
+        upserted_count=batch_result.successful_item_count,
+        total_item_count=batch_result.total_item_count,
+        failed_item_count=batch_result.failed_item_count,
+        total_batch_count=batch_result.total_batch_count,
+        successful_batch_count=batch_result.successful_batch_count,
+        failed_batch_count=batch_result.failed_batch_count,
+        errors=batch_result.errors,
+    )
 
 
 def _limiter_host(host: str) -> str:
@@ -1086,6 +1101,7 @@ class GrpcIndex:
         timeout: float | None = None,
         *,
         max_concurrency: int | None = None,
+        total_timeout: float | None = None,
     ) -> UpsertResponse:
         """Upsert vectors from a pandas DataFrame using async batching.
 
@@ -1107,6 +1123,16 @@ class GrpcIndex:
                 which is what an unbounded submission into a default
                 ``ThreadPoolExecutor`` already gave — pass a value to make
                 throughput reproducible across hosts.
+            total_timeout: Deadline in seconds for the **whole ingest**, as opposed
+                to *timeout*, which bounds a single attempt of a single batch. On
+                expiry no further batches are submitted; batches already in flight
+                are allowed to settle rather than being abandoned, since dropping
+                them client-side would not stop the server from applying them.
+                :exc:`PineconeTimeoutError` is then raised carrying the partial
+                :class:`UpsertResponse` on its ``response`` attribute, whose
+                ``failed_items`` are the rows that were never sent. ``None``
+                (default) means the ingest is bounded only by the per-batch
+                deadlines.
             timeout: Server-side deadline in seconds applied to *each batch's*
                 upsert request — not to the DataFrame as a whole. ``None``
                 (default) uses the client's configured request timeout: the
@@ -1135,7 +1161,10 @@ class GrpcIndex:
                 dependency; install it yourself with ``pip install pandas``.
             :exc:`PineconeValueError`: If *df* is not a ``pandas.DataFrame``.
             :exc:`PineconeValueError`: If *batch_size* is not a positive integer.
-            :exc:`PineconeTimeoutError`: If a batch exceeds *timeout* on the server.
+            :exc:`PineconeTimeoutError`: If a batch exceeds *timeout* on the server,
+                or if *total_timeout* expires before every batch is submitted. In
+                the latter case the exception carries the partial
+                :class:`UpsertResponse` on its ``response`` attribute.
 
         Note:
             If any batch fails, this method raises that batch's error and does
@@ -1233,7 +1262,17 @@ class GrpcIndex:
             executor=self._get_batch_executor(resolved_concurrency),
             limiter_registry=self._limiter_registry,
             host=self._limiter_host,
+            total_timeout=total_timeout,
         )
+
+        if batch_result.timed_out:
+            partial = _upsert_response_from(batch_result)
+            raise PineconeTimeoutError(
+                f"total_timeout of {total_timeout}s expired after "
+                f"{partial.upserted_count} of {batch_result.total_item_count} vectors were "
+                f"upserted; retry the remainder with response.failed_items",
+                response=partial,
+            )
 
         if batch_result.errors:
             # Today's contract is to raise, and to raise the lowest-indexed

@@ -77,6 +77,11 @@ class BatchResult(Struct, kw_only=True):
             ``lsn_committed``) across successful sub-batches, or ``None``
             when no sub-batch reported these headers. See
             :class:`BatchResponseInfo`.
+        timed_out: Whether a ``total_timeout`` expired with work left unsent. The
+            batches that were never attempted appear in ``errors``, so
+            ``failed_items`` is what remains to be sent. A deadline that elapses
+            while the last batches are in flight, all of which then land, does not
+            set this — there would be nothing to retry.
 
     Examples:
         >>> from pinecone import Pinecone
@@ -110,6 +115,7 @@ class BatchResult(Struct, kw_only=True):
     failed_batch_count: int
     errors: list[BatchError]
     response_info: BatchResponseInfo | None = None
+    timed_out: bool = False
 
     @property
     def has_errors(self) -> bool:
@@ -183,6 +189,7 @@ class BatchResult(Struct, kw_only=True):
             "response_info": (
                 self.response_info.to_dict() if self.response_info is not None else None
             ),
+            "timed_out": self.timed_out,
         }
 
     def to_json(self) -> str:

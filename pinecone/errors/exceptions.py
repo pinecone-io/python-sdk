@@ -264,7 +264,19 @@ class PineconeTimeoutError(PineconeError, TimeoutError):
     ``except TimeoutError`` blocks in caller code catch SDK timeouts without
     having to import a Pinecone-specific class. This is the same pattern used
     by :class:`PineconeValueError` (extends :class:`ValueError`).
+
+    Args:
+        message: Description of what timed out.
+        response: Partial result, when the timeout interrupted a bulk operation
+            that had already applied some of its work. Carrying it means the
+            caller can tell what landed instead of having to re-send everything;
+            ``response.failed_items`` is what remains. ``None`` for timeouts with
+            nothing partial to report.
     """
+
+    def __init__(self, message: str, *, response: Any | None = None) -> None:
+        self.response = response
+        super().__init__(message)
 
 
 class PineconeConnectionError(PineconeError):
