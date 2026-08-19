@@ -235,7 +235,11 @@ class Index:
             When ``batch_size`` is set, batches are submitted **in parallel** via a
             ``ThreadPoolExecutor`` of ``max_concurrency`` workers (default 4, range
             1–64). Per-batch HTTP retries are handled by the client's configured
-            ``RetryConfig`` (connection errors and retryable status codes).
+            ``RetryConfig`` — connection errors, client-side timeouts, and the
+            configured ``retryable_status_codes``. Unlike the gRPC transport, a timeout
+            **is** retried here, so *timeout* is a per-attempt deadline: the default
+            ``max_retries=3`` admits up to 4 attempts × *timeout* per batch, plus
+            backoff. Lower ``max_retries`` to shrink that.
 
             **Partial failures do not raise.** When ``batch_size`` is set, per-batch
             errors are captured on the returned :class:`UpsertResponse` (see

@@ -262,7 +262,9 @@ class GrpcIndex:
         api_version (str): API version string. Defaults to the current data plane version.
         source_tag (str | None): Tag appended to the User-Agent string for request attribution.
         secure (bool): Whether to use TLS encryption. Defaults to ``True``.
-        timeout (float): Request timeout in seconds. Defaults to ``20.0``.
+        timeout (float): Deadline in seconds for a **single attempt** of a request, not
+            for the call as a whole. Defaults to ``20.0``. A per-call ``timeout=`` does not
+            replace it — the channel keeps this one too, so the shorter of the two governs.
         connect_timeout (float): Connection timeout in seconds. Defaults to ``1.0``.
         retry_config (RetryConfig | None): Retry policy for transient gRPC errors. Accepts
             the same :class:`~pinecone._internal.config.RetryConfig` REST uses. ``None``
@@ -285,15 +287,24 @@ class GrpcIndex:
 
         1. **Connect** — ``connect_timeout``, default ``1.0s``.
         2. **Per attempt** — ``timeout`` (or a per-call ``timeout=``), default ``20.0s``.
-           This is a deadline on *one attempt*, not on the call.
+           This is a deadline on *one attempt*, not on the call. Both apply when a call
+           passes its own, so the shorter of the two is what fires.
         3. **Retry budget** — ``retry_config.max_retries`` attempts after the first, with
            backoff between them.
         4. **Whole job** — for bulk methods only, ``total_timeout``.
 
-        Layers 2 and 3 multiply. ``timeout=120`` is not a 120s bound: with the default
-        ``max_retries=5`` it is up to 6 attempts × 120s **plus** backoff, so a worst case
-        near 17 minutes. Lower ``max_retries`` to shrink that, or bound the whole
-        operation with ``total_timeout``.
+        Layers 2 and 3 compound **only across retryable failures.** This transport retries
+        a fixed set of ``tonic::Code`` values — UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED —
+        so reaching the multiplied worst case (with the default ``max_retries=5``, up to 6
+        attempts × ``timeout`` plus backoff, or near 17 minutes at ``timeout=120``) takes
+        every attempt burning nearly its full deadline and *then* failing with one of those
+        codes. That is the case a lower ``max_retries`` shrinks.
+
+        **An expiring deadline is not one of them.** Layer 2 firing raises
+        :exc:`~pinecone.errors.PineconeTimeoutError` after a single attempt, so
+        ``max_retries`` is not the knob for a timeout. Raise ``timeout=`` to give the server
+        longer per attempt — raising the index-level ``timeout`` too if it is the lower of
+        the two — or bound a bulk job with ``total_timeout``.
 
     Examples:
 
@@ -1223,13 +1234,16 @@ class GrpcIndex:
                 deadlines rather than failing prematurely. Raise *timeout* to
                 give slow batches more time on the server.
 
-                **This is not a bound on the batch.** With the default
-                ``max_retries=5`` a batch is up to 6 attempts × *timeout*, plus
-                backoff between them — ``timeout=120`` admits a worst case near 17
-                minutes for a single batch. See the four timeout layers on
-                :class:`GrpcIndex`. To shrink the multiplier, pass a
-                ``retry_config`` with a lower ``max_retries`` when constructing the
-                index.
+                **This is not a bound on the batch, but only retryable failures
+                stretch it.** The transport retries UNAVAILABLE, RESOURCE_EXHAUSTED
+                and ABORTED, so a batch that keeps failing on those codes runs up to
+                6 attempts × *timeout* plus backoff under the default
+                ``max_retries=5`` — a worst case near 17 minutes at ``timeout=120``.
+                Passing a ``retry_config`` with a lower ``max_retries`` when
+                constructing the index shrinks *that* case. A *timeout* that expires
+                is not retried: the batch fails after one attempt, so the knob for a
+                timeout is a larger *timeout*, or *total_timeout* to bound the whole
+                ingest. See the four timeout layers on :class:`GrpcIndex`.
 
         Returns:
             :class:`UpsertResponse` with the total count of vectors upserted across
