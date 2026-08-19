@@ -145,19 +145,52 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, Status>>,
 {
+    retry_on_transient_request(config, (), |()| operation()).await
+}
+
+/// [`retry_on_transient`] for operations that consume a request.
+///
+/// tonic's generated clients take the request by value, so every attempt needs
+/// its own copy. Handing the closure `request.clone()` on each iteration copies
+/// the full proto payload once per attempt — at 500 x 1536 f32 that is ~3 MB of
+/// memcpy per batch. This clones only while another attempt is still possible
+/// and gives the last one the original by value, so `n` attempts cost `n - 1`
+/// clones instead of `n`, and a `max_retries: 0` config costs none at all.
+///
+/// Removing the remaining clone would mean not owning the payload per attempt —
+/// a shared or pre-encoded representation the generated client cannot take.
+pub async fn retry_on_transient_request<F, Fut, T, R>(
+    config: &RetryConfig,
+    request: R,
+    mut operation: F,
+) -> Result<T, Status>
+where
+    R: Clone,
+    F: FnMut(R) -> Fut,
+    Fut: Future<Output = Result<T, Status>>,
+{
     let mut attempt = 0u32;
     let mut prev_delay = config.initial_backoff;
+    let mut pending = request;
 
     loop {
-        match operation().await {
+        // `spare` is None exactly when the retry budget is spent, which is also
+        // the attempt that gets the original rather than a copy.
+        let (payload, spare) = if attempt < config.max_retries {
+            (pending.clone(), Some(pending))
+        } else {
+            (pending, None)
+        };
+
+        match operation(payload).await {
             Ok(val) => return Ok(val),
             Err(status) if config.retryable_codes.contains(&(status.code() as i32)) => {
                 if let Some(cb) = &config.on_throttle {
                     cb(config.host.clone());
                 }
-                if attempt >= config.max_retries {
+                let Some(next) = spare else {
                     return Err(status);
-                }
+                };
                 let delay = if let Some(pushback) = parse_pushback(&status) {
                     smear_pushback(pushback, config.max_backoff)
                 } else {
@@ -166,6 +199,7 @@ where
                 tracing::debug!("retry attempt {} sleeping for {:?}", attempt + 1, delay);
                 prev_delay = delay;
                 tokio::time::sleep(delay).await;
+                pending = next;
                 attempt += 1;
             }
             Err(status) => return Err(status),

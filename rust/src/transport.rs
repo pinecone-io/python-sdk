@@ -10,7 +10,7 @@ use tonic::transport::{Channel, ClientTlsConfig};
 
 use crate::proto;
 use crate::proto::vector_service_client::VectorServiceClient;
-use crate::retry::{retry_on_transient, RetryConfig, ThrottleCallback};
+use crate::retry::{retry_on_transient_request, RetryConfig, ThrottleCallback};
 
 /// Maximum gRPC message size for both send and receive (128 MB).
 const MAX_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
@@ -733,17 +733,17 @@ impl GrpcChannel {
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
-                self.runtime.block_on(retry_on_transient(&retry_config, || {
-                    let mut c = client.clone();
-                    let r = request.clone();
-                    async move {
-                        let mut req = tonic::Request::new(r);
-                        if let Some(dur) = timeout {
-                            req.set_timeout(dur);
+                self.runtime
+                    .block_on(retry_on_transient_request(&retry_config, request, |r| {
+                        let mut c = client.clone();
+                        async move {
+                            let mut req = tonic::Request::new(r);
+                            if let Some(dur) = timeout {
+                                req.set_timeout(dur);
+                            }
+                            c.upsert(req).await
                         }
-                        c.upsert(req).await
-                    }
-                }))
+                    }))
             })
             .map_err(status_to_py_err)?;
 
@@ -817,17 +817,17 @@ impl GrpcChannel {
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
-                self.runtime.block_on(retry_on_transient(&retry_config, || {
-                    let mut c = client.clone();
-                    let r = request.clone();
-                    async move {
-                        let mut req = tonic::Request::new(r);
-                        if let Some(dur) = timeout {
-                            req.set_timeout(dur);
+                self.runtime
+                    .block_on(retry_on_transient_request(&retry_config, request, |r| {
+                        let mut c = client.clone();
+                        async move {
+                            let mut req = tonic::Request::new(r);
+                            if let Some(dur) = timeout {
+                                req.set_timeout(dur);
+                            }
+                            c.query(req).await
                         }
-                        c.query(req).await
-                    }
-                }))
+                    }))
             })
             .map_err(status_to_py_err)?;
 
@@ -878,17 +878,17 @@ impl GrpcChannel {
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
-                self.runtime.block_on(retry_on_transient(&retry_config, || {
-                    let mut c = client.clone();
-                    let r = request.clone();
-                    async move {
-                        let mut req = tonic::Request::new(r);
-                        if let Some(dur) = timeout {
-                            req.set_timeout(dur);
+                self.runtime
+                    .block_on(retry_on_transient_request(&retry_config, request, |r| {
+                        let mut c = client.clone();
+                        async move {
+                            let mut req = tonic::Request::new(r);
+                            if let Some(dur) = timeout {
+                                req.set_timeout(dur);
+                            }
+                            c.fetch(req).await
                         }
-                        c.fetch(req).await
-                    }
-                }))
+                    }))
             })
             .map_err(status_to_py_err)?;
 
@@ -943,17 +943,17 @@ impl GrpcChannel {
         let retry_config = self.retry_config.clone();
         #[allow(clippy::result_large_err)]
         py.detach(|| {
-            self.runtime.block_on(retry_on_transient(&retry_config, || {
-                let mut c = client.clone();
-                let r = request.clone();
-                async move {
-                    let mut req = tonic::Request::new(r);
-                    if let Some(dur) = timeout {
-                        req.set_timeout(dur);
+            self.runtime
+                .block_on(retry_on_transient_request(&retry_config, request, |r| {
+                    let mut c = client.clone();
+                    async move {
+                        let mut req = tonic::Request::new(r);
+                        if let Some(dur) = timeout {
+                            req.set_timeout(dur);
+                        }
+                        c.delete(req).await
                     }
-                    c.delete(req).await
-                }
-            }))
+                }))
         })
         .map_err(status_to_py_err)?;
 
@@ -1008,17 +1008,17 @@ impl GrpcChannel {
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
-                self.runtime.block_on(retry_on_transient(&retry_config, || {
-                    let mut c = client.clone();
-                    let r = request.clone();
-                    async move {
-                        let mut req = tonic::Request::new(r);
-                        if let Some(dur) = timeout {
-                            req.set_timeout(dur);
+                self.runtime
+                    .block_on(retry_on_transient_request(&retry_config, request, |r| {
+                        let mut c = client.clone();
+                        async move {
+                            let mut req = tonic::Request::new(r);
+                            if let Some(dur) = timeout {
+                                req.set_timeout(dur);
+                            }
+                            c.update(req).await
                         }
-                        c.update(req).await
-                    }
-                }))
+                    }))
             })
             .map_err(status_to_py_err)?;
 
@@ -1066,17 +1066,17 @@ impl GrpcChannel {
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
-                self.runtime.block_on(retry_on_transient(&retry_config, || {
-                    let mut c = client.clone();
-                    let r = request.clone();
-                    async move {
-                        let mut req = tonic::Request::new(r);
-                        if let Some(dur) = timeout {
-                            req.set_timeout(dur);
+                self.runtime
+                    .block_on(retry_on_transient_request(&retry_config, request, |r| {
+                        let mut c = client.clone();
+                        async move {
+                            let mut req = tonic::Request::new(r);
+                            if let Some(dur) = timeout {
+                                req.set_timeout(dur);
+                            }
+                            c.list(req).await
                         }
-                        c.list(req).await
-                    }
-                }))
+                    }))
             })
             .map_err(status_to_py_err)?;
 
@@ -1137,17 +1137,17 @@ impl GrpcChannel {
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
-                self.runtime.block_on(retry_on_transient(&retry_config, || {
-                    let mut c = client.clone();
-                    let r = request.clone();
-                    async move {
-                        let mut req = tonic::Request::new(r);
-                        if let Some(dur) = timeout {
-                            req.set_timeout(dur);
+                self.runtime
+                    .block_on(retry_on_transient_request(&retry_config, request, |r| {
+                        let mut c = client.clone();
+                        async move {
+                            let mut req = tonic::Request::new(r);
+                            if let Some(dur) = timeout {
+                                req.set_timeout(dur);
+                            }
+                            c.describe_index_stats(req).await
                         }
-                        c.describe_index_stats(req).await
-                    }
-                }))
+                    }))
             })
             .map_err(status_to_py_err)?;
 
@@ -1215,17 +1215,17 @@ impl GrpcChannel {
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
-                self.runtime.block_on(retry_on_transient(&retry_config, || {
-                    let mut c = client.clone();
-                    let r = request.clone();
-                    async move {
-                        let mut req = tonic::Request::new(r);
-                        if let Some(dur) = timeout {
-                            req.set_timeout(dur);
+                self.runtime
+                    .block_on(retry_on_transient_request(&retry_config, request, |r| {
+                        let mut c = client.clone();
+                        async move {
+                            let mut req = tonic::Request::new(r);
+                            if let Some(dur) = timeout {
+                                req.set_timeout(dur);
+                            }
+                            c.list_namespaces(req).await
                         }
-                        c.list_namespaces(req).await
-                    }
-                }))
+                    }))
             })
             .map_err(status_to_py_err)?;
 
@@ -1274,17 +1274,17 @@ impl GrpcChannel {
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
-                self.runtime.block_on(retry_on_transient(&retry_config, || {
-                    let mut c = client.clone();
-                    let r = request.clone();
-                    async move {
-                        let mut req = tonic::Request::new(r);
-                        if let Some(dur) = timeout {
-                            req.set_timeout(dur);
+                self.runtime
+                    .block_on(retry_on_transient_request(&retry_config, request, |r| {
+                        let mut c = client.clone();
+                        async move {
+                            let mut req = tonic::Request::new(r);
+                            if let Some(dur) = timeout {
+                                req.set_timeout(dur);
+                            }
+                            c.describe_namespace(req).await
                         }
-                        c.describe_namespace(req).await
-                    }
-                }))
+                    }))
             })
             .map_err(status_to_py_err)?;
 
@@ -1318,17 +1318,17 @@ impl GrpcChannel {
         let retry_config = self.retry_config.clone();
         #[allow(clippy::result_large_err)]
         py.detach(|| {
-            self.runtime.block_on(retry_on_transient(&retry_config, || {
-                let mut c = client.clone();
-                let r = request.clone();
-                async move {
-                    let mut req = tonic::Request::new(r);
-                    if let Some(dur) = timeout {
-                        req.set_timeout(dur);
+            self.runtime
+                .block_on(retry_on_transient_request(&retry_config, request, |r| {
+                    let mut c = client.clone();
+                    async move {
+                        let mut req = tonic::Request::new(r);
+                        if let Some(dur) = timeout {
+                            req.set_timeout(dur);
+                        }
+                        c.delete_namespace(req).await
                     }
-                    c.delete_namespace(req).await
-                }
-            }))
+                }))
         })
         .map_err(status_to_py_err)?;
 
@@ -1369,17 +1369,17 @@ impl GrpcChannel {
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
-                self.runtime.block_on(retry_on_transient(&retry_config, || {
-                    let mut c = client.clone();
-                    let r = request.clone();
-                    async move {
-                        let mut req = tonic::Request::new(r);
-                        if let Some(dur) = timeout {
-                            req.set_timeout(dur);
+                self.runtime
+                    .block_on(retry_on_transient_request(&retry_config, request, |r| {
+                        let mut c = client.clone();
+                        async move {
+                            let mut req = tonic::Request::new(r);
+                            if let Some(dur) = timeout {
+                                req.set_timeout(dur);
+                            }
+                            c.create_namespace(req).await
                         }
-                        c.create_namespace(req).await
-                    }
-                }))
+                    }))
             })
             .map_err(status_to_py_err)?;
 
@@ -1424,17 +1424,17 @@ impl GrpcChannel {
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
-                self.runtime.block_on(retry_on_transient(&retry_config, || {
-                    let mut c = client.clone();
-                    let r = request.clone();
-                    async move {
-                        let mut req = tonic::Request::new(r);
-                        if let Some(dur) = timeout {
-                            req.set_timeout(dur);
+                self.runtime
+                    .block_on(retry_on_transient_request(&retry_config, request, |r| {
+                        let mut c = client.clone();
+                        async move {
+                            let mut req = tonic::Request::new(r);
+                            if let Some(dur) = timeout {
+                                req.set_timeout(dur);
+                            }
+                            c.fetch_by_metadata(req).await
                         }
-                        c.fetch_by_metadata(req).await
-                    }
-                }))
+                    }))
             })
             .map_err(status_to_py_err)?;
 

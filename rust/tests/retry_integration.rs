@@ -2,7 +2,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use pinecone_grpc::retry::{retry_on_transient, RetryConfig, ThrottleCallback};
+use pinecone_grpc::retry::{
+    retry_on_transient, retry_on_transient_request, RetryConfig, ThrottleCallback,
+};
 use tonic::Status;
 
 #[tokio::test]
@@ -234,4 +236,94 @@ async fn configured_max_wait_still_bounds_pushback() {
         "max_wait=2s should have bounded a 30s pushback, waited {:?}",
         start.elapsed()
     );
+}
+
+/// A request whose clones are counted, so the copy-per-attempt contract is
+/// pinned rather than assumed.
+#[derive(Debug, Default)]
+struct CountingRequest {
+    clones: Arc<AtomicU32>,
+}
+
+impl Clone for CountingRequest {
+    fn clone(&self) -> Self {
+        self.clones.fetch_add(1, Ordering::SeqCst);
+        Self {
+            clones: self.clones.clone(),
+        }
+    }
+}
+
+async fn count_clones(config: &RetryConfig, failures: u32) -> (u32, u32) {
+    let clones = Arc::new(AtomicU32::new(0));
+    let attempts = Arc::new(AtomicU32::new(0));
+    let seen = attempts.clone();
+
+    let request = CountingRequest {
+        clones: clones.clone(),
+    };
+    let _ = retry_on_transient_request(config, request, |_r| {
+        let seen = seen.clone();
+        async move {
+            let n = seen.fetch_add(1, Ordering::SeqCst);
+            if n < failures {
+                Err(Status::unavailable("transient"))
+            } else {
+                Ok::<(), Status>(())
+            }
+        }
+    })
+    .await;
+
+    (
+        attempts.load(Ordering::SeqCst),
+        clones.load(Ordering::SeqCst),
+    )
+}
+
+#[tokio::test(start_paused = true)]
+async fn retries_disabled_costs_no_clone() {
+    let config = RetryConfig {
+        max_retries: 0,
+        ..RetryConfig::default()
+    };
+
+    let (attempts, clones) = count_clones(&config, 0).await;
+
+    assert_eq!(attempts, 1);
+    assert_eq!(
+        clones, 0,
+        "the only attempt should receive the request by value"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn n_attempts_cost_n_minus_one_clones() {
+    let config = RetryConfig {
+        max_retries: 2,
+        ..RetryConfig::default()
+    };
+
+    // Fails twice, succeeds on the third and final permitted attempt.
+    let (attempts, clones) = count_clones(&config, 2).await;
+
+    assert_eq!(attempts, 3);
+    assert_eq!(clones, 2, "the final attempt should take the original");
+}
+
+/// The residual cost, stated so a change to it is deliberate: with retries
+/// enabled the first attempt cannot know it will succeed, so it still works from
+/// a copy. Removing that would mean not owning the payload per attempt, which
+/// tonic's generated client cannot do.
+#[tokio::test(start_paused = true)]
+async fn first_of_several_permitted_attempts_still_copies() {
+    let config = RetryConfig {
+        max_retries: 5,
+        ..RetryConfig::default()
+    };
+
+    let (attempts, clones) = count_clones(&config, 0).await;
+
+    assert_eq!(attempts, 1);
+    assert_eq!(clones, 1);
 }
