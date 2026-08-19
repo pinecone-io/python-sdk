@@ -16,7 +16,9 @@ pub struct RetryConfig {
     pub max_retries: u32,
     /// Initial backoff duration before the first retry.
     pub initial_backoff: Duration,
-    /// Maximum backoff duration cap.
+    /// Maximum backoff duration cap. Bounds both the jitter path and a
+    /// server-supplied pushback hint, so it must be large enough to honor a
+    /// realistic `grpc-retry-pushback-ms` value.
     pub max_backoff: Duration,
     /// Backoff multiplier (retained for API compatibility; no longer used in delay
     /// computation since decorrelated jitter was adopted in DX-0153).
@@ -40,7 +42,11 @@ impl Default for RetryConfig {
         Self {
             max_retries: 5,
             initial_backoff: Duration::from_millis(100),
-            max_backoff: Duration::from_millis(1600),
+            // Matches REST's `RetryConfig.max_wait`. A 1600ms cap silently swallowed
+            // server pushback: a `grpc-retry-pushback-ms: 30000` hint was clamped to
+            // 1.6s, so we parsed an explicit instruction from the server and then
+            // hammered it anyway.
+            max_backoff: Duration::from_secs(60),
             multiplier: 2,
             retryable_codes: [
                 tonic::Code::Unavailable as i32,

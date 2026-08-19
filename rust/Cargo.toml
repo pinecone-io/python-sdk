@@ -7,8 +7,16 @@ edition = "2021"
 name = "pinecone_grpc"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# On by default so `maturin`/`uv sync` build the extension module as before.
+# `cargo test --no-default-features` turns it off, which lets the test binary
+# link against libpython instead of leaving Python symbols undefined —
+# otherwise the tests in rust/tests/ cannot be linked, let alone run.
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]
+
 [dependencies]
-pyo3 = { version = "0.29", features = ["extension-module", "abi3-py310"] }
+pyo3 = { version = "0.29", features = ["abi3-py310"] }
 tonic = { version = "0.13", features = ["tls-ring", "tls-native-roots"] }
 prost = "0.13"
 prost-types = "0.13"
@@ -18,6 +26,11 @@ rand = "0.9"
 tracing = "0.1"
 http = "1"
 hyper-util = { version = "0.1", features = ["client-legacy"] }
+
+[dev-dependencies]
+# `test-util` gives tests paused/virtual time, so a 30s backoff assertion costs
+# no wall clock. Dev-only: the shipped cdylib does not get this feature.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
 
 [build-dependencies]
 tonic-build = "0.13"

@@ -189,3 +189,10 @@ jobs:
 
       - name: cargo check
         run: cargo check --all-targets
+
+      # --no-default-features turns off pyo3's extension-module so the test
+      # binaries can link against libpython. With it on, Python symbols are
+      # left undefined and rust/tests/ cannot be linked — which is why these
+      # tests had never run in CI.
+      - name: cargo test
+        run: cargo test --no-default-features

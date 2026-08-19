@@ -125,6 +125,10 @@ class Pinecone:
             retry_config or RetryConfig(),
             on_throttle=self._limiter_registry.report_throttled,
         )
+        # gRPC's own defaults differ from REST's (5 retries / 0.1s floor vs 3 / 0.25s),
+        # so an unset retry_config must stay unset on that transport rather than
+        # inheriting REST's numbers. An explicit one is honored on both.
+        self._grpc_retry_config = augmented_retry_config if retry_config is not None else None
         config = PineconeConfig(
             api_key=api_key or "",
             host=host or "",
@@ -396,6 +400,8 @@ class Pinecone:
                 host=resolved_host,
                 api_key=self._config.api_key,
                 source_tag=self._config.source_tag or None,
+                retry_config=self._grpc_retry_config,
+                proxy_url=self._config.proxy_url or None,
                 on_throttle=self._limiter_registry.report_throttled,
             )
 

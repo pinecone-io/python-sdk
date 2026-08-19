@@ -16,7 +16,7 @@ from pinecone._internal.adapters.imports_adapter import ImportsAdapter
 from pinecone._internal.adapters.vectors_adapter import VectorsAdapter, extract_response_info
 from pinecone._internal.batch import batch_execute
 from pinecone._internal.batching import chunked, validate_batch_size, with_progress
-from pinecone._internal.config import PineconeConfig
+from pinecone._internal.config import PineconeConfig, RetryConfig
 from pinecone._internal.constants import DATA_PLANE_API_VERSION
 from pinecone._internal.data_plane_helpers import _build_search_records_body, _validate_host
 from pinecone._internal.keyword_only import keyword_only_methods
@@ -158,6 +158,14 @@ def _dict_to_namespace_description(data: dict[str, Any]) -> NamespaceDescription
     )
 
 
+# gRPC's retry defaults, which differ from REST's (3 / 0.25s / 60s). The counts and
+# floor are what the Rust layer has always used; only the cap changed, from 1.6s — a
+# value small enough to swallow a `grpc-retry-pushback-ms: 30000` hint from the server.
+_GRPC_DEFAULT_MAX_RETRIES = 5
+_GRPC_DEFAULT_BACKOFF_FACTOR = 0.1
+_GRPC_DEFAULT_MAX_WAIT = 60.0
+
+
 @keyword_only_methods
 class GrpcIndex:
     """Synchronous gRPC data plane client targeting a specific Pinecone index.
@@ -174,9 +182,33 @@ class GrpcIndex:
         secure (bool): Whether to use TLS encryption. Defaults to ``True``.
         timeout (float): Request timeout in seconds. Defaults to ``20.0``.
         connect_timeout (float): Connection timeout in seconds. Defaults to ``1.0``.
+        retry_config (RetryConfig | None): Retry policy for transient gRPC errors. Accepts
+            the same :class:`~pinecone._internal.config.RetryConfig` REST uses. ``None``
+            (default) uses the gRPC defaults: ``max_retries=5``, ``backoff_factor=0.1``,
+            ``max_wait=60.0``. ``retryable_status_codes`` is **ignored on this transport** —
+            it carries HTTP statuses, while gRPC retries a fixed set of ``tonic::Code``
+            values (UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED).
+        proxy_url (str | None): HTTP proxy URL. gRPC traffic is tunnelled through it with
+            HTTP CONNECT.
 
     Raises:
         :exc:`ValidationError`: If no API key can be resolved or the host is invalid.
+
+    Note:
+        **Four timeout layers apply to every gRPC call**, and only the first three bound a
+        single request:
+
+        1. **Connect** — ``connect_timeout``, default ``1.0s``.
+        2. **Per attempt** — ``timeout`` (or a per-call ``timeout=``), default ``20.0s``.
+           This is a deadline on *one attempt*, not on the call.
+        3. **Retry budget** — ``retry_config.max_retries`` attempts after the first, with
+           backoff between them.
+        4. **Whole job** — for bulk methods only, ``total_timeout``.
+
+        Layers 2 and 3 multiply. ``timeout=120`` is not a 120s bound: with the default
+        ``max_retries=5`` it is up to 6 attempts × 120s **plus** backoff, so a worst case
+        near 17 minutes. Lower ``max_retries`` to shrink that, or bound the whole
+        operation with ``total_timeout``.
 
     Examples:
 
@@ -197,6 +229,8 @@ class GrpcIndex:
         secure: bool = True,
         timeout: float = 20.0,
         connect_timeout: float = 1.0,
+        retry_config: RetryConfig | None = None,
+        proxy_url: str | None = None,
         on_throttle: Callable[[str], None] | None = None,
     ) -> None:
         # Resolve API key: explicit arg > env var
@@ -217,6 +251,19 @@ class GrpcIndex:
         from pinecone import __version__
         from pinecone._grpc import GrpcChannel  # type: ignore[import-not-found]
 
+        # `retryable_status_codes` is deliberately not forwarded: it carries HTTP
+        # statuses, and this transport retries a fixed set of tonic::Code values.
+        # Forcing HTTP statuses through a gRPC channel would be meaningless.
+        self._retry_config = retry_config or RetryConfig(
+            max_retries=_GRPC_DEFAULT_MAX_RETRIES,
+            backoff_factor=_GRPC_DEFAULT_BACKOFF_FACTOR,
+            max_wait=_GRPC_DEFAULT_MAX_WAIT,
+        )
+        # RetryConfig.on_throttle is how REST carries the limiter hook; honor it when
+        # the explicit argument is absent so threading a client-built config does not
+        # silently drop the callback.
+        resolved_on_throttle = on_throttle or self._retry_config.on_throttle
+
         self._channel: GrpcChannelProtocol = GrpcChannel(
             endpoint,
             resolved_key,
@@ -225,8 +272,12 @@ class GrpcIndex:
             secure,
             timeout,
             connect_timeout,
+            max_retries=self._retry_config.max_retries,
+            backoff_factor_s=self._retry_config.backoff_factor,
+            max_wait_s=self._retry_config.max_wait,
             source_tag=source_tag,
-            on_throttle=on_throttle,
+            proxy_url=proxy_url,
+            on_throttle=resolved_on_throttle,
         )
 
         self._executor = ThreadPoolExecutor()
@@ -1013,6 +1064,14 @@ class GrpcIndex:
                 server, so a large ingest is bounded only by these per-batch
                 deadlines rather than failing prematurely. Raise *timeout* to
                 give slow batches more time on the server.
+
+                **This is not a bound on the batch.** With the default
+                ``max_retries=5`` a batch is up to 6 attempts × *timeout*, plus
+                backoff between them — ``timeout=120`` admits a worst case near 17
+                minutes for a single batch. See the four timeout layers on
+                :class:`GrpcIndex`. To shrink the multiplier, pass a
+                ``retry_config`` with a lower ``max_retries`` when constructing the
+                index.
 
         Returns:
             :class:`UpsertResponse` with the total count of vectors upserted across

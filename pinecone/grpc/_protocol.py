@@ -25,6 +25,8 @@ class GrpcChannelProtocol(Protocol):
         timeout_s: float | None = None,
         connect_timeout_s: float | None = None,
         max_retries: int | None = None,
+        backoff_factor_s: float | None = None,
+        max_wait_s: float | None = None,
         source_tag: str | None = None,
         proxy_url: str | None = None,
         on_throttle: Callable[[str], None] | None = None,

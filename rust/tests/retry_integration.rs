@@ -169,3 +169,69 @@ async fn host_string_received_by_callback() {
         hosts
     );
 }
+
+/// A server that answers `grpc-retry-pushback-ms: 30000` is telling us to wait 30
+/// seconds. Under the old 1600ms `max_backoff` default that hint was clamped to
+/// 1.6s and we hammered the server anyway. Runs on paused time, so the 30s is
+/// virtual and the test is instant.
+#[tokio::test(start_paused = true)]
+async fn thirty_second_pushback_is_honored_not_clamped() {
+    let pushback_ms: u64 = 30_000;
+
+    let config = RetryConfig {
+        max_retries: 1,
+        ..RetryConfig::default()
+    };
+    assert!(
+        config.max_backoff >= Duration::from_millis(pushback_ms),
+        "default max_backoff {:?} is too small to honor a {}ms pushback hint",
+        config.max_backoff,
+        pushback_ms
+    );
+
+    let start = tokio::time::Instant::now();
+    let _ = retry_on_transient(&config, || async {
+        let mut s = Status::resource_exhausted("throttled");
+        s.metadata_mut().insert(
+            "grpc-retry-pushback-ms",
+            pushback_ms.to_string().parse().unwrap(),
+        );
+        Err::<(), Status>(s)
+    })
+    .await;
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed >= Duration::from_millis(pushback_ms),
+        "waited {:?}, which is less than the {}ms the server asked for",
+        elapsed,
+        pushback_ms
+    );
+}
+
+/// The cap is still a cap: an explicitly configured `max_wait` bounds a pushback
+/// hint that exceeds it. That is the deliberate behavior — the defect was the
+/// default being too small to honor realistic hints, not the clamp existing.
+#[tokio::test(start_paused = true)]
+async fn configured_max_wait_still_bounds_pushback() {
+    let config = RetryConfig {
+        max_retries: 1,
+        max_backoff: Duration::from_secs(2),
+        ..RetryConfig::default()
+    };
+
+    let start = tokio::time::Instant::now();
+    let _ = retry_on_transient(&config, || async {
+        let mut s = Status::resource_exhausted("throttled");
+        s.metadata_mut()
+            .insert("grpc-retry-pushback-ms", "30000".parse().unwrap());
+        Err::<(), Status>(s)
+    })
+    .await;
+
+    assert!(
+        start.elapsed() <= Duration::from_secs(3),
+        "max_wait=2s should have bounded a 30s pushback, waited {:?}",
+        start.elapsed()
+    );
+}

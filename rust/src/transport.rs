@@ -557,6 +557,11 @@ impl GrpcChannel {
     ///     timeout_s: Request timeout in seconds (default 20.0).
     ///     connect_timeout_s: Connection timeout in seconds (default 1.0).
     ///     max_retries: Max retry attempts on transient codes (UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED — default 5, 0 disables).
+    ///     backoff_factor_s: Minimum backoff delay floor in seconds between retries (default 0.1).
+    ///     max_wait_s: Maximum backoff delay in seconds (default 60.0). Bounds both the
+    ///                 jitter path and a server-supplied `grpc-retry-pushback-ms` hint,
+    ///                 so lowering it below a realistic pushback value means ignoring
+    ///                 what the server asked for.
     ///     source_tag: Optional source tag appended to the User-Agent string.
     ///     proxy_url: Optional HTTP proxy URL (e.g. "http://proxy.example.com:8080").
     ///                When set, gRPC traffic is tunnelled through the proxy via HTTP CONNECT.
@@ -565,7 +570,7 @@ impl GrpcChannel {
     ///                  SDK's adaptive concurrency limiter to self-tune bulk-operation
     ///                  concurrency in response to throttling.
     #[new]
-    #[pyo3(signature = (endpoint, api_key, api_version, version, secure=true, timeout_s=None, connect_timeout_s=None, max_retries=None, source_tag=None, proxy_url=None, on_throttle=None))]
+    #[pyo3(signature = (endpoint, api_key, api_version, version, secure=true, timeout_s=None, connect_timeout_s=None, max_retries=None, backoff_factor_s=None, max_wait_s=None, source_tag=None, proxy_url=None, on_throttle=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -577,6 +582,8 @@ impl GrpcChannel {
         timeout_s: Option<f64>,
         connect_timeout_s: Option<f64>,
         max_retries: Option<u32>,
+        backoff_factor_s: Option<f64>,
+        max_wait_s: Option<f64>,
         source_tag: Option<&str>,
         proxy_url: Option<&str>,
         on_throttle: Option<Py<PyAny>>,
@@ -644,11 +651,22 @@ impl GrpcChannel {
             });
             cb
         });
+        let defaults = RetryConfig::default();
+        let initial_backoff = match backoff_factor_s {
+            Some(secs) => secs_to_duration(py, secs, "backoff_factor_s")?,
+            None => defaults.initial_backoff,
+        };
+        let max_backoff = match max_wait_s {
+            Some(secs) => secs_to_duration(py, secs, "max_wait_s")?,
+            None => defaults.max_backoff,
+        };
         let retry_config = RetryConfig {
-            max_retries: max_retries.unwrap_or(5),
+            max_retries: max_retries.unwrap_or(defaults.max_retries),
+            initial_backoff,
+            max_backoff,
             on_throttle: on_throttle_cb,
             host,
-            ..RetryConfig::default()
+            ..defaults
         };
 
         Ok(Self {
