@@ -15,6 +15,9 @@ from pinecone.errors.exceptions import PineconeValueError
 if TYPE_CHECKING:
     import pandas as pd  # type: ignore[import-untyped]
 
+_REQUIRED_COLUMNS = ("id", "values")
+# Only to make the rename example concrete; nothing detects these in the frame.
+_COMMON_ALIASES = {"id": "doc_id", "values": "embedding"}
 _OPTIONAL_COLUMNS = ("sparse_values", "metadata")
 _ON_ERROR_VALUES = ("raise", "collect")
 _NAN_LIKE_DTYPE_KINDS = frozenset("fMm")
@@ -53,6 +56,27 @@ def _is_missing(value: Any, na: tuple[Any, ...]) -> bool:
     return False
 
 
+def _require_columns(df: pd.DataFrame) -> None:
+    """Fail on a missing column here, where the frame is still in hand.
+
+    Reaching the column access with one absent raises a bare ``KeyError: 'id'``,
+    which names neither the method nor the schema it wanted.
+    """
+    found = list(df.columns)
+    missing = [name for name in _REQUIRED_COLUMNS if name not in found]
+    if not missing:
+        return
+    # The example has to rename the column that is actually missing. A fixed
+    # `'vector': 'values'` is a fix for a different failure than the one reported.
+    example = ", ".join(f"{_COMMON_ALIASES[name]!r}: {name!r}" for name in missing)
+    raise PineconeValueError(
+        f"DataFrame is missing required column(s): {missing}. "
+        f"upsert_from_dataframe requires {list(_REQUIRED_COLUMNS)} "
+        f"and optionally {list(_OPTIONAL_COLUMNS)}; the frame has {found}. "
+        f"Rename or add the missing column(s), e.g. df = df.rename(columns={{{example}}})."
+    )
+
+
 def extract_records(df: pd.DataFrame) -> list[dict[str, Any]]:
     """Return one upsert record dict per row of *df*.
 
@@ -65,8 +89,10 @@ def extract_records(df: pd.DataFrame) -> list[dict[str, Any]]:
     and surfaces as ``metadata must be a dict, got float``.
 
     Raises:
-        KeyError: If ``id`` or ``values`` is missing.
+        PineconeValueError: If ``id`` or ``values`` is missing.
     """
+    _require_columns(df)
+
     ids = df["id"].to_numpy()
     values = df["values"].to_numpy()
 

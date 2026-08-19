@@ -35,7 +35,10 @@ def require_positive(name: str, value: int) -> None:
 def require_in_range(name: str, value: int, min_val: int, max_val: int) -> None:
     """Raise ValidationError if value is not in [min_val, max_val] inclusive."""
     if value < min_val or value > max_val:
-        raise ValidationError(f"{name} must be between {min_val} and {max_val}, got {value}")
+        raise ValidationError(
+            f"{name} must be between {min_val} and {max_val}, got {value}. "
+            f"Pass a {name} within that range."
+        )
 
 
 def require_max_length(name: str, value: str, max_length: int) -> None:

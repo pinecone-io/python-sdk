@@ -226,6 +226,19 @@ def _limiter_host(host: str) -> str:
     return bare
 
 
+def _as_sentence(text: str) -> str:
+    """Close the wrapped message off, so appended guidance starts a new sentence.
+
+    Without the period, ``deadline exceeded`` and the guidance become one clause,
+    and anything matching on the leading clause picks up the run-specific timeout
+    values from the guidance — which these messages do not promise to keep stable.
+    """
+    stripped = text.rstrip()
+    if not stripped or stripped[-1] in ".!?":
+        return stripped
+    return f"{stripped}."
+
+
 def _default_max_concurrency() -> int:
     """What an unbounded submission into a default ThreadPoolExecutor already gave.
 
@@ -315,6 +328,7 @@ class GrpcIndex:
             )
 
         # Validate and normalize host
+        self._request_timeout = timeout
         self._host = _validate_host(host)
         self._limiter_host = _limiter_host(self._host)
         self._limiter_registry = limiter_registry
@@ -1116,6 +1130,36 @@ class GrpcIndex:
             storage_fullness=result.get("storage_fullness"),
         )
 
+    def _timeout_guidance(self, timeout: float | None) -> str:
+        """Say which of the four layers fired, with the value that was in effect.
+
+        A timeout here is the entire diagnostic surface for a batch job that died
+        partway through, and "deadline exceeded" on its own does not say which
+        knob to turn.
+        """
+        index_level = self._request_timeout
+        if timeout is None:
+            deadline = f"the index-level timeout of {index_level}s"
+        else:
+            # The channel keeps the Endpoint-level deadline it was built with even
+            # when a call passes its own, so the shorter of the two is what fired.
+            # Naming only the per-call value points at the wrong number and the
+            # wrong knob whenever the index-level one is smaller.
+            deadline = (
+                f"{min(timeout, index_level)}s, the shorter of timeout={timeout} and the "
+                f"index-level timeout of {index_level}s — both apply to every call"
+            )
+        return (
+            f"The per-attempt deadline fired: {deadline}. It was not the connect timeout "
+            f"and not total_timeout. Timeouts are not retried on this transport, which "
+            f"retries only UNAVAILABLE, RESOURCE_EXHAUSTED and ABORTED, so this batch "
+            f"failed after a single attempt and retry_config.max_retries is not the knob "
+            f"to change. Raise timeout= to give the server longer per attempt — raising "
+            f"the index-level timeout= too if it is the lower of the two — or set "
+            f"total_timeout= to bound the whole ingest. Upserts are idempotent by vector "
+            f"id, so retrying the same rows is safe."
+        )
+
     def upsert_from_dataframe(
         self,
         df: pd.DataFrame,
@@ -1269,7 +1313,11 @@ class GrpcIndex:
             ) from None
 
         if not isinstance(df, pd.DataFrame):
-            raise PineconeValueError("df must be a pandas DataFrame")
+            raise PineconeValueError(
+                f"df must be a pandas DataFrame, got {type(df).__name__}. Build one with "
+                "columns ['id', 'values'] and optionally ['sparse_values', 'metadata'], "
+                "e.g. pd.DataFrame([{'id': 'v1', 'values': [0.1, 0.2]}])."
+            )
 
         validate_batch_size(batch_size)
 
@@ -1284,8 +1332,8 @@ class GrpcIndex:
         # Validate before submitting anything, so a malformed row cannot leave
         # part of the frame ingested. VectorFactory would otherwise do this
         # inside a worker thread, after earlier batches had already landed.
-        for record in records:
-            validate_vector_dict(record)
+        for row, record in enumerate(records):
+            validate_vector_dict(record, row=row)
 
         def _upsert_batch(batch: builtins.list[dict[str, Any]]) -> dict[str, Any]:
             return self._channel.upsert(batch, namespace or None, timeout_s=timeout)
@@ -1321,6 +1369,11 @@ class GrpcIndex:
                 # All batches have settled by the time batch_execute returns, so
                 # nothing is left running server-side when this propagates.
                 error = min(batch_result.errors, key=lambda err: err.batch_index).error
+                if isinstance(error, PineconeTimeoutError):
+                    raise PineconeTimeoutError(
+                        f"{_as_sentence(str(error))} {self._timeout_guidance(timeout)}",
+                        response=response,
+                    ) from error
                 error.response = response  # type: ignore[attr-defined]
                 raise error
             if on_error is None:

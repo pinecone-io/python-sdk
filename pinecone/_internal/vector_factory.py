@@ -11,6 +11,12 @@ from pinecone.models.vectors.vector import Vector
 _RECOGNIZED_KEYS = {"id", "values", "sparse_values", "metadata"}
 
 
+def _truncate(value: Any, limit: int = 80) -> str:
+    """Show the offending value without pasting a whole embedding into a message."""
+    text = repr(value)
+    return text if len(text) <= limit else f"{text[:limit]}... ({len(text)} chars)"
+
+
 def _as_list(raw: Any) -> list[Any]:
     """Convert array-like *raw* to a list of Python scalars.
 
@@ -178,43 +184,86 @@ def _has_no_values(raw: Any) -> bool:
     return len(raw) == 0
 
 
-def validate_vector_dict(item: dict[str, Any]) -> None:
+def _at(row: int | None, id_: Any) -> str:
+    """Locate a bad row for a caller who has to filter a frame from the message alone.
+
+    Row index and vector id are both included because an agent acting on this
+    has one or the other to hand and cannot be relied on to have a particular one.
+    """
+    if row is None:
+        return ""
+    return f" (row {row}, id={id_!r})"
+
+
+def validate_vector_dict(item: dict[str, Any], *, row: int | None = None) -> None:
     """Apply :class:`VectorFactory`'s checks to a vector dict, converting nothing.
 
     The gRPC DataFrame path hands array values straight to the Rust layer, which
     unboxes them in C. Skipping :meth:`VectorFactory.build` skips its validation
     too, so the same checks — and the same exception types, which callers catch
     on — have to happen here instead.
+
+    Args:
+        item: The vector dict to validate.
+        row: Position in the source DataFrame, included in messages when given.
     """
     try:
         id_ = item["id"]
     except KeyError as err:
-        raise PineconeValueError("Vector dict must contain an 'id' key") from err
+        raise PineconeValueError(
+            f"Vector dict must contain an 'id' key{_at(row, None)}; "
+            f"got keys {sorted(item)}. Add an 'id' column of unique string ids."
+        ) from err
     if not isinstance(id_, str):
-        raise PineconeTypeError(f"Vector ID must be a string, got {type(id_).__name__}")
+        raise PineconeTypeError(
+            f"Vector ID must be a string, got {type(id_).__name__} {id_!r}{_at(row, id_)}. "
+            f"Convert the id column to str, e.g. df['id'] = df['id'].astype(str)."
+        )
     if not id_.isascii():
-        raise PineconeValueError(f"Vector ID must contain only ASCII characters, got: {id_!r}")
+        raise PineconeValueError(
+            f"Vector ID must contain only ASCII characters, got: {id_!r}{_at(row, id_)}. "
+            f"Re-encode or replace the non-ASCII characters in this id."
+        )
     if "\x00" in id_:
-        raise PineconeValueError(f"Vector ID must not contain null characters, got: {id_!r}")
+        raise PineconeValueError(
+            f"Vector ID must not contain null characters, got: {id_!r}{_at(row, id_)}. "
+            f"Strip the null bytes from this id."
+        )
 
     if not _RECOGNIZED_KEYS.issuperset(item):
         extra = item.keys() - _RECOGNIZED_KEYS
-        raise PineconeValueError(f"Vector dict contains unrecognized keys: {sorted(extra)}")
+        raise PineconeValueError(
+            f"Vector dict contains unrecognized keys: {sorted(extra)}{_at(row, id_)}. "
+            f"Only {sorted(_RECOGNIZED_KEYS)} are accepted; drop the extra column(s) "
+            f"or move them into 'metadata'."
+        )
 
     raw_values = item.get("values")
     has_values = raw_values is not None and not _has_no_values(raw_values)
 
     raw_sparse = item.get("sparse_values")
     if raw_sparse is not None:
-        _parse_sparse(raw_sparse)
+        try:
+            _parse_sparse(raw_sparse)
+        except (PineconeTypeError, PineconeValueError) as exc:
+            # _parse_sparse is shared with the conversion path, which has no row
+            # to report. Re-raise the same type with the location appended, so a
+            # bad sparse cell is as locatable as a bad metadata one.
+            raise type(exc)(f"{exc}{_at(row, id_)}") from exc
 
     metadata = item.get("metadata")
     if metadata is not None and not isinstance(metadata, dict):
-        raise PineconeTypeError(f"metadata must be a dict, got {type(metadata).__name__}")
+        raise PineconeTypeError(
+            f"metadata must be a dict, got {type(metadata).__name__} "
+            f"{_truncate(metadata)}{_at(row, id_)}. Pass a dict of metadata fields, "
+            f"or None where a row has none."
+        )
 
     if not has_values and raw_sparse is None:
         raise PineconeValueError(
-            "Vector must have at least one of non-empty dense values or sparse values"
+            f"Vector must have at least one of non-empty dense values or sparse "
+            f"values{_at(row, id_)}. Give this row a non-empty 'values' array or a "
+            f"'sparse_values' dict."
         )
 
 

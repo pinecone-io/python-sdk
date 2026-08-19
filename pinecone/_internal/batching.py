@@ -13,7 +13,10 @@ T = TypeVar("T")
 def validate_batch_size(batch_size: int) -> None:
     """Raise PineconeValueError unless batch_size is a positive int."""
     if not isinstance(batch_size, int) or batch_size <= 0:
-        raise PineconeValueError("batch_size must be a positive integer")
+        raise PineconeValueError(
+            f"batch_size must be a positive integer, got {batch_size!r} "
+            f"({type(batch_size).__name__}). Pass a positive int, e.g. batch_size=500."
+        )
 
 
 def chunked(items: Sequence[T], batch_size: int) -> list[list[T]]:
