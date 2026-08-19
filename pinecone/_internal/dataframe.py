@@ -10,10 +10,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from pinecone.errors.exceptions import PineconeValueError
+
 if TYPE_CHECKING:
     import pandas as pd  # type: ignore[import-untyped]
 
 _OPTIONAL_COLUMNS = ("sparse_values", "metadata")
+_ON_ERROR_VALUES = ("raise", "collect")
 _NAN_LIKE_DTYPE_KINDS = frozenset("fMm")
 
 
@@ -82,3 +85,14 @@ def extract_records(df: pd.DataFrame) -> list[dict[str, Any]]:
                 record[name] = value
 
     return records
+
+
+def _resolve_on_error(on_error: str | None) -> str:
+    """Validate an ``on_error`` argument, treating absence as ``"collect"``."""
+    if on_error is None:
+        return "collect"
+    if on_error not in _ON_ERROR_VALUES:
+        raise PineconeValueError(
+            f"on_error must be one of {list(_ON_ERROR_VALUES)}, got {on_error!r}"
+        )
+    return on_error

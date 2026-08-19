@@ -6,9 +6,10 @@ import builtins
 import logging
 import os
 import threading
+import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     import pandas as pd  # type: ignore[import-untyped]
@@ -21,7 +22,7 @@ from pinecone._internal.batching import validate_batch_size
 from pinecone._internal.config import PineconeConfig, RetryConfig
 from pinecone._internal.constants import DATA_PLANE_API_VERSION
 from pinecone._internal.data_plane_helpers import _build_search_records_body, _validate_host
-from pinecone._internal.dataframe import extract_records
+from pinecone._internal.dataframe import _resolve_on_error, extract_records
 from pinecone._internal.keyword_only import keyword_only_methods
 from pinecone._internal.validation import require_in_range, require_positive
 from pinecone._internal.vector_factory import VectorFactory, validate_vector_dict
@@ -169,6 +170,29 @@ def _dict_to_namespace_description(data: dict[str, Any]) -> NamespaceDescription
 _GRPC_DEFAULT_MAX_RETRIES = 5
 _GRPC_DEFAULT_BACKOFF_FACTOR = 0.1
 _GRPC_DEFAULT_MAX_WAIT = 60.0
+
+
+_warned_about_grpc_partial_failure = False
+
+
+def _warn_grpc_partial_failure_once(response: UpsertResponse) -> None:
+    """Announce the 9.2.0 change the first time a caller is affected by it.
+
+    Only on gRPC: REST has aggregated since v9.0.0, so warning there would be
+    noise about behavior that did not change.
+    """
+    global _warned_about_grpc_partial_failure
+    if _warned_about_grpc_partial_failure:
+        return
+    _warned_about_grpc_partial_failure = True
+    warnings.warn(
+        f"{response.failed_item_count} of {response.total_item_count} vectors failed to "
+        "upsert. As of 9.2.0 upsert_from_dataframe aggregates partial failures instead "
+        "of raising: inspect response.errors and retry response.failed_items. Pass "
+        'on_error="raise" to restore the previous behavior, or on_error="collect" to '
+        "silence this warning.",
+        stacklevel=3,
+    )
 
 
 def _upsert_response_from(batch_result: BatchResult) -> UpsertResponse:
@@ -1102,6 +1126,7 @@ class GrpcIndex:
         *,
         max_concurrency: int | None = None,
         total_timeout: float | None = None,
+        on_error: Literal["raise", "collect"] | None = None,
     ) -> UpsertResponse:
         """Upsert vectors from a pandas DataFrame using async batching.
 
@@ -1123,6 +1148,16 @@ class GrpcIndex:
                 which is what an unbounded submission into a default
                 ``ThreadPoolExecutor`` already gave — pass a value to make
                 throughput reproducible across hosts.
+            on_error: What to do when some batches fail. ``"collect"`` returns an
+                :class:`UpsertResponse` carrying ``failed_item_count``, ``errors``
+                and ``failed_items``, so the caller can retry only what failed —
+                the same contract the REST transport has had since v9.0.0.
+                ``"raise"`` re-raises the lowest-indexed batch failure, after all
+                batches have settled, with the partial result attached to the
+                exception's ``response`` attribute. ``None`` (default) behaves as
+                ``"collect"`` and additionally warns once per process when a
+                partial failure occurs, since this transport used to raise; pass
+                ``"collect"`` explicitly to silence that.
             total_timeout: Deadline in seconds for the **whole ingest**, as opposed
                 to *timeout*, which bounds a single attempt of a single batch. On
                 expiry no further batches are submitted; batches already in flight
@@ -1167,11 +1202,13 @@ class GrpcIndex:
                 :class:`UpsertResponse` on its ``response`` attribute.
 
         Note:
-            If any batch fails, this method raises that batch's error and does
-            **not** report a partial count — unlike :meth:`upsert` with
-            ``batch_size``, which aggregates per-batch failures without raising.
+            **Changed in 9.2.0.** Partial failures are aggregated rather than
+            raised, matching :meth:`upsert` with ``batch_size`` and the REST
+            transport. Callers that relied on the raise should pass
+            ``on_error="raise"``. The old raise discarded the partial count, so
+            no caller could tell what had landed; the new default reports it.
             Because upserts are idempotent by vector ID, re-running the whole
-            DataFrame after a failure is safe.
+            DataFrame after a failure is also still safe.
 
         Examples:
 
@@ -1236,6 +1273,7 @@ class GrpcIndex:
 
         validate_batch_size(batch_size)
 
+        resolved_on_error = _resolve_on_error(on_error)
         resolved_concurrency = (
             _default_max_concurrency() if max_concurrency is None else max_concurrency
         )
@@ -1265,21 +1303,30 @@ class GrpcIndex:
             total_timeout=total_timeout,
         )
 
+        response = _upsert_response_from(batch_result)
+
         if batch_result.timed_out:
-            partial = _upsert_response_from(batch_result)
-            raise PineconeTimeoutError(
+            message = (
                 f"total_timeout of {total_timeout}s expired after "
-                f"{partial.upserted_count} of {batch_result.total_item_count} vectors were "
-                f"upserted; retry the remainder with response.failed_items",
-                response=partial,
+                f"{response.upserted_count} of {batch_result.total_item_count} vectors were "
+                f"upserted; retry the remainder with response.failed_items"
             )
+            if resolved_on_error == "raise":
+                raise PineconeTimeoutError(message, response=response)
+            logger.warning(message)
+            return response
 
         if batch_result.errors:
-            # Today's contract is to raise, and to raise the lowest-indexed
-            # failure specifically. A8 replaces this with aggregation.
-            raise min(batch_result.errors, key=lambda err: err.batch_index).error
+            if resolved_on_error == "raise":
+                # All batches have settled by the time batch_execute returns, so
+                # nothing is left running server-side when this propagates.
+                error = min(batch_result.errors, key=lambda err: err.batch_index).error
+                error.response = response  # type: ignore[attr-defined]
+                raise error
+            if on_error is None:
+                _warn_grpc_partial_failure_once(response)
 
-        return UpsertResponse(upserted_count=batch_result.successful_item_count)
+        return response
 
     # ------------------------------------------------------------------
     # Async (future-returning) variants

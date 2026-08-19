@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     import pandas as pd  # type: ignore[import-untyped]
@@ -426,6 +426,8 @@ class AsyncIndex:
         batch_size: int = 500,
         show_progress: bool = True,
         timeout: float | None = None,
+        *,
+        on_error: Literal["raise", "collect"] | None = None,
     ) -> UpsertResponse:
         """Not supported for async clients.
 
@@ -433,8 +435,9 @@ class AsyncIndex:
         and call upsert() in a loop. For very large datasets, use start_import() for
         bulk loading from cloud storage.
 
-        The *timeout* parameter exists only for signature parity with the sync
-        and gRPC clients; it is unused because this method always raises.
+        The *timeout* and *on_error* parameters exist only for signature parity
+        with the sync and gRPC clients; they are unused because this method
+        always raises.
 
         Raises:
             :exc:`NotImplementedError`: Always.

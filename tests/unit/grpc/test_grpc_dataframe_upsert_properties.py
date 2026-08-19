@@ -71,6 +71,13 @@ def _channel_vectors(ch: MagicMock):
     return [v for c in ch.upsert.call_args_list for v in c.args[0]]
 
 
+def _batches_of(n_rows: int, batch_size: int, failing: frozenset[int]):
+    """The batches at the given indices, as lists of record dicts."""
+    rows = [{"id": f"v{i}"} for i in range(n_rows)]
+    batches = [rows[i : i + batch_size] for i in range(0, n_rows, batch_size)]
+    return [batch for idx, batch in enumerate(batches) if idx in failing]
+
+
 def _side_effect_factory(batch_size: int, failing: frozenset[int], exc_factory):
     """Per-batch side effect keyed on the batch's own contents.
 
@@ -211,11 +218,16 @@ class TestUpsertFromDataframePartitionProperties:
 
 
 class TestUpsertFromDataframePartialFailureProperties:
-    """Pins the current all-or-nothing-raise contract (see issue #26)."""
+    """The aggregating contract, shared with upsert(batch_size=...) and REST.
+
+    Changed in 9.2.0 (issue #26). What these used to pin — first failure wins,
+    partial count discarded — is now what `on_error="raise"` does, minus the
+    discarding.
+    """
 
     @settings(max_examples=50, deadline=None)
     @given(case=_cases())
-    def test_returns_full_count_iff_no_batch_fails(self, case) -> None:
+    def test_successes_are_reported_even_when_other_batches_fail(self, case) -> None:
         pd = pytest.importorskip("pandas")
         n_rows, batch_size, failing, _ = case
         ch = MagicMock()
@@ -223,17 +235,38 @@ class TestUpsertFromDataframePartialFailureProperties:
             batch_size, failing, lambda i: RuntimeError(f"batch {i} boom")
         )
         with _make_grpc_index(ch) as idx:
-            df = _make_df(pd, n_rows)
-            if not failing:
-                result = idx.upsert_from_dataframe(df, batch_size=batch_size, show_progress=False)
-                assert result.upserted_count == n_rows
-            else:
-                with pytest.raises(RuntimeError):
-                    idx.upsert_from_dataframe(df, batch_size=batch_size, show_progress=False)
+            result = idx.upsert_from_dataframe(
+                _make_df(pd, n_rows), batch_size=batch_size, show_progress=False, on_error="collect"
+            )
+
+        failed_rows = sum(len(batch) for batch in _batches_of(n_rows, batch_size, failing))
+        assert result.upserted_count == n_rows - failed_rows
+        assert result.failed_item_count == failed_rows
+        assert result.upserted_count + result.failed_item_count == n_rows
+        assert len(result.errors) == len(failing)
 
     @settings(max_examples=50, deadline=None)
     @given(case=_cases())
-    def test_original_exception_propagates_unwrapped(self, case) -> None:
+    def test_failed_rows_are_returned_for_retry(self, case) -> None:
+        pd = pytest.importorskip("pandas")
+        n_rows, batch_size, failing, _ = case
+        ch = MagicMock()
+        ch.upsert.side_effect = _side_effect_factory(
+            batch_size, failing, lambda i: RuntimeError(f"batch {i} boom")
+        )
+        with _make_grpc_index(ch) as idx:
+            result = idx.upsert_from_dataframe(
+                _make_df(pd, n_rows), batch_size=batch_size, show_progress=False, on_error="collect"
+            )
+
+        expected = {
+            item["id"] for batch in _batches_of(n_rows, batch_size, failing) for item in batch
+        }
+        assert {item["id"] for item in result.failed_items} == expected
+
+    @settings(max_examples=50, deadline=None)
+    @given(case=_cases())
+    def test_on_error_raise_propagates_the_original_exception_unwrapped(self, case) -> None:
         pd = pytest.importorskip("pandas")
         n_rows, batch_size, failing, _ = case
         if not failing:
@@ -245,12 +278,15 @@ class TestUpsertFromDataframePartialFailureProperties:
         with _make_grpc_index(ch) as idx:
             with pytest.raises(PineconeTimeoutError):
                 idx.upsert_from_dataframe(
-                    _make_df(pd, n_rows), batch_size=batch_size, show_progress=False
+                    _make_df(pd, n_rows),
+                    batch_size=batch_size,
+                    show_progress=False,
+                    on_error="raise",
                 )
 
     @settings(max_examples=40, deadline=None)
     @given(case=_cases())
-    def test_failed_batches_are_not_cancelled(self, case) -> None:
+    def test_every_batch_runs_regardless_of_failures(self, case) -> None:
         pd = pytest.importorskip("pandas")
         n_rows, batch_size, failing, n_batches = case
         if not failing:
@@ -260,15 +296,14 @@ class TestUpsertFromDataframePartialFailureProperties:
             batch_size, failing, lambda i: RuntimeError(f"batch {i} boom")
         )
         with _make_grpc_index(ch) as idx:
-            with pytest.raises(RuntimeError):
-                idx.upsert_from_dataframe(
-                    _make_df(pd, n_rows), batch_size=batch_size, show_progress=False
-                )
+            idx.upsert_from_dataframe(
+                _make_df(pd, n_rows), batch_size=batch_size, show_progress=False, on_error="collect"
+            )
 
-            idx._executor.shutdown(wait=True)
-            assert _upsert_call_count(ch) == n_batches
+        assert _upsert_call_count(ch) == n_batches
 
-    def test_earlier_successes_are_discarded_on_later_failure(self) -> None:
+    def test_on_error_raise_settles_every_batch_before_raising(self) -> None:
+        """The old raise left the remaining batches running server-side."""
         pd = pytest.importorskip("pandas")
         ch = MagicMock()
         ch.upsert.side_effect = _side_effect_factory(
@@ -276,4 +311,25 @@ class TestUpsertFromDataframePartialFailureProperties:
         )
         with _make_grpc_index(ch) as idx:
             with pytest.raises(RuntimeError):
-                idx.upsert_from_dataframe(_make_df(pd, 6), batch_size=2, show_progress=False)
+                idx.upsert_from_dataframe(
+                    _make_df(pd, 6), batch_size=2, show_progress=False, on_error="raise"
+                )
+
+        assert _upsert_call_count(ch) == 3
+
+    def test_on_error_raise_attaches_the_partial_result(self) -> None:
+        """The old raise discarded the count, so no caller could tell what landed."""
+        pd = pytest.importorskip("pandas")
+        ch = MagicMock()
+        ch.upsert.side_effect = _side_effect_factory(
+            batch_size=2, failing=frozenset({1}), exc_factory=lambda i: RuntimeError("boom")
+        )
+        with _make_grpc_index(ch) as idx:
+            with pytest.raises(RuntimeError) as excinfo:
+                idx.upsert_from_dataframe(
+                    _make_df(pd, 6), batch_size=2, show_progress=False, on_error="raise"
+                )
+
+        response = excinfo.value.response
+        assert response.upserted_count == 4
+        assert {item["id"] for item in response.failed_items} == {"v2", "v3"}

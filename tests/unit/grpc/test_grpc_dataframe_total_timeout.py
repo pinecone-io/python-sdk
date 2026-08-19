@@ -98,6 +98,7 @@ class TestExpiry:
                 show_progress=False,
                 max_concurrency=1,
                 total_timeout=0.05,
+                on_error="raise",
             )
         channel.released.set()
 
@@ -121,6 +122,7 @@ class TestExpiry:
                 show_progress=False,
                 max_concurrency=1,
                 total_timeout=0.05,
+                on_error="raise",
             )
         channel.released.set()
 
@@ -138,6 +140,7 @@ class TestExpiry:
                 show_progress=False,
                 max_concurrency=1,
                 total_timeout=0.05,
+                on_error="raise",
             )
         channel.released.set()
 
@@ -159,6 +162,7 @@ class TestExpiry:
                 show_progress=False,
                 max_concurrency=1,
                 total_timeout=0.05,
+                on_error="raise",
             )
         channel.released.set()
 
@@ -202,6 +206,26 @@ class TestNothingLeftToRetry:
         assert result.upserted_count == 4
         assert result.failed_item_count == 0
         assert result.failed_items == []
+
+
+class TestExpiryUnderCollect:
+    """Expiry follows on_error, like any other partial failure."""
+
+    def test_default_returns_the_partial_result_instead_of_raising(self) -> None:
+        channel = _StallingChannel(accept=2)
+        index = _grpc_index(MagicMock(upsert=channel.upsert))
+
+        response = index.upsert_from_dataframe(
+            _frame(6),
+            batch_size=1,
+            show_progress=False,
+            max_concurrency=1,
+            total_timeout=0.05,
+        )
+        channel.released.set()
+
+        assert response.upserted_count == 3
+        assert {item["id"] for item in response.failed_items} == {"v3", "v4", "v5"}
 
 
 class TestGenerousDeadline:
@@ -254,6 +278,7 @@ class TestDeadlineDuringLimiterWait:
                 show_progress=False,
                 max_concurrency=1,
                 total_timeout=0.05,
+                on_error="raise",
             )
         channel.released.set()
 

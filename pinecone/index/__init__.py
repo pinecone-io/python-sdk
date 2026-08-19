@@ -6,7 +6,7 @@ import logging
 import os
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     import pandas as pd  # type: ignore[import-untyped]
@@ -22,7 +22,7 @@ from pinecone._internal.data_plane_helpers import (
     _validate_host,
     _vector_to_dict,
 )
-from pinecone._internal.dataframe import extract_records
+from pinecone._internal.dataframe import _resolve_on_error, extract_records
 from pinecone._internal.keyword_only import keyword_only_methods
 from pinecone._internal.validation import require_in_range, require_positive
 from pinecone._internal.vector_factory import VectorFactory
@@ -368,6 +368,8 @@ class Index:
         batch_size: int = 500,
         show_progress: bool = True,
         timeout: float | None = None,
+        *,
+        on_error: Literal["raise", "collect"] | None = None,
     ) -> UpsertResponse:
         """Upsert vectors from a pandas DataFrame.
 
@@ -388,6 +390,12 @@ class Index:
                 batch's* upsert request — not to the DataFrame as a whole.
                 ``None`` (default) uses the client-level default. Raise it to
                 accommodate large or slow batches.
+            on_error: What to do when some batches fail. ``"collect"`` (the
+                default, and this transport's behavior since v9.0.0) returns an
+                :class:`UpsertResponse` carrying ``failed_item_count``, ``errors``
+                and ``failed_items``. ``"raise"`` re-raises the lowest-indexed
+                batch failure once every batch has settled, with the partial
+                result attached to the exception's ``response`` attribute.
 
         Returns:
             :class:`UpsertResponse` with the total count of vectors upserted across
@@ -457,14 +465,23 @@ class Index:
 
         records: list[dict[str, Any]] = extract_records(df)
 
+        resolved_on_error = _resolve_on_error(on_error)
+
         ns = namespace or ""
-        return self.upsert(
+        response = self.upsert(
             vectors=records,
             namespace=ns,
             batch_size=batch_size,
             show_progress=show_progress,
             timeout=timeout,
         )
+
+        if resolved_on_error == "raise" and response.errors:
+            error = min(response.errors, key=lambda err: err.batch_index).error
+            error.response = response  # type: ignore[attr-defined]
+            raise error
+
+        return response
 
     def upsert_records(
         self,
