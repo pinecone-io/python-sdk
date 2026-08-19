@@ -403,6 +403,7 @@ class Pinecone:
                 retry_config=self._grpc_retry_config,
                 proxy_url=self._config.proxy_url or None,
                 on_throttle=self._limiter_registry.report_throttled,
+                limiter_registry=self._limiter_registry,
             )
 
         from pinecone.index import Index as _Index

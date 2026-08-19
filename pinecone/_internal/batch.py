@@ -216,9 +216,14 @@ def batch_execute(
 
     def _wrapped_op(batch: list[dict[str, Any]]) -> Any:
         try:
-            return operation(batch)
+            result = operation(batch)
         finally:
             _release()
+        # AIMD's increase half. Without this the limiter only ever halves, so one
+        # throttle permanently pins a long-lived client to a lower concurrency.
+        if limiter is not None:
+            limiter.report_success()
+        return result
 
     progress = _create_progress_bar(total_batches, desc, show_progress)
 
@@ -375,6 +380,8 @@ async def async_batch_execute(
             else:
                 successful_item_count += len(batch)
                 _collect_lsn(batch_result, lsn_reconciled_values, lsn_committed_values)
+                if limiter is not None:
+                    limiter.report_success()
             progress.update(1)
         finally:
             if use_limiter:

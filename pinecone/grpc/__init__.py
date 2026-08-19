@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 from pinecone._internal.adapters.imports_adapter import ImportsAdapter
 from pinecone._internal.adapters.vectors_adapter import VectorsAdapter, extract_response_info
+from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
 from pinecone._internal.batch import batch_execute
 from pinecone._internal.batching import validate_batch_size
 from pinecone._internal.config import PineconeConfig, RetryConfig
@@ -168,6 +169,24 @@ _GRPC_DEFAULT_BACKOFF_FACTOR = 0.1
 _GRPC_DEFAULT_MAX_WAIT = 60.0
 
 
+def _limiter_host(host: str) -> str:
+    """The key the Rust throttle callback reports under.
+
+    ``self._host`` carries a scheme, because ``normalize_host`` adds one; the
+    callback receives what ``parse_host_from_endpoint`` produced, which is the
+    bare hostname. Registering a limiter under one and reporting throttles
+    against the other would leave the limiter permanently at its ceiling.
+    """
+    bare = host
+    for prefix in ("https://", "http://"):
+        if bare.startswith(prefix):
+            bare = bare[len(prefix) :]
+            break
+    for separator in (":", "/"):
+        bare = bare.split(separator, 1)[0]
+    return bare
+
+
 def _default_max_concurrency() -> int:
     """What an unbounded submission into a default ThreadPoolExecutor already gave.
 
@@ -201,6 +220,9 @@ class GrpcIndex:
             values (UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED).
         proxy_url (str | None): HTTP proxy URL. gRPC traffic is tunnelled through it with
             HTTP CONNECT.
+        limiter_registry (_AdaptiveLimiterRegistry | None): SDK-internal. Registry the
+            bulk paths consult to back off under throttling. Wired by
+            :meth:`Pinecone.index`; not intended for user configuration.
 
     Raises:
         :exc:`ValidationError`: If no API key can be resolved or the host is invalid.
@@ -243,6 +265,7 @@ class GrpcIndex:
         retry_config: RetryConfig | None = None,
         proxy_url: str | None = None,
         on_throttle: Callable[[str], None] | None = None,
+        limiter_registry: _AdaptiveLimiterRegistry | None = None,
     ) -> None:
         # Resolve API key: explicit arg > env var
         resolved_key = api_key or os.environ.get("PINECONE_API_KEY", "")
@@ -254,6 +277,8 @@ class GrpcIndex:
 
         # Validate and normalize host
         self._host = _validate_host(host)
+        self._limiter_host = _limiter_host(self._host)
+        self._limiter_registry = limiter_registry
         self._source_tag = source_tag
 
         # Build gRPC endpoint and create the Rust-backed channel
@@ -442,6 +467,8 @@ class GrpcIndex:
             show_progress=show_progress,
             desc="Upserting",
             executor=self._get_batch_executor(max_concurrency),
+            limiter_registry=self._limiter_registry,
+            host=self._limiter_host,
         )
 
         return UpsertResponse(
@@ -1204,6 +1231,8 @@ class GrpcIndex:
             show_progress=show_progress,
             desc="Upserting",
             executor=self._get_batch_executor(resolved_concurrency),
+            limiter_registry=self._limiter_registry,
+            host=self._limiter_host,
         )
 
         if batch_result.errors:
