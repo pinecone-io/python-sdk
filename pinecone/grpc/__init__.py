@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 import warnings
+from collections import OrderedDict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Literal
@@ -167,6 +168,10 @@ def _dict_to_namespace_description(data: dict[str, Any]) -> NamespaceDescription
 # gRPC's retry defaults, which differ from REST's (3 / 0.25s / 60s). The counts and
 # floor are what the Rust layer has always used; only the cap changed, from 1.6s — a
 # value small enough to swallow a `grpc-retry-pushback-ms: 30000` hint from the server.
+# Distinct concurrency values a handle keeps pools for. Callers realistically use
+# one or two; the cap only matters for code that varies it per call.
+_MAX_CACHED_BATCH_EXECUTORS = 4
+
 _GRPC_DEFAULT_MAX_RETRIES = 5
 _GRPC_DEFAULT_BACKOFF_FACTOR = 0.1
 _GRPC_DEFAULT_MAX_WAIT = 60.0
@@ -342,7 +347,10 @@ class GrpcIndex:
         self._request_timeout = timeout
         self._host = _validate_host(host)
         self._limiter_host = _limiter_host(self._host)
-        self._limiter_registry = limiter_registry
+        # A directly-constructed handle has no client behind it to supply one,
+        # and without a registry the bulk paths do no adaptive backoff at all.
+        # Per-handle state is weaker than per-client but far better than none.
+        self._limiter_registry = limiter_registry or _AdaptiveLimiterRegistry()
         self._source_tag = source_tag
 
         # Build gRPC endpoint and create the Rust-backed channel
@@ -381,7 +389,7 @@ class GrpcIndex:
         )
 
         self._executor = ThreadPoolExecutor()
-        self._batch_executors: dict[int, ThreadPoolExecutor] = {}
+        self._batch_executors: OrderedDict[int, ThreadPoolExecutor] = OrderedDict()
         self._batch_executor_lock = threading.Lock()
 
         # REST HTTP client for records operations (integrated inference).
@@ -416,13 +424,19 @@ class GrpcIndex:
         futures after shutdown" in whichever one was still submitting.
         """
         with self._batch_executor_lock:
-            executor = self._batch_executors.get(max_concurrency)
+            executor = self._batch_executors.pop(max_concurrency, None)
             if executor is None:
                 executor = ThreadPoolExecutor(
                     max_concurrency,
                     thread_name_prefix="pinecone-grpc-batch-upsert",
                 )
-                self._batch_executors[max_concurrency] = executor
+                # Evict least-recently-used rather than growing without bound: a
+                # caller varying max_concurrency could otherwise accumulate 64
+                # pools and their threads for the life of the handle.
+                while len(self._batch_executors) >= _MAX_CACHED_BATCH_EXECUTORS:
+                    _, evicted = self._batch_executors.popitem(last=False)
+                    evicted.shutdown(wait=False)
+            self._batch_executors[max_concurrency] = executor
             return executor
 
     def upsert(

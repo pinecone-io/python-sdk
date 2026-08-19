@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
 from pinecone.models.batch import BatchResult
 
@@ -231,3 +233,68 @@ class TestClientWiresTheRegistry:
             idx = pc.index(host="test-idx-abc.svc.pinecone.io", grpc=True)
 
         assert idx._limiter_registry is pc._limiter_registry
+
+
+class TestDirectConstructionIsStillProtected:
+    """A bare GrpcIndex has no client behind it to supply a registry."""
+
+    def test_it_builds_its_own_registry(self) -> None:
+        from pinecone.grpc import GrpcIndex
+
+        mock_module = MagicMock()
+        mock_module.GrpcChannel.return_value = MagicMock()
+        with patch.dict("sys.modules", {_MOCK_GRPC_MODULE_PATH: mock_module}):
+            idx = GrpcIndex(host="https://test-idx-abc.svc.pinecone.io", api_key="test-key")
+
+        assert idx._limiter_registry is not None
+
+    def test_the_batch_path_gates_on_it(self) -> None:
+        """Without a registry the gate degenerates to a deadline check."""
+        from pinecone.grpc import GrpcIndex
+
+        channel = MagicMock()
+        channel.upsert.return_value = {"upserted_count": 1}
+        mock_module = MagicMock()
+        mock_module.GrpcChannel.return_value = channel
+        with patch.dict("sys.modules", {_MOCK_GRPC_MODULE_PATH: mock_module}):
+            idx = GrpcIndex(host="https://test-idx-abc.svc.pinecone.io", api_key="test-key")
+
+        with patch("pinecone.grpc.batch_execute", autospec=True) as spy:
+            spy.return_value = _empty_batch_result()
+            idx.upsert(vectors=[{"id": "v1", "values": [0.1]}], batch_size=1, show_progress=False)
+
+        assert spy.call_args[1]["limiter_registry"] is idx._limiter_registry
+
+
+class TestBatchExecutorCacheIsBounded:
+    def test_old_pools_are_evicted_and_shut_down(self) -> None:
+        from pinecone.grpc import _MAX_CACHED_BATCH_EXECUTORS, GrpcIndex
+
+        mock_module = MagicMock()
+        mock_module.GrpcChannel.return_value = MagicMock()
+        with patch.dict("sys.modules", {_MOCK_GRPC_MODULE_PATH: mock_module}):
+            idx = GrpcIndex(host="https://test-idx-abc.svc.pinecone.io", api_key="test-key")
+
+        first = idx._get_batch_executor(1)
+        for size in range(2, _MAX_CACHED_BATCH_EXECUTORS + 3):
+            idx._get_batch_executor(size)
+
+        assert len(idx._batch_executors) <= _MAX_CACHED_BATCH_EXECUTORS
+        with pytest.raises(RuntimeError):
+            first.submit(lambda: None)
+
+    def test_a_reused_size_stays_alive(self) -> None:
+        from pinecone.grpc import GrpcIndex
+
+        mock_module = MagicMock()
+        mock_module.GrpcChannel.return_value = MagicMock()
+        with patch.dict("sys.modules", {_MOCK_GRPC_MODULE_PATH: mock_module}):
+            idx = GrpcIndex(host="https://test-idx-abc.svc.pinecone.io", api_key="test-key")
+
+        pool = idx._get_batch_executor(4)
+        for size in (8, 16):
+            idx._get_batch_executor(size)
+            idx._get_batch_executor(4)
+
+        assert idx._get_batch_executor(4) is pool
+        assert pool.submit(lambda: "alive").result() == "alive"

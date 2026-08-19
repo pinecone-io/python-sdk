@@ -8,7 +8,6 @@ parallel, collect errors, and optionally display a tqdm progress bar.
 from __future__ import annotations
 
 import asyncio
-import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as _FuturesTimeoutError
@@ -109,6 +108,10 @@ class _Deadline:
         if self._expires_at is None:
             return None
         return max(0.0, self._expires_at - time.monotonic())
+
+    def at(self) -> float | None:
+        """The absolute monotonic instant this expires, or None if unbounded."""
+        return self._expires_at
 
 
 def _abandoned_error(batch_index: int, batch: list[dict[str, Any]], total_timeout: float) -> Any:
@@ -242,31 +245,20 @@ def batch_execute(
     else:
         limiter = None
 
-    condition = threading.Condition()
-    inflight = 0
-
     def _acquire(deadline: _Deadline) -> bool:
-        """Take an in-flight slot, or report that the budget ran out waiting for one."""
-        nonlocal inflight
+        """Take an in-flight slot, or report that the budget ran out waiting for one.
+
+        The slot is owned by the limiter, not by this call, so concurrent bulk
+        operations against one host share a single bound.
+        """
         if limiter is None:
             return not deadline.expired()
-        with condition:
-            while inflight >= limiter.current_limit():
-                if deadline.expired():
-                    return False
-                condition.wait(timeout=deadline.remaining())
-            if deadline.expired():
-                return False
-            inflight += 1
-        return True
+        return limiter.acquire(deadline.at())
 
     def _release() -> None:
-        nonlocal inflight
         if limiter is None:
             return
-        with condition:
-            inflight -= 1
-            condition.notify_all()
+        limiter.release()
 
     def _wrapped_op(batch: list[dict[str, Any]]) -> Any:
         try:

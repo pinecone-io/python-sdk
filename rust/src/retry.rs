@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rand::Rng;
@@ -8,6 +8,71 @@ use tonic::Status;
 
 /// Callback type invoked on every retryable error. Receives the host string.
 pub type ThrottleCallback = Arc<dyn Fn(String) + Send + Sync>;
+
+/// Token bucket bounding how much *extra* load retries may add, per gRFC A6.
+///
+/// The adaptive limiter on the Python side bounds how many batches are in
+/// flight; nothing bounded how many attempts each one costs. During a partial
+/// outage — say 20% of calls failing — a flat 6x multiplier means a client sends
+/// 2x its baseline volume at exactly the moment the backend has lost capacity.
+///
+/// Every failure spends a token; every success returns `token_ratio` of one.
+/// While the bucket is below half, retries are suppressed and calls fail fast on
+/// their first attempt, so a total outage self-limits to one request per call
+/// instead of `max_retries + 1`.
+pub struct RetryBudget {
+    tokens: Mutex<f64>,
+    max_tokens: f64,
+    token_ratio: f64,
+}
+
+impl RetryBudget {
+    pub fn new(max_tokens: f64, token_ratio: f64) -> Self {
+        Self {
+            tokens: Mutex::new(max_tokens),
+            max_tokens,
+            token_ratio,
+        }
+    }
+
+    /// Spend a token for a failed attempt. Returns whether a retry is affordable.
+    fn withdraw(&self) -> bool {
+        let mut tokens = self.tokens.lock().unwrap_or_else(|e| e.into_inner());
+        *tokens = (*tokens - 1.0).max(0.0);
+        *tokens > self.max_tokens / 2.0
+    }
+
+    /// Return a fraction of a token for a successful call.
+    fn deposit(&self) {
+        let mut tokens = self.tokens.lock().unwrap_or_else(|e| e.into_inner());
+        *tokens = (*tokens + self.token_ratio).min(self.max_tokens);
+    }
+}
+
+impl Default for RetryBudget {
+    fn default() -> Self {
+        Self::new(DEFAULT_BUDGET_TOKENS, DEFAULT_BUDGET_RATIO)
+    }
+}
+
+/// Bucket size. Large enough that a short burst of failures on an otherwise
+/// healthy channel never suppresses retries, small enough to react within a few
+/// hundred calls.
+const DEFAULT_BUDGET_TOKENS: f64 = 100.0;
+
+/// Sustained retry overhead permitted once the bucket has drained: 10% of
+/// successful traffic, which is the gRFC A6 default.
+const DEFAULT_BUDGET_RATIO: f64 = 0.1;
+
+/// Multiple of `initial_backoff` seeding the decorrelated-jitter window.
+///
+/// Seeding it at `initial_backoff` makes the first retry `uniform(base, 3*base)`
+/// — with a 100ms base that is a 200ms window, identical for every client in a
+/// fleet. A backend restart returns UNAVAILABLE to everyone at once and carries
+/// no trailers, so that narrow window is exactly where a thundering herd forms.
+/// Nothing useful recovers in 100ms anyway, so the wider first draw costs a
+/// caller little and buys the fleet real dispersion.
+const FIRST_RETRY_SPREAD: u32 = 10;
 
 /// Configuration for retry behavior on gRPC calls.
 #[derive(Clone)]
@@ -35,6 +100,8 @@ pub struct RetryConfig {
     pub on_throttle: Option<ThrottleCallback>,
     /// Host string passed to `on_throttle` callback (parsed from endpoint at construction).
     pub host: String,
+    /// Shared per-channel retry budget. `None` disables budgeting entirely.
+    pub budget: Option<Arc<RetryBudget>>,
 }
 
 impl Default for RetryConfig {
@@ -57,26 +124,44 @@ impl Default for RetryConfig {
             .collect(),
             on_throttle: None,
             host: String::new(),
+            budget: Some(Arc::new(RetryBudget::default())),
         }
     }
+}
+
+/// What a server-supplied pushback hint tells the client to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pushback {
+    /// Wait at least this long before retrying.
+    Wait(Duration),
+    /// The server is shedding load and does not want this call retried at all.
+    Stop,
 }
 
 /// Parse a server-supplied retry pushback hint from a tonic Status's trailers.
 ///
 /// Looks for `grpc-retry-pushback-ms` first (gRPC-native, milliseconds), then
 /// `retry-after` (HTTP-style, seconds) as a fallback. Returns `None` if neither
-/// is present or the value cannot be parsed as a non-negative number.
+/// is present or the value cannot be parsed as a number.
+///
+/// A negative value is `Pushback::Stop`: per gRFC A6 that is the server saying
+/// do not retry. Treating it as "no hint" would mean retrying against an
+/// explicit instruction from a backend that is trying to shed load.
 ///
 /// HTTP-date values in `retry-after` are not parsed and return `None`.
-pub fn parse_pushback(status: &Status) -> Option<Duration> {
+pub fn parse_pushback(status: &Status) -> Option<Pushback> {
     let metadata = status.metadata();
 
     // gRPC-native: milliseconds
     if let Some(v) = metadata.get("grpc-retry-pushback-ms") {
         if let Ok(s) = v.to_str() {
             if let Ok(ms) = s.trim().parse::<f64>() {
-                if ms >= 0.0 && ms.is_finite() {
-                    return Some(Duration::from_millis(ms as u64));
+                if ms.is_finite() {
+                    return Some(if ms < 0.0 {
+                        Pushback::Stop
+                    } else {
+                        Pushback::Wait(Duration::from_millis(ms as u64))
+                    });
                 }
             }
         }
@@ -86,8 +171,12 @@ pub fn parse_pushback(status: &Status) -> Option<Duration> {
     if let Some(v) = metadata.get("retry-after") {
         if let Ok(s) = v.to_str() {
             if let Ok(secs) = s.trim().parse::<f64>() {
-                if secs >= 0.0 && secs.is_finite() {
-                    return Some(Duration::from_secs_f64(secs));
+                if secs.is_finite() {
+                    return Some(if secs < 0.0 {
+                        Pushback::Stop
+                    } else {
+                        Pushback::Wait(Duration::from_secs_f64(secs))
+                    });
                 }
             }
         }
@@ -99,17 +188,26 @@ pub fn parse_pushback(status: &Status) -> Option<Duration> {
 /// Add a uniform smear on top of the server-supplied pushback so concurrent
 /// clients don't all wake at the same instant.
 ///
-/// Returns `min(max_backoff, pushback + uniform(0, pushback * 0.5))`.
-fn smear_pushback(pushback: Duration, max_backoff: Duration) -> Duration {
-    let pb_ms = pushback.as_millis() as u64;
-    let smear_max = pb_ms / 2;
+/// Returns `base + uniform(0, max(base / 2, floor))` where `base` is the
+/// pushback clamped to `max_backoff`.
+///
+/// The clamp happens *before* the smear, matching the REST transport. Smearing
+/// first and truncating afterwards collapses part of the distribution onto
+/// exactly `max_backoff` — with a 60s cap, a 50s pushback puts 60% of a fleet on
+/// the same millisecond and a pushback at or above the cap puts all of it there,
+/// on the one code path whose whole purpose is dispersal.
+///
+/// `floor` keeps a zero pushback ("retry immediately", per gRFC A6) from
+/// producing a zero-width, perfectly synchronized wave.
+fn smear_pushback(pushback: Duration, max_backoff: Duration, floor: Duration) -> Duration {
+    let base_ms = std::cmp::min(pushback, max_backoff).as_millis() as u64;
+    let smear_max = std::cmp::max(base_ms / 2, floor.as_millis() as u64);
     let smear_ms = if smear_max == 0 {
         0
     } else {
         rand::rng().random_range(0..=smear_max)
     };
-    let total = Duration::from_millis(pb_ms.saturating_add(smear_ms));
-    std::cmp::min(total, max_backoff)
+    Duration::from_millis(base_ms.saturating_add(smear_ms))
 }
 
 /// Decorrelated jitter (AWS-recommended pattern): uniform(base, prev*3)
@@ -170,7 +268,7 @@ where
     Fut: Future<Output = Result<T, Status>>,
 {
     let mut attempt = 0u32;
-    let mut prev_delay = config.initial_backoff;
+    let mut prev_delay = config.initial_backoff * FIRST_RETRY_SPREAD;
     let mut pending = request;
 
     loop {
@@ -183,18 +281,35 @@ where
         };
 
         match operation(payload).await {
-            Ok(val) => return Ok(val),
+            Ok(val) => {
+                if let Some(budget) = &config.budget {
+                    budget.deposit();
+                }
+                return Ok(val);
+            }
             Err(status) if config.retryable_codes.contains(&(status.code() as i32)) => {
                 if let Some(cb) = &config.on_throttle {
                     cb(config.host.clone());
                 }
+                let affordable = config.budget.as_ref().is_none_or(|b| b.withdraw());
                 let Some(next) = spare else {
                     return Err(status);
                 };
-                let delay = if let Some(pushback) = parse_pushback(&status) {
-                    smear_pushback(pushback, config.max_backoff)
-                } else {
-                    decorrelated_jitter(config.initial_backoff, prev_delay, config.max_backoff)
+                if !affordable {
+                    tracing::debug!("retry budget exhausted; failing fast");
+                    return Err(status);
+                }
+                let delay = match parse_pushback(&status) {
+                    Some(Pushback::Stop) => {
+                        tracing::debug!("server asked us not to retry; failing fast");
+                        return Err(status);
+                    }
+                    Some(Pushback::Wait(pushback)) => {
+                        smear_pushback(pushback, config.max_backoff, config.initial_backoff)
+                    }
+                    None => {
+                        decorrelated_jitter(config.initial_backoff, prev_delay, config.max_backoff)
+                    }
                 };
                 tracing::debug!("retry attempt {} sleeping for {:?}", attempt + 1, delay);
                 prev_delay = delay;
@@ -464,7 +579,10 @@ mod tests {
         status
             .metadata_mut()
             .insert("grpc-retry-pushback-ms", "1500".parse().unwrap());
-        assert_eq!(parse_pushback(&status), Some(Duration::from_millis(1500)));
+        assert_eq!(
+            parse_pushback(&status),
+            Some(Pushback::Wait(Duration::from_millis(1500)))
+        );
     }
 
     #[test]
@@ -473,7 +591,10 @@ mod tests {
         status
             .metadata_mut()
             .insert("retry-after", "30".parse().unwrap());
-        assert_eq!(parse_pushback(&status), Some(Duration::from_secs(30)));
+        assert_eq!(
+            parse_pushback(&status),
+            Some(Pushback::Wait(Duration::from_secs(30)))
+        );
     }
 
     #[test]
@@ -485,7 +606,10 @@ mod tests {
         status
             .metadata_mut()
             .insert("retry-after", "30".parse().unwrap());
-        assert_eq!(parse_pushback(&status), Some(Duration::from_millis(500)));
+        assert_eq!(
+            parse_pushback(&status),
+            Some(Pushback::Wait(Duration::from_millis(500)))
+        );
     }
 
     #[test]
@@ -495,12 +619,23 @@ mod tests {
     }
 
     #[test]
-    fn parse_pushback_returns_none_for_negative_value() {
-        let mut status = Status::resource_exhausted("limited");
+    fn parse_pushback_negative_means_do_not_retry() {
+        // gRFC A6: a negative pushback is the server refusing the retry, not a
+        // missing hint. Treating it as absent retries against the instruction.
+        let mut status = Status::unavailable("busy");
         status
             .metadata_mut()
-            .insert("grpc-retry-pushback-ms", "-100".parse().unwrap());
-        assert_eq!(parse_pushback(&status), None);
+            .insert("grpc-retry-pushback-ms", "-1".parse().unwrap());
+        assert_eq!(parse_pushback(&status), Some(Pushback::Stop));
+    }
+
+    #[test]
+    fn parse_pushback_negative_retry_after_means_do_not_retry() {
+        let mut status = Status::unavailable("busy");
+        status
+            .metadata_mut()
+            .insert("retry-after", "-5".parse().unwrap());
+        assert_eq!(parse_pushback(&status), Some(Pushback::Stop));
     }
 
     #[test]
@@ -520,7 +655,10 @@ mod tests {
             .metadata_mut()
             .insert("grpc-retry-pushback-ms", "1500.5".parse().unwrap());
         // Truncates to 1500 ms (Duration::from_millis takes u64)
-        assert_eq!(parse_pushback(&status), Some(Duration::from_millis(1500)));
+        assert_eq!(
+            parse_pushback(&status),
+            Some(Pushback::Wait(Duration::from_millis(1500)))
+        );
     }
 
     #[test]
@@ -698,28 +836,62 @@ mod tests {
         let max = Duration::from_secs(120);
         let pushback = Duration::from_secs(60);
         for _ in 0..200 {
-            let d = smear_pushback(pushback, max);
+            let d = smear_pushback(pushback, max, Duration::ZERO);
             assert!(d >= pushback, "delay {d:?} < pushback {pushback:?}");
             assert!(d <= Duration::from_millis(60_000 + 30_000));
         }
     }
 
     #[test]
-    fn smear_pushback_capped_at_max_backoff() {
+    fn smear_pushback_clamps_the_base_then_smears() {
+        // The clamp applies to the base, so the smear still disperses a fleet
+        // that was told to wait longer than the cap. Clamping afterwards instead
+        // would put every one of these samples on exactly `max`.
         let max = Duration::from_millis(70_000);
-        let pushback = Duration::from_secs(60);
-        for _ in 0..200 {
-            let d = smear_pushback(pushback, max);
-            assert!(d <= max);
+        let pushback = Duration::from_secs(120);
+        let samples: std::collections::HashSet<u64> = (0..200)
+            .map(|_| smear_pushback(pushback, max, Duration::ZERO).as_millis() as u64)
+            .collect();
+        assert!(
+            samples.len() > 50,
+            "pushback above the cap collapsed to {} distinct delays",
+            samples.len()
+        );
+        for d in &samples {
+            assert!(*d >= 70_000, "delay {d} below the clamped base");
+            assert!(*d <= 105_000, "delay {d} above base + half");
         }
     }
 
     #[test]
-    fn smear_pushback_zero_pushback_is_zero() {
-        assert_eq!(
-            smear_pushback(Duration::ZERO, Duration::from_secs(60)),
-            Duration::ZERO
+    fn smear_pushback_at_the_cap_still_disperses() {
+        let max = Duration::from_secs(60);
+        let samples: std::collections::HashSet<u64> = (0..200)
+            .map(|_| smear_pushback(max, max, Duration::ZERO).as_millis() as u64)
+            .collect();
+        assert!(
+            samples.len() > 50,
+            "a pushback exactly at the cap produced {} distinct delays",
+            samples.len()
         );
+    }
+
+    #[test]
+    fn smear_pushback_zero_disperses_using_the_floor() {
+        // gRFC A6 reads a zero pushback as "retry immediately". Without a floor
+        // every client would do so on the same millisecond.
+        let floor = Duration::from_millis(100);
+        let samples: std::collections::HashSet<u64> = (0..200)
+            .map(|_| {
+                smear_pushback(Duration::ZERO, Duration::from_secs(60), floor).as_millis() as u64
+            })
+            .collect();
+        assert!(
+            samples.len() > 20,
+            "zero pushback collapsed to {} delays",
+            samples.len()
+        );
+        assert!(samples.iter().all(|d| *d <= 100));
     }
 
     #[test]
