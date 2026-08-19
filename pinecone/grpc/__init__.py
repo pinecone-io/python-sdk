@@ -22,7 +22,7 @@ from pinecone._internal.data_plane_helpers import _build_search_records_body, _v
 from pinecone._internal.dataframe import extract_records
 from pinecone._internal.keyword_only import keyword_only_methods
 from pinecone._internal.validation import require_in_range, require_positive
-from pinecone._internal.vector_factory import VectorFactory
+from pinecone._internal.vector_factory import VectorFactory, validate_vector_dict
 from pinecone.errors.exceptions import (
     PineconeValueError,
     ValidationError,
@@ -1157,9 +1157,18 @@ class GrpcIndex:
 
         records: builtins.list[dict[str, Any]] = extract_records(df)
 
+        # Validate before submitting anything, so a malformed row cannot leave
+        # part of the frame ingested. VectorFactory would otherwise do this
+        # inside a worker thread, after earlier batches had already landed.
+        for record in records:
+            validate_vector_dict(record)
+
+        def _upsert_batch(batch: builtins.list[dict[str, Any]]) -> dict[str, Any]:
+            return self._channel.upsert(batch, namespace or None, timeout_s=timeout)
+
         batches = chunked(records, batch_size)
-        futures: builtins.list[PineconeFuture[UpsertResponse]] = [
-            self.upsert_async(vectors=batch, namespace=namespace, timeout=timeout)
+        futures = [
+            self._executor.submit(_upsert_batch, batch)
             for batch in with_progress(batches, show_progress=show_progress)
         ]
 
@@ -1168,8 +1177,7 @@ class GrpcIndex:
             # Each batch is bounded by the server-side deadline (*timeout*), so
             # wait indefinitely here rather than letting result()'s fixed 5s
             # default spuriously fail large ingests.
-            result = future.result(timeout=None)
-            total_count += result.upserted_count
+            total_count += future.result().get("upserted_count", 0)
 
         return UpsertResponse(upserted_count=total_count)
 

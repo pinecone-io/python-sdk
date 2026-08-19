@@ -286,3 +286,55 @@ class TestUnsupportedTypes:
     def test_int_rejected(self) -> None:
         with pytest.raises(PineconeTypeError, match="got int"):
             VectorFactory.build(42)
+
+
+class TestArrayLikeValues:
+    """Array-like values are unboxed in C, not one Python object per element."""
+
+    def test_numpy_values_become_real_python_floats(self) -> None:
+        np = pytest.importorskip("numpy")
+        arr = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+
+        result = VectorFactory.build({"id": "v1", "values": arr})
+
+        assert all(type(v) is float for v in result.values)
+
+    def test_numpy_values_are_json_serializable(self) -> None:
+        """`list(arr)` yielded np.float32 objects, which orjson refuses outright."""
+        np = pytest.importorskip("numpy")
+        import orjson
+
+        arr = np.array([0.1, 0.2], dtype=np.float32)
+        with pytest.raises(TypeError, match=r"numpy\.float32"):
+            orjson.dumps({"values": list(arr)})
+
+        result = VectorFactory.build({"id": "v1", "values": arr})
+
+        assert orjson.dumps({"values": result.values})
+
+    def test_plain_lists_are_still_passed_through_untouched(self) -> None:
+        values = [0.1, 0.2]
+
+        result = VectorFactory.build({"id": "v1", "values": values})
+
+        assert result.values is values
+
+    def test_tuple_values_still_convert(self) -> None:
+        result = VectorFactory.build({"id": "v1", "values": (0.1, 0.2)})
+
+        assert result.values == [0.1, 0.2]
+
+    def test_numpy_values_in_a_tuple_input(self) -> None:
+        np = pytest.importorskip("numpy")
+        arr = np.array([0.1, 0.2], dtype=np.float32)
+
+        result = VectorFactory.build(("v1", arr))
+
+        assert all(type(v) is float for v in result.values)
+
+    def test_zero_dimensional_array_still_rejected(self) -> None:
+        """A 0-d array is not a sequence of values; tolist() gives a bare scalar."""
+        np = pytest.importorskip("numpy")
+
+        with pytest.raises(TypeError):
+            VectorFactory.build({"id": "v1", "values": np.float32(0.5).reshape(())})

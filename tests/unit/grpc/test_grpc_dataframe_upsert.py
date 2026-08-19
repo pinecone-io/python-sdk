@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import inspect
+from concurrent.futures import Future
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
@@ -11,7 +12,6 @@ import pytest
 
 from pinecone.errors.exceptions import PineconeValueError
 from pinecone.grpc import GrpcIndex
-from pinecone.grpc.future import PineconeFuture
 from pinecone.models.vectors.responses import UpsertResponse
 
 _MOCK_GRPC_MODULE_PATH = "pinecone._grpc"
@@ -218,24 +218,30 @@ class TestGrpcDataframeUpsert:
     def test_client_side_wait_is_unbounded(
         self, grpc_index: GrpcIndex, mock_channel: MagicMock
     ) -> None:
-        """Result collection should wait indefinitely, not the 5s result() default.
+        """Collection waits for the server instead of imposing a client deadline.
 
-        This is what lets a batch slower than 5s succeed instead of raising
-        PineconeTimeoutError from the client-side wait.
+        The bug behind the customer's report: collection used
+        PineconeFuture.result()'s 5s default, so any batch slower than that
+        raised PineconeTimeoutError even though the upsert had succeeded. The
+        assertion is on the waiting, not on which future type does it.
         """
         pd = pytest.importorskip("pandas")
         df = pd.DataFrame({"id": ["v1", "v2"], "values": [[0.1], [0.2]]})
         mock_channel.upsert.return_value = {"upserted_count": 1}
 
-        with patch.object(
-            PineconeFuture, "result", autospec=True, return_value=_upsert_response(1)
-        ) as mock_result:
-            grpc_index.upsert_from_dataframe(df, batch_size=1, show_progress=False)
+        waits: list[object] = []
+        real_result = Future.result
 
-        assert mock_result.call_count == 2
-        for call in mock_result.call_args_list:
-            assert "timeout" in call.kwargs, "result() must be called with an explicit timeout"
-            assert call.kwargs["timeout"] is None
+        def _recording_result(self: Future[object], timeout: float | None = None) -> object:
+            waits.append(timeout)
+            return real_result(self, timeout)
+
+        with patch.object(Future, "result", _recording_result):
+            result = grpc_index.upsert_from_dataframe(df, batch_size=1, show_progress=False)
+
+        assert result.upserted_count == 2
+        assert waits, "collection did not wait on the batches at all"
+        assert all(w is None for w in waits), f"collection imposed a client-side deadline: {waits}"
 
     def test_metadata_and_sparse_values_forwarded(
         self, grpc_index: GrpcIndex, mock_channel: MagicMock

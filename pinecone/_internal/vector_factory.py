@@ -11,6 +11,22 @@ from pinecone.models.vectors.vector import Vector
 _RECOGNIZED_KEYS = {"id", "values", "sparse_values", "metadata"}
 
 
+def _as_list(raw: Any) -> list[Any]:
+    """Convert array-like *raw* to a list of Python scalars.
+
+    numpy and pyarrow expose ``.tolist()``, which unboxes in C. ``list()`` on a
+    numpy float32 array instead allocates one ``np.float32`` object per element —
+    2246ms and +248MB per 20k x 384 rows — and every one of those has to be
+    unboxed again by whatever consumes the list.
+    """
+    tolist = getattr(raw, "tolist", None)
+    if tolist is None:
+        return list(raw)
+    converted = tolist()
+    # A 0-d array yields a bare scalar; fall through so it raises as before.
+    return converted if isinstance(converted, list) else list(raw)
+
+
 def _from_tuple(item: tuple[Any, ...]) -> Vector:
     length = len(item)
     if length == 2:
@@ -21,7 +37,7 @@ def _from_tuple(item: tuple[Any, ...]) -> Vector:
             raise PineconeValueError(f"Vector ID must contain only ASCII characters, got: {id_!r}")
         if "\x00" in id_:
             raise PineconeValueError(f"Vector ID must not contain null characters, got: {id_!r}")
-        converted = values if isinstance(values, list) else list(values)
+        converted = values if isinstance(values, list) else _as_list(values)
         if not converted:
             raise PineconeValueError(
                 "Vector must have at least one of non-empty dense values or sparse values"
@@ -37,7 +53,7 @@ def _from_tuple(item: tuple[Any, ...]) -> Vector:
             raise PineconeValueError(f"Vector ID must not contain null characters, got: {id_!r}")
         if metadata is not None and not isinstance(metadata, dict):
             raise PineconeTypeError(f"metadata must be a dict, got {type(metadata).__name__}")
-        converted = values if isinstance(values, list) else list(values)
+        converted = values if isinstance(values, list) else _as_list(values)
         if not converted:
             raise PineconeValueError(
                 "Vector must have at least one of non-empty dense values or sparse values"
@@ -62,7 +78,7 @@ def _from_dict(item: dict[str, Any]) -> Vector:
     item_len = len(item)
     if item_len == 2 and "values" in item:
         raw_values = item["values"]
-        values = raw_values if isinstance(raw_values, list) else list(raw_values)
+        values = raw_values if isinstance(raw_values, list) else _as_list(raw_values)
         if not values:
             raise PineconeValueError(
                 "Vector must have at least one of non-empty dense values or sparse values"
@@ -72,7 +88,7 @@ def _from_dict(item: dict[str, Any]) -> Vector:
     # Fast path: 3-key dict {"id": ..., "values": ..., "sparse_values": ...}
     if item_len == 3 and "values" in item and "sparse_values" in item:
         raw_values = item["values"]
-        values = raw_values if isinstance(raw_values, list) else list(raw_values)
+        values = raw_values if isinstance(raw_values, list) else _as_list(raw_values)
         sv = _parse_sparse(item["sparse_values"])
         return Vector(id_, values, sv, None)
 
@@ -83,7 +99,7 @@ def _from_dict(item: dict[str, Any]) -> Vector:
 
     raw_values = item.get("values")
     values = (
-        (raw_values if isinstance(raw_values, list) else list(raw_values))
+        (raw_values if isinstance(raw_values, list) else _as_list(raw_values))
         if raw_values is not None
         else []
     )
@@ -135,13 +151,71 @@ def _parse_sparse(raw: Any) -> SparseValues:
         )
 
     return SparseValues(
-        indices if isinstance(indices, list) else list(indices),
+        indices if isinstance(indices, list) else _as_list(indices),
         (
             values
             if isinstance(values, list) and (not values or isinstance(values[0], float))
             else [float(v) for v in values]
         ),
     )
+
+
+def _has_no_values(raw: Any) -> bool:
+    """Whether *raw* holds no dense values, without materializing it to find out.
+
+    ``size`` covers numpy and pyarrow; anything else that reached here supports
+    ``len``. Neither iterates, which matters because the caller is deliberately
+    avoiding a full pass over the array.
+    """
+    if getattr(raw, "ndim", None) == 0:
+        # A 0-d array is a scalar, not a sequence of values, but its `size` is 1
+        # so the check below would call it non-empty. Iterating raises exactly
+        # what `list()` raises on the VectorFactory path, keeping the two in step.
+        iter(raw)
+    size = getattr(raw, "size", None)
+    if size is not None:
+        return bool(size == 0)
+    return len(raw) == 0
+
+
+def validate_vector_dict(item: dict[str, Any]) -> None:
+    """Apply :class:`VectorFactory`'s checks to a vector dict, converting nothing.
+
+    The gRPC DataFrame path hands array values straight to the Rust layer, which
+    unboxes them in C. Skipping :meth:`VectorFactory.build` skips its validation
+    too, so the same checks — and the same exception types, which callers catch
+    on — have to happen here instead.
+    """
+    try:
+        id_ = item["id"]
+    except KeyError as err:
+        raise PineconeValueError("Vector dict must contain an 'id' key") from err
+    if not isinstance(id_, str):
+        raise PineconeTypeError(f"Vector ID must be a string, got {type(id_).__name__}")
+    if not id_.isascii():
+        raise PineconeValueError(f"Vector ID must contain only ASCII characters, got: {id_!r}")
+    if "\x00" in id_:
+        raise PineconeValueError(f"Vector ID must not contain null characters, got: {id_!r}")
+
+    if not _RECOGNIZED_KEYS.issuperset(item):
+        extra = item.keys() - _RECOGNIZED_KEYS
+        raise PineconeValueError(f"Vector dict contains unrecognized keys: {sorted(extra)}")
+
+    raw_values = item.get("values")
+    has_values = raw_values is not None and not _has_no_values(raw_values)
+
+    raw_sparse = item.get("sparse_values")
+    if raw_sparse is not None:
+        _parse_sparse(raw_sparse)
+
+    metadata = item.get("metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        raise PineconeTypeError(f"metadata must be a dict, got {type(metadata).__name__}")
+
+    if not has_values and raw_sparse is None:
+        raise PineconeValueError(
+            "Vector must have at least one of non-empty dense values or sparse values"
+        )
 
 
 class VectorFactory:
@@ -177,7 +251,7 @@ class VectorFactory:
                         raw_values = item["values"]
                     except KeyError:
                         return _from_dict(item)
-                    converted = raw_values if raw_values.__class__ is list else list(raw_values)
+                    converted = raw_values if raw_values.__class__ is list else _as_list(raw_values)
                     if converted:
                         return Vector(id_, converted)
             elif item_len == 3:
@@ -205,7 +279,7 @@ class VectorFactory:
                             and (not s_indices or s_indices[0].__class__ is int)
                         ):
                             converted = (
-                                raw_values if raw_values.__class__ is list else list(raw_values)
+                                raw_values if raw_values.__class__ is list else _as_list(raw_values)
                             )
                             if not s_values or s_values[0].__class__ is float:
                                 return Vector(
@@ -226,7 +300,7 @@ class VectorFactory:
             if len(item) == 2:
                 id_, values = item
                 if id_.__class__ is str and id_.isascii() and "\x00" not in id_:
-                    converted = values if values.__class__ is list else list(values)
+                    converted = values if values.__class__ is list else _as_list(values)
                     if converted:
                         return Vector(id_, converted)
             return _from_tuple(item)
