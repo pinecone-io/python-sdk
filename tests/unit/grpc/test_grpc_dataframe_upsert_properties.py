@@ -54,6 +54,18 @@ def _make_df(pd, n_rows: int):
     )
 
 
+def _upsert_call_count(ch: MagicMock) -> int:
+    """Number of batches that reached the channel.
+
+    `upsert_from_dataframe` submits every batch concurrently, and Mock only
+    updates `call_count` and `call_args_list` atomically on Python 3.13+. On
+    3.10-3.12 a concurrent `call_count += 1` loses increments, so `call_count`
+    undercounts. `list.append` is atomic on every version, which makes the
+    length of `call_args_list` the reliable count.
+    """
+    return len(ch.upsert.call_args_list)
+
+
 def _channel_vectors(ch: MagicMock):
     """Every vector dict handed to channel.upsert, flattened across batches."""
     return [v for c in ch.upsert.call_args_list for v in c.args[0]]
@@ -132,7 +144,7 @@ class TestUpsertFromDataframePartitionProperties:
             )
 
         sizes = [len(c.args[0]) for c in ch.upsert.call_args_list]
-        assert ch.upsert.call_count == (math.ceil(n_rows / batch_size) if n_rows else 0)
+        assert _upsert_call_count(ch) == (math.ceil(n_rows / batch_size) if n_rows else 0)
         assert all(0 < s <= batch_size for s in sizes)
         assert len([s for s in sizes if s != batch_size]) <= 1
         # Coverage, not just cardinality: every input id reaches the channel
@@ -193,7 +205,7 @@ class TestUpsertFromDataframePartitionProperties:
                 _make_df(pd, n_rows), batch_size=batch_size, timeout=timeout, show_progress=False
             )
 
-        assert ch.upsert.call_count >= 1
+        assert _upsert_call_count(ch) >= 1
         for c in ch.upsert.call_args_list:
             assert c.kwargs["timeout_s"] == timeout
 
@@ -254,7 +266,7 @@ class TestUpsertFromDataframePartialFailureProperties:
                 )
 
             idx._executor.shutdown(wait=True)
-            assert ch.upsert.call_count == n_batches
+            assert _upsert_call_count(ch) == n_batches
 
     def test_earlier_successes_are_discarded_on_later_failure(self) -> None:
         pd = pytest.importorskip("pandas")

@@ -30,6 +30,18 @@ def _upsert_response(upserted_count: int) -> UpsertResponse:
     return UpsertResponse(upserted_count=upserted_count)
 
 
+def _upsert_call_count(ch: MagicMock) -> int:
+    """Number of batches that reached the channel.
+
+    `upsert_from_dataframe` submits every batch concurrently, and Mock only
+    updates `call_count` and `call_args_list` atomically on Python 3.13+. On
+    3.10-3.12 a concurrent `call_count += 1` loses increments, so `call_count`
+    undercounts. `list.append` is atomic on every version, which makes the
+    length of `call_args_list` the reliable count.
+    """
+    return len(ch.upsert.call_args_list)
+
+
 @pytest.fixture
 def mock_channel() -> MagicMock:
     ch = MagicMock()
@@ -64,7 +76,7 @@ class TestGrpcDataframeUpsert:
 
         result = grpc_index.upsert_from_dataframe(df, show_progress=False)
 
-        assert mock_channel.upsert.call_count == 3
+        assert _upsert_call_count(mock_channel) == 3
         batch_sizes = [len(call[0][0]) for call in mock_channel.upsert.call_args_list]
         assert sorted(batch_sizes) == [200, 500, 500]
         assert result.upserted_count == 1200
@@ -87,7 +99,7 @@ class TestGrpcDataframeUpsert:
 
         grpc_index.upsert_from_dataframe(df, batch_size=3, show_progress=False)
 
-        assert mock_channel.upsert.call_count == 4
+        assert _upsert_call_count(mock_channel) == 4
         batch_sizes = [len(call[0][0]) for call in mock_channel.upsert.call_args_list]
         assert sorted(batch_sizes) == [1, 3, 3, 3]
 
@@ -142,7 +154,7 @@ class TestGrpcDataframeUpsert:
 
         result = grpc_index.upsert_from_dataframe(df, show_progress=False)
 
-        assert mock_channel.upsert.call_count == 1
+        assert _upsert_call_count(mock_channel) == 1
         assert result.upserted_count == 3
 
     def test_invalid_df_raises(self, grpc_index: GrpcIndex) -> None:
@@ -185,7 +197,7 @@ class TestGrpcDataframeUpsert:
 
         grpc_index.upsert_from_dataframe(df, batch_size=2, timeout=42.0, show_progress=False)
 
-        assert mock_channel.upsert.call_count == 3
+        assert _upsert_call_count(mock_channel) == 3
         for call in mock_channel.upsert.call_args_list:
             assert call.kwargs["timeout_s"] == 42.0
 

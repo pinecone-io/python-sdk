@@ -89,7 +89,8 @@ class TestUpsertFromDataframeBasic:
 class TestUpsertFromDataframeBatching:
     """Batching behavior."""
 
-    def test_upsert_from_dataframe_batching(self) -> None:
+    def test_upsert_from_dataframe_delegates_default_batch_size(self) -> None:
+        """Batching is delegated to upsert(batch_size=...), not done here."""
         pd = pytest.importorskip("pandas")
         df = pd.DataFrame(
             {
@@ -98,14 +99,14 @@ class TestUpsertFromDataframeBatching:
             }
         )
         idx = _make_index()
-        idx.upsert = MagicMock(return_value=_make_upsert_response(upserted_count=500))  # type: ignore[method-assign]
+        idx.upsert = MagicMock(return_value=_make_upsert_response(upserted_count=1200))  # type: ignore[method-assign]
 
         idx.upsert_from_dataframe(df, show_progress=False)
 
-        assert idx.upsert.call_count == 3
-        assert len(idx.upsert.call_args_list[0][1]["vectors"]) == 500
-        assert len(idx.upsert.call_args_list[1][1]["vectors"]) == 500
-        assert len(idx.upsert.call_args_list[2][1]["vectors"]) == 200
+        idx.upsert.assert_called_once()
+        call_kwargs = idx.upsert.call_args[1]
+        assert len(call_kwargs["vectors"]) == 1200
+        assert call_kwargs["batch_size"] == 500
 
     def test_upsert_from_dataframe_custom_batch_size(self) -> None:
         pd = pytest.importorskip("pandas")
@@ -116,15 +117,14 @@ class TestUpsertFromDataframeBatching:
             }
         )
         idx = _make_index()
-        idx.upsert = MagicMock(return_value=_make_upsert_response(upserted_count=3))  # type: ignore[method-assign]
+        idx.upsert = MagicMock(return_value=_make_upsert_response(upserted_count=10))  # type: ignore[method-assign]
 
         idx.upsert_from_dataframe(df, batch_size=3, show_progress=False)
 
-        assert idx.upsert.call_count == 4
-        assert len(idx.upsert.call_args_list[0][1]["vectors"]) == 3
-        assert len(idx.upsert.call_args_list[1][1]["vectors"]) == 3
-        assert len(idx.upsert.call_args_list[2][1]["vectors"]) == 3
-        assert len(idx.upsert.call_args_list[3][1]["vectors"]) == 1
+        idx.upsert.assert_called_once()
+        call_kwargs = idx.upsert.call_args[1]
+        assert call_kwargs["batch_size"] == 3
+        assert len(call_kwargs["vectors"]) == 10
 
     def test_upsert_from_dataframe_namespace(self) -> None:
         pd = pytest.importorskip("pandas")
@@ -160,7 +160,8 @@ class TestUpsertFromDataframeDefaults:
         async_params = list(inspect.signature(AsyncIndex.upsert_from_dataframe).parameters)
         assert sync_params == async_params
 
-    def test_upsert_from_dataframe_aggregates_count(self) -> None:
+    def test_upsert_from_dataframe_returns_upsert_result(self) -> None:
+        """The aggregate upsert() computes across batches is returned unchanged."""
         pd = pytest.importorskip("pandas")
         df = pd.DataFrame(
             {
@@ -169,17 +170,18 @@ class TestUpsertFromDataframeDefaults:
             }
         )
         idx = _make_index()
-        # Two batches returning 50 and 30
-        idx.upsert = MagicMock(  # type: ignore[method-assign]
-            side_effect=[
-                _make_upsert_response(upserted_count=50),
-                _make_upsert_response(upserted_count=30),
-            ]
+        aggregate = UpsertResponse(
+            upserted_count=80,
+            total_item_count=100,
+            failed_item_count=20,
         )
+        idx.upsert = MagicMock(return_value=aggregate)  # type: ignore[method-assign]
 
         result = idx.upsert_from_dataframe(df, batch_size=50, show_progress=False)
 
+        assert result is aggregate
         assert result.upserted_count == 80
+        assert result.failed_item_count == 20
 
 
 class TestUpsertFromDataframeErrors:

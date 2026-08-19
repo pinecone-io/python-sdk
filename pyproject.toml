@@ -141,6 +141,11 @@ markers = [
 [dependency-groups]
 dev = [
     "anyio>=4.13.0",
+    # pandas/numpy back the DataFrame ingest tests, which importorskip and would
+    # otherwise skip silently in CI. numpy is what makes them representative of a
+    # real embedding frame.
+    "pandas>=2.0",
+    "numpy>=1.26",
     "ipykernel>=7.2.0",
     "pytest>=9.0.3",
     "pytest-anyio>=0.0.0",
