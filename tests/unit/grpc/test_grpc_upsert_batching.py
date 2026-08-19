@@ -206,33 +206,44 @@ class TestGrpcUpsertBatching:
         mock_channel.upsert.return_value = {"upserted_count": 5}
         vectors = _make_vectors(10)
         grpc_index.upsert(vectors=vectors, batch_size=5, max_concurrency=4, show_progress=False)
-        executor_first = grpc_index._batch_executor
+        executor_first = grpc_index._batch_executors[4]
         grpc_index.upsert(vectors=vectors, batch_size=5, max_concurrency=4, show_progress=False)
-        executor_second = grpc_index._batch_executor
+        executor_second = grpc_index._batch_executors[4]
         assert executor_first is executor_second
 
-    def test_upsert_executor_recreated_on_max_concurrency_change(
+    def test_each_max_concurrency_keeps_its_own_executor(
         self, grpc_index: GrpcIndex, mock_channel: MagicMock
     ) -> None:
-        """Changing max_concurrency creates a new executor and shuts down the old one."""
+        """The pools coexist rather than one replacing the other.
+
+        upsert() and upsert_from_dataframe() have different concurrency defaults
+        and can run concurrently on one handle, so shutting a pool down because
+        the other caller asked for a different size would raise "cannot schedule
+        new futures after shutdown" in whichever was still submitting.
+        """
         mock_channel.upsert.return_value = {"upserted_count": 5}
         vectors = _make_vectors(10)
         grpc_index.upsert(vectors=vectors, batch_size=5, max_concurrency=4, show_progress=False)
-        executor_first = grpc_index._batch_executor
-        assert executor_first is not None
+        executor_first = grpc_index._batch_executors[4]
         grpc_index.upsert(vectors=vectors, batch_size=5, max_concurrency=8, show_progress=False)
-        executor_second = grpc_index._batch_executor
-        assert executor_second is not executor_first
 
-    def test_close_shuts_down_batch_executor(
+        assert grpc_index._batch_executors[8] is not executor_first
+        assert grpc_index._batch_executors[4] is executor_first
+        assert executor_first.submit(lambda: "alive").result() == "alive"
+
+    def test_close_shuts_down_every_batch_executor(
         self, grpc_index: GrpcIndex, mock_channel: MagicMock
     ) -> None:
-        """close() must call shutdown on the batch executor if one was created."""
+        """close() must shut down each pool that was created."""
         mock_channel.upsert.return_value = {"upserted_count": 5}
         vectors = _make_vectors(10)
-        grpc_index.upsert(vectors=vectors, batch_size=5, show_progress=False)
-        executor = grpc_index._batch_executor
-        assert executor is not None
-        with patch.object(executor, "shutdown") as mock_shutdown:
-            grpc_index.close()
-            mock_shutdown.assert_called_once_with(wait=False)
+        grpc_index.upsert(vectors=vectors, batch_size=5, max_concurrency=4, show_progress=False)
+        grpc_index.upsert(vectors=vectors, batch_size=5, max_concurrency=8, show_progress=False)
+        executors = list(grpc_index._batch_executors.values())
+        assert len(executors) == 2
+
+        grpc_index.close()
+
+        for executor in executors:
+            with pytest.raises(RuntimeError):
+                executor.submit(lambda: None)

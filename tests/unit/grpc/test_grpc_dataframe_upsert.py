@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import builtins
 import inspect
+import os
+import threading
 from concurrent.futures import Future
 from types import ModuleType
 from unittest.mock import MagicMock, patch
@@ -11,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from pinecone.errors.exceptions import PineconeValueError
-from pinecone.grpc import GrpcIndex
+from pinecone.grpc import GrpcIndex, _default_max_concurrency
 from pinecone.models.vectors.responses import UpsertResponse
 
 _MOCK_GRPC_MODULE_PATH = "pinecone._grpc"
@@ -329,3 +331,176 @@ class TestGrpcDataframeMissingCells:
         sent = {v["id"]: v for v in mock_channel.upsert.call_args[0][0]}
         assert sent["v1"]["sparse_values"] == sparse
         assert "sparse_values" not in sent["v2"]
+
+
+class TestGrpcDataframeConcurrency:
+    """Submission is bounded, and the bound is a parameter."""
+
+    def test_default_max_concurrency_matches_the_old_unbounded_pool(self) -> None:
+        """min(32, cpu+4) is what a default ThreadPoolExecutor already gave."""
+        expected = min(32, (os.cpu_count() or 1) + 4)
+
+        assert _default_max_concurrency() == expected
+
+    def test_default_is_forwarded_to_the_batch_executor(
+        self, grpc_index: GrpcIndex, mock_channel: MagicMock
+    ) -> None:
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame({"id": ["v1", "v2"], "values": [[0.1], [0.2]]})
+        mock_channel.upsert.return_value = {"upserted_count": 1}
+
+        with patch.object(
+            GrpcIndex,
+            "_get_batch_executor",
+            autospec=True,
+            side_effect=GrpcIndex._get_batch_executor,
+        ) as spy:
+            grpc_index.upsert_from_dataframe(df, batch_size=1, show_progress=False)
+
+        assert spy.call_args[0][1] == _default_max_concurrency()
+
+    def test_explicit_max_concurrency_is_forwarded(
+        self, grpc_index: GrpcIndex, mock_channel: MagicMock
+    ) -> None:
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame({"id": ["v1", "v2"], "values": [[0.1], [0.2]]})
+        mock_channel.upsert.return_value = {"upserted_count": 1}
+
+        with patch.object(
+            GrpcIndex,
+            "_get_batch_executor",
+            autospec=True,
+            side_effect=GrpcIndex._get_batch_executor,
+        ) as spy:
+            grpc_index.upsert_from_dataframe(
+                df, batch_size=1, show_progress=False, max_concurrency=3
+            )
+
+        assert spy.call_args[0][1] == 3
+
+    @pytest.mark.parametrize("bad", [0, -1, 65])
+    def test_out_of_range_max_concurrency_raises(self, grpc_index: GrpcIndex, bad: int) -> None:
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame({"id": ["v1"], "values": [[0.1]]})
+
+        with pytest.raises(PineconeValueError, match="max_concurrency"):
+            grpc_index.upsert_from_dataframe(df, max_concurrency=bad, show_progress=False)
+
+    def test_in_flight_batches_never_exceed_max_concurrency(
+        self, grpc_index: GrpcIndex, mock_channel: MagicMock
+    ) -> None:
+        """The starvation fix: 2000 batches no longer all queue at once."""
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame(
+            {"id": [f"v{i}" for i in range(60)], "values": [[float(i)] for i in range(60)]}
+        )
+
+        lock = threading.Lock()
+        inflight = 0
+        peak = 0
+
+        def _tracking_upsert(vectors: list[dict[str, object]], namespace: str | None, **_: object):
+            nonlocal inflight, peak
+            with lock:
+                inflight += 1
+                peak = max(peak, inflight)
+            try:
+                return {"upserted_count": len(vectors)}
+            finally:
+                with lock:
+                    inflight -= 1
+
+        mock_channel.upsert.side_effect = _tracking_upsert
+
+        grpc_index.upsert_from_dataframe(df, batch_size=1, max_concurrency=4, show_progress=False)
+
+        assert peak <= 4, f"{peak} batches were in flight with max_concurrency=4"
+
+    def test_max_concurrency_is_keyword_only(self) -> None:
+        """Positional df is what keeps this method out of the keyword-only guard."""
+        sig = inspect.signature(GrpcIndex.upsert_from_dataframe)
+
+        assert sig.parameters["max_concurrency"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert sig.parameters["df"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+
+
+class TestBatchExecutorIsNotSharedAcrossSizes:
+    """upsert() defaults to 4 workers, upsert_from_dataframe() to min(32, cpu+4)."""
+
+    def test_different_sizes_get_different_pools(self, grpc_index: GrpcIndex) -> None:
+        four = grpc_index._get_batch_executor(4)
+        sixteen = grpc_index._get_batch_executor(16)
+
+        assert four is not sixteen
+
+    def test_same_size_reuses_one_pool(self, grpc_index: GrpcIndex) -> None:
+        assert grpc_index._get_batch_executor(8) is grpc_index._get_batch_executor(8)
+
+    def test_asking_for_another_size_does_not_shut_the_first_down(
+        self, grpc_index: GrpcIndex
+    ) -> None:
+        """Shutting it down mid-submit raises "cannot schedule new futures"."""
+        four = grpc_index._get_batch_executor(4)
+        grpc_index._get_batch_executor(16)
+
+        assert four.submit(lambda: "still usable").result() == "still usable"
+
+    def test_close_shuts_down_every_pool(self, grpc_index: GrpcIndex) -> None:
+        pools = [grpc_index._get_batch_executor(n) for n in (2, 4, 8)]
+
+        grpc_index.close()
+
+        for pool in pools:
+            with pytest.raises(RuntimeError):
+                pool.submit(lambda: None)
+
+
+class TestGrpcDataframeDoesNotStarveTheSharedExecutor:
+    def test_batches_do_not_queue_on_the_shared_async_executor(
+        self, grpc_index: GrpcIndex, mock_channel: MagicMock
+    ) -> None:
+        """A 2000-batch frame used to queue 2000 tasks ahead of every *_async call."""
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame(
+            {"id": [f"v{i}" for i in range(10)], "values": [[float(i)] for i in range(10)]}
+        )
+        mock_channel.upsert.return_value = {"upserted_count": 1}
+
+        shared = grpc_index._executor
+        with patch.object(shared, "submit", wraps=shared.submit) as shared_submit:
+            grpc_index.upsert_from_dataframe(df, batch_size=1, show_progress=False)
+
+        assert shared_submit.call_count == 0
+
+
+class TestGrpcDataframeProgressTracksCompletion:
+    def test_bar_advances_once_per_completed_batch(
+        self, grpc_index: GrpcIndex, mock_channel: MagicMock
+    ) -> None:
+        """The bar used to wrap submission, so it filled before the ingest ran."""
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame(
+            {"id": [f"v{i}" for i in range(6)], "values": [[float(i)] for i in range(6)]}
+        )
+        mock_channel.upsert.return_value = {"upserted_count": 2}
+
+        updates: list[int] = []
+        completed_at_update: list[int] = []
+
+        class _RecordingBar:
+            def update(self, n: int = 1) -> None:
+                updates.append(n)
+                completed_at_update.append(len(mock_channel.upsert.call_args_list))
+
+            def set_postfix_str(self, s: str) -> None:
+                pass
+
+            def close(self) -> None:
+                pass
+
+        with patch("pinecone._internal.batch._create_progress_bar", return_value=_RecordingBar()):
+            grpc_index.upsert_from_dataframe(df, batch_size=2, show_progress=True)
+
+        assert sum(updates) == 3
+        # Each update lands after a batch actually reached the channel, never before.
+        assert all(seen >= i + 1 for i, seen in enumerate(completed_at_update))

@@ -5,6 +5,7 @@ from __future__ import annotations
 import builtins
 import logging
 import os
+import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
@@ -15,7 +16,7 @@ if TYPE_CHECKING:
 from pinecone._internal.adapters.imports_adapter import ImportsAdapter
 from pinecone._internal.adapters.vectors_adapter import VectorsAdapter, extract_response_info
 from pinecone._internal.batch import batch_execute
-from pinecone._internal.batching import chunked, validate_batch_size, with_progress
+from pinecone._internal.batching import validate_batch_size
 from pinecone._internal.config import PineconeConfig, RetryConfig
 from pinecone._internal.constants import DATA_PLANE_API_VERSION
 from pinecone._internal.data_plane_helpers import _build_search_records_body, _validate_host
@@ -167,6 +168,15 @@ _GRPC_DEFAULT_BACKOFF_FACTOR = 0.1
 _GRPC_DEFAULT_MAX_WAIT = 60.0
 
 
+def _default_max_concurrency() -> int:
+    """What an unbounded submission into a default ThreadPoolExecutor already gave.
+
+    Bounding submission without keeping this number would be a throughput
+    regression rather than a fix, so it is the default and callers override it.
+    """
+    return min(32, (os.cpu_count() or 1) + 4)
+
+
 @keyword_only_methods
 class GrpcIndex:
     """Synchronous gRPC data plane client targeting a specific Pinecone index.
@@ -282,8 +292,8 @@ class GrpcIndex:
         )
 
         self._executor = ThreadPoolExecutor()
-        self._batch_executor: ThreadPoolExecutor | None = None
-        self._batch_executor_workers: int = 0
+        self._batch_executors: dict[int, ThreadPoolExecutor] = {}
+        self._batch_executor_lock = threading.Lock()
 
         # REST HTTP client for records operations (integrated inference).
         # upsert_records and search use REST endpoints with no gRPC equivalent.
@@ -308,15 +318,23 @@ class GrpcIndex:
         return self._host
 
     def _get_batch_executor(self, max_concurrency: int) -> ThreadPoolExecutor:
-        if self._batch_executor is None or self._batch_executor_workers != max_concurrency:
-            if self._batch_executor is not None:
-                self._batch_executor.shutdown(wait=False)
-            self._batch_executor = ThreadPoolExecutor(
-                max_concurrency,
-                thread_name_prefix="pinecone-grpc-batch-upsert",
-            )
-            self._batch_executor_workers = max_concurrency
-        return self._batch_executor
+        """Return the pool of this size, creating it once.
+
+        Pools are kept per size rather than resized in place. upsert() and
+        upsert_from_dataframe() have different concurrency defaults and can run
+        concurrently on one index handle; shutting a pool down because the other
+        caller asked for a different size would raise "cannot schedule new
+        futures after shutdown" in whichever one was still submitting.
+        """
+        with self._batch_executor_lock:
+            executor = self._batch_executors.get(max_concurrency)
+            if executor is None:
+                executor = ThreadPoolExecutor(
+                    max_concurrency,
+                    thread_name_prefix="pinecone-grpc-batch-upsert",
+                )
+                self._batch_executors[max_concurrency] = executor
+            return executor
 
     def upsert(
         self,
@@ -1039,6 +1057,8 @@ class GrpcIndex:
         batch_size: int = 500,
         show_progress: bool = True,
         timeout: float | None = None,
+        *,
+        max_concurrency: int | None = None,
     ) -> UpsertResponse:
         """Upsert vectors from a pandas DataFrame using async batching.
 
@@ -1053,8 +1073,13 @@ class GrpcIndex:
             namespace: Target namespace. Defaults to the default namespace.
             batch_size: Number of rows per upsert batch. Defaults to 500.
             show_progress: If ``True`` and ``tqdm`` is installed, display a
-                progress bar. If ``tqdm`` is not installed, silently falls
-                back to no progress bar.
+                progress bar. The bar advances as batches *complete*. If ``tqdm``
+                is not installed, silently falls back to no progress bar.
+            max_concurrency: Number of batches in flight at once, range
+                ``[1, 64]``. ``None`` (default) uses ``min(32, cpu_count + 4)``,
+                which is what an unbounded submission into a default
+                ``ThreadPoolExecutor`` already gave — pass a value to make
+                throughput reproducible across hosts.
             timeout: Server-side deadline in seconds applied to *each batch's*
                 upsert request — not to the DataFrame as a whole. ``None``
                 (default) uses the client's configured request timeout: the
@@ -1155,6 +1180,11 @@ class GrpcIndex:
 
         validate_batch_size(batch_size)
 
+        resolved_concurrency = (
+            _default_max_concurrency() if max_concurrency is None else max_concurrency
+        )
+        require_in_range("max_concurrency", resolved_concurrency, 1, 64)
+
         records: builtins.list[dict[str, Any]] = extract_records(df)
 
         # Validate before submitting anything, so a malformed row cannot leave
@@ -1166,20 +1196,22 @@ class GrpcIndex:
         def _upsert_batch(batch: builtins.list[dict[str, Any]]) -> dict[str, Any]:
             return self._channel.upsert(batch, namespace or None, timeout_s=timeout)
 
-        batches = chunked(records, batch_size)
-        futures = [
-            self._executor.submit(_upsert_batch, batch)
-            for batch in with_progress(batches, show_progress=show_progress)
-        ]
+        batch_result = batch_execute(
+            items=records,
+            operation=_upsert_batch,
+            batch_size=batch_size,
+            max_concurrency=resolved_concurrency,
+            show_progress=show_progress,
+            desc="Upserting",
+            executor=self._get_batch_executor(resolved_concurrency),
+        )
 
-        total_count = 0
-        for future in futures:
-            # Each batch is bounded by the server-side deadline (*timeout*), so
-            # wait indefinitely here rather than letting result()'s fixed 5s
-            # default spuriously fail large ingests.
-            total_count += future.result().get("upserted_count", 0)
+        if batch_result.errors:
+            # Today's contract is to raise, and to raise the lowest-indexed
+            # failure specifically. A8 replaces this with aggregation.
+            raise min(batch_result.errors, key=lambda err: err.batch_index).error
 
-        return UpsertResponse(upserted_count=total_count)
+        return UpsertResponse(upserted_count=batch_result.successful_item_count)
 
     # ------------------------------------------------------------------
     # Async (future-returning) variants
@@ -2079,8 +2111,11 @@ class GrpcIndex:
     def close(self) -> None:
         """Close the underlying gRPC channel, REST client, and release resources."""
         self._executor.shutdown(wait=True)
-        if self._batch_executor is not None:
-            self._batch_executor.shutdown(wait=False)
+        with self._batch_executor_lock:
+            executors = list(self._batch_executors.values())
+            self._batch_executors.clear()
+        for executor in executors:
+            executor.shutdown(wait=False)
         self._http.close()
         if hasattr(self._channel, "close"):
             self._channel.close()
