@@ -342,6 +342,10 @@ Admin Models
    :members:
    :show-inheritance:
 
+.. autoclass:: pinecone.models.admin.token.TokenResponse
+   :members:
+   :show-inheritance:
+
 Assistant Models
 ----------------
 

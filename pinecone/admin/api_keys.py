@@ -22,11 +22,13 @@ _VALID_ROLES = {r.value for r in APIKeyRole}
 def _validate_roles(roles: Sequence[APIKeyRole | str]) -> list[APIKeyRole]:
     """Validate each role and return typed enum values."""
     result: list[APIKeyRole] = []
-    for role in roles:
+    for index, role in enumerate(roles):
         role_str = role.value if isinstance(role, APIKeyRole) else role
         if role_str not in _VALID_ROLES:
             opts = ", ".join(repr(v) for v in sorted(_VALID_ROLES))
-            raise ValidationError(f"Invalid role {role_str!r}. Must be one of {opts}")
+            raise ValidationError(
+                f"roles[{index}]: Invalid role {role_str!r}. Must be one of {opts}"
+            )
         result.append(APIKeyRole(role_str))
     return result
 

@@ -9,6 +9,7 @@ import httpx
 import orjson
 
 from pinecone import __version__
+from pinecone._internal.adapters._decode import decode_response
 from pinecone._internal.config import PineconeConfig
 from pinecone._internal.constants import ADMIN_API_VERSION, API_VERSION_HEADER, DEFAULT_BASE_URL
 from pinecone._internal.http_client import HTTPClient, _build_socket_options, _RetryTransport
@@ -17,8 +18,10 @@ from pinecone.errors.exceptions import (
     ApiError,
     PineconeConnectionError,
     PineconeTimeoutError,
+    ResponseParsingError,
     ValidationError,
 )
+from pinecone.models.admin.token import TokenResponse
 
 if TYPE_CHECKING:
     from pinecone.admin.api_keys import ApiKeys
@@ -72,7 +75,10 @@ class Admin:
         client_secret (str | None): OAuth2 client secret. Falls back to ``PINECONE_CLIENT_SECRET``
             env var.
         additional_headers (dict[str, str] | None): Extra headers included in every admin API
-            request.
+            request. Merged last, so an entry keyed exactly ``"Authorization"`` or
+            ``"X-Pinecone-Api-Version"`` replaces the Bearer token or the API version the SDK
+            would otherwise send. Matching is case-sensitive: any other spelling is sent
+            alongside the SDK's own header rather than replacing it.
         proxy_url (str | None): HTTP proxy URL for outgoing requests.
         ssl_verify (bool): Whether to verify SSL certificates. Defaults to ``True``.
         source_tag (str | None): Tag appended to the User-Agent string for request attribution.
@@ -224,16 +230,24 @@ class Admin:
                 body=err_body,
             )
 
-        data: dict[str, Any] = response.json()
-        access_token = data.get("access_token", "")
-        if not access_token:
+        try:
+            token = decode_response(response.content, TokenResponse)
+        except ResponseParsingError:
+            token = None
+
+        if token is None or not token.access_token:
+            missing_body: dict[str, Any] | None
+            try:
+                missing_body = response.json()
+            except Exception:
+                missing_body = None
             raise ApiError(
                 message="OAuth response missing access_token",
                 status_code=response.status_code,
-                body=data,
+                body=missing_body,
             )
 
-        return str(access_token)
+        return token.access_token
 
     @property
     def organizations(self) -> Organizations:

@@ -63,6 +63,8 @@ DEFAULT_EPOCH_ISSUE = 87
 GRPC_SURFACE = "db_data_grpc"
 RESULTS_ENV = "PINECONE_CONFORMANCE_RESULTS"
 
+OperationMap = dict[str, dict[str, Any]]
+
 HTTP_METHODS = ("get", "put", "post", "delete", "options", "head", "patch", "trace")
 _VERSION_VALUE_RE = re.compile(r"\d{4}-\d{2}")
 _RPC_RE = re.compile(r"^\s*rpc\s+(\w+)\s*\(")
@@ -73,11 +75,26 @@ class SpecError(RuntimeError):
     """A spec file could not be parsed into an unambiguous operation list."""
 
 
-def parse_oas_file(path: Path) -> dict[str, dict[str, str]]:
+def declares_success_body(operation: dict[str, Any]) -> bool:
+    """Whether any 2xx response of *operation* declares a response body.
+
+    Recorded in the manifest so ``ClaimRecorder`` can distinguish an operation
+    with a response schema (round-trip mandatory) from one that answers with an
+    empty body, where inventing a throwaway model would only inflate coverage.
+    """
+    for status, response in (operation.get("responses") or {}).items():
+        if not str(status).startswith("2") or not isinstance(response, dict):
+            continue
+        if response.get("content"):
+            return True
+    return False
+
+
+def parse_oas_file(path: Path) -> OperationMap:
     surface = path.name.removesuffix(f"_{API_VERSION}.oas.yaml")
     with path.open() as f:
         doc = yaml.safe_load(f)
-    ops: dict[str, dict[str, str]] = {}
+    ops: OperationMap = {}
     for url_path, path_item in (doc.get("paths") or {}).items():
         if not isinstance(path_item, dict):
             continue
@@ -91,15 +108,20 @@ def parse_oas_file(path: Path) -> dict[str, dict[str, str]]:
             op_id = f"{surface}:{operation_id}"
             if op_id in ops:
                 raise SpecError(f"{path.name}: duplicate operationId {operation_id!r}")
-            ops[op_id] = {"kind": "http", "method": method.upper(), "path": url_path}
+            ops[op_id] = {
+                "kind": "http",
+                "method": method.upper(),
+                "path": url_path,
+                "success_body": declares_success_body(operation),
+            }
     if not ops:
         raise SpecError(f"{path.name}: no operations found")
     return ops
 
 
-def parse_proto_file(path: Path) -> dict[str, dict[str, str]]:
+def parse_proto_file(path: Path) -> OperationMap:
     service = ""
-    ops: dict[str, dict[str, str]] = {}
+    ops: OperationMap = {}
     for line in path.read_text().splitlines():
         service_match = _SERVICE_RE.match(line)
         if service_match:
@@ -119,28 +141,28 @@ def parse_proto_file(path: Path) -> dict[str, dict[str, str]]:
     return ops
 
 
-def derive_operations(specs_dir: Path) -> dict[str, dict[str, str]]:
+def derive_operations(specs_dir: Path) -> OperationMap:
     oas_files = sorted(specs_dir.glob(f"*_{API_VERSION}.oas.yaml"))
     proto_file = specs_dir / f"db_data_{API_VERSION}.proto"
     if not oas_files:
         raise SpecError(f"no *_{API_VERSION}.oas.yaml files in {specs_dir}")
     if not proto_file.exists():
         raise SpecError(f"{proto_file} not found")
-    ops: dict[str, dict[str, str]] = {}
+    ops: OperationMap = {}
     for oas in oas_files:
         ops.update(parse_oas_file(oas))
     ops.update(parse_proto_file(proto_file))
     return ops
 
 
-def load_manifest() -> dict[str, dict[str, str]]:
+def load_manifest() -> OperationMap:
     with MANIFEST_PATH.open() as f:
         manifest = json.load(f)
-    operations: dict[str, dict[str, str]] = manifest["operations"]
+    operations: OperationMap = manifest["operations"]
     return operations
 
 
-def write_manifest(ops: dict[str, dict[str, str]]) -> None:
+def write_manifest(ops: OperationMap) -> None:
     lines = [
         "{",
         f'  "api_version": "{API_VERSION}",',
@@ -308,7 +330,7 @@ def rust_proto_wired() -> tuple[bool, str]:
     return True, "vendored proto present and wired in rust/build.rs"
 
 
-def resolve_operations(specs_dir: Path, *, strict: bool) -> dict[str, dict[str, str]]:
+def resolve_operations(specs_dir: Path, *, strict: bool) -> OperationMap:
     """The operation map, preferring live specs and checking manifest drift.
 
     ``strict`` (used by --verify / --gate) requires the specs checkout; the
@@ -332,7 +354,7 @@ def resolve_operations(specs_dir: Path, *, strict: bool) -> dict[str, dict[str, 
     return load_manifest()
 
 
-def print_report(ops: dict[str, dict[str, str]], covered: set[str], basis: str) -> None:
+def print_report(ops: OperationMap, covered: set[str], basis: str) -> None:
     surfaces: dict[str, list[str]] = {}
     for op_id in ops:
         surfaces.setdefault(surface_of(op_id), []).append(op_id)
@@ -350,13 +372,13 @@ def print_report(ops: dict[str, dict[str, str]], covered: set[str], basis: str) 
     print(f"overall grpc: {grpc_done}/{len(grpc_ops)}")
 
 
-def mode_report(ops: dict[str, dict[str, str]]) -> int:
+def mode_report(ops: OperationMap) -> int:
     _, results = run_conformance_suite(collect_only=True)
     print_report(ops, set(claimed_ops(results)), basis="claimed by collected tests")
     return 0
 
 
-def mode_gaps(ops: dict[str, dict[str, str]]) -> int:
+def mode_gaps(ops: OperationMap) -> int:
     _, results = run_conformance_suite(collect_only=True)
     claims = claimed_ops(results)
     for op_id in sorted(ops):
@@ -365,7 +387,7 @@ def mode_gaps(ops: dict[str, dict[str, str]]) -> int:
     return 0
 
 
-def run_verify(ops: dict[str, dict[str, str]]) -> tuple[bool, set[str], list[str]]:
+def run_verify(ops: OperationMap) -> tuple[bool, set[str], list[str]]:
     exit_code, results = run_conformance_suite(collect_only=False)
     problems: list[str] = []
     if exit_code not in (0, 5):
@@ -380,7 +402,7 @@ def run_verify(ops: dict[str, dict[str, str]]) -> tuple[bool, set[str], list[str
     return not problems, verified, problems
 
 
-def mode_verify(ops: dict[str, dict[str, str]]) -> int:
+def mode_verify(ops: OperationMap) -> int:
     green, verified, problems = run_verify(ops)
     print_report(ops, verified, basis="verified by passing tests")
     for problem in problems:
@@ -388,7 +410,7 @@ def mode_verify(ops: dict[str, dict[str, str]]) -> int:
     return 0 if green else 1
 
 
-def mode_gate(ops: dict[str, dict[str, str]], epoch_issue: int) -> int:
+def mode_gate(ops: OperationMap, epoch_issue: int) -> int:
     conditions: list[tuple[bool, str]] = []
 
     green, verified, problems = run_verify(ops)

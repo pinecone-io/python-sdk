@@ -438,6 +438,21 @@ def test_update_invalid_role_raises(api_keys: ApiKeys) -> None:
         api_keys.update(api_key_id="k1", roles=["NotARealRole"])
 
 
+def test_invalid_role_message_names_parameter_value_and_all_allowed_values(
+    api_keys: ApiKeys,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        api_keys.create(
+            project_id="p1", name="mykey", roles=[APIKeyRole.PROJECT_EDITOR, "NotARealRole"]
+        )
+
+    message = str(exc_info.value)
+    assert "roles[1]" in message
+    assert "'NotARealRole'" in message
+    for role in APIKeyRole:
+        assert repr(role.value) in message
+
+
 @respx.mock
 def test_decoded_roles_are_api_key_role_instances(api_keys: ApiKeys) -> None:
     respx.get(f"{BASE_URL}/admin/api-keys/k1").mock(

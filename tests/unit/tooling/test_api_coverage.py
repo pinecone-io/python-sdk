@@ -54,6 +54,21 @@ def _request(method: str, path: str, version: str | None = "2026-07") -> httpx.R
     return httpx.Request(method, f"https://api.pinecone.io{path}", headers=headers)
 
 
+def _overall(stdout: str, kind: str) -> tuple[int, int]:
+    """Parse ``overall <kind>: <covered>/<total>`` out of a --report run.
+
+    Covered counts grow as each release lane lands its conformance tests, so
+    these end-to-end tests assert the denominator and the invariants, never a
+    snapshot of the numerator.
+    """
+    for line in stdout.splitlines():
+        prefix = f"overall {kind}: "
+        if line.startswith(prefix):
+            covered, _, total = line.removeprefix(prefix).partition("/")
+            return int(covered), int(total)
+    raise AssertionError(f"no 'overall {kind}' line in --report output:\n{stdout}")
+
+
 def test_parse_oas_file_extracts_operations(tmp_path: Path) -> None:
     oas = tmp_path / "widgets_2026-07.oas.yaml"
     oas.write_text(
@@ -67,22 +82,53 @@ def test_parse_oas_file_extracts_operations(tmp_path: Path) -> None:
                     in: query
                 get:
                   operationId: list_widgets
+                  responses:
+                    '200':
+                      content:
+                        application/json:
+                          schema:
+                            type: object
                 post:
                   operationId: create_widget
+                  responses:
+                    '201':
+                      content:
+                        application/json:
+                          schema:
+                            type: object
               /widgets/{widget_id}:
                 delete:
                   operationId: delete_widget
+                  responses:
+                    '202':
+                      description: accepted
+                    '404':
+                      content:
+                        application/json:
+                          schema:
+                            type: object
             """
         )
     )
     ops = cov.parse_oas_file(oas)
     assert ops == {
-        "widgets:list_widgets": {"kind": "http", "method": "GET", "path": "/widgets"},
-        "widgets:create_widget": {"kind": "http", "method": "POST", "path": "/widgets"},
+        "widgets:list_widgets": {
+            "kind": "http",
+            "method": "GET",
+            "path": "/widgets",
+            "success_body": True,
+        },
+        "widgets:create_widget": {
+            "kind": "http",
+            "method": "POST",
+            "path": "/widgets",
+            "success_body": True,
+        },
         "widgets:delete_widget": {
             "kind": "http",
             "method": "DELETE",
             "path": "/widgets/{widget_id}",
+            "success_body": False,
         },
     }
 
@@ -386,14 +432,23 @@ def test_claim_fixture_enforcement_end_to_end(tmp_path: Path) -> None:
 def test_report_mode_end_to_end() -> None:
     proc = _run([sys.executable, str(SCRIPT_PATH), "--report"])
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "overall http: 0/102" in proc.stdout
-    assert "overall grpc: 0/12" in proc.stdout
+    http_covered, http_total = _overall(proc.stdout, "http")
+    grpc_covered, grpc_total = _overall(proc.stdout, "grpc")
+    assert (http_total, grpc_total) == (102, 12)
+    assert 0 <= http_covered <= http_total
+    assert 0 <= grpc_covered <= grpc_total
 
 
 def test_gaps_mode_end_to_end() -> None:
+    report = _run([sys.executable, str(SCRIPT_PATH), "--report"])
+    assert report.returncode == 0, report.stdout + report.stderr
+    http_covered, http_total = _overall(report.stdout, "http")
+    grpc_covered, grpc_total = _overall(report.stdout, "grpc")
+
     proc = _run([sys.executable, str(SCRIPT_PATH), "--gaps"])
     assert proc.returncode == 0, proc.stdout + proc.stderr
     gaps = proc.stdout.split()
-    assert len(gaps) == 114
-    assert "admin:list_projects" in gaps
+    uncovered = (http_total - http_covered) + (grpc_total - grpc_covered)
+    assert len(gaps) == uncovered
+    assert set(gaps) <= set(manifest_operations())
     assert "db_data_grpc:Upsert" in gaps

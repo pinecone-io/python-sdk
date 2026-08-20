@@ -131,7 +131,7 @@ class TestAdminTokenFetch:
         admin = Admin(client_id="test-id", client_secret="test-secret")
 
         request = route.calls.last.request
-        assert request.headers["X-Pinecone-Api-Version"] == "2025-10"
+        assert request.headers["X-Pinecone-Api-Version"] == "2026-07"
 
         admin.close()
 
@@ -190,7 +190,7 @@ class TestAdminHeaders:
         respx.post(_OAUTH_URL).mock(return_value=Response(200, json=_token_response()))
 
         admin = Admin(client_id="test-id", client_secret="test-secret")
-        assert admin._http._headers["X-Pinecone-Api-Version"] == "2025-10"
+        assert admin._http._headers["X-Pinecone-Api-Version"] == "2026-07"
         admin.close()
 
     @respx.mock

@@ -26,6 +26,8 @@ MANIFEST_PATH = Path(__file__).resolve().parent / f"manifest_{EXPECTED_API_VERSI
 
 _CATEGORIES = ("request", "api_version", "roundtrip")
 
+OperationMap = dict[str, dict[str, Any]]
+
 F = TypeVar("F", bound=Callable[..., Any])
 
 CLAIMS: dict[str, list[str]] = {}
@@ -40,10 +42,10 @@ class ConformanceError(AssertionError):
 
 
 @lru_cache(maxsize=1)
-def manifest_operations() -> dict[str, dict[str, str]]:
+def manifest_operations() -> OperationMap:
     with MANIFEST_PATH.open() as f:
         manifest = json.load(f)
-    operations: dict[str, dict[str, str]] = manifest["operations"]
+    operations: OperationMap = manifest["operations"]
     return operations
 
 
@@ -198,6 +200,11 @@ class ClaimRecorder:
         absent-field contract cannot be skipped by omission.
         """
         op_id = self._resolve(op)
+        entry = self._ops[op_id]
+        if entry["kind"] == "http" and not entry["success_body"]:
+            raise ConformanceError(
+                f"{op_id}: the spec declares no success response body; use assert_no_response_body"
+            )
         if not (isinstance(model_cls, type) and issubclass(model_cls, msgspec.Struct)):
             raise ConformanceError(f"{op_id}: assert_roundtrip needs a msgspec.Struct type")
 
@@ -241,6 +248,29 @@ class ClaimRecorder:
                     f"{invented}; the round-trip is not exercising absence"
                 )
 
+        self._satisfied.add((op_id, "roundtrip"))
+
+    def assert_no_response_body(self, returned: Any, *, op: str | None = None) -> None:
+        """The empty-body leg of the schema contract, for 202/204-style operations.
+
+        Satisfies the ``roundtrip`` category only for operations the spec gives
+        no success response body. ``returned`` is the SDK call's return value and
+        must be ``None``: the alternative — round-tripping a throwaway empty
+        model — would let any operation dodge the schema category.
+        """
+        op_id = self._resolve(op)
+        entry = self._ops[op_id]
+        if entry["kind"] != "http":
+            raise ConformanceError(f"{op_id} is a gRPC rpc; use assert_roundtrip")
+        if entry["success_body"]:
+            raise ConformanceError(
+                f"{op_id}: the spec declares a success response body; use assert_roundtrip"
+            )
+        if returned is not None:
+            raise ConformanceError(
+                f"{op_id}: spec declares no success response body, but the SDK returned "
+                f"{returned!r} instead of None"
+            )
         self._satisfied.add((op_id, "roundtrip"))
 
     def assert_satisfied(self) -> None:

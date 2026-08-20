@@ -67,6 +67,15 @@ test ends; the `claim` fixture fails the test at teardown otherwise:
    payload (those fields stripped) must still decode, and the model must not
    invent values for them.
 
+   Operations whose spec declares no success response body — 202/204 deletes
+   and the like — satisfy this category with
+   `claim.assert_no_response_body(returned)` instead, where `returned` is the
+   SDK call's return value and must be `None`. Which of the two applies is not
+   the test's choice: the manifest records `success_body` per operation from
+   the OAS, and each method refuses the operations the other one owns. So an
+   operation with a real response schema cannot dodge the round-trip by
+   claiming to have no body.
+
 Additional rules:
 
 - Tests must exercise the SDK's real request path (public client classes, or
@@ -83,7 +92,8 @@ Additional rules:
 ## Why inflation is detectable
 
 - The denominator comes from parsing the spec files, not a hand-kept list.
-- Expected method/path/service/rpc come from the manifest, not the test.
+- Expected method/path/service/rpc and whether a success response body exists
+  come from the manifest, not the test.
 - A claimed test that skips any mandatory assertion fails at teardown.
 - A claimed test that fails, errors, or is skipped does not count under
   `--verify` or `--gate`.
