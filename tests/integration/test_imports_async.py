@@ -18,6 +18,7 @@ from pinecone.errors.exceptions import PineconeValueError
 from pinecone.models.imports.list import ImportList
 from pinecone.models.imports.model import ImportModel, StartImportResponse
 from tests.integration.conftest import async_cleanup_resource, unique_name
+from tests.integration.index_shapes import MANAGED_AWS, dense_schema
 
 # A public S3 URI that the Pinecone import API accepts. The import will
 # be cancelled before it runs, so it does not matter whether the bucket
@@ -48,9 +49,8 @@ async def test_import_lifecycle_async(async_client: AsyncPinecone) -> None:
         # 1. Create a serverless index (needed to get a data-plane host)
         await async_client.indexes.create(
             name=index_name,
-            dimension=2,
-            metric="cosine",
-            spec={"serverless": {"cloud": "aws", "region": "us-east-1"}},
+            schema=dense_schema(2, "cosine"),
+            deployment=MANAGED_AWS,
             timeout=120,
         )
 

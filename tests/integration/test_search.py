@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from pinecone import EmbedConfig, IntegratedSpec, Pinecone, UpsertRecordsResponse
+from pinecone import Pinecone, UpsertRecordsResponse
 from pinecone.errors.exceptions import PineconeValueError
 from pinecone.models.vectors.search import (
     Hit,
@@ -34,16 +34,11 @@ def test_search_records_rest(client: Pinecone, api_key: str) -> None:
     name = unique_name("idx")
     namespace = "srch-ns"
     try:
-        client.indexes.create(
+        client.indexes.create_for_model(
             name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(
-                    model="multilingual-e5-large",
-                    field_map={"text": "text"},
-                ),
-            ),
+            cloud="aws",
+            region="us-east-1",
+            embed={"model": "multilingual-e5-large", "field_map": {"text": "text"}},
         )
 
         # Wait for the index to become ready using SDK's describe
@@ -115,16 +110,11 @@ def test_search_records_grpc(client: Pinecone, api_key: str) -> None:
     name = unique_name("idx")
     namespace = "srch-ns"
     try:
-        client.indexes.create(
+        client.indexes.create_for_model(
             name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(
-                    model="multilingual-e5-large",
-                    field_map={"text": "text"},
-                ),
-            ),
+            cloud="aws",
+            region="us-east-1",
+            embed={"model": "multilingual-e5-large", "field_map": {"text": "text"}},
         )
         wait_for_ready(
             lambda: client.indexes.describe(name).status.ready,
@@ -162,16 +152,11 @@ def test_search_with_rerank_rest(client: Pinecone, api_key: str) -> None:
     name = unique_name("idx")
     namespace = "rerank-ns"
     try:
-        client.indexes.create(
+        client.indexes.create_for_model(
             name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(
-                    model="multilingual-e5-large",
-                    field_map={"text": "text"},
-                ),
-            ),
+            cloud="aws",
+            region="us-east-1",
+            embed={"model": "multilingual-e5-large", "field_map": {"text": "text"}},
         )
 
         wait_for_ready(
@@ -263,16 +248,11 @@ def test_search_by_id_rest(client: Pinecone, api_key: str) -> None:
     name = unique_name("idx")
     namespace = "sid-ns"
     try:
-        client.indexes.create(
+        client.indexes.create_for_model(
             name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(
-                    model="multilingual-e5-large",
-                    field_map={"text": "text"},
-                ),
-            ),
+            cloud="aws",
+            region="us-east-1",
+            embed={"model": "multilingual-e5-large", "field_map": {"text": "text"}},
         )
 
         wait_for_ready(
@@ -344,16 +324,11 @@ def test_search_with_filter_rest(client: Pinecone, api_key: str) -> None:
     name = unique_name("idx")
     namespace = "swf-ns"
     try:
-        client.indexes.create(
+        client.indexes.create_for_model(
             name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(
-                    model="multilingual-e5-large",
-                    field_map={"text": "text"},
-                ),
-            ),
+            cloud="aws",
+            region="us-east-1",
+            embed={"model": "multilingual-e5-large", "field_map": {"text": "text"}},
         )
 
         wait_for_ready(
@@ -479,16 +454,11 @@ def test_search_with_filter_grpc(client: Pinecone, api_key: str) -> None:
     name = unique_name("idx")
     namespace = "swf-ns"
     try:
-        client.indexes.create(
+        client.indexes.create_for_model(
             name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(
-                    model="multilingual-e5-large",
-                    field_map={"text": "text"},
-                ),
-            ),
+            cloud="aws",
+            region="us-east-1",
+            embed={"model": "multilingual-e5-large", "field_map": {"text": "text"}},
         )
 
         wait_for_ready(
@@ -575,16 +545,11 @@ def test_search_by_id_grpc(client: Pinecone, api_key: str) -> None:
     name = unique_name("idx")
     namespace = "sid-ns"
     try:
-        client.indexes.create(
+        client.indexes.create_for_model(
             name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(
-                    model="multilingual-e5-large",
-                    field_map={"text": "text"},
-                ),
-            ),
+            cloud="aws",
+            region="us-east-1",
+            embed={"model": "multilingual-e5-large", "field_map": {"text": "text"}},
         )
 
         wait_for_ready(
@@ -704,16 +669,11 @@ def test_search_records_alias_with_typed_inputs_rest(client: Pinecone, api_key: 
     name = unique_name("idx")
     namespace = "alias-ns"
     try:
-        client.indexes.create(
+        client.indexes.create_for_model(
             name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(
-                    model="multilingual-e5-large",
-                    field_map={"text": "text"},
-                ),
-            ),
+            cloud="aws",
+            region="us-east-1",
+            embed={"model": "multilingual-e5-large", "field_map": {"text": "text"}},
         )
 
         wait_for_ready(
@@ -782,16 +742,11 @@ def test_search_records_alias_with_typed_inputs_grpc(client: Pinecone, api_key: 
     name = unique_name("idx")
     namespace = "alias-grpc-ns"
     try:
-        client.indexes.create(
+        client.indexes.create_for_model(
             name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(
-                    model="multilingual-e5-large",
-                    field_map={"text": "text"},
-                ),
-            ),
+            cloud="aws",
+            region="us-east-1",
+            embed={"model": "multilingual-e5-large", "field_map": {"text": "text"}},
         )
         wait_for_ready(
             lambda: client.indexes.describe(name).status.ready,
@@ -856,18 +811,11 @@ def test_search_with_match_terms_rest(client: Pinecone, api_key: str) -> None:
     name = unique_name("idx")
     namespace = "mt-ns"
     try:
-        client.indexes.create(
+        client.indexes.create_for_model(
             name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(
-                    model="pinecone-sparse-english-v0",
-                    field_map={"text": "text"},
-                ),
-            ),
-            vector_type="sparse",
-            metric="dotproduct",
+            cloud="aws",
+            region="us-east-1",
+            embed={"model": "pinecone-sparse-english-v0", "field_map": {"text": "text"}},
             timeout=300,
         )
         index = client.index(name=name)
@@ -952,16 +900,11 @@ def test_search_with_rerank_grpc(client: Pinecone, api_key: str) -> None:
     name = unique_name("idx")
     namespace = "rr-grpc-ns"
     try:
-        client.indexes.create(
+        client.indexes.create_for_model(
             name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(
-                    model="multilingual-e5-large",
-                    field_map={"text": "text"},
-                ),
-            ),
+            cloud="aws",
+            region="us-east-1",
+            embed={"model": "multilingual-e5-large", "field_map": {"text": "text"}},
         )
 
         wait_for_ready(
@@ -1059,16 +1002,11 @@ def test_search_all_fields_default_and_restricted_rest(client: Pinecone, api_key
     name = unique_name("idx")
     namespace = "af-ns"
     try:
-        client.indexes.create(
+        client.indexes.create_for_model(
             name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(
-                    model="multilingual-e5-large",
-                    field_map={"text": "text"},
-                ),
-            ),
+            cloud="aws",
+            region="us-east-1",
+            embed={"model": "multilingual-e5-large", "field_map": {"text": "text"}},
         )
 
         wait_for_ready(
