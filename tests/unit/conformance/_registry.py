@@ -12,10 +12,11 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from functools import lru_cache
+from functools import cache, lru_cache
 from pathlib import Path
 from typing import Any, TypeVar
 
+import jsonschema
 import msgspec
 import pytest
 
@@ -42,11 +43,76 @@ class ConformanceError(AssertionError):
 
 
 @lru_cache(maxsize=1)
-def manifest_operations() -> OperationMap:
+def _manifest() -> dict[str, Any]:
     with MANIFEST_PATH.open() as f:
-        manifest = json.load(f)
-    operations: OperationMap = manifest["operations"]
+        manifest: dict[str, Any] = json.load(f)
+    return manifest
+
+
+def manifest_operations() -> OperationMap:
+    operations: OperationMap = _manifest()["operations"]
     return operations
+
+
+def manifest_schemas() -> dict[str, Any]:
+    schemas: dict[str, Any] = _manifest()["schemas"]
+    return schemas
+
+
+@cache
+def _schema_validator(schema_key: str) -> jsonschema.protocols.Validator:
+    schema = manifest_schemas().get(schema_key)
+    if schema is None:
+        raise ConformanceError(
+            f"response schema {schema_key!r} is not in the manifest — regenerate it "
+            "with scripts/api_coverage.py --write-manifest"
+        )
+    return jsonschema.Draft202012Validator(schema)
+
+
+def validate_response_payload(op_id: str, entry: Mapping[str, Any], payload: Any) -> None:
+    """Validate a test fixture against the OAS response schema for *op_id*.
+
+    This is what makes a claimed operation mean spec conformance rather than
+    self-consistency: the payload the test mocks must be a response a
+    spec-conformant server could send. A ``divergence`` entry switches
+    validation to the documented alternative schema, but only when it carries
+    the question-issue reference and reason the exception list requires — a
+    tampered or incomplete exception fails rather than silently passing.
+    """
+    divergence = entry.get("divergence")
+    if divergence is not None:
+        issue = divergence.get("issue")
+        if not isinstance(issue, int) or isinstance(issue, bool) or issue <= 0:
+            raise ConformanceError(
+                f"{op_id}: divergence entry does not reference a question issue number; "
+                "silent divergence exceptions are not allowed (see "
+                "tests/unit/conformance/divergences_2026-07.json)"
+            )
+        if not isinstance(divergence.get("reason"), str) or not divergence["reason"].strip():
+            raise ConformanceError(f"{op_id}: divergence entry has no reason")
+        schema_key = divergence.get("response_schema")
+    else:
+        schema_key = entry.get("response_schema")
+    if not isinstance(schema_key, str):
+        raise ConformanceError(
+            f"{op_id}: manifest records no response schema for this operation — "
+            "regenerate it with scripts/api_coverage.py --write-manifest"
+        )
+    errors = sorted(
+        _schema_validator(schema_key).iter_errors(payload),
+        key=lambda e: ([str(p) for p in e.absolute_path], e.message),
+    )
+    if errors:
+        details = "; ".join(
+            f"{'/'.join(str(p) for p in error.absolute_path) or '<root>'}: {error.message}"
+            for error in errors[:5]
+        )
+        suffix = f" (+{len(errors) - 5} more)" if len(errors) > 5 else ""
+        raise ConformanceError(
+            f"{op_id}: fixture does not conform to the spec response schema "
+            f"{schema_key}: {details}{suffix}"
+        )
 
 
 def api_op(op_id: str) -> Callable[[F], F]:
@@ -192,7 +258,14 @@ class ClaimRecorder:
         optional_absent: Sequence[str],
         op: str | None = None,
     ) -> None:
-        """The payload survives decode -> model -> re-encode without loss.
+        """The payload conforms to the OAS response schema and survives
+        decode -> model -> re-encode without loss.
+
+        For HTTP operations the payload is first validated against the
+        operation's vendored response schema (or its registered divergence
+        alternative), so a fixture no spec-conformant server could send
+        cannot claim coverage. gRPC rpcs have no OAS schema and skip that
+        leg.
 
         ``optional_absent`` names top-level optional fields to strip for the
         absent-field leg: the reduced payload must still decode, and the
@@ -205,10 +278,13 @@ class ClaimRecorder:
         """
         op_id = self._resolve(op)
         entry = self._ops[op_id]
-        if entry["kind"] == "http" and not entry["success_body"]:
-            raise ConformanceError(
-                f"{op_id}: the spec declares no success response body; use assert_no_response_body"
-            )
+        if entry["kind"] == "http":
+            if not entry["success_body"]:
+                raise ConformanceError(
+                    f"{op_id}: the spec declares no success response body; "
+                    "use assert_no_response_body"
+                )
+            validate_response_payload(op_id, entry, payload)
         if not (isinstance(model_cls, type) and issubclass(model_cls, msgspec.Struct)):
             raise ConformanceError(f"{op_id}: assert_roundtrip needs a msgspec.Struct type")
 

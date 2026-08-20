@@ -11,6 +11,7 @@ import textwrap
 from pathlib import Path
 
 import httpx
+import jsonschema
 import msgspec
 import pytest
 
@@ -43,6 +44,12 @@ class SampleModel(msgspec.Struct):
     dimension: int
     pagination: str | None = None
     metric: str | None = None
+
+
+class SampleToken(msgspec.Struct):
+    access_token: str
+    token_type: str
+    expires_in: int | None = None
 
 
 class RequiredOnlyModel(msgspec.Struct):
@@ -137,7 +144,7 @@ def test_parse_oas_file_extracts_operations(tmp_path: Path) -> None:
             """
         )
     )
-    ops = cov.parse_oas_file(oas)
+    ops, schemas = cov.parse_oas_file(oas)
     assert ops == {
         "widgets:list_widgets": {
             "kind": "http",
@@ -145,6 +152,7 @@ def test_parse_oas_file_extracts_operations(tmp_path: Path) -> None:
             "base_path": "",
             "path": "/widgets",
             "success_body": True,
+            "response_schema": "widgets:list_widgets.response",
         },
         "widgets:create_widget": {
             "kind": "http",
@@ -152,6 +160,7 @@ def test_parse_oas_file_extracts_operations(tmp_path: Path) -> None:
             "base_path": "",
             "path": "/widgets",
             "success_body": True,
+            "response_schema": "widgets:Widget",
         },
         "widgets:delete_widget": {
             "kind": "http",
@@ -159,6 +168,7 @@ def test_parse_oas_file_extracts_operations(tmp_path: Path) -> None:
             "base_path": "",
             "path": "/widgets/{widget_id}",
             "success_body": False,
+            "response_schema": None,
         },
         "widgets:retire_widget": {
             "kind": "http",
@@ -166,6 +176,19 @@ def test_parse_oas_file_extracts_operations(tmp_path: Path) -> None:
             "base_path": "",
             "path": "/widgets/{widget_id}/retire",
             "success_body": False,
+            "response_schema": None,
+        },
+    }
+    assert schemas == {
+        "widgets:list_widgets.response": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"data": {"type": "array", "items": {"type": "string"}}},
+        },
+        "widgets:Widget": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"id": {"type": "string"}},
         },
     }
 
@@ -189,7 +212,7 @@ def test_parse_oas_file_records_the_server_base_path(tmp_path: Path) -> None:
             """
         )
     )
-    ops = cov.parse_oas_file(oas)
+    ops, _ = cov.parse_oas_file(oas)
     assert ops["widgets:list_widgets"]["base_path"] == "/widget"
 
 
@@ -257,6 +280,277 @@ def test_parse_proto_file_rejects_rpc_outside_service(tmp_path: Path) -> None:
         cov.parse_proto_file(proto)
 
 
+_BUNDLER_DOC = {
+    "components": {
+        "schemas": {
+            "Leaf": {
+                "type": "object",
+                "properties": {"value": {"type": "string", "example": "v"}},
+                "required": ["value"],
+            },
+            "Node": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "children": {
+                        "type": "array",
+                        "items": {"$ref": "#/components/schemas/Node"},
+                    },
+                },
+            },
+            "Envelope": {
+                "type": "object",
+                "description": "annotation to strip",
+                "x-component-name": "Envelope",
+                "properties": {
+                    "leaf": {
+                        "nullable": True,
+                        "type": "object",
+                        "allOf": [{"$ref": "#/components/schemas/Leaf"}],
+                    },
+                    "state": {"type": "string", "nullable": True},
+                },
+            },
+        }
+    }
+}
+
+
+def test_bundler_inlines_refs_merges_allof_translates_nullable_and_seals() -> None:
+    bundled = cov._SchemaBundler(_BUNDLER_DOC).bundle({"$ref": "#/components/schemas/Envelope"})
+    assert bundled == {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "leaf": {
+                "type": ["object", "null"],
+                "additionalProperties": False,
+                "properties": {"value": {"type": "string"}},
+                "required": ["value"],
+            },
+            "state": {"type": ["string", "null"]},
+        },
+    }
+
+
+def test_bundler_relaxes_oneof_to_deduplicated_anyof() -> None:
+    doc: dict = {"components": {"schemas": {}}}
+    schema = {
+        "type": "object",
+        "properties": {
+            "reference": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "properties": {"file": {"type": "string"}},
+                        "discriminator": {"propertyName": "type"},
+                    },
+                    {"type": "object", "properties": {"file": {"type": "string"}}},
+                    {
+                        "type": "object",
+                        "properties": {"file": {"type": "string"}, "pages": {"type": "integer"}},
+                    },
+                ]
+            }
+        },
+    }
+    bundled = cov._SchemaBundler(doc).bundle(schema)
+    variants = bundled["properties"]["reference"]["anyOf"]
+    assert len(variants) == 2
+    assert "oneOf" not in json.dumps(bundled)
+
+    validator = jsonschema.Draft202012Validator(bundled)
+    validator.validate({"reference": {"file": "doc.pdf"}})
+    validator.validate({"reference": {"file": "doc.pdf", "pages": 3}})
+    assert list(validator.iter_errors({"reference": {"unknown": 1}}))
+
+
+def test_bundler_widens_both_type_and_enum_for_nullable() -> None:
+    doc: dict = {"components": {"schemas": {}}}
+    schema = {
+        "type": "object",
+        "properties": {
+            "state": {"type": "string", "enum": ["on", "off"], "nullable": True},
+        },
+    }
+    bundled = cov._SchemaBundler(doc).bundle(schema)
+    assert bundled["properties"]["state"] == {
+        "type": ["string", "null"],
+        "enum": ["on", "off", None],
+    }
+    jsonschema.Draft202012Validator(bundled).validate({"state": None})
+
+
+def test_bundler_keeps_cyclic_refs_as_local_defs() -> None:
+    bundled = cov._SchemaBundler(_BUNDLER_DOC).bundle({"$ref": "#/components/schemas/Node"})
+    assert bundled["$ref"] == "#/$defs/Node"
+    node = bundled["$defs"]["Node"]
+    assert node["properties"]["children"]["items"] == {"$ref": "#/$defs/Node"}
+    assert node["additionalProperties"] is False
+
+    validator = jsonschema.Draft202012Validator(bundled)
+    validator.validate({"name": "root", "children": [{"name": "child", "children": []}]})
+    assert list(validator.iter_errors({"name": "root", "children": [{"unknown": 1}]}))
+
+
+_DIVERGENT_OAS = """
+openapi: 3.0.3
+paths:
+  /widgets/{widget_id}:
+    patch:
+      operationId: update_widget
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateWidgetResponse'
+components:
+  schemas:
+    UpdateWidgetResponse:
+      type: object
+      properties:
+        widget_name:
+          type: string
+    Widget:
+      type: object
+      properties:
+        id:
+          type: string
+      required:
+      - id
+"""
+
+
+def test_parse_oas_file_applies_divergences(tmp_path: Path) -> None:
+    oas = tmp_path / "widgets_2026-07.oas.yaml"
+    oas.write_text(_DIVERGENT_OAS)
+    divergences = {
+        "widgets:update_widget": {
+            "issue": 170,
+            "reason": "backend returns the full Widget",
+            "alternative_schema": "Widget",
+        }
+    }
+    ops, schemas = cov.parse_oas_file(oas, divergences)
+    entry = ops["widgets:update_widget"]
+    assert entry["response_schema"] == "widgets:UpdateWidgetResponse"
+    assert entry["divergence"] == {
+        "issue": 170,
+        "reason": "backend returns the full Widget",
+        "response_schema": "widgets:Widget",
+    }
+    assert set(schemas) == {"widgets:UpdateWidgetResponse", "widgets:Widget"}
+
+
+def test_parse_oas_file_rejects_divergence_naming_a_missing_component(tmp_path: Path) -> None:
+    oas = tmp_path / "widgets_2026-07.oas.yaml"
+    oas.write_text(_DIVERGENT_OAS)
+    divergences = {
+        "widgets:update_widget": {
+            "issue": 170,
+            "reason": "backend returns the full Widget",
+            "alternative_schema": "NoSuchSchema",
+        }
+    }
+    with pytest.raises(cov.SpecError, match="not in components/schemas"):
+        cov.parse_oas_file(oas, divergences)
+
+
+def _synthetic_specs_dir(tmp_path: Path) -> Path:
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    (specs / "widgets_2026-07.oas.yaml").write_text(_DIVERGENT_OAS)
+    (specs / "db_data_2026-07.proto").write_text(
+        'syntax = "proto3";\nservice VectorService {\n'
+        "  rpc Upsert(UpsertRequest) returns (UpsertResponse) {}\n}\n"
+    )
+    return specs
+
+
+def test_manifest_generation_is_deterministic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    divergences_path = tmp_path / "divergences_2026-07.json"
+    divergences_path.write_text(
+        json.dumps(
+            {
+                "divergences": {
+                    "widgets:update_widget": {
+                        "issue": 170,
+                        "reason": "backend returns the full Widget",
+                        "alternative_schema": "Widget",
+                    }
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(cov, "DIVERGENCES_PATH", divergences_path)
+    specs = _synthetic_specs_dir(tmp_path)
+
+    first = cov.derive_manifest(specs)
+    second = cov.derive_manifest(specs)
+    assert first == second
+    assert cov.render_manifest(first) == cov.render_manifest(second)
+
+    shuffled = {
+        "api_version": first["api_version"],
+        "operations": dict(reversed(list(first["operations"].items()))),
+        "schemas": dict(reversed(list(first["schemas"].items()))),
+    }
+    assert cov.render_manifest(shuffled) == cov.render_manifest(first)
+    assert json.loads(cov.render_manifest(first))["operations"] == first["operations"]
+
+
+def test_derive_manifest_rejects_divergences_for_unknown_operations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    divergences_path = tmp_path / "divergences_2026-07.json"
+    divergences_path.write_text(
+        json.dumps(
+            {
+                "divergences": {
+                    "widgets:no_such_op": {
+                        "issue": 170,
+                        "reason": "stale entry",
+                        "alternative_schema": "Widget",
+                    }
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(cov, "DIVERGENCES_PATH", divergences_path)
+    specs = _synthetic_specs_dir(tmp_path)
+    with pytest.raises(cov.SpecError, match="not in the specs"):
+        cov.derive_manifest(specs)
+
+
+@pytest.mark.parametrize(
+    ("entry", "message"),
+    [
+        ({"reason": "r", "alternative_schema": "Widget"}, "must reference a question"),
+        (
+            {"issue": True, "reason": "r", "alternative_schema": "Widget"},
+            "must reference a question",
+        ),
+        ({"issue": 170, "reason": " ", "alternative_schema": "Widget"}, "non-empty 'reason'"),
+        ({"issue": 170, "reason": "r"}, "alternative_schema"),
+        (
+            {"issue": 170, "reason": "r", "alternative_schema": "Widget", "extra": 1},
+            "unknown keys",
+        ),
+    ],
+)
+def test_load_divergences_rejects_malformed_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: dict, message: str
+) -> None:
+    divergences_path = tmp_path / "divergences_2026-07.json"
+    divergences_path.write_text(json.dumps({"divergences": {"widgets:update_widget": entry}}))
+    monkeypatch.setattr(cov, "DIVERGENCES_PATH", divergences_path)
+    with pytest.raises(cov.SpecError, match=message):
+        cov.load_divergences()
+
+
 def test_vendored_manifest_denominators() -> None:
     ops = manifest_operations()
     http = [op for op, entry in ops.items() if entry["kind"] == "http"]
@@ -276,7 +570,10 @@ def test_vendored_manifest_denominators() -> None:
 
 @pytest.mark.skipif(not cov.DEFAULT_SPECS_DIR.is_dir(), reason="2026-07 spec checkout not present")
 def test_vendored_manifest_matches_live_specs() -> None:
-    assert cov.derive_operations(cov.DEFAULT_SPECS_DIR) == cov.load_manifest()
+    derived = cov.derive_manifest(cov.DEFAULT_SPECS_DIR)
+    vendored = cov.load_manifest()
+    assert vendored["operations"] == derived["operations"]
+    assert vendored["schemas"] == derived["schemas"]
 
 
 def test_version_constants_extraction() -> None:
@@ -350,14 +647,14 @@ def test_api_op_registers_and_marks() -> None:
 
 
 def test_recorder_happy_path_http() -> None:
-    recorder = ClaimRecorder(["db_control:list_indexes"])
-    request = _request("GET", "/indexes")
+    recorder = ClaimRecorder(["oauth:get_token"])
+    request = _request("POST", "/oauth/token")
     recorder.assert_request(request)
     recorder.assert_api_version(request)
     recorder.assert_roundtrip(
-        SampleModel,
-        {"name": "idx", "dimension": 2, "pagination": "tok"},
-        optional_absent=["pagination"],
+        SampleToken,
+        {"access_token": "tok", "token_type": "Bearer", "expires_in": 1800},
+        optional_absent=["expires_in"],
     )
     recorder.assert_satisfied()
 
@@ -394,7 +691,7 @@ def test_recorder_grpc_request_and_metadata() -> None:
 
 
 def test_recorder_roundtrip_detects_lost_fields() -> None:
-    recorder = ClaimRecorder(["db_control:list_indexes"])
+    recorder = ClaimRecorder(["db_data_grpc:Upsert"])
     with pytest.raises(ConformanceError, match="lost in schema round-trip"):
         recorder.assert_roundtrip(
             SampleModel,
@@ -404,7 +701,7 @@ def test_recorder_roundtrip_detects_lost_fields() -> None:
 
 
 def test_recorder_roundtrip_requires_optional_absent_leg() -> None:
-    recorder = ClaimRecorder(["db_control:list_indexes"])
+    recorder = ClaimRecorder(["db_data_grpc:Upsert"])
     with pytest.raises(ConformanceError, match="optional_absent must exercise at least one"):
         recorder.assert_roundtrip(
             SampleModel, {"name": "idx", "dimension": 2, "pagination": "tok"}, optional_absent=[]
@@ -420,12 +717,12 @@ def test_recorder_roundtrip_requires_optional_absent_leg() -> None:
 
 
 def test_recorder_roundtrip_allows_required_only_models() -> None:
-    recorder = ClaimRecorder(["db_control:list_indexes"])
+    recorder = ClaimRecorder(["db_data_grpc:Upsert"])
     recorder.assert_roundtrip(RequiredOnlyModel, {"name": "idx"}, optional_absent=[])
 
 
 def test_recorder_roundtrip_allows_a_payload_with_no_optional_field() -> None:
-    recorder = ClaimRecorder(["db_control:list_indexes"])
+    recorder = ClaimRecorder(["db_data_grpc:Upsert"])
     recorder.assert_roundtrip(SampleModel, {"name": "idx", "dimension": 2}, optional_absent=[])
 
 
@@ -488,11 +785,10 @@ def test_claim_fixture_enforcement_end_to_end(tmp_path: Path) -> None:
                 )
 
 
-            @api_op("db_control:list_indexes")
+            @api_op("db_data_grpc:Upsert")
             def test_satisfied(claim):
-                req = _req("GET", "/indexes")
-                claim.assert_request(req)
-                claim.assert_api_version(req)
+                claim.assert_grpc_request("/VectorService/Upsert")
+                claim.assert_api_version([("x-pinecone-api-version", "2026-07")])
                 claim.assert_roundtrip(Probe, {"a": 1, "b": "x"}, optional_absent=["b"])
 
 

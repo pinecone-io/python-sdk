@@ -12,6 +12,8 @@ from tests.unit.conformance._registry import (
     UnknownOperationError,
     api_op,
     manifest_operations,
+    manifest_schemas,
+    validate_response_payload,
 )
 
 __all__ = [
@@ -24,4 +26,6 @@ __all__ = [
     "UnknownOperationError",
     "api_op",
     "manifest_operations",
+    "manifest_schemas",
+    "validate_response_payload",
 ]

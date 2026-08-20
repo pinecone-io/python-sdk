@@ -1,0 +1,11 @@
+{
+  "api_version": "2026-07",
+  "purpose": "Hand-maintained divergence exception list consumed by scripts/api_coverage.py --write-manifest. Each entry switches conformance fixture validation for one operation from the OAS response schema to the alternative component schema the SDK deliberately implements (backend behavior over spec). Every entry MUST reference an open 'SPEC-vs-BACKEND' question issue by number; the --gate mode fails if the referenced issue is closed or is not a question issue. See tests/unit/conformance/README.md.",
+  "divergences": {
+    "assistant_control:update_assistant": {
+      "issue": 170,
+      "reason": "The OAS declares UpdateAssistantResponse (assistant_name/instructions/metadata), but the backend has always returned the full Assistant shape (svc-knowledge-engine src/control/service/routes/v202604/mod.rs:145-165, routed for 2026-07 by routes/mod.rs:21) and Assistants.update() decodes AssistantModel accordingly.",
+      "alternative_schema": "Assistant"
+    }
+  }
+}

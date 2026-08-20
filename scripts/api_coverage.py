@@ -17,6 +17,18 @@ Coverage is claimed by tests in ``tests/unit/conformance/`` decorated with
 test actually passed (see tests/unit/conformance/README.md for the
 assertion contract each test must satisfy).
 
+The manifest also vendors, per HTTP operation with a success response body,
+the OAS response schema (refs resolved, OAS 3.0 ``nullable`` translated,
+declared objects sealed with ``additionalProperties: false``) so
+``assert_roundtrip`` can validate each test's fixture against the spec
+before round-tripping it. Operations where the SDK deliberately implements
+backend behavior over the OAS carry a ``divergence`` entry — sourced from
+the hand-maintained ``tests/unit/conformance/divergences_2026-07.json``,
+each referencing an open SPEC-vs-BACKEND question issue — that switches
+fixture validation to the documented alternative schema. No silent
+exceptions: ``--gate`` checks every referenced issue is still an open
+``question`` issue.
+
 Usage:
 
     uv run python scripts/api_coverage.py --report
@@ -33,6 +45,7 @@ Usage:
    excepted by a ``DECISION:`` comment on the epoch issue
 4. rust/proto/db_data_2026-07.proto exists and rust/build.rs references it
 5. the epoch issue has zero open sub-issues
+6. every divergence exception references an open ``question`` issue
 """
 
 from __future__ import annotations
@@ -54,6 +67,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFORMANCE_DIR = REPO_ROOT / "tests" / "unit" / "conformance"
 MANIFEST_PATH = CONFORMANCE_DIR / "manifest_2026-07.json"
+DIVERGENCES_PATH = CONFORMANCE_DIR / "divergences_2026-07.json"
 CONSTANTS_PATH = REPO_ROOT / "pinecone" / "_internal" / "constants.py"
 RUST_PROTO_PATH = REPO_ROOT / "rust" / "proto" / "db_data_2026-07.proto"
 RUST_BUILD_RS_PATH = REPO_ROOT / "rust" / "build.rs"
@@ -77,6 +91,11 @@ class SpecError(RuntimeError):
 
 
 _SHAPE_KEYWORDS = ("properties", "items", "additionalProperties", "allOf", "oneOf", "anyOf", "enum")
+_ANNOTATION_KEYWORDS = frozenset(
+    {"description", "example", "examples", "title", "externalDocs", "xml", "deprecated"}
+)
+_COMPOSITION_KEYWORDS = ("allOf", "anyOf", "oneOf", "not")
+_CHILD_LIST_KEYWORDS = ("allOf", "anyOf", "oneOf")
 
 
 def _deref(schema: Any, doc: dict[str, Any], seen: frozenset[str] = frozenset()) -> Any:
@@ -111,20 +130,205 @@ def _conveys_fields(schema: Any, doc: dict[str, Any]) -> bool:
     return schema.get("type") not in (None, "object")
 
 
-def declares_success_body(operation: dict[str, Any], doc: dict[str, Any]) -> bool:
-    """Whether any 2xx response of *operation* declares a response body.
+def success_response_schema(operation: dict[str, Any], doc: dict[str, Any]) -> Any:
+    """The schema of *operation*'s success response body, or None.
 
-    Recorded in the manifest so ``ClaimRecorder`` can distinguish an operation
-    with a response schema (round-trip mandatory) from one that answers with an
-    empty body, where inventing a throwaway model would only inflate coverage.
+    The first 2xx (lowest status) with a field-conveying media schema wins;
+    ``application/json`` is preferred when a response declares several media
+    types (the chat operations also declare ``text/event-stream``). ``None``
+    means the operation answers with an empty body — 202/204 deletes and bare
+    ``type: object`` acknowledgements — where inventing a throwaway model
+    would only inflate coverage.
     """
-    for status, response in (operation.get("responses") or {}).items():
+    responses = operation.get("responses") or {}
+    for status in sorted(responses, key=str):
+        response = responses[status]
         if not str(status).startswith("2") or not isinstance(response, dict):
             continue
-        for media in (response.get("content") or {}).values():
+        content = response.get("content") or {}
+        for media_type in sorted(content, key=lambda m: (m != "application/json", m)):
+            media = content[media_type]
             if isinstance(media, dict) and _conveys_fields(media.get("schema"), doc):
-                return True
-    return False
+                return media.get("schema")
+    return None
+
+
+class _SchemaBundler:
+    """Turns one OAS 3.0 response schema into a self-contained JSON Schema.
+
+    Five transformations, in order, all at manifest-generation time so the
+    test-time validator stays a plain ``jsonschema`` call:
+
+    - **refs resolved**: non-cyclic ``$ref``s are inlined; cyclic ones become
+      local ``#/$defs/<Name>`` entries so recursion cannot loop.
+    - **oneOf relaxed to anyOf**: see :func:`_relax_oneof` — with
+      ``discriminator`` stripped, exactly-one-match would fail spec-valid
+      payloads whose variants inline to overlapping schemas.
+    - **allOf merged**: the specs use single-branch ``allOf`` as a nullable-
+      wrapper idiom; branches that are plain object schemas merge into their
+      parent. Anything unmergeable is kept verbatim (and stays unsealed).
+    - **nullable translated**: OAS 3.0 ``nullable: true`` has no JSON Schema
+      meaning, so it becomes ``type: [T, "null"]`` / an enum ``null`` / an
+      ``anyOf`` wrapper; ``type`` and ``enum`` are widened independently
+      when both are present.
+    - **annotations stripped**: descriptions, examples, and ``x-*`` extensions
+      carry no constraints and would bloat the vendored manifest.
+
+    Sealing (``additionalProperties: false`` on objects that declare
+    ``properties`` without addressing extras) happens in :func:`_seal` after
+    bundling: it is what makes a fixture carrying keys the spec never declared
+    fail validation instead of silently counting as coverage.
+    """
+
+    def __init__(self, doc: dict[str, Any]) -> None:
+        self._doc = doc
+        self._defs: dict[str, Any] = {}
+        self._cyclic: set[str] = set()
+
+    def bundle(self, schema: Any) -> dict[str, Any]:
+        out = self._convert(schema, frozenset())
+        if not isinstance(out, dict):
+            raise SpecError(f"response schema did not convert to an object: {out!r}")
+        if self._defs:
+            out["$defs"] = dict(sorted(self._defs.items()))
+        _seal(out)
+        return out
+
+    def _resolve(self, ref: str) -> Any:
+        target: Any = self._doc
+        for part in ref.removeprefix("#/").split("/"):
+            if not isinstance(target, dict) or part not in target:
+                raise SpecError(f"unresolvable $ref {ref!r}")
+            target = target[part]
+        return target
+
+    def _convert(self, schema: Any, in_progress: frozenset[str]) -> Any:
+        if not isinstance(schema, dict):
+            return schema
+        ref = schema.get("$ref")
+        if isinstance(ref, str):
+            if not ref.startswith("#/"):
+                raise SpecError(f"external $ref {ref!r} is not supported")
+            name = ref.rsplit("/", 1)[-1]
+            if ref in in_progress:
+                self._cyclic.add(ref)
+                return {"$ref": f"#/$defs/{name}"}
+            converted = self._convert(self._resolve(ref), in_progress | {ref})
+            if ref in self._cyclic:
+                self._defs[name] = converted
+                return {"$ref": f"#/$defs/{name}"}
+            return converted
+
+        out: dict[str, Any] = {}
+        for key, value in schema.items():
+            if key in _ANNOTATION_KEYWORDS or key.startswith("x-") or key == "discriminator":
+                continue
+            if key == "properties" and isinstance(value, dict):
+                out[key] = {k: self._convert(v, in_progress) for k, v in value.items()}
+            elif key in ("items", "additionalProperties", "not") and isinstance(value, dict):
+                out[key] = self._convert(value, in_progress)
+            elif key in _CHILD_LIST_KEYWORDS and isinstance(value, list):
+                out[key] = [self._convert(v, in_progress) for v in value]
+            else:
+                out[key] = value
+        return _apply_nullable(_merge_allof(_relax_oneof(out)))
+
+
+def _relax_oneof(node: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite ``oneOf`` as a deduplicated ``anyOf``.
+
+    ``discriminator`` is stripped during bundling, so OAS variants that
+    differed only by it inline to identical (or overlapping, once sealed)
+    schemas — under ``oneOf``'s exactly-one-match rule a spec-valid payload
+    then matches several branches and *fails*. The property fixture
+    validation needs is "matches at least one documented variant", which is
+    ``anyOf``.
+    """
+    branches = node.get("oneOf")
+    if not isinstance(branches, list):
+        return node
+    deduped: list[Any] = list(node.get("anyOf", []))
+    seen = {json.dumps(b, sort_keys=True) for b in deduped}
+    for branch in branches:
+        fingerprint = json.dumps(branch, sort_keys=True)
+        if fingerprint not in seen:
+            seen.add(fingerprint)
+            deduped.append(branch)
+    out = {key: value for key, value in node.items() if key != "oneOf"}
+    out["anyOf"] = deduped
+    return out
+
+
+def _merge_allof(node: dict[str, Any]) -> dict[str, Any]:
+    branches = node.get("allOf")
+    if not isinstance(branches, list):
+        return node
+    if any(key in node for key in ("anyOf", "oneOf", "not", "$ref")):
+        return node
+    merged = {key: value for key, value in node.items() if key != "allOf"}
+    if "properties" in merged:
+        merged["properties"] = dict(merged["properties"])
+    for branch in branches:
+        if not isinstance(branch, dict):
+            return node
+        if any(key in branch for key in _COMPOSITION_KEYWORDS) or "$ref" in branch:
+            return node
+        if branch.get("type", "object") != "object":
+            return node
+        for key, value in branch.items():
+            if key == "properties":
+                properties = merged.setdefault("properties", {})
+                for prop, prop_schema in value.items():
+                    if prop in properties and properties[prop] != prop_schema:
+                        return node
+                    properties[prop] = prop_schema
+            elif key == "required":
+                merged["required"] = sorted(set(merged.get("required", [])) | set(value))
+            elif key not in merged:
+                merged[key] = value
+            elif merged[key] != value:
+                return node
+    merged.setdefault("type", "object")
+    return merged
+
+
+def _apply_nullable(node: dict[str, Any]) -> dict[str, Any]:
+    if node.pop("nullable", None) is not True:
+        return node
+    handled = False
+    if isinstance(node.get("type"), str):
+        node["type"] = [node["type"], "null"]
+        handled = True
+    if isinstance(node.get("enum"), list):
+        if None not in node["enum"]:
+            node["enum"] = [*node["enum"], None]
+        handled = True
+    if not handled:
+        return {"anyOf": [node, {"type": "null"}]}
+    return node
+
+
+def _seal(node: Any) -> None:
+    if isinstance(node, list):
+        for child in node:
+            _seal(child)
+        return
+    if not isinstance(node, dict):
+        return
+    if (
+        "properties" in node
+        and "additionalProperties" not in node
+        and not any(key in node for key in _COMPOSITION_KEYWORDS)
+    ):
+        node["additionalProperties"] = False
+    for key in ("properties", "$defs"):
+        for child in node.get(key, {}).values():
+            _seal(child)
+    for key in ("items", "additionalProperties", "not"):
+        if isinstance(node.get(key), dict):
+            _seal(node[key])
+    for key in _CHILD_LIST_KEYWORDS:
+        _seal(node.get(key, []))
 
 
 def server_base_path(doc: dict[str, Any], name: str) -> str:
@@ -146,12 +350,61 @@ def server_base_path(doc: dict[str, Any], name: str) -> str:
     return bases.pop() if bases else ""
 
 
-def parse_oas_file(path: Path) -> OperationMap:
+def _record_schema(
+    schemas: dict[str, Any], key: str, bundled: dict[str, Any], context: str
+) -> None:
+    if key in schemas and schemas[key] != bundled:
+        raise SpecError(f"{context}: schema key {key!r} maps to two different shapes")
+    schemas[key] = bundled
+
+
+def load_divergences() -> dict[str, dict[str, Any]]:
+    """The hand-maintained divergence exception list, structurally validated.
+
+    Every entry must name an operation, reference a question issue by number,
+    give a reason, and name the alternative component schema the SDK actually
+    implements — the manifest generator refuses anything less, so a silent or
+    unattributed exception cannot exist.
+    """
+    if not DIVERGENCES_PATH.exists():
+        return {}
+    with DIVERGENCES_PATH.open() as f:
+        doc = json.load(f)
+    divergences = doc.get("divergences")
+    if not isinstance(divergences, dict):
+        raise SpecError(f"{DIVERGENCES_PATH.name}: top-level 'divergences' object is required")
+    for op_id, entry in divergences.items():
+        if not isinstance(entry, dict):
+            raise SpecError(f"{DIVERGENCES_PATH.name}: {op_id}: entry must be an object")
+        issue = entry.get("issue")
+        if not isinstance(issue, int) or isinstance(issue, bool) or issue <= 0:
+            raise SpecError(
+                f"{DIVERGENCES_PATH.name}: {op_id}: 'issue' must reference a question "
+                "issue by positive number — no silent divergence exceptions"
+            )
+        if not isinstance(entry.get("reason"), str) or not entry["reason"].strip():
+            raise SpecError(f"{DIVERGENCES_PATH.name}: {op_id}: a non-empty 'reason' is required")
+        if not isinstance(entry.get("alternative_schema"), str) or not entry["alternative_schema"]:
+            raise SpecError(
+                f"{DIVERGENCES_PATH.name}: {op_id}: 'alternative_schema' must name the "
+                "component schema the SDK actually implements"
+            )
+        unknown = set(entry) - {"issue", "reason", "alternative_schema"}
+        if unknown:
+            raise SpecError(f"{DIVERGENCES_PATH.name}: {op_id}: unknown keys {sorted(unknown)}")
+    return {str(op_id): dict(entry) for op_id, entry in divergences.items()}
+
+
+def parse_oas_file(
+    path: Path, divergences: dict[str, dict[str, Any]] | None = None
+) -> tuple[OperationMap, dict[str, Any]]:
     surface = path.name.removesuffix(f"_{API_VERSION}.oas.yaml")
+    divergences = divergences or {}
     with path.open() as f:
         doc = yaml.safe_load(f)
     base_path = server_base_path(doc, path.name)
     ops: OperationMap = {}
+    schemas: dict[str, Any] = {}
     for url_path, path_item in (doc.get("paths") or {}).items():
         if not isinstance(path_item, dict):
             continue
@@ -165,16 +418,44 @@ def parse_oas_file(path: Path) -> OperationMap:
             op_id = f"{surface}:{operation_id}"
             if op_id in ops:
                 raise SpecError(f"{path.name}: duplicate operationId {operation_id!r}")
-            ops[op_id] = {
+            schema = success_response_schema(operation, doc)
+            entry: dict[str, Any] = {
                 "kind": "http",
                 "method": method.upper(),
                 "base_path": base_path,
                 "path": url_path,
-                "success_body": declares_success_body(operation, doc),
+                "success_body": schema is not None,
+                "response_schema": None,
             }
+            if schema is not None:
+                ref = schema.get("$ref") if isinstance(schema, dict) else None
+                if isinstance(ref, str) and list(schema) == ["$ref"]:
+                    key = f"{surface}:{ref.rsplit('/', 1)[-1]}"
+                else:
+                    key = f"{surface}:{operation_id}.response"
+                _record_schema(schemas, key, _SchemaBundler(doc).bundle(schema), path.name)
+                entry["response_schema"] = key
+            divergence = divergences.get(op_id)
+            if divergence is not None:
+                component = divergence["alternative_schema"]
+                components = (doc.get("components") or {}).get("schemas") or {}
+                if component not in components:
+                    raise SpecError(
+                        f"{path.name}: divergence for {op_id} names alternative schema "
+                        f"{component!r}, which is not in components/schemas"
+                    )
+                alt_key = f"{surface}:{component}"
+                bundled = _SchemaBundler(doc).bundle({"$ref": f"#/components/schemas/{component}"})
+                _record_schema(schemas, alt_key, bundled, path.name)
+                entry["divergence"] = {
+                    "issue": divergence["issue"],
+                    "reason": divergence["reason"],
+                    "response_schema": alt_key,
+                }
+            ops[op_id] = entry
     if not ops:
         raise SpecError(f"{path.name}: no operations found")
-    return ops
+    return ops, schemas
 
 
 def parse_proto_file(path: Path) -> OperationMap:
@@ -199,41 +480,65 @@ def parse_proto_file(path: Path) -> OperationMap:
     return ops
 
 
-def derive_operations(specs_dir: Path) -> OperationMap:
+def derive_manifest(specs_dir: Path) -> dict[str, Any]:
     oas_files = sorted(specs_dir.glob(f"*_{API_VERSION}.oas.yaml"))
     proto_file = specs_dir / f"db_data_{API_VERSION}.proto"
     if not oas_files:
         raise SpecError(f"no *_{API_VERSION}.oas.yaml files in {specs_dir}")
     if not proto_file.exists():
         raise SpecError(f"{proto_file} not found")
+    divergences = load_divergences()
     ops: OperationMap = {}
+    schemas: dict[str, Any] = {}
     for oas in oas_files:
-        ops.update(parse_oas_file(oas))
+        file_ops, file_schemas = parse_oas_file(oas, divergences)
+        ops.update(file_ops)
+        for key, bundled in file_schemas.items():
+            _record_schema(schemas, key, bundled, oas.name)
     ops.update(parse_proto_file(proto_file))
-    return ops
+    unconsumed = sorted(set(divergences) - set(ops))
+    if unconsumed:
+        raise SpecError(
+            f"{DIVERGENCES_PATH.name} lists divergences for operations not in the specs: "
+            f"{unconsumed}"
+        )
+    return {"api_version": API_VERSION, "operations": ops, "schemas": schemas}
 
 
-def load_manifest() -> OperationMap:
+def load_manifest() -> dict[str, Any]:
     with MANIFEST_PATH.open() as f:
-        manifest = json.load(f)
-    operations: OperationMap = manifest["operations"]
-    return operations
+        manifest: dict[str, Any] = json.load(f)
+    return manifest
 
 
-def write_manifest(ops: OperationMap) -> None:
+def render_manifest(manifest: dict[str, Any]) -> str:
+    ops = manifest["operations"]
+    schemas = manifest["schemas"]
     lines = [
         "{",
         f'  "api_version": "{API_VERSION}",',
         '  "generated_by": "uv run python scripts/api_coverage.py --write-manifest",',
         '  "operations": {',
     ]
-    entries = [
-        f"    {json.dumps(op_id)}: {json.dumps(ops[op_id], sort_keys=True)}"
-        for op_id in sorted(ops)
-    ]
-    lines.append(",\n".join(entries))
+    lines.append(
+        ",\n".join(
+            f"    {json.dumps(op_id)}: {json.dumps(ops[op_id], sort_keys=True)}"
+            for op_id in sorted(ops)
+        )
+    )
+    lines.extend(["  },", '  "schemas": {'])
+    lines.append(
+        ",\n".join(
+            f"    {json.dumps(key)}: {json.dumps(schemas[key], sort_keys=True)}"
+            for key in sorted(schemas)
+        )
+    )
     lines.extend(["  }", "}", ""])
-    MANIFEST_PATH.write_text("\n".join(lines))
+    return "\n".join(lines)
+
+
+def write_manifest(manifest: dict[str, Any], path: Path = MANIFEST_PATH) -> None:
+    path.write_text(render_manifest(manifest))
 
 
 def surface_of(op_id: str) -> str:
@@ -393,23 +698,29 @@ def resolve_operations(specs_dir: Path, *, strict: bool) -> OperationMap:
 
     ``strict`` (used by --verify / --gate) requires the specs checkout; the
     read-only modes fall back to the vendored manifest so they work in CI.
+    Drift is checked over operations AND vendored response schemas — a stale
+    schema would quietly validate fixtures against yesterday's contract.
     """
     if specs_dir.is_dir():
-        ops = derive_operations(specs_dir)
+        derived = derive_manifest(specs_dir)
         if not MANIFEST_PATH.exists():
             raise SpecError(
                 f"{MANIFEST_PATH.relative_to(REPO_ROOT)} missing — run --write-manifest"
             )
-        if load_manifest() != ops:
-            raise SpecError(
-                "vendored manifest is stale relative to the specs in "
-                f"{specs_dir} — run --write-manifest and commit the result"
-            )
-        return ops
+        vendored = load_manifest()
+        for section in ("operations", "schemas"):
+            if vendored.get(section) != derived[section]:
+                raise SpecError(
+                    f"vendored manifest {section} are stale relative to the specs in "
+                    f"{specs_dir} — run --write-manifest and commit the result"
+                )
+        operations: OperationMap = derived["operations"]
+        return operations
     if strict:
         raise SpecError(f"specs directory {specs_dir} not found (pass --specs-dir)")
     print(f"note: {specs_dir} not found; using vendored manifest", file=sys.stderr)
-    return load_manifest()
+    manifest_operations: OperationMap = load_manifest()["operations"]
+    return manifest_operations
 
 
 def print_report(ops: OperationMap, covered: set[str], basis: str) -> None:
@@ -503,6 +814,35 @@ def mode_gate(ops: OperationMap, epoch_issue: int) -> int:
     wired, why = rust_proto_wired()
     conditions.append((wired, f"rust proto: {why}"))
 
+    divergent = {
+        op_id: entry["divergence"] for op_id, entry in ops.items() if entry.get("divergence")
+    }
+    for op_id, divergence in sorted(divergent.items()):
+        issue = divergence["issue"]
+        try:
+            payload = json.loads(_gh(["issue", "view", str(issue), "--json", "state,labels"]))
+            labels = {label["name"] for label in payload.get("labels", [])}
+            if payload.get("state") != "OPEN":
+                conditions.append(
+                    (
+                        False,
+                        f"divergence: {op_id} references issue #{issue}, which is "
+                        f"{payload.get('state')}; resolve the divergence or reopen the question",
+                    )
+                )
+            elif "question" not in labels:
+                conditions.append(
+                    (False, f"divergence: {op_id} references #{issue}, not a 'question' issue")
+                )
+            else:
+                conditions.append(
+                    (True, f"divergence: {op_id} references open question issue #{issue}")
+                )
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            conditions.append((False, f"divergence: could not check #{issue} via gh: {exc}"))
+    if not divergent:
+        conditions.append((True, "divergence: no divergence exceptions registered"))
+
     try:
         open_subissues = fetch_open_subissues(epoch_issue)
         if open_subissues:
@@ -557,11 +897,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.write_manifest:
             if not args.specs_dir.is_dir():
                 raise SpecError(f"specs directory {args.specs_dir} not found")
-            ops = derive_operations(args.specs_dir)
-            write_manifest(ops)
+            manifest = derive_manifest(args.specs_dir)
+            write_manifest(manifest)
+            ops = manifest["operations"]
             http = sum(1 for entry in ops.values() if entry["kind"] == "http")
             grpc = len(ops) - http
-            print(f"wrote {MANIFEST_PATH.relative_to(REPO_ROOT)} ({http} http ops, {grpc} rpcs)")
+            print(
+                f"wrote {MANIFEST_PATH.relative_to(REPO_ROOT)} ({http} http ops, {grpc} rpcs, "
+                f"{len(manifest['schemas'])} response schemas)"
+            )
             return 0
 
         strict = args.verify or args.gate

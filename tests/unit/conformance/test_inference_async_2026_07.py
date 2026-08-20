@@ -18,7 +18,10 @@ union of two array types, and the model's ``"dense"`` default trips the
 absent-field guard on a spec-required field (#94's finding, not a 2026-07
 change). As there, the envelope leg alone would let the items through
 untouched, so both embed tests also assert ``result.to_dict() == payload``: a
-full trip out through the real async decode path and back.
+full trip out through the real async decode path and back. The sparse item
+round-trip is a plain msgspec assertion, not ``claim.assert_roundtrip``,
+because claim payloads are validated against the operation's response schema
+and an embedding item is not a response body.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 import httpx
+import msgspec
 import orjson
 import pytest
 import respx
@@ -106,7 +110,12 @@ async def test_async_embed_sparse(
     claim.assert_request(request)
     claim.assert_api_version(request)
     claim.assert_roundtrip(_EmbedEnvelope, EMBED_SPARSE, optional_absent=[])
-    claim.assert_roundtrip(SparseEmbedding, SPARSE_ITEM, optional_absent=["sparse_tokens"])
+    item = msgspec.convert(SPARSE_ITEM, type=SparseEmbedding)
+    assert msgspec.to_builtins(item) == SPARSE_ITEM
+    reduced = {k: v for k, v in SPARSE_ITEM.items() if k != "sparse_tokens"}
+    rebuilt = msgspec.to_builtins(msgspec.convert(reduced, type=SparseEmbedding))
+    assert {key: rebuilt[key] for key in reduced} == reduced
+    assert rebuilt.get("sparse_tokens") is None
 
 
 @api_op("inference:rerank")

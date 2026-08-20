@@ -65,8 +65,9 @@ test ends; the `claim` fixture fails the test at teardown otherwise:
    imported from `pinecone._internal.constants`, or a wrong constant would
    certify itself.
 3. **Schema round-trip** — `claim.assert_roundtrip(ModelCls, payload,
-   optional_absent=[...])` decodes the payload into the msgspec model,
-   re-encodes it, and requires nothing to be lost. `optional_absent` must name
+   optional_absent=[...])` first validates the payload against the operation's
+   OAS response schema (see below), then decodes the payload into the msgspec
+   model, re-encodes it, and requires nothing to be lost. `optional_absent` must name
    at least one optional field whenever the payload carries any: the reduced
    payload (those fields stripped) must still decode, and the model must not
    invent values for them. A payload that carries no optional field at all —
@@ -91,6 +92,40 @@ test ends; the `claim` fixture fails the test at teardown otherwise:
    populated field could only have come from a body the spec does not declare,
    and fails.
 
+## Fixture validation against the OAS response schema
+
+Round-tripping a fixture only proves the SDK is consistent with the test's own
+invention. To make a claim mean *spec conformance*, the manifest also vendors,
+per HTTP operation with a success body, the OAS response schema — refs
+resolved, OAS 3.0 `nullable` translated to JSON Schema, annotations stripped,
+and every object that declares `properties` sealed with
+`additionalProperties: false` — and `assert_roundtrip` validates the payload
+against it before the round-trip legs. A fixture carrying a key the spec never
+declared, a wrong type, or a missing required property fails the test. gRPC
+rpcs have no OAS schema and skip this leg.
+
+### Divergence exceptions
+
+Some operations deliberately implement backend behavior over the OAS. Those
+are registered in the hand-maintained `divergences_2026-07.json`, which
+`--write-manifest` folds into the manifest as a per-op
+`divergence: {issue, reason, response_schema}` entry that switches fixture
+validation to the documented alternative component schema. The rules, enforced
+at generation time, at test time, and by `--gate`:
+
+- Every exception must reference a `SPEC-vs-BACKEND` question issue by number
+  and give a reason; the generator and the registry both refuse anything less,
+  so silent exceptions cannot exist.
+- `--gate` fails if a referenced issue is closed or is not labeled `question`:
+  resolving the question means removing the exception (or fixing the spec) —
+  not keeping a stale exemption.
+- The manifest keeps recording what the OAS actually declares
+  (`response_schema`) alongside the alternative, so the divergence stays
+  visible instead of overwriting the spec's story.
+
+Current exceptions: `assistant_control:update_assistant` (#170 — the backend
+returns the full `Assistant` shape, not `UpdateAssistantResponse`).
+
 Additional rules:
 
 - Tests must exercise the SDK's real request path (public client classes, or
@@ -109,6 +144,9 @@ Additional rules:
 - The denominator comes from parsing the spec files, not a hand-kept list.
 - Expected method/path/service/rpc and whether a success response body exists
   come from the manifest, not the test.
+- Response fixtures must validate against the OAS response schema vendored in
+  the manifest (or an explicitly registered, issue-referenced divergence), so
+  a test cannot claim an operation by mocking a shape the spec never promised.
 - A claimed test that skips any mandatory assertion fails at teardown.
 - A claimed test that fails, errors, or is skipped does not count under
   `--verify` or `--gate`.

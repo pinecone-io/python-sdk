@@ -21,7 +21,10 @@ envelope first and dispatches on ``vector_type`` for exactly that reason. The
 envelope leg alone would let the embedding items through untouched, so both
 embed tests additionally assert ``result.to_dict() == payload``: a full trip
 out through the SDK's real decode path and back, items included. The sparse test
-also records the item-level round-trip directly.
+also round-trips the item through ``SparseEmbedding`` directly — as a plain
+msgspec assertion, because ``claim.assert_roundtrip`` payloads are validated
+against the operation's response schema and an embedding item is not a
+response body.
 
 The client under test is a real :class:`Inference`, so the version on the wire
 comes from ``INFERENCE_API_VERSION`` and not from this file. Async inference
@@ -34,6 +37,7 @@ from collections.abc import Iterator
 from typing import Any
 
 import httpx
+import msgspec
 import orjson
 import pytest
 import respx
@@ -186,7 +190,12 @@ def test_embed_sparse(claim: Any, inference: Inference, respx_mock: respx.MockRo
     claim.assert_request(request)
     claim.assert_api_version(request)
     claim.assert_roundtrip(_EmbedEnvelope, EMBED_SPARSE, optional_absent=[])
-    claim.assert_roundtrip(SparseEmbedding, SPARSE_ITEM, optional_absent=["sparse_tokens"])
+    item = msgspec.convert(SPARSE_ITEM, type=SparseEmbedding)
+    assert msgspec.to_builtins(item) == SPARSE_ITEM
+    reduced = {k: v for k, v in SPARSE_ITEM.items() if k != "sparse_tokens"}
+    rebuilt = msgspec.to_builtins(msgspec.convert(reduced, type=SparseEmbedding))
+    assert {key: rebuilt[key] for key in reduced} == reduced
+    assert rebuilt.get("sparse_tokens") is None
 
 
 @api_op("inference:rerank")

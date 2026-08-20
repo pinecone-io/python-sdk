@@ -161,4 +161,7 @@ dev = [
     # scripts/api_coverage.py parses the 2026-07 OAS specs to derive the
     # conformance denominator (epoch #87 gate).
     "pyyaml>=6.0",
+    # tests/unit/conformance/_registry.py validates response fixtures against
+    # the OAS response schemas vendored into the conformance manifest (#189).
+    "jsonschema>=4.21",
 ]
