@@ -490,6 +490,9 @@ fn namespace_description_to_py_dict(
     let dict = PyDict::new(py);
     dict.set_item("name", &ns.name)?;
     dict.set_item("record_count", ns.record_count)?;
+    // Unconditional, unlike the two below: `size_bytes` is a non-optional proto
+    // `uint64`, so there is no absent-vs-zero signal on the wire to forward.
+    dict.set_item("size_bytes", ns.size_bytes)?;
     if let Some(ref schema) = ns.schema {
         let schema_dict = metadata_schema_to_py_dict(py, schema)?;
         dict.set_item("schema", schema_dict)?;
@@ -1254,7 +1257,8 @@ impl GrpcChannel {
     ///     timeout_s: Per-call timeout in seconds. None uses the client-level default.
     ///
     /// Returns:
-    ///     Dict with "name", "record_count", and optional "schema" and "indexed_fields".
+    ///     Dict with "name", "record_count", "size_bytes", and optional "schema"
+    ///     and "indexed_fields".
     #[pyo3(signature = (namespace, timeout_s=None))]
     fn describe_namespace(
         &self,
@@ -1345,7 +1349,8 @@ impl GrpcChannel {
     ///     timeout_s: Per-call timeout in seconds. None uses the client-level default.
     ///
     /// Returns:
-    ///     Dict with "name", "record_count", and optional "schema" and "indexed_fields".
+    ///     Dict with "name", "record_count", "size_bytes", and optional "schema"
+    ///     and "indexed_fields".
     #[pyo3(signature = (name, schema=None, timeout_s=None))]
     fn create_namespace(
         &self,
@@ -1467,6 +1472,110 @@ mod tests {
     use std::collections::HashSet;
     use std::time::Duration;
     use tonic::service::Interceptor;
+
+    fn size_bytes_through_converter(size_bytes: u64) -> u64 {
+        Python::initialize();
+        Python::attach(|py| {
+            let ns = proto::NamespaceDescription {
+                name: "movies-en".to_string(),
+                record_count: 42,
+                size_bytes,
+                ..Default::default()
+            };
+            let dict = namespace_description_to_py_dict(py, &ns).expect("converter succeeds");
+            dict.bind(py)
+                .get_item("size_bytes")
+                .expect("lookup succeeds")
+                .expect("size_bytes is always emitted")
+                .extract::<u64>()
+                .expect("size_bytes extracts as u64")
+        })
+    }
+
+    #[test]
+    fn namespace_description_to_py_dict_emits_zero_size_bytes() {
+        assert_eq!(size_bytes_through_converter(0), 0);
+    }
+
+    #[test]
+    fn namespace_description_to_py_dict_does_not_truncate_size_bytes() {
+        for value in [
+            u64::from(u32::MAX),
+            u64::from(u32::MAX) + 1,
+            1_099_511_627_776,
+            u64::MAX - 1,
+            u64::MAX,
+        ] {
+            assert_eq!(
+                size_bytes_through_converter(value),
+                value,
+                "size_bytes {value} truncated crossing the PyO3 boundary"
+            );
+        }
+    }
+
+    #[test]
+    fn namespace_description_to_py_dict_emits_the_full_key_set() {
+        Python::initialize();
+        Python::attach(|py| {
+            let ns = proto::NamespaceDescription {
+                name: "movies-en".to_string(),
+                record_count: 42,
+                size_bytes: 1_048_576,
+                schema: Some(proto::MetadataSchema {
+                    fields: std::collections::HashMap::new(),
+                }),
+                indexed_fields: Some(proto::IndexedFields {
+                    fields: vec!["genre".to_string(), "year".to_string()],
+                }),
+            };
+            let dict = namespace_description_to_py_dict(py, &ns).expect("converter succeeds");
+            let bound = dict.bind(py);
+            let mut keys: Vec<String> = bound
+                .keys()
+                .iter()
+                .map(|k| k.extract::<String>().expect("keys are strings"))
+                .collect();
+            keys.sort();
+            assert_eq!(
+                keys,
+                [
+                    "indexed_fields",
+                    "name",
+                    "record_count",
+                    "schema",
+                    "size_bytes"
+                ]
+            );
+            assert_eq!(
+                bound
+                    .get_item("indexed_fields")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<Vec<String>>()
+                    .expect("indexed_fields is a bare list of names"),
+                ["genre", "year"]
+            );
+        });
+    }
+
+    #[test]
+    fn namespace_description_to_py_dict_omits_absent_optionals() {
+        Python::initialize();
+        Python::attach(|py| {
+            let dict =
+                namespace_description_to_py_dict(py, &proto::NamespaceDescription::default())
+                    .expect("converter succeeds");
+            let bound = dict.bind(py);
+            let mut keys: Vec<String> = bound
+                .keys()
+                .iter()
+                .map(|k| k.extract::<String>().expect("keys are strings"))
+                .collect();
+            keys.sort();
+            assert_eq!(keys, ["name", "record_count", "size_bytes"]);
+        });
+    }
 
     #[test]
     fn normalize_source_tag_lowercases_and_strips() {

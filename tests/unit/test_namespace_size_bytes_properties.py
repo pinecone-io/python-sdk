@@ -76,7 +76,12 @@ def test_list_namespaces_size_bytes_roundtrips(payload: dict[str, Any]) -> None:
 
 
 class TestRestGrpcParity:
-    """The shared fixture #121 extends when it plumbs size_bytes through the channel."""
+    """The shared fixture both lanes decode.
+
+    #121 plumbed size_bytes through the gRPC channel; the parity cases that
+    exercise it across the uint64 range live alongside the rest of the gRPC
+    namespace coverage, in tests/unit/grpc/test_grpc_namespace_2026_07.py.
+    """
 
     def test_parity_without_size_bytes(self) -> None:
         rest_payload = make_namespace_description_response()

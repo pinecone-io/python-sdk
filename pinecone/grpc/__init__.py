@@ -24,7 +24,15 @@ from pinecone._internal.constants import DATA_PLANE_API_VERSION
 from pinecone._internal.data_plane_helpers import _build_search_records_body, _validate_host
 from pinecone._internal.dataframe import _resolve_on_error, extract_records
 from pinecone._internal.keyword_only import keyword_only_methods
-from pinecone._internal.validation import require_in_range, require_positive
+from pinecone._internal.validation import (
+    require_creatable_namespace_name,
+    require_in_range,
+    require_positive,
+    require_valid_namespace_limit,
+    require_valid_namespace_name,
+    require_valid_namespace_prefix,
+    require_valid_namespace_schema,
+)
 from pinecone._internal.vector_factory import VectorFactory, validate_vector_dict
 from pinecone.errors.exceptions import (
     PineconeTimeoutError,
@@ -140,6 +148,11 @@ def _dict_to_namespace_description(data: dict[str, Any]) -> NamespaceDescription
     Shared by create_namespace, describe_namespace, and list_namespaces_paginated
     to convert the dict payload returned by the Rust-backed GrpcChannel into a
     typed NamespaceDescription, including optional schema and indexed_fields.
+
+    ``indexed_fields`` arrives as a bare list of names here, where the REST JSON
+    nests the same names under a ``fields`` key — see
+    ``namespace_description_to_py_dict`` in rust/src/transport.rs. Both shapes
+    have to produce the same model, so the two readers cannot be collapsed.
     """
     schema: NamespaceSchema | None = None
     raw_schema = data.get("schema")
@@ -161,6 +174,7 @@ def _dict_to_namespace_description(data: dict[str, Any]) -> NamespaceDescription
         record_count=data.get("record_count", 0),
         schema=schema,
         indexed_fields=indexed_fields,
+        size_bytes=data.get("size_bytes", 0),
     )
 
 
@@ -1803,15 +1817,28 @@ class GrpcIndex:
         """Fetch a single page of namespace descriptions via gRPC.
 
         Args:
-            prefix (str | None): Return only namespaces whose names start with this prefix.
-            limit (int | None): Maximum number of namespaces to return in this page.
+            prefix (str | None): Return only namespaces whose names start with this
+                prefix. Must be ASCII, must not contain the NUL character, and must
+                be at most 512 characters. The empty prefix matches every namespace.
+            limit (int | None): Maximum number of namespaces to return in this page,
+                1-100. Defaults to 100 server-side.
             pagination_token (str | None): Token from a previous response to fetch the next page.
             timeout (float | None): Per-call timeout in seconds.
 
         Returns:
             :class:`ListNamespacesResponse` with namespace descriptions, pagination info,
-            and total count.
+            and total count. Each description carries ``size_bytes``.
+
+        Raises:
+            :exc:`ValidationError`: If *prefix* or *limit* violates the rules above.
+                Raised before the call reaches the channel, with the same message
+                the REST and asyncio clients raise.
         """
+        if prefix is not None:
+            require_valid_namespace_prefix("prefix", prefix)
+        if limit is not None:
+            require_valid_namespace_limit("limit", limit)
+
         logger.info("Listing namespaces (paginated) via gRPC")
         result = self._channel.list_namespaces(
             prefix=prefix,
@@ -1849,19 +1876,26 @@ class GrpcIndex:
         retrieved.
 
         Args:
-            prefix (str | None): Return only namespaces whose names start with this prefix.
-            limit (int | None): Maximum number of namespaces to return per page.
+            prefix (str | None): Return only namespaces whose names start with this
+                prefix. Must be ASCII, must not contain the NUL character, and must
+                be at most 512 characters. The empty prefix matches every namespace.
+            limit (int | None): Maximum number of namespaces to return per page, 1-100.
             timeout (float | None): Per-call timeout in seconds.
 
         Yields:
-            :class:`ListNamespacesResponse` for each page of results.
+            :class:`ListNamespacesResponse` for each page of results. Each
+            :class:`NamespaceDescription` carries ``size_bytes``.
+
+        Raises:
+            :exc:`ValidationError`: If *prefix* or *limit* violates the rules above.
+                Raised on first iteration, before the call reaches the channel.
 
         Examples:
             .. code-block:: python
 
                 for page in idx.list_namespaces(prefix="prod-"):
                     for ns in page.namespaces:
-                        print(ns.name, ns.record_count)
+                        print(ns.name, ns.record_count, ns.size_bytes)
         """
         pagination_token: str | None = None
         while True:
@@ -1888,21 +1922,36 @@ class GrpcIndex:
         """Create a named namespace in the index via gRPC.
 
         Args:
-            name (str): Name for the new namespace (must be non-empty).
-            schema (dict[str, Any] | None): Optional schema configuration
-                with metadata field indexing settings.
+            name (str): Name for the new namespace. Must be ASCII, must not
+                contain the NUL character, and must be 1-512 characters long.
+                ``__default__`` is reserved and cannot be created: it names the
+                namespace requests address when they omit a namespace, so it
+                always exists.
+            schema (dict[str, Any] | None): Optional metadata-index configuration,
+                ``{"fields": {<field>: {"filterable": True}}}``. By default every
+                metadata field is indexed; when *schema* is given, only the listed
+                fields are. ``filterable`` is required on each field and must be
+                ``True`` — to leave a field unindexed, omit it from ``fields``.
             timeout (float | None): Per-call timeout in seconds.
 
         Returns:
-            :class:`NamespaceDescription` with the namespace name and record count.
+            :class:`NamespaceDescription` with the namespace name, record count,
+            schema, indexed fields, and ``size_bytes``.
 
         Raises:
-            :exc:`ValidationError`: If the name is not a string or is empty/whitespace.
+            :exc:`ValidationError`: If *name* violates the rules above, or *schema*
+                is malformed. Raised before the call reaches the channel, with the
+                same message the REST and asyncio clients raise.
+
+        Examples:
+            .. code-block:: python
+
+                ns = idx.create_namespace(name="movies-en")
+                print(ns.name, ns.record_count, ns.size_bytes)
         """
-        if not isinstance(name, str):
-            raise ValidationError("namespace name must be a string")
-        if not name or not name.strip():
-            raise ValidationError("namespace name must be a non-empty string")
+        require_creatable_namespace_name("name", name)
+        if schema is not None:
+            require_valid_namespace_schema("schema", schema)
 
         logger.info("Creating namespace %r via gRPC", name)
         result = self._channel.create_namespace(name, schema, timeout_s=timeout)
@@ -1917,17 +1966,33 @@ class GrpcIndex:
     ) -> NamespaceDescription:
         """Describe a namespace by name.
 
+        This operation is rate limited per index, independently of the other
+        namespace operations. Prefer :meth:`list_namespaces` when describing more
+        than one namespace: it returns the same information for every namespace
+        in a single request and is not subject to that limit.
+
         Args:
-            name (str): Name of the namespace to describe.
+            name (str): Name of the namespace to describe. Must be ASCII, must not
+                contain the NUL character, and must be 1-512 characters long.
+                ``__default__`` is accepted and describes the namespace requests
+                address when they omit one.
             timeout (float | None): Per-call timeout in seconds.
 
         Returns:
             :class:`NamespaceDescription` with the namespace name, record count,
-            and schema information.
+            schema, indexed fields, and ``size_bytes``.
 
         Raises:
-            :exc:`ValidationError`: If the name is not a string or is empty/whitespace.
+            :exc:`ValidationError`: If *name* violates the rules above. Raised
+                before the call reaches the channel, with the same message the
+                REST and asyncio clients raise.
             :exc:`TypeError`: If unexpected keyword arguments are passed.
+
+        Examples:
+            .. code-block:: python
+
+                ns = idx.describe_namespace(name="movies-en")
+                print(ns.name, ns.record_count, ns.size_bytes)
         """
         legacy_namespace: str | None = kwargs.pop("namespace", None)
         if kwargs:
@@ -1937,10 +2002,7 @@ class GrpcIndex:
         if name is not None and legacy_namespace is not None:
             raise ValidationError("Provide either name= or namespace=, not both")
         effective: str = name if name is not None else (legacy_namespace or "")
-        if not isinstance(effective, str):
-            raise ValidationError("namespace name must be a string")
-        if not effective or not effective.strip():
-            raise ValidationError("namespace name must be a non-empty string")
+        require_valid_namespace_name("name", effective)
 
         logger.info("Describing namespace %r via gRPC", effective)
         result = self._channel.describe_namespace(effective, timeout_s=timeout)
@@ -1956,14 +2018,17 @@ class GrpcIndex:
         """Delete a namespace by name, removing all its vectors.
 
         Args:
-            name (str): Name of the namespace to delete.
+            name (str): Name of the namespace to delete. Must be ASCII, must not
+                contain the NUL character, and must be 1-512 characters long.
             timeout (float | None): Per-call timeout in seconds.
 
         Returns:
             None — a successful delete returns no payload.
 
         Raises:
-            :exc:`ValidationError`: If the name is not a string or is empty/whitespace.
+            :exc:`ValidationError`: If *name* violates the rules above. Raised
+                before the call reaches the channel, with the same message the
+                REST and asyncio clients raise.
             :exc:`TypeError`: If unexpected keyword arguments are passed.
         """
         legacy_namespace: str | None = kwargs.pop("namespace", None)
@@ -1974,10 +2039,7 @@ class GrpcIndex:
         if name is not None and legacy_namespace is not None:
             raise ValidationError("Provide either name= or namespace=, not both")
         effective: str = name if name is not None else (legacy_namespace or "")
-        if not isinstance(effective, str):
-            raise ValidationError("namespace name must be a string")
-        if not effective or not effective.strip():
-            raise ValidationError("namespace name must be a non-empty string")
+        require_valid_namespace_name("name", effective)
 
         logger.info("Deleting namespace %r via gRPC", effective)
         self._channel.delete_namespace(effective, timeout_s=timeout)
