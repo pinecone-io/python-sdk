@@ -1,40 +1,59 @@
 """Cross-transport parity checks for storm simulation metrics.
 
 Compares dispersion_width and request_amplification across sync (DX-0166),
-async (DX-0167), and gRPC (DX-0168) storm tests. Each test writes a JSON
-metrics file; this module reads all three and asserts they are within
-acceptable bounds of each other.
+async (DX-0167), and gRPC (DX-0168). All three canonical scenarios are run here,
+in this session, so the comparison is always between metrics produced by the
+same run — see tests/unit/_internal/_storm_parity_scenarios.py.
 """
 
 from __future__ import annotations
 
-import json
-import pathlib
+import asyncio
 
 import pytest
 
-_DIR = pathlib.Path(__file__).parent
-_SYNC_PATH = _DIR / "_storm_parity_metrics_sync.json"
-_ASYNC_PATH = _DIR / "_storm_parity_metrics_async.json"
-_GRPC_PATH = _DIR / "_storm_parity_metrics_grpc.json"
+from tests.unit._internal._storm_parity_scenarios import (
+    METRIC_KEYS,
+    StormMetrics,
+    async_parity_metrics,
+    grpc_parity_metrics,
+    sync_parity_metrics,
+)
 
 
-def _load(path: pathlib.Path) -> dict[str, object]:
-    if not path.exists():
-        pytest.xfail(f"{path.name} not yet generated — run the corresponding storm test first")
-    with path.open() as f:
-        data: dict[str, object] = json.load(f)
-    return data
+# Override the unit-test conftest's autouse sleep-suppressor. Storm scenarios
+# need real sleeps so retries actually advance the clock past the throttle
+# window. Defining the same-named fixture here takes precedence.
+@pytest.fixture(autouse=True)
+def _no_retry_sleep() -> None:
+    pass
 
 
-def test_dispersion_widths_within_2x() -> None:
-    sync_m = _load(_SYNC_PATH)
-    async_m = _load(_ASYNC_PATH)
-    grpc_m = _load(_GRPC_PATH)
+@pytest.fixture(scope="module")
+def metrics() -> dict[str, StormMetrics]:
+    return {
+        "sync": sync_parity_metrics(),
+        "async": asyncio.run(async_parity_metrics()),
+        "grpc": grpc_parity_metrics(),
+    }
 
-    sync_w = float(sync_m["dispersion_width"])  # type: ignore[arg-type]
-    async_w = float(async_m["dispersion_width"])  # type: ignore[arg-type]
-    grpc_w = float(grpc_m["dispersion_width"])  # type: ignore[arg-type]
+
+@pytest.mark.parametrize("transport", ["sync", "async", "grpc"])
+def test_metrics_complete_and_finite(transport: str, metrics: dict[str, StormMetrics]) -> None:
+    m = metrics[transport]
+    assert set(m) == set(METRIC_KEYS)
+    assert m["transport"] == transport
+    assert m["n_clients"] == 50
+    assert float(m["dispersion_width"]) > 0.0  # type: ignore[arg-type]
+    assert m["first_success_relative"] is not None, "no success observed after throttle window"
+    assert float(m["first_success_relative"]) > 0.0  # type: ignore[arg-type]
+    assert float(m["request_amplification"]) >= 1.0  # type: ignore[arg-type]
+
+
+def test_dispersion_widths_within_2x(metrics: dict[str, StormMetrics]) -> None:
+    sync_w = float(metrics["sync"]["dispersion_width"])  # type: ignore[arg-type]
+    async_w = float(metrics["async"]["dispersion_width"])  # type: ignore[arg-type]
+    grpc_w = float(metrics["grpc"]["dispersion_width"])  # type: ignore[arg-type]
 
     assert async_w <= sync_w * 2.0, f"async dispersion {async_w:.3f} > 2x sync {sync_w:.3f}"
     assert sync_w <= async_w * 2.0, f"sync dispersion {sync_w:.3f} > 2x async {async_w:.3f}"
@@ -42,14 +61,10 @@ def test_dispersion_widths_within_2x() -> None:
     assert sync_w <= grpc_w * 2.0, f"sync dispersion {sync_w:.3f} > 2x gRPC {grpc_w:.3f}"
 
 
-def test_amplifications_within_1_5x() -> None:
-    sync_m = _load(_SYNC_PATH)
-    async_m = _load(_ASYNC_PATH)
-    grpc_m = _load(_GRPC_PATH)
-
-    sync_a = float(sync_m["request_amplification"])  # type: ignore[arg-type]
-    async_a = float(async_m["request_amplification"])  # type: ignore[arg-type]
-    grpc_a = float(grpc_m["request_amplification"])  # type: ignore[arg-type]
+def test_amplifications_within_1_5x(metrics: dict[str, StormMetrics]) -> None:
+    sync_a = float(metrics["sync"]["request_amplification"])  # type: ignore[arg-type]
+    async_a = float(metrics["async"]["request_amplification"])  # type: ignore[arg-type]
+    grpc_a = float(metrics["grpc"]["request_amplification"])  # type: ignore[arg-type]
 
     assert async_a <= sync_a * 1.5, f"async amp {async_a:.3f} > 1.5x sync {sync_a:.3f}"
     assert sync_a <= async_a * 1.5, f"sync amp {sync_a:.3f} > 1.5x async {async_a:.3f}"

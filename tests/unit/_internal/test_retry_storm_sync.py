@@ -6,9 +6,6 @@ disperse in time rather than re-colliding, and that request amplification stays 
 
 from __future__ import annotations
 
-import json
-import pathlib
-
 import httpx
 import pytest
 
@@ -19,8 +16,6 @@ from tests.unit._internal._storm_fixture import (
     StormScenario,
     _FaultInjectionTransport,
 )
-
-_PARITY_METRICS_PATH = pathlib.Path(__file__).parent / "_storm_parity_metrics_sync.json"
 
 
 # Override the unit-test conftest's autouse sleep-suppressor. Storm tests
@@ -159,38 +154,3 @@ def test_retry_after_smear_upper_bound_respected() -> None:
         f"latest success at {latest_success - window_end:.3f}s after window end, "
         f"expected <= {config.retry_after_seconds * 1.5:.3f}s"
     )
-
-
-def test_parity_metric_recorded() -> None:
-    """Runs the canonical scenario and writes metrics to disk for cross-transport comparison.
-
-    DX-0167 (async) and DX-0168 (bulk upsert) write sibling files; test_storm_parity.py
-    reads all three and asserts they are within 2x (dispersion) and 1.5x (amplification)
-    of each other.
-    """
-    config = StormConfig(
-        n_clients=50,
-        throttle_window_seconds=1.0,
-        retry_after_seconds=0.5,
-        seed=0xC0FFEE,
-    )
-    scenario = StormScenario(config)
-    transport = _make_transport(scenario)
-
-    scenario.run_sync(
-        lambda: transport.handle_request(httpx.Request("POST", "https://api.example.com/upsert"))
-    )
-
-    first = scenario.first_success_after_window()
-    start = scenario.sync_transport.start_time
-    first_relative: float | None = (first - start) if first is not None else None
-
-    metrics: dict[str, object] = {
-        "transport": "sync",
-        "n_clients": config.n_clients,
-        "dispersion_width": scenario.dispersion_width(only_successes=True),
-        "first_success_relative": first_relative,
-        "request_amplification": scenario.request_amplification(),
-    }
-    _PARITY_METRICS_PATH.write_text(json.dumps(metrics, indent=2))
-    assert _PARITY_METRICS_PATH.exists()

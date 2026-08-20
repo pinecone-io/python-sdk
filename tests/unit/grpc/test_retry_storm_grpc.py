@@ -12,8 +12,6 @@ rust/src/retry.rs and rust/tests/retry_integration.rs.
 
 from __future__ import annotations
 
-import json
-import pathlib
 import random
 import threading
 import time
@@ -23,10 +21,6 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 import pytest
-
-_PARITY_METRICS_PATH = (
-    pathlib.Path(__file__).parent.parent / "_internal" / "_storm_parity_metrics_grpc.json"
-)
 
 # ---------------------------------------------------------------------------
 # Override the unit-test conftest's autouse sleep-suppressor.
@@ -364,33 +358,3 @@ def test_grpc_trailer_name_case_insensitivity() -> None:
     # Delay should be in [0.5, 0.75]s per smear: completion within 1.3s after window
     amp = _request_amplification(records, config.n_clients)
     assert 1.0 < amp <= 3.0, f"amplification {amp:.3f} unexpected"
-
-
-def test_grpc_parity_metric_recorded() -> None:
-    """Runs the canonical scenario and writes metrics for cross-transport comparison.
-
-    test_storm_parity.py reads this file alongside the sync and async metrics to
-    assert that dispersion widths are within 2x and amplifications within 1.5x
-    across all three transport paths.
-    """
-    config = GrpcStormConfig(
-        n_clients=50,
-        throttle_window_seconds=1.0,
-        pushback_ms=500.0,
-        seed=0xC0FFEE,
-    )
-    server = _run_storm(config)
-    records = server.records
-
-    first = _first_success_after_window(records, server, config)
-    first_relative: float | None = (first - server.start_time) if first is not None else None
-
-    metrics: dict[str, object] = {
-        "transport": "grpc",
-        "n_clients": config.n_clients,
-        "dispersion_width": _dispersion_width(records, only_successes=True),
-        "first_success_relative": first_relative,
-        "request_amplification": _request_amplification(records, config.n_clients),
-    }
-    _PARITY_METRICS_PATH.write_text(json.dumps(metrics, indent=2))
-    assert _PARITY_METRICS_PATH.exists()
