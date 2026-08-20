@@ -60,6 +60,8 @@ class AsyncCollections:
             ValidationError: If *name* is empty, longer than 45 characters, contains
                 characters outside ``[a-z0-9-]``, or starts/ends with a hyphen.
                 Also raised if *source* is empty.
+            ApiError: If the API returns an error response (e.g. authentication
+                failure or server error).
 
         Examples:
 
@@ -85,6 +87,10 @@ class AsyncCollections:
         Returns:
             A CollectionList supporting iteration, len(), index access,
             and a names() convenience method.
+
+        Raises:
+            ApiError: If the API returns an error response (e.g. authentication
+                failure or server error).
 
         Examples:
 
@@ -114,6 +120,7 @@ class AsyncCollections:
         Raises:
             ValidationError: If *name* is empty.
             NotFoundError: If the collection does not exist.
+            ApiError: If the API returns another error response.
 
         Examples:
 
@@ -138,6 +145,7 @@ class AsyncCollections:
         Raises:
             ValidationError: If *name* is empty.
             NotFoundError: If the collection does not exist.
+            ApiError: If the API returns another error response.
 
         Examples:
 
