@@ -12,14 +12,30 @@ Also tests restoring an index from a backup via create_index_from_backup().
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from pinecone import AsyncPinecone
 from pinecone.errors.exceptions import NotFoundError
 from pinecone.models.backups.list import BackupList, RestoreJobList
 from pinecone.models.backups.model import BackupModel, RestoreJobModel
+from pinecone.models.indexes.deployment import ManagedDeployment
 from pinecone.models.indexes.index import IndexModel
+from pinecone.models.indexes.schema import DenseVectorField
 from tests.integration.conftest import async_cleanup_resource, async_poll_until, unique_name
+
+_DENSE_SCHEMA: dict[str, Any] = {
+    "fields": {"embedding": {"type": "dense_vector", "dimension": 2, "metric": "cosine"}}
+}
+_DOTPRODUCT_SCHEMA: dict[str, Any] = {
+    "fields": {"embedding": {"type": "dense_vector", "dimension": 4, "metric": "dotproduct"}}
+}
+_MANAGED_AWS: dict[str, Any] = {
+    "deployment_type": "managed",
+    "cloud": "aws",
+    "region": "us-east-1",
+}
 
 # ---------------------------------------------------------------------------
 # backup-get-alias — REST async
@@ -44,9 +60,8 @@ async def test_backup_get_alias_and_default_description_async(async_client: Asyn
         # 1. Create a small serverless index to back up
         await async_client.indexes.create(
             name=index_name,
-            dimension=2,
-            metric="cosine",
-            spec={"serverless": {"cloud": "aws", "region": "us-east-1"}},
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=120,
         )
 
@@ -117,9 +132,8 @@ async def test_backup_lifecycle_async(async_client: AsyncPinecone) -> None:
         # 1. Create a small serverless index to back up
         await async_client.indexes.create(
             name=index_name,
-            dimension=2,
-            metric="cosine",
-            spec={"serverless": {"cloud": "aws", "region": "us-east-1"}},
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=120,
         )
 
@@ -216,9 +230,8 @@ async def test_create_index_from_backup_async(async_client: AsyncPinecone) -> No
         # 1. Create a small source index
         await async_client.indexes.create(
             name=source_index_name,
-            dimension=4,
-            metric="dotproduct",
-            spec={"serverless": {"cloud": "aws", "region": "us-east-1"}},
+            schema=_DOTPRODUCT_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=120,
         )
 
@@ -258,13 +271,16 @@ async def test_create_index_from_backup_async(async_client: AsyncPinecone) -> No
         # 5. Verify the restored IndexModel has the same dimension and metric
         assert isinstance(restored, IndexModel)
         assert restored.name == restore_index_name
-        assert restored.dimension == 4
-        assert restored.metric == "dotproduct"
         assert restored.status.ready is True
-        # Serverless spec should be preserved
-        assert restored.spec.serverless is not None
-        assert restored.spec.serverless.cloud == "aws"
-        assert restored.spec.serverless.region == "us-east-1"
+
+        embedding = restored.schema.fields["embedding"]
+        assert isinstance(embedding, DenseVectorField)
+        assert embedding.dimension == 4
+        assert embedding.metric == "dotproduct"
+
+        assert isinstance(restored.deployment, ManagedDeployment)
+        assert restored.deployment.cloud == "aws"
+        assert restored.deployment.region == "us-east-1"
 
         # 6. Get an Index handle — index should be reachable and queryable
         restore_desc = await async_client.indexes.describe(restore_index_name)
@@ -366,9 +382,8 @@ async def test_restore_jobs_list_and_describe_async(async_client: AsyncPinecone)
         # 1. Create a small source index
         await async_client.indexes.create(
             name=source_index_name,
-            dimension=2,
-            metric="cosine",
-            spec={"serverless": {"cloud": "aws", "region": "us-east-1"}},
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=120,
         )
 

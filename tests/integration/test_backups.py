@@ -12,14 +12,30 @@ Also tests restoring an index from a backup via create_index_from_backup().
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from pinecone import Pinecone
 from pinecone.errors.exceptions import NotFoundError
 from pinecone.models.backups.list import BackupList, RestoreJobList
 from pinecone.models.backups.model import BackupModel, RestoreJobModel
+from pinecone.models.indexes.deployment import ManagedDeployment
 from pinecone.models.indexes.index import IndexModel
+from pinecone.models.indexes.schema import DenseVectorField, IndexSchema
 from tests.integration.conftest import cleanup_resource, poll_until, unique_name
+
+_DENSE_SCHEMA: dict[str, Any] = {
+    "fields": {"embedding": {"type": "dense_vector", "dimension": 2, "metric": "cosine"}}
+}
+_DOTPRODUCT_SCHEMA: dict[str, Any] = {
+    "fields": {"embedding": {"type": "dense_vector", "dimension": 4, "metric": "dotproduct"}}
+}
+_MANAGED_AWS: dict[str, Any] = {
+    "deployment_type": "managed",
+    "cloud": "aws",
+    "region": "us-east-1",
+}
 
 # ---------------------------------------------------------------------------
 # backup-get-alias — REST sync
@@ -45,9 +61,8 @@ def test_backup_get_alias_and_default_description_rest(client: Pinecone) -> None
         # 1. Create a small serverless index to back up
         client.indexes.create(
             name=index_name,
-            dimension=2,
-            metric="cosine",
-            spec={"serverless": {"cloud": "aws", "region": "us-east-1"}},
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=120,
         )
 
@@ -70,8 +85,7 @@ def test_backup_get_alias_and_default_description_rest(client: Pinecone) -> None
         described = client.backups.describe(backup_id=backup_id)
         assert isinstance(described, BackupModel)
         assert described.backup_id == backup_id
-        # schema field must be accessible (either None or a dict, never raises)
-        assert described.schema is None or isinstance(described.schema, dict)
+        assert described.schema is None or isinstance(described.schema, IndexSchema)
 
         # 4. Call get() — unified-bak-0012: must return identical result to describe()
         gotten = client.backups.get(backup_id=backup_id)
@@ -85,8 +99,7 @@ def test_backup_get_alias_and_default_description_rest(client: Pinecone) -> None
             f"get().description={gotten.description!r} != "
             f"describe().description={described.description!r}"
         )
-        # schema must be accessible on both
-        assert gotten.schema is None or isinstance(gotten.schema, dict)
+        assert gotten.schema is None or isinstance(gotten.schema, IndexSchema)
 
     finally:
         if backup_id is not None:
@@ -123,9 +136,8 @@ def test_backup_lifecycle_rest(client: Pinecone) -> None:
         # 1. Create a small serverless index to back up
         client.indexes.create(
             name=index_name,
-            dimension=2,
-            metric="cosine",
-            spec={"serverless": {"cloud": "aws", "region": "us-east-1"}},
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=120,
         )
 
@@ -222,9 +234,8 @@ def test_create_index_from_backup_rest(client: Pinecone) -> None:
         # 1. Create a small source index
         client.indexes.create(
             name=source_index_name,
-            dimension=4,
-            metric="dotproduct",
-            spec={"serverless": {"cloud": "aws", "region": "us-east-1"}},
+            schema=_DOTPRODUCT_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=120,
         )
 
@@ -264,13 +275,16 @@ def test_create_index_from_backup_rest(client: Pinecone) -> None:
         # 5. Verify the restored IndexModel has the same dimension and metric
         assert isinstance(restored, IndexModel)
         assert restored.name == restore_index_name
-        assert restored.dimension == 4
-        assert restored.metric == "dotproduct"
         assert restored.status.ready is True
-        # Serverless spec should be preserved
-        assert restored.spec.serverless is not None
-        assert restored.spec.serverless.cloud == "aws"
-        assert restored.spec.serverless.region == "us-east-1"
+
+        embedding = restored.schema.fields["embedding"]
+        assert isinstance(embedding, DenseVectorField)
+        assert embedding.dimension == 4
+        assert embedding.metric == "dotproduct"
+
+        assert isinstance(restored.deployment, ManagedDeployment)
+        assert restored.deployment.cloud == "aws"
+        assert restored.deployment.region == "us-east-1"
 
         # 6. Get an Index handle — index should be reachable and queryable
         restore_index = client.index(name=restore_index_name)
@@ -329,9 +343,8 @@ def test_restore_jobs_list_and_describe_rest(client: Pinecone) -> None:
         # 1. Create a small source index
         client.indexes.create(
             name=source_index_name,
-            dimension=2,
-            metric="cosine",
-            spec={"serverless": {"cloud": "aws", "region": "us-east-1"}},
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=120,
         )
 
@@ -505,9 +518,8 @@ def test_create_backup_tags_type(client: Pinecone) -> None:
     try:
         client.indexes.create(
             name=index_name,
-            dimension=2,
-            metric="cosine",
-            spec={"serverless": {"cloud": "aws", "region": "us-east-1"}},
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=120,
         )
 

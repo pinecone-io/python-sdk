@@ -2,13 +2,32 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from pinecone import AsyncIndex, AsyncPinecone
-from pinecone.errors import ForbiddenError
-from pinecone.models.indexes.index import IndexModel, IndexSpec, IndexStatus
-from pinecone.models.indexes.specs import EmbedConfig, IntegratedSpec, ServerlessSpec
+from pinecone.errors import ForbiddenError, PineconeValueError
+from pinecone.models.indexes.deployment import ManagedDeployment
+from pinecone.models.indexes.index import IndexModel, IndexStatus
+from pinecone.models.indexes.schema import (
+    DenseVectorField,
+    IndexSchema,
+    SemanticTextField,
+)
 from tests.integration.conftest import async_cleanup_resource, unique_name
+
+_DENSE_SCHEMA: dict[str, Any] = {
+    "fields": {"embedding": {"type": "dense_vector", "dimension": 2, "metric": "cosine"}}
+}
+_DOTPRODUCT_SCHEMA: dict[str, Any] = {
+    "fields": {"embedding": {"type": "dense_vector", "dimension": 4, "metric": "dotproduct"}}
+}
+_MANAGED_AWS: dict[str, Any] = {
+    "deployment_type": "managed",
+    "cloud": "aws",
+    "region": "us-east-1",
+}
 
 # ---------------------------------------------------------------------------
 # list-indexes
@@ -17,26 +36,23 @@ from tests.integration.conftest import async_cleanup_resource, unique_name
 
 @pytest.mark.integration
 @pytest.mark.anyio
-async def test_list_indexes_returns_index_list(async_client: AsyncPinecone) -> None:
-    """async pc.indexes.list() returns an IndexList that is iterable and supports len()."""
-    result = await async_client.indexes.list()
+async def test_list_indexes_returns_async_paginator(async_client: AsyncPinecone) -> None:
+    """async pc.indexes.list() yields IndexModel instances with distinct non-empty names.
 
-    # IndexList supports len()
-    count = len(result)
-    assert isinstance(count, int)
-    assert count >= 0
+    2026-07 replaced IndexList (len()/.names()) with an AsyncPaginator that is
+    no longer a coroutine — it must be iterated with ``async for``, not awaited.
+    """
+    items = [idx async for idx in async_client.indexes.list()]
 
-    # IndexList supports iteration
-    items = list(result)
-    assert len(items) == count
+    for item in items:
+        assert isinstance(item, IndexModel)
 
-    # .names() returns a list of strings
-    names = result.names()
-    assert isinstance(names, list)
-    assert len(names) == count
+    names = [idx.name for idx in items]
+    assert len(names) == len(items)
     for name in names:
         assert isinstance(name, str)
         assert len(name) > 0
+    assert len(set(names)) == len(names)
 
 
 # ---------------------------------------------------------------------------
@@ -52,20 +68,24 @@ async def test_create_serverless_index_becomes_ready(async_client: AsyncPinecone
     try:
         model = await async_client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=300,
         )
 
         assert model.name == name
-        assert model.dimension == 2
-        assert model.metric == "cosine"
         assert model.status.ready is True
         assert model.status.state == "Ready"
-        assert model.spec.serverless is not None
-        assert model.spec.serverless.cloud == "aws"
-        assert model.spec.serverless.region == "us-east-1"
+
+        embedding = model.schema.fields["embedding"]
+        assert isinstance(embedding, DenseVectorField)
+        assert embedding.dimension == 2
+        assert embedding.metric == "cosine"
+
+        assert isinstance(model.deployment, ManagedDeployment)
+        assert model.deployment.cloud == "aws"
+        assert model.deployment.region == "us-east-1"
+
         assert model.deletion_protection == "disabled"
         assert isinstance(model.host, str)
         assert len(model.host) > 0
@@ -83,43 +103,36 @@ async def test_create_serverless_index_becomes_ready(async_client: AsyncPinecone
 async def test_create_integrated_dense_index_becomes_ready_async(
     async_client: AsyncPinecone,
 ) -> None:
-    """Create an integrated dense index asynchronously, wait for ready state, verify fields, then delete."""
+    """Create an integrated dense index via create_for_model, verify fields, then delete.
+
+    2026-07 moved integrated creation off ``create(spec=IntegratedSpec(...))``
+    onto ``create_for_model`` (new on the async namespace), and the embedding
+    configuration comes back as a SemanticTextField named after the field_map
+    text entry rather than as ``model.embed``.
+    """
     name = unique_name("int")
     try:
-        model = await async_client.indexes.create(
+        model = await async_client.indexes.create_for_model(
             name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(
-                    model="llama-text-embed-v2",
-                    field_map={"text": "chunk_text"},
-                    metric="cosine",
-                ),
-            ),
+            cloud="aws",
+            region="us-east-1",
+            embed={
+                "model": "llama-text-embed-v2",
+                "field_map": {"text": "chunk_text"},
+                "metric": "cosine",
+            },
             timeout=300,
         )
 
-        assert model.name == name
-        assert model.status.ready is True
-        assert model.status.state == "Ready"
-        assert model.dimension == 1024
-        assert model.metric == "cosine"
-        assert model.vector_type == "dense"
-        assert model.embed is not None
-        assert model.embed.model == "llama-text-embed-v2"
-        assert model.embed.field_map["text"] == "chunk_text"
-
         described = await async_client.indexes.describe(name)
-        assert described.name == model.name
-        assert described.status.ready is True
-        assert described.status.state == "Ready"
-        assert described.dimension == 1024
-        assert described.metric == "cosine"
-        assert described.vector_type == "dense"
-        assert described.embed is not None
-        assert described.embed.model == "llama-text-embed-v2"
-        assert described.embed.field_map["text"] == "chunk_text"
+        for result in (model, described):
+            assert result.name == name
+            assert result.status.ready is True
+            assert result.status.state == "Ready"
+            chunk_text = result.schema.fields["chunk_text"]
+            assert isinstance(chunk_text, SemanticTextField)
+            assert chunk_text.model == "llama-text-embed-v2"
+            assert chunk_text.metric == "cosine"
     finally:
         await async_cleanup_resource(
             lambda: async_client.indexes.delete(name),
@@ -141,9 +154,8 @@ async def test_describe_index_returns_full_model(async_client: AsyncPinecone) ->
     try:
         await async_client.indexes.create(
             name=name,
-            dimension=4,
-            metric="dotproduct",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DOTPRODUCT_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=300,
         )
 
@@ -151,27 +163,29 @@ async def test_describe_index_returns_full_model(async_client: AsyncPinecone) ->
 
         assert isinstance(desc, IndexModel)
         assert desc.name == name
-        assert desc.dimension == 4
-        assert desc.metric == "dotproduct"
-        assert desc.vector_type == "dense"
         assert desc.deletion_protection == "disabled"
 
-        # Status fields
         assert isinstance(desc.status, IndexStatus)
         assert desc.status.ready is True
         assert isinstance(desc.status.state, str)
         assert len(desc.status.state) > 0
 
-        # Spec is serverless
-        assert isinstance(desc.spec, IndexSpec)
-        assert desc.spec.serverless is not None
-        assert desc.spec.pod is None
-        assert desc.spec.serverless.cloud == "aws"
-        assert desc.spec.serverless.region == "us-east-1"
+        assert isinstance(desc.schema, IndexSchema)
+        embedding = desc.schema.fields["embedding"]
+        assert isinstance(embedding, DenseVectorField)
+        assert embedding.dimension == 4
+        assert embedding.metric == "dotproduct"
 
-        # Host is a non-empty string
+        assert isinstance(desc.deployment, ManagedDeployment)
+        assert desc.deployment.cloud == "aws"
+        assert desc.deployment.region == "us-east-1"
+
         assert isinstance(desc.host, str)
         assert len(desc.host) > 0
+
+        for removed in ("dimension", "metric", "vector_type", "spec", "embed", "created_at"):
+            with pytest.raises(AttributeError, match="was removed in the 2026-07"):
+                getattr(desc, removed)
     finally:
         await async_cleanup_resource(
             lambda: async_client.indexes.delete(name),
@@ -199,9 +213,8 @@ async def test_index_handle_rest_async(async_client: AsyncPinecone) -> None:
     try:
         await async_client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=300,
         )
 
@@ -242,9 +255,8 @@ async def test_create_index_with_tags(async_client: AsyncPinecone) -> None:
     try:
         model = await async_client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             tags=tags,
             timeout=300,
         )
@@ -284,9 +296,8 @@ async def test_index_exists_returns_correct_bool(async_client: AsyncPinecone) ->
     try:
         await async_client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=300,
         )
 
@@ -308,10 +319,16 @@ async def test_index_exists_returns_correct_bool(async_client: AsyncPinecone) ->
 
 @pytest.mark.integration
 @pytest.mark.anyio
-async def test_index_exists_with_empty_name_returns_false(async_client: AsyncPinecone) -> None:
-    """Empty/whitespace names must short-circuit to False without a network call."""
-    assert await async_client.indexes.exists("") is False
-    assert await async_client.has_index("") is False
+async def test_index_exists_with_empty_name_raises(async_client: AsyncPinecone) -> None:
+    """An empty name raises before any network call.
+
+    2026-07 changed the async lane from returning False to raising
+    PineconeValueError, bringing it in line with the sync client.
+    """
+    with pytest.raises(PineconeValueError):
+        await async_client.indexes.exists("")
+    with pytest.raises(PineconeValueError):
+        await async_client.has_index("")
 
 
 # ---------------------------------------------------------------------------
@@ -327,9 +344,8 @@ async def test_configure_index_updates_tags(async_client: AsyncPinecone) -> None
     try:
         await async_client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             tags={"env": "integration-test", "version": "1", "to-remove": "yes"},
             timeout=300,
         )
@@ -373,9 +389,8 @@ async def test_configure_deletion_protection_toggle_async(async_client: AsyncPin
     try:
         await async_client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=300,
         )
 
@@ -433,9 +448,8 @@ async def test_delete_index_timeout_minus1_returns_immediately_async(
     try:
         await async_client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=300,
         )
 
@@ -464,51 +478,47 @@ async def test_delete_index_timeout_minus1_returns_immediately_async(
 
 
 # ---------------------------------------------------------------------------
-# configure-index returns None and preserves unspecified fields
+# configure-index returns the updated model and preserves unspecified fields
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
 @pytest.mark.anyio
-async def test_configure_returns_none_and_preserves_deletion_protection_async(
+async def test_configure_returns_model_and_preserves_deletion_protection_async(
     async_client: AsyncPinecone,
 ) -> None:
-    """async configure() always returns None; omitting deletion_protection leaves it unchanged.
+    """async configure() returns the updated IndexModel; omitted fields stay unchanged.
 
-    Verifies claims:
-    - unified-index-0029: configure-index discards the API response and returns None
-    - unified-index-0022: when configure is called without deletion_protection, the
-      current value is preserved (the SDK omits the field from the PATCH body)
+    2026-07 changed configure() from returning None (unified-index-0029) to
+    returning the updated IndexModel, so the response itself is now the
+    assertion surface for unified-index-0022 (fields omitted from the PATCH
+    body keep their current value).
     """
     name = unique_name("idx")
     try:
         await async_client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=300,
         )
 
-        # Enable deletion protection — must return None
         result1 = await async_client.indexes.configure(name, deletion_protection="enabled")
-        assert result1 is None, "configure() must return None (unified-index-0029)"
+        assert isinstance(result1, IndexModel)
+        assert result1.deletion_protection == "enabled"
 
-        # Verify deletion protection is now "enabled"
         desc1 = await async_client.indexes.describe(name)
         assert desc1.deletion_protection == "enabled"
 
-        # Configure just a tag — no deletion_protection argument — must return None
         result2 = await async_client.indexes.configure(name, tags={"test-key": "test-val"})
-        assert result2 is None, "configure() must return None (unified-index-0029)"
-
-        # Describe again: deletion_protection must still be "enabled" (preserved, not reset)
-        desc2 = await async_client.indexes.describe(name)
-        assert desc2.deletion_protection == "enabled", (
+        assert isinstance(result2, IndexModel)
+        assert result2.deletion_protection == "enabled", (
             "deletion_protection must be preserved when configure() is called without it "
             "(unified-index-0022)"
         )
-        # Also verify the tag was applied
+
+        desc2 = await async_client.indexes.describe(name)
+        assert desc2.deletion_protection == "enabled"
         assert desc2.tags is not None
         assert desc2.tags.get("test-key") == "test-val"
 
@@ -558,9 +568,8 @@ async def test_async_index_factory_auto_resolves_on_cache_miss_rest_async(
     try:
         await async_client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=300,
         )
         # create() with timeout polling already populated the cache via describe.
@@ -597,73 +606,6 @@ async def test_async_index_factory_auto_resolves_on_cache_miss_rest_async(
 
 
 # ---------------------------------------------------------------------------
-# schema parameter — flat vs nested format normalization — REST async
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.integration
-@pytest.mark.anyio
-@pytest.mark.skip(
-    reason=(
-        "IT-0017: same root cause as sync variant — _normalize_schema() strips 'fields' wrapper, "
-        "sending flat format which the 2025-10 API rejects with 422."
-    )
-)
-async def test_create_index_with_schema_normalization_async(
-    async_client: AsyncPinecone,
-) -> None:
-    """Async create() accepts schema in both flat and nested formats.
-
-    DISABLED: IT-0017 — same root cause as sync variant.
-
-    Async variant of test_create_index_with_schema_normalization_rest. Verifies:
-    - unified-schema-0001: nested schema {"fields": {...}} is normalized to flat format
-      identically to flat schema {"field": {...}} before the API call.
-    - unified-schema-0002: schemas can be included in serverless index creation requests.
-    """
-    name_nested = unique_name("idx")
-    name_flat = unique_name("idx")
-    try:
-        # --- Step 1: nested schema format ---
-        result_nested = await async_client.indexes.create(
-            name=name_nested,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-            schema={"fields": {"genre": {"filterable": True}}},
-            timeout=300,
-        )
-        assert isinstance(result_nested, IndexModel), (
-            "async create() with nested schema must return an IndexModel"
-        )
-        assert result_nested.name == name_nested
-        assert result_nested.status.ready is True
-
-        # --- Step 2: flat schema format ---
-        result_flat = await async_client.indexes.create(
-            name=name_flat,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-            schema={"genre": {"filterable": True}},
-            timeout=300,
-        )
-        assert isinstance(result_flat, IndexModel), (
-            "async create() with flat schema must return an IndexModel"
-        )
-        assert result_flat.name == name_flat
-        assert result_flat.status.ready is True
-
-    finally:
-        await async_cleanup_resource(
-            lambda: async_client.indexes.delete(name_nested), name_nested, "index"
-        )
-        await async_cleanup_resource(
-            lambda: async_client.indexes.delete(name_flat), name_flat, "index"
-        )
-
-
-# ---------------------------------------------------------------------------
 # IndexModel bracket access — unified-index-0026
 # ---------------------------------------------------------------------------
 
@@ -685,43 +627,32 @@ async def test_index_model_bracket_access_on_real_describe_async(
     try:
         await async_client.indexes.create(
             name=index_name,
-            dimension=2,
-            metric="cosine",
-            spec={"serverless": {"cloud": "aws", "region": "us-east-1"}},
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=-1,
         )
 
         model = await async_client.indexes.describe(index_name)
         assert isinstance(model, IndexModel)
 
-        # --- Bracket access equals attribute access ---
-        assert model["name"] == model.name, "model['name'] must equal model.name"
-        assert model["metric"] == model.metric, "model['metric'] must equal model.metric"
-        assert model["host"] == model.host, "model['host'] must equal model.host"
-        assert model["vector_type"] == model.vector_type, (
-            "model['vector_type'] must equal model.vector_type"
-        )
-        assert model["deletion_protection"] == model.deletion_protection, (
-            "model['deletion_protection'] must equal model.deletion_protection"
-        )
-        assert model["dimension"] == model.dimension, (
-            "model['dimension'] must equal model.dimension"
-        )
+        for field in ("name", "host", "deletion_protection", "schema", "deployment", "status"):
+            assert model[field] == getattr(model, field), (
+                f"model[{field!r}] must equal model.{field}"
+            )
+            assert field in model, f"'{field}' must be in IndexModel"
 
-        # --- Specific field values ---
         assert model["name"] == index_name, "Bracket 'name' must match the created index name"
-        assert model["metric"] == "cosine", "Bracket 'metric' must be 'cosine'"
-        assert model["vector_type"] == "dense", "Bracket 'vector_type' must be 'dense'"
         assert model["deletion_protection"] == "disabled", (
             "Bracket 'deletion_protection' must be 'disabled'"
         )
+        assert model["schema"].fields["embedding"].metric == "cosine"
 
-        # --- Containment check ---
-        for field in ("name", "metric", "host", "dimension", "deletion_protection", "vector_type"):
-            assert field in model, f"'{field}' must be in IndexModel"
         assert "nonexistent_field_xyz" not in model, "Non-existent key must NOT be in IndexModel"
+        for removed in ("dimension", "metric", "vector_type", "spec", "embed"):
+            assert removed not in model, f"Removed field {removed!r} must not be in IndexModel"
+            with pytest.raises(KeyError):
+                _ = model[removed]
 
-        # --- KeyError on missing key ---
         with pytest.raises(KeyError):
             _ = model["nonexistent_field_xyz"]
 
