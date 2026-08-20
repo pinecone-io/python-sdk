@@ -13,13 +13,25 @@ from pinecone.models.vectors.sparse import SparseValues
 class Vector(DictLikeStruct, Struct, rename="camel", gc=False):
     """A stored vector with optional sparse values and metadata.
 
+    At least one of ``values`` or ``sparse_values`` must be populated; the 2026-07 API models
+    this as ``anyOf: [required values, required sparseValues]``, so ``values`` is no longer
+    required on its own. A sparse-only vector still serializes an empty ``values`` array, which
+    satisfies that ``anyOf``.
+
     Attributes:
-        id (str): Unique identifier for the vector.
-        values (list[float]): Dense vector values as a list of floats.
+        id (str): Unique identifier for the vector. ASCII, 1 to 512 characters, no NUL.
+        values (list[float]): Dense vector values as a list of floats. Empty for a sparse-only
+            vector, and empty on a response whenever values were not returned.
         sparse_values (SparseValues | None): Sparse vector component, or ``None`` if the vector
             has no sparse values.
         metadata (dict[str, Any] | None): User-defined metadata key-value pairs, or ``None`` if
-            no metadata is attached.
+            no metadata is attached. Each value must be a string, a number, a boolean, or a
+            list of strings — nested objects and lists with a non-string element are rejected.
+            A key whose value is ``None`` is dropped by the server rather than rejected. Keys
+            may not begin with ``$``, which is reserved for filter operators; every other key is
+            accepted, including empty and non-ASCII keys. The field is typed ``Any`` rather than
+            narrowed to that grammar so that decoding a response never fails on a value shape
+            the server has started returning; requests are validated on the way out instead.
     """
 
     id: str
@@ -72,7 +84,8 @@ class ScoredVector(DictLikeStruct, Struct, rename="camel", kw_only=True, gc=Fals
         sparse_values (SparseValues | None): Sparse vector component, or ``None`` if the vector
             has no sparse values.
         metadata (dict[str, Any] | None): User-defined metadata key-value pairs, or ``None`` if
-            metadata was not requested or not attached.
+            metadata was not requested or not attached. Values follow the same grammar as
+            :attr:`Vector.metadata`: string, number, boolean, or list of strings.
     """
 
     id: str
