@@ -29,6 +29,7 @@ from pinecone._internal.batch import (
     _empty_result,
     _validate_batch_params,
 )
+from pinecone._internal.bulk.classify import DISPOSITION_ABANDONED, is_retryable
 from pinecone._internal.bulk.core import AcquireOutcome
 from pinecone._internal.bulk.registry import GateRegistry, get_registry
 from pinecone.models.batch import BatchError, BatchResult
@@ -52,6 +53,7 @@ def _stalled_error(batch_index: int, batch: list[dict[str, Any]]) -> BatchError:
         items=batch,
         error=PineconeError(message),
         error_message=message,
+        disposition=DISPOSITION_ABANDONED,
     )
 
 
@@ -90,6 +92,10 @@ def bulk_execute_sync(
     lsn_committed_values: list[int] = []
     timed_out = False
     stalled = False
+    peak_inflight = 0
+    outstanding_now = 0
+    counter_lock = threading.Lock()
+    throttle_events_at_start = gate.throttle_events
 
     progress = _create_progress_bar(total_batches, desc, show_progress)
     call_bound = threading.Semaphore(max_concurrency)
@@ -99,11 +105,18 @@ def bulk_execute_sync(
     )
 
     def _wrapped_op(batch: list[dict[str, Any]]) -> Any:
+        nonlocal peak_inflight, outstanding_now
+        with counter_lock:
+            outstanding_now += 1
+            peak_inflight = max(peak_inflight, outstanding_now)
         try:
             result = operation(batch)
         except Exception:
             gate.report_failure()
             raise
+        finally:
+            with counter_lock:
+                outstanding_now -= 1
         gate.report_success()
         return result
 
@@ -119,6 +132,7 @@ def bulk_execute_sync(
                     items=batch,
                     error=exc,
                     error_message=str(exc),
+                    retryable=is_retryable(exc),
                 )
             )
         else:
@@ -205,4 +219,7 @@ def bulk_execute_sync(
         errors=sorted(errors, key=lambda err: err.batch_index),
         response_info=_build_aggregate(lsn_reconciled_values, lsn_committed_values),
         timed_out=timed_out,
+        throttle_event_count=gate.throttle_events - throttle_events_at_start,
+        final_limit=gate.limit,
+        peak_inflight=peak_inflight,
     )

@@ -202,3 +202,81 @@ def test_empty_items_short_circuits() -> None:
     )
     assert result.total_item_count == 0
     assert result.total_batch_count == 0
+
+
+def test_dispositions_and_counters_on_mixed_outcomes() -> None:
+    gate = get_registry().get(HOST)
+
+    def op(batch: list[dict[str, Any]]) -> Any:
+        if batch[0]["id"] == "0":
+            from pinecone.errors.exceptions import PineconeValueError
+
+            raise PineconeValueError("dimension mismatch")
+        if batch[0]["id"] == "2":
+            gate.report_throttled()
+        return {"upserted_count": len(batch)}
+
+    result = bulk_execute_sync(
+        items=_items(12),
+        operation=op,
+        batch_size=2,
+        max_concurrency=4,
+        show_progress=False,
+        host=HOST,
+    )
+    assert result.successful_item_count == 10
+    poison = [e for e in result.errors if not e.retryable]
+    assert len(poison) == 1 and poison[0].disposition == "rejected"
+    assert result.throttle_event_count == 1, "the in-window throttle must be counted"
+    assert result.final_limit == gate.limit
+    assert 1 <= result.peak_inflight <= 4
+
+
+def test_stall_errors_carry_abandoned_disposition() -> None:
+    gate = get_registry().get(HOST)
+    while gate.limit > 1:
+        gate.report_throttled()
+
+    def dying(batch: list[dict[str, Any]]) -> Any:
+        raise RuntimeError("UNAVAILABLE")
+
+    result = bulk_execute_sync(
+        items=_items(20),
+        operation=dying,
+        batch_size=2,
+        max_concurrency=2,
+        show_progress=False,
+        host=HOST,
+    )
+    abandoned = [e for e in result.errors if e.disposition == "abandoned"]
+    rejected = [e for e in result.errors if e.disposition == "rejected"]
+    assert abandoned, "stall-abandoned batches must be labeled"
+    assert rejected, "the batches that actually failed stay rejected"
+    assert all(e.retryable for e in abandoned)
+
+
+def test_deadline_unsent_batches_carry_unsent_disposition() -> None:
+    import threading
+
+    gate = get_registry().get(HOST)
+    while gate.limit > 1:
+        gate.report_throttled()
+    release = threading.Event()
+
+    def slow(batch: list[dict[str, Any]]) -> Any:
+        release.wait(2.0)
+        return {"upserted_count": len(batch)}
+
+    result = bulk_execute_sync(
+        items=_items(8),
+        operation=slow,
+        batch_size=2,
+        max_concurrency=4,
+        show_progress=False,
+        host=HOST,
+        total_timeout=0.2,
+    )
+    release.set()
+    unsent = [e for e in result.errors if e.disposition == "unsent"]
+    assert unsent, "deadline-expired batches must be labeled unsent"
+    assert all(e.retryable for e in unsent)

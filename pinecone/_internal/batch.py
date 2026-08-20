@@ -126,7 +126,16 @@ def _abandoned_error(batch_index: int, batch: list[dict[str, Any]], total_timeou
         items=batch,
         error=PineconeTimeoutError(message),
         error_message=message,
+        disposition="unsent",
     )
+
+
+def _classify_retryable(error: BaseException) -> bool:
+    """Deferred import: bulk.classify cannot be imported at module top —
+    bulk/__init__ imports the engine, which imports this module."""
+    from pinecone._internal.bulk.classify import is_retryable
+
+    return is_retryable(error)
 
 
 def _empty_result() -> BatchResult:
@@ -295,6 +304,7 @@ def batch_execute(
                     items=batch,
                     error=exc,
                     error_message=str(exc),
+                    retryable=_classify_retryable(exc),
                 )
             )
         else:
@@ -464,6 +474,7 @@ async def async_batch_execute(
                         items=batch,
                         error=exc,
                         error_message=str(exc),
+                        retryable=_classify_retryable(exc),
                     )
                 )
             else:

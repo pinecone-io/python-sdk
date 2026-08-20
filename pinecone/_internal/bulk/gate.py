@@ -68,6 +68,10 @@ class HostGate:
     def stalled(self) -> bool:
         return self._core.stalled
 
+    @property
+    def throttle_events(self) -> int:
+        return self._core.throttle_events
+
     def quiescent(self) -> bool:
         with self._lock:
             return self._core.quiescent()

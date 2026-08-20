@@ -1,7 +1,7 @@
 {
   "transport": "async",
   "n_clients": 50,
-  "dispersion_width": 0.37638158298796043,
-  "first_success_relative": 1.032714584012865,
+  "dispersion_width": 0.37500625000393484,
+  "first_success_relative": 1.034215542007587,
   "request_amplification": 3.0
 }

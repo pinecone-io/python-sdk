@@ -79,6 +79,7 @@ class GateCore:
         "_inflight",
         "_limit",
         "_success_streak",
+        "_throttle_events",
         "_waiters",
     )
 
@@ -93,6 +94,7 @@ class GateCore:
         self._epoch_settles_remaining = 0
         self._hold_until: float | None = None
         self._consecutive_failures = 0
+        self._throttle_events = 0
 
     @property
     def limit(self) -> int:
@@ -105,6 +107,10 @@ class GateCore:
     @property
     def waiting(self) -> int:
         return len(self._waiters)
+
+    @property
+    def throttle_events(self) -> int:
+        return self._throttle_events
 
     @property
     def stalled(self) -> bool:
@@ -172,6 +178,7 @@ class GateCore:
         make an existing failure streak count as stalled, and queued waiters
         must learn that the same way report_failure's edge tells them."""
         self._success_streak = 0
+        self._throttle_events += 1
         if pushback_seconds is not None and pushback_seconds > 0:
             hold = now + pushback_seconds
             if self._hold_until is None or hold > self._hold_until:
