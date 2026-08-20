@@ -361,3 +361,41 @@ def test_audit_httpx_transports_have_zero_transport_retries() -> None:
             if "retries" in match.group(1):
                 offenders.append(f"{path}: {match.group(0)[:80]}")
     assert not offenders, f"transport-level retries configured: {offenders}"
+
+
+class TestBudgetRegistryEviction:
+    """LRU eviction at the cap — mutation testing showed it was unpinned."""
+
+    def test_cap_is_enforced_at_exactly_max_budgets(self) -> None:
+        from pinecone._internal.http_client import _MAX_BUDGETS
+
+        assert _MAX_BUDGETS == 1024
+        registry = _BudgetRegistry()
+        for i in range(_MAX_BUDGETS):
+            registry.get(f"host-{i}.example.com")
+        assert len(registry._budgets) == _MAX_BUDGETS
+        registry.get("one-more.example.com")
+        assert len(registry._budgets) == _MAX_BUDGETS, "the cap is a ceiling, not a suggestion"
+
+    def test_eviction_removes_the_least_recently_used_host(self) -> None:
+        from pinecone._internal.http_client import _MAX_BUDGETS
+
+        registry = _BudgetRegistry()
+        for i in range(_MAX_BUDGETS):
+            registry.get(f"host-{i}.example.com")
+        registry.get("host-0.example.com")
+        registry.get("one-more.example.com")
+        assert "host-0.example.com" in registry._budgets, "recently touched must survive"
+        assert "host-1.example.com" not in registry._budgets, "the LRU entry is the one evicted"
+
+    def test_evicted_host_comes_back_with_a_full_budget(self) -> None:
+        from pinecone._internal.http_client import _MAX_BUDGETS
+
+        registry = _BudgetRegistry()
+        drained = registry.get("victim.example.com")
+        _drain(drained)
+        for i in range(_MAX_BUDGETS):
+            registry.get(f"filler-{i}.example.com")
+        revived = registry.get("victim.example.com")
+        assert revived is not drained
+        assert revived.tokens() == _BUDGET_MAX_TOKENS, "re-created budgets start full (fail-open)"
