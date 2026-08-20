@@ -190,12 +190,14 @@ longer buys sparse writes; declare both fields:
 
 `SchemaBuilder` spells the same thing as
 `.add_dense_vector_field("embedding", dimension=1536, metric="dotproduct")
-.add_sparse_vector_field("sparse_terms")`.
+.add_sparse_vector_field("sparse_terms")` — but use the dict form for now:
+`add_sparse_vector_field()` emits a `metric` key the server rejects
+([#350](https://github.com/pinecone-io/python-sdk-internal/issues/350)).
 
 This fails *silently at create time* — the index is created and only the
-sparse upserts are refused later. Full write-up, including the error text
-and the affected fixtures:
-[#332](https://github.com/pinecone-io/python-sdk-internal/issues/332).
+sparse upserts are refused later. Full write-up, including which error a
+caller actually sees today: [sparse writes now require a declared
+`sparse_vector` field](#sparse-writes).
 ```
 
 ## Flow 3 — full-text-search create

@@ -331,6 +331,13 @@ class AsyncIndexes:
                 or ``$``. Field-type rules (at most one dense and one sparse
                 vector field; metadata types rejected) are enforced by the
                 server and surfaced verbatim.
+                A **hybrid** index must declare its ``sparse_vector`` field
+                explicitly. At 2026-07 a dense field with
+                ``metric="dotproduct"`` no longer accepts sparse values on its
+                own: the create succeeds, and only the sparse upserts are
+                refused later. The field cannot be added by ``configure()``, so
+                an index created without one has to be recreated. See
+                ``docs/migration/v10-2026-07-vector-models.md``.
             name: Optional name for the index. 1-45 characters matching
                 ``^[a-z0-9]([a-z0-9-]*[a-z0-9])?$``. If omitted, the server
                 assigns one.

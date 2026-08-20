@@ -114,6 +114,10 @@ pc.indexes.create(
   backend rejects both with 400 (`Creating an index from collection or
   backup is not yet supported`). Use `pc.create_index_from_backup(...)` to
   restore a backup.
+- A **hybrid** index must declare its `sparse_vector` field. `metric="dotproduct"`
+  on the dense field no longer implies sparse support, and the field cannot be
+  added later — see [sparse writes now require a declared `sparse_vector`
+  field](#sparse-writes).
 - Readiness polling stays the default (`timeout=-1` opts out), matching the
   9.x top-level behavior.
 - Pod deployments must include all of `environment`, `pod_type`,
