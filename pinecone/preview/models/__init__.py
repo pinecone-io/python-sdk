@@ -7,7 +7,6 @@ docs/conventions/preview-channel.md § Type isolation.
 
 from __future__ import annotations
 
-from pinecone.preview.models.backups import PreviewBackupModel, PreviewCreateBackupRequest
 from pinecone.preview.models.deployment import (
     PreviewByocDeployment,
     PreviewDeployment,
@@ -56,11 +55,9 @@ from pinecone.preview.models.sparse import PreviewSparseValues
 from pinecone.preview.models.status import PreviewIndexStatus
 
 __all__ = [
-    "PreviewBackupModel",
     "PreviewBooleanField",
     "PreviewByocDeployment",
     "PreviewConfigureIndexRequest",
-    "PreviewCreateBackupRequest",
     "PreviewCreateIndexRequest",
     "PreviewDenseVectorField",
     "PreviewDenseVectorQuery",

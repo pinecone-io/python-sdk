@@ -13,8 +13,9 @@ from __future__ import annotations
 import pytest
 
 from pinecone import Pinecone
+from pinecone.models.backups.model import BackupModel
+from pinecone.models.indexes.schema import IndexSchema
 from pinecone.preview import SchemaBuilder as PreviewSchemaBuilder
-from pinecone.preview.models import PreviewBackupModel
 from tests.integration.conftest import poll_until
 
 pytestmark = [pytest.mark.integration, pytest.mark.preview_integration]
@@ -62,7 +63,7 @@ def test_create_backup_returns_initializing_backup(
         name="before-migration",
         description="Snapshot before schema change",
     )
-    assert isinstance(backup, PreviewBackupModel)
+    assert isinstance(backup, BackupModel)
     assert isinstance(backup.backup_id, str) and len(backup.backup_id) > 0
     assert isinstance(backup.status, str) and len(backup.status) > 0
 
@@ -78,7 +79,7 @@ def test_list_backups_includes_created_backup(
     backup_ids = [b.backup_id for b in client.preview.indexes.list_backups(ready_preview_index)]
     assert backup.backup_id in backup_ids
     for item in client.preview.indexes.list_backups(ready_preview_index):
-        assert isinstance(item, PreviewBackupModel)
+        assert isinstance(item, BackupModel)
         assert isinstance(item.backup_id, str) and len(item.backup_id) > 0
         assert isinstance(item.status, str)
         assert isinstance(item.created_at, str)
@@ -134,7 +135,7 @@ def test_create_backup_all_required_fields_present(
     client: Pinecone,
     ready_dense_preview_index: str,
 ) -> None:
-    """create_backup() response contains all required PreviewBackupModel fields.
+    """create_backup() response contains all required BackupModel fields.
 
     Existing tests verify backup_id and status only. This test checks the full
     set of required fields: source_index_name, source_index_id, cloud, region,
@@ -145,7 +146,7 @@ def test_create_backup_all_required_fields_present(
         name="all-fields-test",
         description="Verifying all required backup fields",
     )
-    assert isinstance(backup, PreviewBackupModel)
+    assert isinstance(backup, BackupModel)
     assert isinstance(backup.backup_id, str) and len(backup.backup_id) > 0
     assert backup.source_index_name == ready_dense_preview_index
     assert isinstance(backup.source_index_id, str) and len(backup.source_index_id) > 0
@@ -158,7 +159,7 @@ def test_create_backup_all_required_fields_present(
 
 
 # ---------------------------------------------------------------------------
-# test_create_backup_optional_fields_are_correctly_typed — §2 PreviewBackupModel optional fields
+# test_create_backup_optional_fields_are_correctly_typed — §2 BackupModel optional fields
 # ---------------------------------------------------------------------------
 
 
@@ -166,13 +167,13 @@ def test_describe_backup_returns_preview_backup_model(
     client: Pinecone,
     ready_dense_preview_index: str,
 ) -> None:
-    """describe_backup() returns a PreviewBackupModel with expected fields."""
+    """describe_backup() returns a BackupModel with expected fields."""
     backup = client.preview.indexes.create_backup(
         ready_dense_preview_index,
         name="describe-test",
     )
     described = client.preview.indexes.describe_backup(backup.backup_id)
-    assert isinstance(described, PreviewBackupModel)
+    assert isinstance(described, BackupModel)
     assert described.backup_id == backup.backup_id
     assert isinstance(described.status, str) and len(described.status) > 0
     assert described.source_index_name == ready_dense_preview_index
@@ -182,15 +183,17 @@ def test_create_backup_optional_fields_are_correctly_typed(
     client: Pinecone,
     ready_dense_preview_index: str,
 ) -> None:
-    """Optional PreviewBackupModel fields have correct Python types (int, dict, or None).
+    """Optional BackupModel fields have correct Python types (int, dict, or None).
 
     PVT-010 (test_create_backup_all_required_fields_present) verified required fields:
     backup_id, source_index_name, source_index_id, status, cloud, region, created_at,
     name, description.
 
-    This test covers the optional fields declared in §2 PreviewBackupModel:
-    - dimension: int | None  — should be 4 for a 4-dim dense vector index if populated
-    - schema: dict | None    — raw schema dict or None
+    This test covers the optional fields declared in §2 BackupModel:
+    - dense_dimension: int | None — 4 for a 4-dim dense vector index when the
+      server returns a typed schema
+    - schema: IndexSchema | None
+    - source_index_deleted_at: str | None — None while the source index is active
     - tags: dict | None      — None when no tags passed to create_backup()
     - record_count: int | None
     - namespace_count: int | None
@@ -204,20 +207,18 @@ def test_create_backup_optional_fields_are_correctly_typed(
         name="optional-fields-test",
     )
 
-    assert isinstance(backup, PreviewBackupModel)
+    assert isinstance(backup, BackupModel)
 
-    # dimension — int or None; for a 4-dim index must be 4 when populated
-    assert backup.dimension is None or isinstance(backup.dimension, int), (
-        f"backup.dimension must be int or None, got {type(backup.dimension)}"
+    assert backup.dense_dimension is None or backup.dense_dimension == 4, (
+        f"expected dense_dimension=4 for dense index, got {backup.dense_dimension}"
     )
-    if backup.dimension is not None:
-        assert backup.dimension == 4, (
-            f"expected dimension=4 for dense index, got {backup.dimension}"
-        )
 
-    # schema — dict or None; contents are server-defined, only type is verified
-    assert backup.schema is None or isinstance(backup.schema, dict), (
-        f"backup.schema must be dict or None, got {type(backup.schema)}"
+    assert backup.schema is None or isinstance(backup.schema, IndexSchema), (
+        f"backup.schema must be IndexSchema or None, got {type(backup.schema)}"
+    )
+
+    assert backup.source_index_deleted_at is None, (
+        "source index is active, so source_index_deleted_at must be None"
     )
 
     # tags — dict[str, Any] or None; API returns {} when no tags are passed

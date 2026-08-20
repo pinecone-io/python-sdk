@@ -1,35 +1,67 @@
-"""Backup and restore response models."""
+"""Backup and restore models (2026-07 API)."""
 
 from __future__ import annotations
 
 from typing import Any
 
+import msgspec
 from msgspec import Struct
 
+from pinecone.models._display import render_table
 from pinecone.models._mixin import StructDictMixin
+from pinecone.models.indexes.schema import (
+    DenseVectorField,
+    IndexSchema,
+    _strip_untyped_tags,
+)
+
+__all__ = [
+    "BackupModel",
+    "CreateIndexFromBackupRequest",
+    "CreateIndexFromBackupResponse",
+    "RestoreJobModel",
+]
+
+_REMOVED_FIELD_HINTS: dict[str, str] = {
+    "dimension": (
+        "read it from schema.fields instead, e.g. "
+        "backup.schema.fields['<field-name>'].dimension on the DenseVectorField, "
+        "or use the backup.dense_dimension convenience property"
+    ),
+    "metric": (
+        "read it from schema.fields instead, e.g. "
+        "backup.schema.fields['<field-name>'].metric on the vector field"
+    ),
+}
 
 
 class BackupModel(Struct, kw_only=True):
-    """Response model for a Pinecone backup.
+    """Response model for a Pinecone backup (2026-07 API).
 
     Attributes:
         backup_id: Unique identifier for the backup.
         source_index_name: Name of the index that was backed up.
         source_index_id: Unique identifier of the source index.
-        status: Current status of the backup.
+        status: Current status of the backup — ``"Initializing"``,
+            ``"Ready"``, or ``"Failed"``.
         cloud: Cloud provider where the backup is stored.
         region: Region where the backup is stored.
+        source_index_deleted_at: Timestamp at which the source index was
+            deleted, or ``None`` when the source index is still active.
+            Only populated by ``list_index_backups(include_deleted=True)``.
         name: User-provided name for the backup.
         description: User-provided description for the backup.
-        dimension: Dimensionality of vectors in the backup.
-        metric: Distance metric used for this backup (e.g. ``"cosine"``), or ``None`` if not
-            returned by the server.
+        schema: Schema captured from the source index, or ``None`` when the
+            server returns no schema (e.g. schedule-produced backups of an
+            index that declared none). Legacy metadata-only schemas decode
+            to :class:`~pinecone.models.indexes.schema.LegacyMetadataField`
+            entries.
         record_count: Number of records in the backup.
         namespace_count: Number of namespaces in the backup.
         size_bytes: Size of the backup in bytes.
-        tags: User-defined key-value tags.
+        tags: User-defined key-value tags, or ``None`` when the source index
+            had none (the API returns ``"tags": null`` rather than ``{}``).
         created_at: Timestamp when the backup was created.
-        schema: Metadata schema of the backed-up index, or ``None`` if not returned.
     """
 
     backup_id: str
@@ -38,19 +70,37 @@ class BackupModel(Struct, kw_only=True):
     status: str
     cloud: str
     region: str
+    source_index_deleted_at: str | None = None
     name: str | None = None
     description: str | None = None
-    dimension: int | None = None
-    metric: str | None = None
+    schema: IndexSchema | None = None
     record_count: int | None = None
     namespace_count: int | None = None
     size_bytes: int | None = None
     tags: dict[str, Any] | None = None
     created_at: str | None = None
-    schema: dict[str, Any] | None = None
+
+    @property
+    def dense_dimension(self) -> int | None:
+        """Dimension of the backup's single dense vector field, if there is one.
+
+        Returns ``None`` when the schema is absent, declares no
+        ``dense_vector`` field, or declares more than one — in which case
+        read the dimension off the field you want via
+        :attr:`schema`\\ ``.fields['<field-name>'].dimension``.
+        """
+        if self.schema is None:
+            return None
+        dims = [f.dimension for f in self.schema.fields.values() if isinstance(f, DenseVectorField)]
+        return dims[0] if len(dims) == 1 else None
 
     def __getattr__(self, name: str) -> Any:
-        """Raise AttributeError for unknown attributes (legacy dict-style delegation)."""
+        if name in _REMOVED_FIELD_HINTS:
+            raise AttributeError(
+                f"BackupModel.{name} was removed in the 2026-07 Pinecone API: "
+                f"{_REMOVED_FIELD_HINTS[name]}. "
+                "See docs/migration/v10-2026-07-backup-models.md."
+            )
         raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
 
     def __getitem__(self, key: str) -> Any:
@@ -63,14 +113,20 @@ class BackupModel(Struct, kw_only=True):
         """Support ``in`` operator (e.g. ``'backup_id' in backup``)."""
         return key in self.__struct_fields__
 
+    def __dir__(self) -> list[str]:
+        attrs = set(super().__dir__())
+        public = {name for name in attrs if not name.startswith("_")}
+        return sorted(public)
+
     def to_dict(self) -> dict[str, Any]:
         """Return a dict representation of this backup model.
 
         Returns:
-            Dictionary with all fields, including optional ones that are ``None``
-            (e.g. ``name``, ``description``, ``dimension``,
-            ``record_count``, ``namespace_count``, ``size_bytes``, ``tags``,
-            ``created_at``). Values are not recursively converted.
+            Dictionary with all fields, including optional ones that are
+            ``None`` (e.g. ``name``, ``description``, ``record_count``,
+            ``source_index_deleted_at``). ``schema`` becomes a plain dict;
+            legacy untyped schema fields are emitted without a ``type`` key,
+            matching the wire format.
 
         Examples:
             >>> from pinecone.models.backups.model import BackupModel
@@ -90,8 +146,113 @@ class BackupModel(Struct, kw_only=True):
             'weekly-backup'
             >>> d["description"] is None
             True
+            >>> d["source_index_deleted_at"] is None
+            True
         """
-        return {f: getattr(self, f) for f in self.__struct_fields__}
+        return {f: _to_builtins_stripped(getattr(self, f)) for f in self.__struct_fields__}
+
+    def __repr__(self) -> str:
+        parts = [
+            f"backup_id={self.backup_id!r}",
+            f"status={self.status!r}",
+            f"source_index_name={self.source_index_name!r}",
+            f"created_at={self.created_at!r}",
+        ]
+        if self.name is not None:
+            parts.append(f"name={self.name!r}")
+        if self.source_index_deleted_at is not None:
+            parts.append(f"source_index_deleted_at={self.source_index_deleted_at!r}")
+        if self.schema is not None:
+            parts.append(f"schema_fields={len(self.schema.fields)}")
+        return f"BackupModel({', '.join(parts)})"
+
+    def _repr_pretty_(self, p: Any, cycle: bool) -> None:
+        """Pretty-printer support for IPython."""
+        if cycle:
+            p.text("BackupModel(...)")
+            return
+
+        p.text("BackupModel(")
+        with p.group(2, "", ")"):
+            p.breakable()
+            p.text(f"backup_id={self.backup_id!r},")
+            p.breakable()
+            p.text(f"source_index_name={self.source_index_name!r},")
+            p.breakable()
+            p.text(f"source_index_id={self.source_index_id!r},")
+            p.breakable()
+            p.text(f"status={self.status!r},")
+            p.breakable()
+            p.text(f"cloud={self.cloud!r},")
+            p.breakable()
+            p.text(f"region={self.region!r},")
+            p.breakable()
+            p.text(f"created_at={self.created_at!r}")
+
+            if self.source_index_deleted_at is not None:
+                p.breakable()
+                p.text(f"source_index_deleted_at={self.source_index_deleted_at!r}")
+            if self.name is not None:
+                p.breakable()
+                p.text(f"name={self.name!r}")
+            if self.description is not None:
+                p.breakable()
+                p.text(f"description={self.description!r}")
+            if self.record_count is not None:
+                p.breakable()
+                p.text(f"record_count={self.record_count}")
+            if self.namespace_count is not None:
+                p.breakable()
+                p.text(f"namespace_count={self.namespace_count}")
+            if self.size_bytes is not None:
+                p.breakable()
+                p.text(f"size_bytes={self.size_bytes}")
+            if self.tags:
+                p.breakable()
+                p.text(f"tags={self.tags!r}")
+            if self.schema is not None:
+                p.breakable()
+                p.text(f"schema=IndexSchema(fields={len(self.schema.fields)} fields)")
+
+    def _repr_html_(self) -> str:
+        """Jupyter notebook HTML representation."""
+        rows: list[tuple[str, str | int]] = [
+            ("Backup ID:", self.backup_id),
+            ("Source Index:", self.source_index_name),
+            ("Source Index ID:", self.source_index_id),
+            ("Status:", self.status),
+            ("Cloud:", self.cloud),
+            ("Region:", self.region),
+            ("Created:", self.created_at if self.created_at is not None else "unknown"),
+        ]
+
+        if self.source_index_deleted_at is not None:
+            rows.append(("Source Index Deleted:", self.source_index_deleted_at))
+        if self.name is not None:
+            rows.append(("Name:", self.name))
+        if self.description is not None:
+            rows.append(("Description:", self.description))
+        if self.schema is not None:
+            rows.append(("Schema fields:", len(self.schema.fields)))
+        if self.record_count is not None:
+            rows.append(("Records:", self.record_count))
+        if self.namespace_count is not None:
+            rows.append(("Namespaces:", self.namespace_count))
+        if self.size_bytes is not None:
+            rows.append(("Size:", f"{self.size_bytes} bytes"))
+        if self.tags:
+            tags_str = ", ".join(f"{k}={v}" for k, v in self.tags.items())
+            rows.append(("Tags:", tags_str))
+
+        return render_table("BackupModel", rows)
+
+
+def _to_builtins_stripped(value: Any) -> Any:
+    if isinstance(value, Struct):
+        return _strip_untyped_tags(msgspec.to_builtins(value))
+    if isinstance(value, dict):
+        return dict(value)
+    return value
 
 
 class RestoreJobModel(Struct, kw_only=True):
@@ -157,6 +318,32 @@ class RestoreJobModel(Struct, kw_only=True):
             True
         """
         return {f: getattr(self, f) for f in self.__struct_fields__}
+
+
+class CreateIndexFromBackupRequest(Struct, kw_only=True, omit_defaults=True):
+    """Request model for creating an index from a backup.
+
+    ``omit_defaults=True`` keeps unset optionals off the wire, so a request
+    built with only ``name`` serialises to ``{"name": ...}`` and the server
+    applies its own defaults (on-demand read capacity, deletion protection
+    disabled, the backup's own tags).
+
+    Attributes:
+        name: Name for the restored index (required). 1-45 characters,
+            starting and ending with an alphanumeric character.
+        tags: Optional key-value tags for the restored index. When omitted,
+            the server copies the backup's tags.
+        deletion_protection: Optional deletion protection setting
+            (``"enabled"`` or ``"disabled"``).
+        read_capacity: Optional read capacity configuration, letting the
+            restore land directly on dedicated read nodes instead of
+            defaulting to on-demand capacity.
+    """
+
+    name: str
+    tags: dict[str, str] | None = None
+    deletion_protection: str | None = None
+    read_capacity: dict[str, Any] | None = None
 
 
 class CreateIndexFromBackupResponse(StructDictMixin, Struct, kw_only=True):

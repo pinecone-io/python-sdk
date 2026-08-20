@@ -49,6 +49,26 @@ def _strip_untyped_tags(obj: Any) -> Any:
     return obj
 
 
+def _tag_untyped_schema_fields(obj: Any) -> Any:
+    """Inject the internal discriminator into ``schema.fields`` entries lacking ``type``.
+
+    Legacy metadata fields arrive with no ``type`` discriminator; msgspec
+    tagged unions cannot decode them without one.  Mutates and returns
+    *obj*; a non-dict or a payload without a dict-shaped ``schema.fields``
+    passes through untouched.
+    """
+    if not isinstance(obj, dict):
+        return obj
+    schema = obj.get("schema")
+    if isinstance(schema, dict):
+        fields = schema.get("fields")
+        if isinstance(fields, dict):
+            for field in fields.values():
+                if isinstance(field, dict) and "type" not in field:
+                    field["type"] = UNTYPED_FIELD_TAG
+    return obj
+
+
 class DenseVectorField(Struct, tag="dense_vector", tag_field="type", kw_only=True):
     """Dense vector field definition.
 

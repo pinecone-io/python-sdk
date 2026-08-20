@@ -10,10 +10,10 @@ import respx
 
 from pinecone._internal.config import PineconeConfig
 from pinecone.errors.exceptions import PineconeValueError
+from pinecone.models.backups.model import BackupModel
 from pinecone.models.pagination import Paginator
 from pinecone.preview._internal.constants import INDEXES_API_VERSION
 from pinecone.preview.indexes import PreviewIndexes
-from pinecone.preview.models.backups import PreviewBackupModel
 
 BASE_URL = "https://api.test.pinecone.io"
 
@@ -95,7 +95,7 @@ def test_create_backup_returns_preview_backup_model(indexes: PreviewIndexes) -> 
         return_value=httpx.Response(200, json=_BACKUP_1)
     )
     result = indexes.create_backup("my")
-    assert isinstance(result, PreviewBackupModel)
+    assert isinstance(result, BackupModel)
     assert result.backup_id == "bkp-001"
     assert result.source_index_name == "my-index"
     assert result.status == "Ready"
@@ -125,7 +125,7 @@ def test_list_backups_yields_backups(indexes: PreviewIndexes) -> None:
     assert isinstance(result, Paginator)
     items = list(result)
     assert len(items) == 2
-    assert all(isinstance(b, PreviewBackupModel) for b in items)
+    assert all(isinstance(b, BackupModel) for b in items)
     assert items[0].backup_id == "bkp-001"
     assert items[1].backup_id == "bkp-002"
 

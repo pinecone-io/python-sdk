@@ -135,6 +135,7 @@ if TYPE_CHECKING:
     from pinecone.models.backups.list import BackupList, RestoreJobList
     from pinecone.models.backups.model import (
         BackupModel,
+        CreateIndexFromBackupRequest,
         CreateIndexFromBackupResponse,
         RestoreJobModel,
     )
@@ -313,6 +314,7 @@ __all__ = [
     "ConflictError",
     "ContextOptions",
     "ContextResponse",
+    "CreateIndexFromBackupRequest",
     "CreateIndexFromBackupResponse",
     "CreateIndexRequest",
     "DeleteDocumentsRequest",
@@ -514,6 +516,10 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "ConflictError": ("pinecone.errors.exceptions", "ConflictError"),
     "ContextOptions": ("pinecone.models.assistant.options", "ContextOptions"),
     "ContextResponse": ("pinecone.models.assistant.context", "ContextResponse"),
+    "CreateIndexFromBackupRequest": (
+        "pinecone.models.backups.model",
+        "CreateIndexFromBackupRequest",
+    ),
     "CreateIndexFromBackupResponse": (
         "pinecone.models.backups.model",
         "CreateIndexFromBackupResponse",

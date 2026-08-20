@@ -30,7 +30,7 @@ from pinecone.models.assistant.model import AssistantModel as AssistantModel
 from pinecone.models.assistant.options import ContextOptions as ContextOptions
 from pinecone.models.assistant.streaming import AsyncChatCompletionStream as AsyncChatCompletionStream, AsyncChatStream as AsyncChatStream, ChatCompletionStream as ChatCompletionStream, ChatCompletionStreamChunk as ChatCompletionStreamChunk, ChatStream as ChatStream, ChatStreamChunk as ChatStreamChunk, StreamCitationChunk as StreamCitationChunk, StreamContentChunk as StreamContentChunk, StreamMessageEnd as StreamMessageEnd, StreamMessageStart as StreamMessageStart
 from pinecone.models.backups.list import BackupList as BackupList, RestoreJobList as RestoreJobList
-from pinecone.models.backups.model import BackupModel as BackupModel, CreateIndexFromBackupResponse as CreateIndexFromBackupResponse, RestoreJobModel as RestoreJobModel
+from pinecone.models.backups.model import BackupModel as BackupModel, CreateIndexFromBackupRequest as CreateIndexFromBackupRequest, CreateIndexFromBackupResponse as CreateIndexFromBackupResponse, RestoreJobModel as RestoreJobModel
 from pinecone.models.collections.list import CollectionList as CollectionList
 from pinecone.models.collections.model import CollectionModel as CollectionModel
 from pinecone.models.documents.document import Document as Document, DocumentRecord as DocumentRecord, UpdateDocumentRecord as UpdateDocumentRecord
@@ -102,6 +102,7 @@ __all__ = [
     "ConflictError",
     "ContextOptions",
     "ContextResponse",
+    "CreateIndexFromBackupRequest",
     "CreateIndexFromBackupResponse",
     "CreateIndexRequest",
     "DeleteDocumentsRequest",

@@ -11,6 +11,7 @@ import msgspec
 from pinecone._internal.constants import DEFAULT_BASE_URL
 from pinecone._internal.validation import require_non_empty, require_positive
 from pinecone.errors.exceptions import NotFoundError, PineconeTimeoutError, PineconeValueError
+from pinecone.models.backups.model import BackupModel
 from pinecone.models.pagination import Page, Paginator
 from pinecone.preview._internal.adapters.backups import (
     PreviewDescribeBackupAdapter,
@@ -24,7 +25,6 @@ from pinecone.preview._internal.adapters.indexes import (
 )
 from pinecone.preview._internal.constants import INDEXES_API_VERSION
 from pinecone.preview._internal.validation import validate_tags
-from pinecone.preview.models.backups import PreviewBackupModel, PreviewCreateBackupRequest
 from pinecone.preview.models.indexes import PreviewIndexModel
 from pinecone.preview.models.requests import PreviewConfigureIndexRequest, PreviewCreateIndexRequest
 
@@ -552,7 +552,7 @@ class PreviewIndexes:
         *,
         name: str | None = None,
         description: str | None = None,
-    ) -> PreviewBackupModel:
+    ) -> BackupModel:
         """Create a backup of a preview index.
 
         .. admonition:: Preview
@@ -569,7 +569,7 @@ class PreviewIndexes:
             description: Optional description providing context for the backup.
 
         Returns:
-            :class:`~pinecone.preview.models.backups.PreviewBackupModel`
+            :class:`~pinecone.models.backups.model.BackupModel`
             describing the newly created backup. The ``status`` field will
             typically be ``"Initializing"`` immediately after creation. Poll
             ``describe_backup()`` until ``status == "Ready"`` before using the
@@ -599,11 +599,12 @@ class PreviewIndexes:
         """
         require_non_empty("index_name", index_name)
 
-        if name is not None or description is not None:
-            req = PreviewCreateBackupRequest(name=name, description=description)
-            content = msgspec.json.encode(req)
-        else:
-            content = b"{}"
+        body: dict[str, str] = {}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        content = msgspec.json.encode(body)
 
         logger.info("Creating backup for preview index index_name=%r", index_name)
         response = self._http.post(
@@ -619,7 +620,7 @@ class PreviewIndexes:
         *,
         limit: int | None = None,
         pagination_token: str | None = None,
-    ) -> Paginator[PreviewBackupModel]:
+    ) -> Paginator[BackupModel]:
         """List backups for a preview index.
 
         .. admonition:: Preview
@@ -639,7 +640,7 @@ class PreviewIndexes:
 
         Returns:
             :class:`~pinecone.models.pagination.Paginator` over
-            :class:`~pinecone.preview.models.backups.PreviewBackupModel`
+            :class:`~pinecone.models.backups.model.BackupModel`
             instances.
 
         Raises:
@@ -665,7 +666,7 @@ class PreviewIndexes:
         if limit is not None:
             require_positive("limit", limit)
 
-        def fetch_page(token: str | None) -> Page[PreviewBackupModel]:
+        def fetch_page(token: str | None) -> Page[BackupModel]:
             params: dict[str, str | int] = {}
             if token:
                 params["paginationToken"] = token
@@ -677,7 +678,7 @@ class PreviewIndexes:
 
         return Paginator(fetch_page=fetch_page, initial_token=pagination_token, limit=limit)
 
-    def describe_backup(self, backup_id: str) -> PreviewBackupModel:
+    def describe_backup(self, backup_id: str) -> BackupModel:
         """Describe a backup by its ID.
 
         .. admonition:: Preview
@@ -692,7 +693,7 @@ class PreviewIndexes:
             backup_id: The unique identifier of the backup to describe.
 
         Returns:
-            :class:`~pinecone.preview.models.backups.PreviewBackupModel`
+            :class:`~pinecone.models.backups.model.BackupModel`
             with the current state of the backup.
 
         Raises:

@@ -13,7 +13,7 @@ from pinecone.errors.exceptions import ResponseParsingError
 from pinecone.models.indexes.index import IndexModel
 from pinecone.models.indexes.list import IndexList
 from pinecone.models.indexes.requests import ConfigureIndexRequest, CreateIndexRequest
-from pinecone.models.indexes.schema import UNTYPED_FIELD_TAG
+from pinecone.models.indexes.schema import _tag_untyped_schema_fields
 
 _logger = logging.getLogger(__name__)
 
@@ -34,24 +34,6 @@ class _RawIndexListEnvelope(msgspec.Struct, kw_only=True):
     succeeds even when individual items fail to decode."""
 
     indexes: list[msgspec.Raw] = []
-
-
-def _tag_untyped_schema_fields(obj: Any) -> Any:
-    """Inject the internal discriminator into schema fields lacking a ``type`` key.
-
-    Legacy metadata fields arrive with no ``type`` discriminator; msgspec
-    tagged unions cannot decode them without one.
-    """
-    if not isinstance(obj, dict):
-        return obj
-    schema = obj.get("schema")
-    if isinstance(schema, dict):
-        fields = schema.get("fields")
-        if isinstance(fields, dict):
-            for field in fields.values():
-                if isinstance(field, dict) and "type" not in field:
-                    field["type"] = UNTYPED_FIELD_TAG
-    return obj
 
 
 def _enrich_parse_error(exc: ResponseParsingError) -> ResponseParsingError:

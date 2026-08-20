@@ -62,11 +62,16 @@ if page.pagination and page.pagination.next:
 backup = pc.backups.describe(backup_id="bk-abc123")
 print(backup.source_index_name)
 print(backup.status)
-print(backup.dimension)
-print(backup.metric)
+print(backup.dense_dimension)
+print(backup.schema.fields["embedding"].metric)
 print(backup.record_count)
 print(backup.size_bytes)
+print(backup.source_index_deleted_at)
 ```
+
+`schema` is an {class}`~pinecone.models.indexes.schema.IndexSchema`, the same
+typed model returned by `pc.indexes.describe(...).schema`, and is `None` when
+the server returns no schema for the backup.
 
 
 ## Restore a backup to a new index

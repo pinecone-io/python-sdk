@@ -25,6 +25,7 @@ Pinecone Python SDK
    :caption: Migration & FAQ
 
    migration/v10-2026-07-index-model
+   migration/v10-2026-07-backup-models
    migration/v10-2026-07-assistant-models
    migration/v10-2026-07-assistant-chat
    migration/v10-2026-07-vector-models

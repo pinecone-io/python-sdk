@@ -11,10 +11,10 @@ import respx
 
 from pinecone._internal.config import PineconeConfig
 from pinecone.errors.exceptions import PineconeValueError
+from pinecone.models.backups.model import BackupModel
 from pinecone.models.pagination import AsyncPaginator
 from pinecone.preview._internal.constants import INDEXES_API_VERSION
 from pinecone.preview.async_indexes import AsyncPreviewIndexes
-from pinecone.preview.models.backups import PreviewBackupModel
 
 BASE_URL = "https://api.test.pinecone.io"
 
@@ -115,7 +115,7 @@ async def test_async_create_backup_returns_preview_backup_model(
         return_value=httpx.Response(200, json=_BACKUP_1)
     )
     result = await indexes.create_backup("foo")
-    assert isinstance(result, PreviewBackupModel)
+    assert isinstance(result, BackupModel)
     assert result.backup_id == "bkp-001"
     assert result.name == "nightly"
 
@@ -156,7 +156,7 @@ async def test_async_list_backups_iterates_items(
     paginator = indexes.list_backups("foo")
     items = [backup async for backup in paginator]
     assert len(items) == 3
-    assert all(isinstance(b, PreviewBackupModel) for b in items)
+    assert all(isinstance(b, BackupModel) for b in items)
 
 
 @respx.mock

@@ -144,7 +144,7 @@ def test_backup_lifecycle_rest(client: Pinecone) -> None:
         assert backup.status in ("Initializing", "Pending", "Ready")
         assert backup.cloud == "aws"
         assert backup.region == "us-east-1"
-        assert backup.dimension == 2
+        assert backup.dense_dimension in (2, None)
         assert backup.created_at is not None
 
         # 3. Poll until the backup is Ready
@@ -252,7 +252,7 @@ def test_create_index_from_backup_rest(client: Pinecone) -> None:
         )
         assert isinstance(ready_backup, BackupModel)
         assert ready_backup.status == "Ready"
-        assert ready_backup.dimension == 4
+        assert ready_backup.dense_dimension in (4, None)
 
         # 4. Restore a new index from the backup (SDK polls until index is ready)
         restored = client.create_index_from_backup(

@@ -54,7 +54,6 @@ def test_preview_models_exports_score_by_queries() -> None:
 
 def test_preview_models_exports_response_models() -> None:
     from pinecone.preview.models import (
-        PreviewBackupModel,
         PreviewDocument,
         PreviewDocumentFetchResponse,
         PreviewDocumentSearchResponse,
@@ -65,7 +64,6 @@ def test_preview_models_exports_response_models() -> None:
     )
 
     assert inspect.isclass(PreviewIndexModel)
-    assert inspect.isclass(PreviewBackupModel)
     assert inspect.isclass(PreviewSchema)
     assert inspect.isclass(PreviewDocument)
     assert inspect.isclass(PreviewDocumentSearchResponse)
@@ -80,7 +78,6 @@ def test_preview_symbols_not_in_pinecone_top_level() -> None:
     preview_symbols = {
         "AsyncPreview",
         "Preview",
-        "PreviewBackupModel",
         "PreviewDenseVectorQuery",
         "PreviewDocument",
         "PreviewDocumentFetchResponse",

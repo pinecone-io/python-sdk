@@ -332,6 +332,10 @@ Backup and Restore Models
    :members:
    :show-inheritance:
 
+.. autoclass:: pinecone.models.backups.model.CreateIndexFromBackupRequest
+   :members:
+   :show-inheritance:
+
 .. autoclass:: pinecone.models.backups.model.CreateIndexFromBackupResponse
    :members:
    :show-inheritance:

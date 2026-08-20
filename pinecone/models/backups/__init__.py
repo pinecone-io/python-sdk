@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from pinecone.models.backups.list import BackupList, RestoreJobList  # noqa: F401
     from pinecone.models.backups.model import (  # noqa: F401
         BackupModel,
+        CreateIndexFromBackupRequest,
         CreateIndexFromBackupResponse,
         RestoreJobModel,
     )
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
 _LAZY_IMPORTS: dict[str, str] = {
     "BackupModel": "pinecone.models.backups.model",
     "RestoreJobModel": "pinecone.models.backups.model",
+    "CreateIndexFromBackupRequest": "pinecone.models.backups.model",
     "CreateIndexFromBackupResponse": "pinecone.models.backups.model",
     "BackupList": "pinecone.models.backups.list",
     "RestoreJobList": "pinecone.models.backups.list",

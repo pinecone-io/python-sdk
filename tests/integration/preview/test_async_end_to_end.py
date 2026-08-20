@@ -591,11 +591,11 @@ async def test_async_create_and_list_backup(
     """Async parity for backup operations — create_backup and list_backups work via async path.
 
     Async counterpart for test_backups.py sync tests. Verifies:
-    - Async create_backup() returns PreviewBackupModel with all required fields.
+    - Async create_backup() returns BackupModel with all required fields.
     - source_index_name matches the index that was backed up.
     - Async list_backups() iteration yields the created backup by backup_id.
     """
-    from pinecone.preview.models import PreviewBackupModel
+    from pinecone.models.backups.model import BackupModel
 
     schema = (
         SchemaBuilder().add_dense_vector_field("embedding", dimension=4, metric="cosine").build()
@@ -620,7 +620,7 @@ async def test_async_create_and_list_backup(
         description="Async backup parity test",
     )
 
-    assert isinstance(backup, PreviewBackupModel)
+    assert isinstance(backup, BackupModel)
     assert isinstance(backup.backup_id, str) and len(backup.backup_id) > 0
     assert backup.source_index_name == preview_index_name
     assert isinstance(backup.source_index_id, str) and len(backup.source_index_id) > 0
@@ -635,7 +635,7 @@ async def test_async_create_and_list_backup(
     assert backup.backup_id in backup_ids
 
     async for item in async_client.preview.indexes.list_backups(preview_index_name):
-        assert isinstance(item, PreviewBackupModel)
+        assert isinstance(item, BackupModel)
         assert isinstance(item.backup_id, str) and len(item.backup_id) > 0
         assert isinstance(item.status, str)
         assert isinstance(item.created_at, str)
@@ -1565,7 +1565,7 @@ async def test_async_describe_returns_typed_schema_fields(
 
 
 # ---------------------------------------------------------------------------
-# test_async_backup_optional_fields_are_correctly_typed — §2 PreviewBackupModel async parity
+# test_async_backup_optional_fields_are_correctly_typed — §2 BackupModel async parity
 # ---------------------------------------------------------------------------
 
 
@@ -1578,11 +1578,12 @@ async def test_async_backup_optional_fields_are_correctly_typed(
     """Async parity for test_create_backup_optional_fields_are_correctly_typed (PVT-023).
 
     Creates a 4-dim dense vector preview index, takes a backup, and verifies that
-    all optional PreviewBackupModel fields (dimension, schema, tags, record_count,
-    namespace_count, size_bytes) are either the expected Python type or None.
-    No existing async test verifies these optional fields.
+    all optional BackupModel fields (schema, source_index_deleted_at, tags,
+    record_count, namespace_count, size_bytes) are either the expected Python
+    type or None. No existing async test verifies these optional fields.
     """
-    from pinecone.preview.models import PreviewBackupModel
+    from pinecone.models.backups.model import BackupModel
+    from pinecone.models.indexes.schema import IndexSchema
 
     schema = (
         SchemaBuilder().add_dense_vector_field("embedding", dimension=4, metric="cosine").build()
@@ -1606,20 +1607,18 @@ async def test_async_backup_optional_fields_are_correctly_typed(
         name="async-optional-fields-test",
     )
 
-    assert isinstance(backup, PreviewBackupModel)
+    assert isinstance(backup, BackupModel)
 
-    # dimension — int or None; for a 4-dim index must be 4 when populated
-    assert backup.dimension is None or isinstance(backup.dimension, int), (
-        f"backup.dimension must be int or None, got {type(backup.dimension)}"
+    assert backup.dense_dimension is None or backup.dense_dimension == 4, (
+        f"expected dense_dimension=4 for dense index, got {backup.dense_dimension}"
     )
-    if backup.dimension is not None:
-        assert backup.dimension == 4, (
-            f"expected dimension=4 for dense index, got {backup.dimension}"
-        )
 
-    # schema — dict or None; contents are server-defined, only type is verified
-    assert backup.schema is None or isinstance(backup.schema, dict), (
-        f"backup.schema must be dict or None, got {type(backup.schema)}"
+    assert backup.schema is None or isinstance(backup.schema, IndexSchema), (
+        f"backup.schema must be IndexSchema or None, got {type(backup.schema)}"
+    )
+
+    assert backup.source_index_deleted_at is None, (
+        "source index is active, so source_index_deleted_at must be None"
     )
 
     # tags — dict[str, str] or None; API returns {} when no tags are passed
