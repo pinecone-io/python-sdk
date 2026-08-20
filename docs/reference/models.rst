@@ -340,6 +340,33 @@ Backup and Restore Models
    :members:
    :show-inheritance:
 
+Backup Schedule Models
+-----------------------
+
+.. autoclass:: pinecone.models.backups.schedules.BackupScheduleModel
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.backups.list.BackupScheduleList
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.backups.schedules.BackupScheduleHistoryItem
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.backups.list.BackupScheduleHistoryList
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.backups.schedules.CreateBackupScheduleRequest
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.backups.schedules.UpdateBackupScheduleRequest
+   :members:
+   :show-inheritance:
+
 Namespace Models
 ----------------
 

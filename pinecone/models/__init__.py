@@ -63,12 +63,23 @@ if TYPE_CHECKING:
         StreamMessageEnd,
         StreamMessageStart,
     )
-    from pinecone.models.backups.list import BackupList, RestoreJobList  # noqa: F401
+    from pinecone.models.backups.list import (  # noqa: F401
+        BackupList,
+        BackupScheduleHistoryList,
+        BackupScheduleList,
+        RestoreJobList,
+    )
     from pinecone.models.backups.model import (  # noqa: F401
         BackupModel,
         CreateIndexFromBackupRequest,
         CreateIndexFromBackupResponse,
         RestoreJobModel,
+    )
+    from pinecone.models.backups.schedules import (  # noqa: F401
+        BackupScheduleHistoryItem,
+        BackupScheduleModel,
+        CreateBackupScheduleRequest,
+        UpdateBackupScheduleRequest,
     )
     from pinecone.models.batch import BatchError, BatchResult  # noqa: F401
     from pinecone.models.collections.list import CollectionList  # noqa: F401
@@ -272,6 +283,13 @@ _LAZY_IMPORTS: dict[str, str] = {
     "CreateIndexFromBackupRequest": "pinecone.models.backups.model",
     "CreateIndexFromBackupResponse": "pinecone.models.backups.model",
     "RestoreJobModel": "pinecone.models.backups.model",
+    # Backup schedules
+    "BackupScheduleHistoryList": "pinecone.models.backups.list",
+    "BackupScheduleList": "pinecone.models.backups.list",
+    "BackupScheduleHistoryItem": "pinecone.models.backups.schedules",
+    "BackupScheduleModel": "pinecone.models.backups.schedules",
+    "CreateBackupScheduleRequest": "pinecone.models.backups.schedules",
+    "UpdateBackupScheduleRequest": "pinecone.models.backups.schedules",
     # Collections
     "CollectionList": "pinecone.models.collections.list",
     "CollectionModel": "pinecone.models.collections.model",
