@@ -24,6 +24,7 @@ from pinecone._internal.data_plane_helpers import (
     _validate_host,
     _vector_to_dict,
 )
+from pinecone._internal.dataframe import _resolve_on_error, extract_records
 from pinecone._internal.keyword_only import keyword_only_methods
 from pinecone._internal.validation import require_in_range, require_positive
 from pinecone._internal.vector_factory import VectorFactory
@@ -434,30 +435,115 @@ class AsyncIndex:
         show_progress: bool = True,
         timeout: float | None = None,
         *,
+        max_concurrency: int | None = None,
+        total_timeout: float | None = None,
         on_error: Literal["raise", "collect"] | None = None,
     ) -> UpsertResponse:
-        """Not supported for async clients.
+        """Upsert vectors from a pandas DataFrame.
 
-        This method is a known limitation of the async client. Instead, batch your data
-        and call upsert() in a loop. For very large datasets, use start_import() for
-        bulk loading from cloud storage.
+        Convenience method that accepts a DataFrame with columns ``id``,
+        ``values``, and optionally ``sparse_values`` and ``metadata``,
+        batches the rows, and upserts them via :meth:`upsert`.
 
-        The *timeout* and *on_error* parameters exist only for signature parity
-        with the sync and gRPC clients; they are unused because this method
-        always raises.
+        Args:
+            df: A ``pandas.DataFrame`` with at least ``id`` and ``values``
+                columns. ``sparse_values`` and ``metadata`` columns are
+                included when present and non-None.
+            namespace: Target namespace. Defaults to the default namespace.
+            batch_size: Number of rows per upsert batch. Defaults to 500.
+            show_progress: If ``True`` and ``tqdm`` is installed, display a
+                progress bar. The bar advances as batches *complete*. If
+                ``tqdm`` is not installed, silently falls back to no
+                progress bar.
+            timeout: Client-side request timeout in seconds applied to *each
+                batch's* upsert request — not to the DataFrame as a whole.
+                ``None`` (default) uses the client-level default. Raise it to
+                accommodate large or slow batches.
+            max_concurrency: Number of batches in flight at once, range
+                ``[1, 64]``. ``None`` (default) uses ``8`` — flat and
+                identical across every transport. The host's adaptive limit
+                still applies underneath.
+            total_timeout: Deadline in seconds for the **whole ingest**, as
+                opposed to *timeout*, which bounds a single attempt of a
+                single batch. On expiry no further batches are submitted;
+                batches already in flight are awaited and never cancelled;
+                unsent batches are reported in ``failed_items``. ``None``
+                (default) means no deadline.
+            on_error: What to do when some batches fail. ``"collect"`` (the
+                default, matching the sync/REST transport) returns an
+                :class:`UpsertResponse` carrying ``failed_item_count``,
+                ``errors`` and ``failed_items``. ``"raise"`` re-raises the
+                lowest-indexed batch failure once every batch has settled,
+                with the partial result attached to the exception's
+                ``response`` attribute.
+
+        Returns:
+            :class:`UpsertResponse` with the total count of vectors upserted
+            across all batches.
 
         Raises:
-            :exc:`NotImplementedError`: Always.
+            :exc:`RuntimeError`: If ``pandas`` is not installed. It is not an SDK
+                dependency; install it yourself with ``pip install pandas``.
+            :exc:`PineconeValueError`: If *df* is not a ``pandas.DataFrame``.
             :exc:`PineconeValueError`: If *batch_size* is not a positive integer.
-        """
-        if not isinstance(batch_size, int) or batch_size <= 0:
-            raise PineconeValueError("batch_size must be a positive integer")
+            :exc:`PineconeValueError`: If *max_concurrency* is outside [1, 64].
+            :exc:`PineconeTimeoutError`: If a batch exceeds *timeout*.
 
-        raise NotImplementedError(
-            "upsert_from_dataframe is not supported for async clients. "
-            "Instead, batch your data and call upsert() in a loop. "
-            "For very large datasets, use start_import() for bulk loading from cloud storage."
+        Examples:
+            .. code-block:: python
+
+                import pandas as pd
+                from pinecone import PineconeAsyncio
+
+                async with PineconeAsyncio(api_key="your-api-key") as pc:
+                    index = pc.index("article-search")
+                    df = pd.DataFrame([
+                        {"id": "article-101", "values": [0.012, -0.087, 0.153]},
+                        {"id": "article-102", "values": [0.045, 0.021, -0.064]},
+                    ])
+                    response = await index.upsert_from_dataframe(df)
+                    response.upserted_count  # 2
+
+        .. seealso::
+           - :meth:`upsert` — for upserting vectors directly (accepts optional
+             ``batch_size``; no DataFrame dependency).
+           - :meth:`start_import` — for bulk loading millions of vectors
+             from cloud storage (S3, GCS).
+        """
+        try:
+            import pandas as pd
+        except ImportError:
+            raise RuntimeError(
+                "pandas is required for upsert_from_dataframe, and is not a "
+                "dependency of this SDK — it is only needed by this one method. "
+                "Install it in your own environment: pip install pandas"
+            ) from None
+
+        if not isinstance(df, pd.DataFrame):
+            raise PineconeValueError("df must be a pandas DataFrame")
+
+        records: list[dict[str, Any]] = extract_records(df)
+
+        resolved_on_error = _resolve_on_error(on_error)
+
+        response = await self.upsert(
+            vectors=records,
+            namespace=namespace or "",
+            batch_size=batch_size,
+            show_progress=show_progress,
+            max_concurrency=(
+                DEFAULT_MAX_CONCURRENCY if max_concurrency is None else max_concurrency
+            ),
+            timeout=timeout,
+            total_timeout=total_timeout,
         )
+
+        if resolved_on_error == "raise" and response.errors:
+            error = min(response.errors, key=lambda err: err.batch_index).error
+            error.response = response  # type: ignore[attr-defined]
+            raise error
+
+        return response
 
     async def query(
         self,

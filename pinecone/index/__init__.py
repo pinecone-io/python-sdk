@@ -368,6 +368,8 @@ class Index:
         show_progress: bool = True,
         timeout: float | None = None,
         *,
+        max_concurrency: int | None = None,
+        total_timeout: float | None = None,
         on_error: Literal["raise", "collect"] | None = None,
     ) -> UpsertResponse:
         """Upsert vectors from a pandas DataFrame.
@@ -389,6 +391,16 @@ class Index:
                 batch's* upsert request — not to the DataFrame as a whole.
                 ``None`` (default) uses the client-level default. Raise it to
                 accommodate large or slow batches.
+            max_concurrency: Number of batches in flight at once, range
+                ``[1, 64]``. ``None`` (default) uses ``8`` — flat and
+                identical across every transport. The host's adaptive limit
+                still applies underneath.
+            total_timeout: Deadline in seconds for the **whole ingest**, as
+                opposed to *timeout*, which bounds a single attempt of a
+                single batch. On expiry no further batches are submitted;
+                batches already in flight are awaited and never cancelled;
+                unsent batches are reported in ``failed_items``. ``None``
+                (default) means no deadline.
             on_error: What to do when some batches fail. ``"collect"`` (the
                 default, and this transport's behavior since v9.0.0) returns an
                 :class:`UpsertResponse` carrying ``failed_item_count``, ``errors``
@@ -472,7 +484,11 @@ class Index:
             namespace=ns,
             batch_size=batch_size,
             show_progress=show_progress,
+            max_concurrency=(
+                DEFAULT_MAX_CONCURRENCY if max_concurrency is None else max_concurrency
+            ),
             timeout=timeout,
+            total_timeout=total_timeout,
         )
 
         if resolved_on_error == "raise" and response.errors:
