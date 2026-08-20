@@ -10,7 +10,7 @@ from pinecone._internal.config import PineconeConfig
 from pinecone._internal.constants import ADMIN_API_VERSION
 from pinecone._internal.http_client import HTTPClient
 from pinecone.admin.projects import Projects
-from pinecone.errors.exceptions import ApiError, PineconeError
+from pinecone.errors.exceptions import ApiError, ForbiddenError, PineconeError
 
 BASE_URL = "https://api.test.pinecone.io"
 
@@ -180,6 +180,68 @@ def test_delete_with_cleanup_original_error_preserved_when_key_deletion_also_fai
             projects.delete_with_cleanup(project_id="proj-123", max_attempts=1)
 
         # Project NOT deleted since cleanup failed
+        mock_delete.assert_not_called()
+
+
+def test_delete_with_cleanup_quota_full_raises_actionable_error(
+    projects: Projects, mock_admin: MagicMock
+) -> None:
+    """A quota-full project gets a 403 naming the quota, and nothing is touched."""
+    mock_admin.api_keys.create.side_effect = ForbiddenError(
+        "You have reached the maximum of 5 API keys allowed for this project.",
+        status_code=403,
+        body={"error": {"code": "PERMISSION_DENIED"}},
+        error_code="PERMISSION_DENIED",
+        request_id="req-quota-1",
+    )
+
+    with (
+        patch.object(projects, "_cleanup_project_resources") as mock_cleanup,
+        patch.object(projects, "delete") as mock_delete,
+        patch("pinecone.admin.projects.time.sleep") as mock_sleep,
+    ):
+        with pytest.raises(ForbiddenError) as excinfo:
+            projects.delete_with_cleanup(project_id="proj-123")
+
+        mock_cleanup.assert_not_called()
+        mock_admin.api_keys.delete.assert_not_called()
+        mock_delete.assert_not_called()
+        mock_sleep.assert_not_called()
+
+    err = excinfo.value
+    message = err.message
+
+    assert "delete_with_cleanup" in message
+    assert "project_id='proj-123'" in message
+    assert "API-key quota" in message
+    assert "maximum of 5 API keys" in message
+    assert "Nothing was deleted" in message
+    assert "admin.api_keys.list(project_id='proj-123')" in message
+    assert "admin.api_keys.delete(api_key_id=...)" in message
+
+    assert err.status_code == 403
+    assert err.error_code == "PERMISSION_DENIED"
+    assert err.request_id == "req-quota-1"
+    assert err.body == {"error": {"code": "PERMISSION_DENIED"}}
+    assert isinstance(err.__cause__, ForbiddenError)
+
+
+def test_delete_with_cleanup_non_403_key_create_failure_propagates_unchanged(
+    projects: Projects, mock_admin: MagicMock
+) -> None:
+    """Only 403s get the quota treatment; other key-create failures pass through."""
+    original = ApiError("boom", status_code=500)
+    mock_admin.api_keys.create.side_effect = original
+
+    with (
+        patch.object(projects, "_cleanup_project_resources") as mock_cleanup,
+        patch.object(projects, "delete") as mock_delete,
+    ):
+        with pytest.raises(ApiError) as excinfo:
+            projects.delete_with_cleanup(project_id="proj-123")
+
+        assert excinfo.value is original
+        mock_cleanup.assert_not_called()
         mock_delete.assert_not_called()
 
 

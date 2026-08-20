@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from pinecone._internal.adapters.admin_adapter import AdminAdapter
 from pinecone._internal.validation import require_non_empty
 from pinecone.errors.exceptions import (
+    ForbiddenError,
     NotFoundError,
     PineconeError,
     PineconeValueError,
@@ -338,6 +339,11 @@ class Projects:
         The cleanup is retried up to *max_attempts* times with *retry_delay*
         seconds between attempts to handle transient failures.
 
+        Creating the temporary key is the first thing this method does, so a
+        project whose API-key quota is already full cannot be cleaned up: the
+        403 is re-raised with the quota named as the blocker and nothing is
+        deleted. Free a key slot and call again.
+
         Args:
             project_id: The identifier of the project to delete.
             max_attempts: Maximum number of cleanup attempts. Defaults to 5.
@@ -346,6 +352,9 @@ class Projects:
         Raises:
             :exc:`PineconeError`: If no admin back-reference is available.
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *project_id* is empty.
+            :exc:`~pinecone.errors.exceptions.ForbiddenError`: If the temporary API key
+                cannot be created — typically because the project's API-key quota is
+                exhausted. No resources are deleted in this case.
             :exc:`ApiError`: If resource cleanup or project deletion fails after all retries.
 
         Examples:
@@ -365,11 +374,31 @@ class Projects:
 
         logger.info("Deleting project %r with cleanup (max_attempts=%d)", project_id, max_attempts)
 
-        temp_key = self._admin.api_keys.create(
-            project_id=project_id,
-            name="_cleanup_temp_key",
-            roles=[APIKeyRole.PROJECT_EDITOR],
-        )
+        try:
+            temp_key = self._admin.api_keys.create(
+                project_id=project_id,
+                name="_cleanup_temp_key",
+                roles=[APIKeyRole.PROJECT_EDITOR],
+            )
+        except ForbiddenError as exc:
+            raise ForbiddenError(
+                "delete_with_cleanup could not create the temporary API key it needs to "
+                f"clean up project_id={project_id!r} (server said: {exc.message}). The "
+                "usual blocker is the per-project API-key quota: a project already at its "
+                "limit has no free slot for the temporary key. Nothing was deleted — the "
+                "project and every resource in it are untouched. To proceed, free a slot "
+                f"with admin.api_keys.list(project_id={project_id!r}) followed by "
+                "admin.api_keys.delete(api_key_id=...), then call delete_with_cleanup "
+                "again. If the quota is not the blocker, the credentials in use lack "
+                "permission to create API keys in this project.",
+                status_code=exc.status_code,
+                body=exc.body,
+                reason=exc.reason,
+                headers=exc.headers,
+                error_code=exc.error_code,
+                request_id=exc.request_id,
+            ) from exc
+
         try:
             last_error: Exception | None = None
             for attempt in range(1, max_attempts + 1):
