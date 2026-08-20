@@ -122,14 +122,24 @@ def test_fetch_request_by_ids_wire_shape() -> None:
 
 
 def test_fetch_request_by_filter_with_pagination() -> None:
-    request = FetchDocumentsRequest(
-        filter={"category": {"$eq": "news"}}, pagination_token="tok", limit=50
-    )
+    request = FetchDocumentsRequest(filter={"category": {"$eq": "news"}}, pagination_token="tok")
     assert orjson.loads(msgspec.json.encode(request)) == {
         "filter": {"category": {"$eq": "news"}},
         "pagination_token": "tok",
-        "limit": 50,
     }
+
+
+def test_fetch_request_rejects_limit() -> None:
+    with pytest.raises(TypeError, match="Unexpected keyword argument 'limit'"):
+        FetchDocumentsRequest(filter={"category": {"$eq": "news"}}, limit=50)  # type: ignore[call-arg]
+
+
+def test_fetch_request_never_serializes_limit() -> None:
+    assert "limit" not in FetchDocumentsRequest.__struct_fields__
+    by_filter = FetchDocumentsRequest(filter={"category": {"$eq": "news"}}, pagination_token="tok")
+    by_ids = FetchDocumentsRequest(ids=["doc-1"], include_fields=["title"])
+    for request in (by_filter, by_ids):
+        assert "limit" not in orjson.loads(msgspec.json.encode(request))
 
 
 def test_fetch_request_rejects_ids_with_filter() -> None:

@@ -147,19 +147,15 @@ class FetchDocumentsRequest(Struct, kw_only=True, omit_defaults=True):
         include_fields: The document fields to include in the response, or
             ``None`` to return all fields.
         pagination_token: Token from a previous fetch response to retrieve
-            the next page of matching documents. Only valid together with
-            ``filter``.
-        limit: Page size for a filtered fetch; ignored when fetching by
-            ``ids``. Accepted by the backend although the published
-            2026-07 OpenAPI spec omits it and describes the page size as
-            fixed.
+            the next page of matching documents. A page holds up to 10000
+            documents; the page size is fixed and cannot be set per
+            request. Only valid together with ``filter``.
     """
 
     ids: list[str] | None = None
     filter: dict[str, Any] | None = None
     include_fields: list[str] | None = None
     pagination_token: str | None = None
-    limit: int | None = None
 
     def __post_init__(self) -> None:
         if self.pagination_token is not None and self.filter is None:
