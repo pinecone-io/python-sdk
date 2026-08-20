@@ -28,6 +28,7 @@ from pinecone.errors.exceptions import (
     NotFoundError,
     PineconeConnectionError,
     PineconeTimeoutError,
+    PineconeTypeError,
     RateLimitError,
     ServiceError,
     UnauthorizedError,
@@ -60,9 +61,130 @@ def _default_pool_size() -> int:
     return max(5 * (os.cpu_count() or 1), 20)
 
 
+# Asymmetric on purpose: orjson accepts a signed 64-bit minimum through an
+# unsigned 64-bit maximum, and rejects either side of that.
+_JSON_INT_MIN = -(2**63)
+_JSON_INT_MAX = 2**64 - 1
+
+# An out-of-range integer can carry thousands of digits; a diagnostic does not
+# need all of them.
+_VALUE_REPR_MAX_LEN = 60
+
+# orjson gives up around 255 levels of nesting, so a body deeper than this
+# failed for its depth, not for a value the walk could name.
+_ENCODE_WALK_MAX_DEPTH = 256
+
+
+def _clip_repr(value: Any) -> str:
+    try:
+        text = repr(value)
+    except Exception:
+        return "<unrenderable>"
+    if len(text) > _VALUE_REPR_MAX_LEN:
+        return text[:_VALUE_REPR_MAX_LEN] + "..."
+    return text
+
+
+def _describe_int(value: int) -> str:
+    """Render *value* for a diagnostic without tripping over its own size.
+
+    ``str()`` on an integer wider than ``sys.get_int_max_str_digits()`` raises,
+    so an absurd value would otherwise turn its own error message into a second
+    error. ``bit_length`` has no such limit.
+    """
+    try:
+        text = str(value)
+    except ValueError:
+        return f"<{value.bit_length()}-bit integer>"
+    if len(text) > _VALUE_REPR_MAX_LEN:
+        return f"{text[:_VALUE_REPR_MAX_LEN]}... ({len(text)} digits)"
+    return text
+
+
+def _locate_unencodable(body: Any) -> tuple[str, str] | None:
+    """Find the value in *body* that orjson refused, as ``(path, reason)``.
+
+    Depth-first in document order, so the reported path is the first offender a
+    reader would find by eye. Iterative rather than recursive: a body deep
+    enough to trip orjson's nesting limit would also overflow a recursive walk,
+    turning one diagnostic into a ``RecursionError``. Returns ``None`` when the
+    cause cannot be pinned to a single value (nesting depth, or an orjson
+    rejection this walk does not model).
+
+    Only ever called after ``orjson.dumps`` has already failed, so its cost
+    stays off the success path entirely.
+    """
+    stack: list[tuple[Any, str, int]] = [(body, "", 0)]
+    while stack:
+        value, path, depth = stack.pop()
+        if depth > _ENCODE_WALK_MAX_DEPTH:
+            return None
+        where = path or "<body>"
+        # bool is an int subclass and always encodes, so it must be excluded
+        # before the range check.
+        if value is None or isinstance(value, (bool, str, float)):
+            continue
+        if isinstance(value, int):
+            if not _JSON_INT_MIN <= value <= _JSON_INT_MAX:
+                return where, (
+                    f"integer {_describe_int(value)} is outside the range JSON encoding "
+                    f"supports ({_JSON_INT_MIN} to {_JSON_INT_MAX}). Send it as a "
+                    f"string, or use a value within that range"
+                )
+            continue
+        if isinstance(value, dict):
+            items = list(value.items())
+            for key, _ in items:
+                if not isinstance(key, str):
+                    return where, (
+                        f"dict key {_clip_repr(key)} is not a string. JSON object keys "
+                        f"must be strings"
+                    )
+            for key, item in reversed(items):
+                child = f"{path}.{key}" if path else str(key)
+                stack.append((item, child, depth + 1))
+            continue
+        if isinstance(value, (list, tuple)):
+            stack.extend(
+                (value[index], f"{path}[{index}]", depth + 1)
+                for index in reversed(range(len(value)))
+            )
+            continue
+        return where, (
+            f"value of type {type(value).__name__} is not JSON-serializable. Convert it "
+            f"to a str, int, float, bool, list, dict, or None first"
+        )
+    return None
+
+
+def _encode_error(body: Any, exc: TypeError) -> PineconeTypeError:
+    """Build the Pinecone-typed replacement for an orjson encode ``TypeError``.
+
+    ``PineconeTypeError`` subclasses both ``PineconeError`` and the built-in
+    ``TypeError``, so this swap is strictly additive: callers who were catching
+    the bare ``TypeError`` still catch it, and ``except PineconeError`` now
+    works too.
+    """
+    located = _locate_unencodable(body)
+    if located is None:
+        return PineconeTypeError(f"Request body cannot be JSON-encoded: {exc}")
+    path, reason = located
+    return PineconeTypeError(f"Request body cannot be JSON-encoded: {reason} ({exc})", path)
+
+
 def _encode_json(body: Any) -> bytes:
-    """Serialize *body* to JSON bytes using orjson (2-3x faster than stdlib json)."""
-    return orjson.dumps(body)
+    """Serialize *body* to JSON bytes using orjson (2-3x faster than stdlib json).
+
+    orjson reports an unencodable body as a bare ``TypeError`` that names
+    neither the offending field nor the limit it broke — "Integer exceeds
+    64-bit range" and nothing else. Locate the value and re-raise it as a
+    Pinecone error carrying the path, so the caller learns which document key
+    or metadata field to fix (issue #187).
+    """
+    try:
+        return orjson.dumps(body)
+    except TypeError as exc:
+        raise _encode_error(body, exc) from exc
 
 
 def _prepare_json_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:

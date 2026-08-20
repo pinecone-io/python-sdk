@@ -15,10 +15,11 @@ reuse document lists across calls, so a normalizer that mutated or aliased them
 would corrupt the caller's own data, silently and at a distance. This pins both
 halves: value-equality after the call, and the body matching a pre-call copy.
 
-Integer values are bounded to int64 on purpose. Anything wider makes the
-request-encoding step raise a bare ``orjson.dumps`` ``TypeError`` instead of a
-Pinecone error — a real rough edge these properties found, tracked separately
-rather than papered over here.
+Integer values are bounded to int64 on purpose: these properties are about
+normalization of encodable bodies, and anything wider is rejected before the
+wire by the encoder itself. That rejection — a Pinecone error naming the
+offending field, since issue #187 — is pinned in
+``tests/unit/test_json_encode_properties.py``.
 """
 
 from __future__ import annotations
