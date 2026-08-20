@@ -136,6 +136,7 @@ markers = [
     "smoke: end-to-end smoke tests that hit a real Pinecone backend (see tests/smoke/README.md)",
     "integration: real-API integration tests against a live Pinecone backend",
     "preview_integration: real-API tests against 2026-01.alpha preview endpoints (not CI-gating)",
+    "api_op(op_id): conformance claim for a 2026-07 API operation (see tests/unit/conformance/README.md)",
 ]
 
 [dependency-groups]
@@ -157,4 +158,7 @@ dev = [
     "mypy>=1.20.0",
     "ruff>=0.15.9",
     "hypothesis>=6.0",
+    # scripts/api_coverage.py parses the 2026-07 OAS specs to derive the
+    # conformance denominator (epoch #87 gate).
+    "pyyaml>=6.0",
 ]

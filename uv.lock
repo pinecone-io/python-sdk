@@ -1665,6 +1665,7 @@ dev = [
     { name = "pytest-benchmark" },
     { name = "pytest-xdist" },
     { name = "python-dotenv" },
+    { name = "pyyaml" },
     { name = "respx" },
     { name = "ruff" },
 ]
@@ -1702,6 +1703,7 @@ dev = [
     { name = "pytest-benchmark", specifier = ">=5.0.0" },
     { name = "pytest-xdist", specifier = ">=3.6" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "respx", specifier = ">=0.22.0" },
     { name = "ruff", specifier = ">=0.15.9" },
 ]
