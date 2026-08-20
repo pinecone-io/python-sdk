@@ -466,12 +466,21 @@ class Pinecone:
         backup_id: str,
         deletion_protection: DeletionProtection | str | None = None,
         tags: Mapping[str, str] | None = None,
+        read_capacity: dict[str, Any] | None = None,
         timeout: int | None = None,
     ) -> CreateIndexFromBackupResponse | IndexModel:
         """Create a new index by restoring from a backup.
 
         Sends a POST to ``/backups/{backup_id}/create-index`` and then
         polls until the index is ready (unless *timeout* is ``-1``).
+
+        This is the only supported way to restore a backup:
+        :meth:`Pinecone.create_index` rejects ``source_backup_id=`` with a
+        message pointing here.
+
+        .. versionchanged:: 10.0
+           Added *read_capacity*, so a restore can land straight onto
+           dedicated read nodes instead of defaulting to on-demand capacity.
 
         Args:
             name (str): Name for the new index.
@@ -480,6 +489,14 @@ class Pinecone:
             deletion_protection (DeletionProtection | str | None): ``"enabled"`` or
                 ``"disabled"``. Defaults to ``"disabled"`` server-side when omitted.
             tags (Mapping[str, str] | None): Optional key-value tags for the new index.
+                When omitted, the server copies the backup's own tags.
+            read_capacity (dict[str, Any] | None): Optional read capacity for the
+                restored index — ``{"mode": "OnDemand"}`` or ``{"mode": "Dedicated",
+                "dedicated": {"node_type": ..., "scaling": "Manual",
+                "manual": {"shards": ..., "replicas": ...}}}``. Omitted entirely
+                when ``None``, leaving the server's on-demand default in place.
+                Serverless backups only; the server rejects a dedicated
+                configuration too small for the backup.
             timeout (int | None): Seconds to wait for readiness. ``None`` (default)
                 blocks up to 300 s. ``-1`` returns a :class:`CreateIndexFromBackupResponse`
                 immediately (contains ``restore_job_id`` and ``index_id``) without polling.
@@ -490,11 +507,14 @@ class Pinecone:
             the restored index once it is ready.
 
         Raises:
-            :exc:`PineconeValueError`: If *name* or *backup_id* is empty.
+            :exc:`PineconeValueError`: If *name* or *backup_id* is empty, or
+                *read_capacity* is an empty dict.
             :exc:`PineconeTimeoutError`: If the index is not ready within the timeout.
             :exc:`IndexInitFailedError`: If the index enters ``InitializationFailed`` state.
             :exc:`IndexTerminatedError`: If the index enters ``Terminating`` or ``Disabled`` state.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response — including 404
+                for an unknown backup, 409 when an index of that name exists, and
+                a failed precondition when the backup is not yet complete.
 
         Examples:
             >>> from pinecone import Pinecone
@@ -510,24 +530,49 @@ class Pinecone:
             ...     timeout=-1,
             ... )
             >>> print(result.restore_job_id)  # doctest: +SKIP
+
+            Restore directly onto dedicated read nodes:
+
+            >>> index = pc.create_index_from_backup(  # doctest: +SKIP
+            ...     name="restored-drn-index",
+            ...     backup_id="bk-daily-20240115",
+            ...     read_capacity={
+            ...         "mode": "Dedicated",
+            ...         "dedicated": {
+            ...             "node_type": "t1",
+            ...             "scaling": "Manual",
+            ...             "manual": {"shards": 2, "replicas": 2},
+            ...         },
+            ...     },
+            ... )
         """
         require_non_empty("name", name)
         require_non_empty("backup_id", backup_id)
+        if read_capacity is not None and not read_capacity:
+            raise ValidationError("read_capacity cannot be an empty dict")
 
-        body: dict[str, Any] = {"name": name}
+        dp_val: str | None = None
         if deletion_protection is not None:
             dp_val = (
                 deletion_protection.value
                 if hasattr(deletion_protection, "value")
                 else deletion_protection
             )
-            body["deletion_protection"] = dp_val
-        if tags is not None:
-            body["tags"] = tags
 
         from pinecone._internal.adapters.backups_adapter import BackupsAdapter
+        from pinecone.models.backups.model import CreateIndexFromBackupRequest
 
-        response = self._http.post(f"/backups/{backup_id}/create-index", json=body)
+        request = CreateIndexFromBackupRequest(
+            name=name,
+            tags=dict(tags) if tags is not None else None,
+            deletion_protection=dp_val,
+            read_capacity=read_capacity,
+        )
+        response = self._http.post(
+            f"/backups/{backup_id}/create-index",
+            content=BackupsAdapter.to_create_index_from_backup_request(request),
+            headers={"Content-Type": "application/json"},
+        )
         create_response = BackupsAdapter.to_create_index_from_backup_response(response.content)
 
         if timeout == -1:
@@ -780,6 +825,7 @@ class Pinecone:
         index_name: str | None = None,
         limit: int | None = None,
         pagination_token: str | None = None,
+        include_deleted: bool | None = None,
     ) -> BackupList:
         """Backwards-compatibility shim for :meth:`Pinecone.backups.list`.
 
@@ -792,6 +838,7 @@ class Pinecone:
             index_name=index_name,
             limit=limit,
             pagination_token=pagination_token,
+            include_deleted=include_deleted,
         )
 
     def describe_backup(self, *, backup_id: str) -> BackupModel:

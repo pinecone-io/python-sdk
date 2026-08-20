@@ -29,6 +29,13 @@ backup = pc.backups.create(
 
 The backup transitions through ``Initializing`` → ``Ready`` when complete.
 
+The same operation is available index-first on the indexes namespace, if that
+reads better in an index-centric flow:
+
+```python
+backup = pc.indexes.create_backup("product-search", name="pre-reindex-snapshot")
+```
+
 
 ## List backups
 
@@ -55,6 +62,45 @@ if page.pagination and page.pagination.next:
     next_page = pc.backups.list(limit=5, pagination_token=page.pagination.next)
 ```
 
+`pagination` is `None` on the final page.
+
+`pc.indexes.list_backups` is the index-scoped equivalent, returning a
+{class}`~pinecone.models.pagination.Paginator` that walks the pages for you:
+
+```python
+for backup in pc.indexes.list_backups("product-search"):
+    print(backup.backup_id, backup.status)
+```
+
+
+### Backups of a deleted index
+
+A backup outlives its source index, so an index-scoped listing has to say what
+it means by the index name. **By default it means the active index.** If every
+index that used the name has been deleted, the API answers **404 — not an empty
+list.**
+
+Pass `include_deleted=True` to widen the listing to every index that has ever
+used the name:
+
+```python
+orphaned = pc.backups.list(index_name="product-search", include_deleted=True)
+
+for backup in orphaned:
+    if backup.source_index_deleted_at:
+        print(backup.backup_id, "orphaned at", backup.source_index_deleted_at)
+```
+
+So a 404 from `pc.backups.list(index_name=...)` is not proof the name was never
+used — retry with `include_deleted=True` before concluding that. A 404 *with*
+`include_deleted=True` does mean the name has never existed in this project.
+
+`include_deleted` applies only to index-scoped listings. The project-wide
+`pc.backups.list()` already returns backups whose source index is gone, and
+passing `include_deleted` there raises `PineconeValueError` rather than being
+silently ignored. Omitting the argument leaves the parameter off the request
+entirely, so the server's default applies.
+
 
 ## Describe a backup
 
@@ -72,6 +118,9 @@ print(backup.source_index_deleted_at)
 `schema` is an {class}`~pinecone.models.indexes.schema.IndexSchema`, the same
 typed model returned by `pc.indexes.describe(...).schema`, and is `None` when
 the server returns no schema for the backup.
+
+`pc.indexes.describe_backup("bk-abc123")` is the same call under the indexes
+namespace.
 
 
 ## Restore a backup to a new index
@@ -114,6 +163,32 @@ index = pc.create_index_from_backup(
 )
 ```
 
+A restore defaults to on-demand read capacity. Pass `read_capacity` to land the
+restored index straight onto dedicated read nodes instead, skipping a
+`configure` round trip after the restore:
+
+```python
+index = pc.create_index_from_backup(
+    name="product-search-restored",
+    backup_id="bk-abc123",
+    read_capacity={
+        "mode": "Dedicated",
+        "dedicated": {
+            "node_type": "t1",
+            "scaling": "Manual",
+            "manual": {"shards": 2, "replicas": 2},
+        },
+    },
+)
+```
+
+Dedicated capacity is a serverless-backup feature, and the server rejects a
+configuration too small to hold the backup.
+
+`create_index_from_backup` is the only supported way to restore a backup —
+`pc.create_index(source_backup_id=...)` raises a `PineconeTypeError` pointing
+here.
+
 
 ## Monitor restore jobs
 
@@ -146,6 +221,11 @@ pc.backups.delete(backup_id="bk-abc123")
 ```
 
 Deleting a backup does not affect the source index or any indexes restored from it.
+The call returns `None` — the API answers `202 Accepted` with no body.
+
+A backup with a restore job still in flight cannot be deleted; the API returns
+`412` and the SDK raises an `ApiError` naming the pending job ids. Wait for the
+restore to finish, then delete.
 
 
 ## See also

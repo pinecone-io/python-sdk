@@ -4,13 +4,18 @@ from __future__ import annotations
 
 from typing import Any, TypeVar
 
+import msgspec
 import orjson
 from msgspec import Struct
 
 from pinecone._internal.adapters._decode import convert_response, decode_response
 from pinecone.errors.exceptions import ResponseParsingError
 from pinecone.models.backups.list import BackupList
-from pinecone.models.backups.model import BackupModel, CreateIndexFromBackupResponse
+from pinecone.models.backups.model import (
+    BackupModel,
+    CreateIndexFromBackupRequest,
+    CreateIndexFromBackupResponse,
+)
 from pinecone.models.indexes.schema import _tag_untyped_schema_fields
 from pinecone.models.vectors.responses import Pagination
 
@@ -73,3 +78,12 @@ class BackupsAdapter:
     def to_create_index_from_backup_response(data: bytes) -> CreateIndexFromBackupResponse:
         """Decode raw JSON bytes into a CreateIndexFromBackupResponse."""
         return decode_response(data, CreateIndexFromBackupResponse)
+
+    @staticmethod
+    def to_create_index_from_backup_request(request: CreateIndexFromBackupRequest) -> bytes:
+        """Encode a CreateIndexFromBackupRequest into request-body bytes.
+
+        The struct is ``omit_defaults=True``, so unset optionals never reach
+        the wire and the server applies its own defaults.
+        """
+        return msgspec.json.encode(request)

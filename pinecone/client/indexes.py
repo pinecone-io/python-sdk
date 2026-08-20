@@ -7,7 +7,9 @@ import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
+from pinecone._internal.adapters.backups_adapter import BackupsAdapter
 from pinecone._internal.adapters.indexes_adapter import IndexesAdapter
+from pinecone._internal.backups_helpers import backup_list_params
 from pinecone._internal.index_migration import (
     reject_legacy_configure_kwargs,
     reject_legacy_create_kwargs,
@@ -25,6 +27,7 @@ from pinecone.errors.exceptions import (
     PineconeTimeoutError,
     PineconeValueError,
 )
+from pinecone.models.backups.model import BackupModel
 from pinecone.models.indexes.index import IndexModel
 from pinecone.models.indexes.requests import ConfigureIndexRequest, CreateIndexRequest
 from pinecone.models.indexes.schema import IndexSchema
@@ -72,16 +75,23 @@ class Indexes:
     """Control-plane operations for Pinecone indexes (2026-07 API).
 
     Provides ``list``, ``describe``, ``exists``, ``create``,
-    ``create_for_model``, ``delete``, and ``configure`` methods.
+    ``create_for_model``, ``delete``, and ``configure`` methods, plus the
+    index-scoped backup methods ``create_backup``, ``list_backups``, and
+    ``describe_backup``.
 
     .. versionchanged:: 10.0
        Graduated to the 2026-07 schema-based API. ``create()`` takes
        ``schema=``/``deployment=`` instead of ``spec=``/``dimension=``/
        ``metric=``/``vector_type=``; ``configure()`` nests pod scaling under
        ``deployment=`` and removed ``embed=``; ``list()`` returns a
-       :class:`~pinecone.models.pagination.Paginator`.
+       :class:`~pinecone.models.pagination.Paginator`; the index-scoped
+       backup methods graduated from the preview namespace.
 
     .. seealso::
+       :class:`~pinecone.client.backups.Backups` (``pc.backups``) covers the
+       project-wide backup listing plus ``delete``, which are not scoped to
+       one index.
+
        Use :meth:`Pinecone.index(name) <pinecone.Pinecone.index>` to get a
        data-plane client for vector operations on a specific index.
 
@@ -661,6 +671,164 @@ class Indexes:
         model = self._adapter.to_index_model(response.content)
         logger.debug("Configured index %r", name)
         return model
+
+    def create_backup(
+        self,
+        index_name: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> BackupModel:
+        """Create a backup of an index.
+
+        Index-scoped convenience for :meth:`Pinecone.backups.create`, which
+        takes the same arguments as keywords and reaches the same endpoint.
+
+        .. versionadded:: 10.0
+           Graduated from ``pc.preview.indexes.create_backup``, now returning
+           the single top-level
+           :class:`~pinecone.models.backups.model.BackupModel`.
+
+        Args:
+            index_name: Name of the index to back up.
+            name: Optional user-defined name for the backup.
+            description: Optional description providing context for the backup.
+
+        Returns:
+            :class:`~pinecone.models.backups.model.BackupModel` describing the
+            new backup. ``status`` is typically ``"Initializing"`` right after
+            creation; poll :meth:`describe_backup` until it reads ``"Ready"``
+            before restoring from it.
+
+        Raises:
+            :exc:`PineconeValueError`: If *index_name* is empty.
+            :exc:`NotFoundError`: If the index does not exist.
+            :exc:`ApiError`: If the API returns another error response.
+
+        Examples:
+            >>> backup = pc.indexes.create_backup("my-index", name="nightly")  # doctest: +SKIP
+            >>> backup.status  # doctest: +SKIP
+            'Initializing'
+        """
+        require_non_empty("index_name", index_name)
+
+        body: dict[str, str] = {}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+
+        logger.info("Creating backup for index %r", index_name)
+        response = self._http.post(f"/indexes/{index_name}/backups", json=body)
+        result = BackupsAdapter.to_backup(response.content)
+        logger.debug("Created backup %r", result.backup_id)
+        return result
+
+    def list_backups(
+        self,
+        index_name: str,
+        *,
+        limit: int | None = None,
+        pagination_token: str | None = None,
+        include_deleted: bool | None = None,
+    ) -> Paginator[BackupModel]:
+        """List the backups of one index.
+
+        .. versionadded:: 10.0
+           Graduated from ``pc.preview.indexes.list_backups``, and gained
+           *include_deleted*. For the project-wide listing use
+           :meth:`Pinecone.backups.list` with no ``index_name``.
+
+        .. important::
+           A 404 here does not necessarily mean "no such index ever existed".
+           With *include_deleted* omitted or ``False``, *index_name* must
+           resolve to an **active** index: if every index that used the name
+           has been deleted, the API answers 404 rather than an empty list.
+           Retrying with ``include_deleted=True`` returns those backups; a
+           404 there means the name was never used in this project.
+
+        Args:
+            index_name: Name of the index whose backups to list.
+            limit: Maximum number of backups to yield across all pages. Must
+                be a positive integer. ``None`` yields all backups.
+            pagination_token: Token to resume pagination from a previous call.
+            include_deleted: When ``True``, include backups of every index
+                that has ever used *index_name*, deleted ones included; those
+                backups carry a non-``None``
+                :attr:`~pinecone.models.backups.model.BackupModel.source_index_deleted_at`.
+                When ``None`` (the default) the parameter is omitted entirely
+                and the server's default (``false``) applies.
+
+        Returns:
+            :class:`~pinecone.models.pagination.Paginator` over
+            :class:`~pinecone.models.backups.model.BackupModel` instances.
+            Iteration stops when the response carries no pagination envelope.
+
+        Raises:
+            :exc:`PineconeValueError`: If *index_name* is empty or *limit* is
+                zero or negative.
+            :exc:`NotFoundError`: If *index_name* does not resolve — see the
+                404 semantics above.
+            :exc:`ApiError`: If the API returns another error response.
+
+        Examples:
+            >>> for backup in pc.indexes.list_backups("my-index"):  # doctest: +SKIP
+            ...     print(backup.backup_id, backup.status)
+
+            >>> orphans = pc.indexes.list_backups(  # doctest: +SKIP
+            ...     "my-index", include_deleted=True
+            ... )
+            >>> [b.backup_id for b in orphans if b.source_index_deleted_at]  # doctest: +SKIP
+            ['bkp_oldidx']
+        """
+        require_non_empty("index_name", index_name)
+        if limit is not None:
+            require_positive("limit", limit)
+
+        def fetch_page(token: str | None) -> Page[BackupModel]:
+            params = backup_list_params(
+                limit=limit,
+                pagination_token=token,
+                include_deleted=include_deleted,
+            )
+            logger.info("Listing backups for index %r", index_name)
+            response = self._http.get(f"/indexes/{index_name}/backups", params=params)
+            result = BackupsAdapter.to_backup_list(response.content)
+            next_token = result.pagination.next if result.pagination is not None else None
+            return Page(items=list(result), pagination_token=next_token)
+
+        return Paginator(fetch_page=fetch_page, initial_token=pagination_token, limit=limit)
+
+    def describe_backup(self, backup_id: str) -> BackupModel:
+        """Describe a backup by its ID.
+
+        Index-scoped alias of :meth:`Pinecone.backups.describe`; the endpoint
+        is keyed by backup id, not by index.
+
+        .. versionadded:: 10.0
+           Graduated from ``pc.preview.indexes.describe_backup``.
+
+        Args:
+            backup_id: The unique identifier of the backup to describe.
+
+        Returns:
+            :class:`~pinecone.models.backups.model.BackupModel` with the
+            current state of the backup.
+
+        Raises:
+            :exc:`PineconeValueError`: If *backup_id* is empty.
+            :exc:`NotFoundError`: If the backup does not exist.
+            :exc:`ApiError`: If the API returns another error response.
+
+        Examples:
+            >>> backup = pc.indexes.describe_backup("bkp-123")  # doctest: +SKIP
+            >>> backup.status  # doctest: +SKIP
+            'Ready'
+        """
+        require_non_empty("backup_id", backup_id)
+        logger.info("Describing backup %r", backup_id)
+        response = self._http.get(f"/backups/{backup_id}")
+        return BackupsAdapter.to_backup(response.content)
 
     @staticmethod
     def _embed_to_body(embed: Mapping[str, Any] | Any) -> dict[str, Any]:
