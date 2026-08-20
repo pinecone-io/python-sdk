@@ -11,8 +11,10 @@ whole suite.
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import threading
+from collections.abc import Iterator
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -25,13 +27,25 @@ pd = pytest.importorskip("pandas")
 
 _MOCK_GRPC_MODULE_PATH = "pinecone._grpc"
 
-# Every test that lets the deadline fire pays `_StallingChannel.released.wait(
-# timeout=2)` below: a fixed 2.0s of wall clock that does not shrink on a faster
-# machine or stretch on a slower one. Measured 2.01s per test, of which 0.3-0.5%
-# is CPU, so the global 5s unit default is only ~2.5x on a constant. 15s is
-# ~7.5x, the ratio #306 used on test_storm_parity.py (4.27s -> 30s). Class-scoped
-# rather than module-level: unlike storm parity's module fixture, nothing here is
-# order-dependent, so the four tests that never stall keep the 5s guard.
+# The expiring deadline every stalling test hands to the ingest.
+# `_released_after_expiry` times itself against this, so the two cannot drift:
+# a release timed against a different number either lands before the deadline
+# (nothing expires) or falls through to `_StallingChannel`'s 2.0s backstop.
+_TOTAL_TIMEOUT = 0.05
+
+# How long past the stall `_released_after_expiry` keeps the fake blocked, on
+# top of `_TOTAL_TIMEOUT`. It only has to cover the ingest waking from its own
+# expired `as_completed` timeout and cancelling the queued batches, which is
+# sub-millisecond work.
+_RELEASE_MARGIN = 0.2
+
+# Measured 0.26s per stalling test — `_TOTAL_TIMEOUT` + `_RELEASE_MARGIN` plus
+# overhead. 15s is deliberate headroom, not a multiple of that: a releaser
+# thread that never sees the stall waits 5s and the stalled `upsert` then pays
+# its 2.0s backstop, so a degraded run legitimately costs ~7s and the global 5s
+# unit default would misreport it as a hang. Class-scoped rather than
+# module-level: nothing here is order-dependent, so the four tests that never
+# stall keep the 5s guard.
 _DEADLINE_TIMEOUT = pytest.mark.timeout(15)
 
 
@@ -77,6 +91,39 @@ class _StallingChannel:
         return {"upserted_count": len(vectors)}
 
 
+@contextlib.contextmanager
+def _released_after_expiry(channel: _StallingChannel) -> Iterator[None]:
+    """Unblock the stalled batch, but not before the ingest's deadline has gone.
+
+    A test cannot release the fake itself: `upsert_from_dataframe` does not
+    return until the in-flight batch settles, and that batch is the one blocked
+    in `_StallingChannel.upsert`, so any release written after the call has
+    already been overtaken by the 2.0s backstop.
+
+    Releasing the instant the stall is observed would be too early — the batch
+    would land inside the budget and nothing would expire. Waiting
+    `_TOTAL_TIMEOUT` + `_RELEASE_MARGIN` past the stall puts the release
+    strictly after the deadline, since the deadline starts before the stall,
+    which is what keeps expiry genuinely happening with a batch in flight.
+
+    `Event.wait` rather than `time.sleep`, for the reason given in the module
+    docstring.
+    """
+
+    def _release_once_expired() -> None:
+        if channel.stalled.wait(timeout=5):
+            channel.released.wait(timeout=_TOTAL_TIMEOUT + _RELEASE_MARGIN)
+        channel.released.set()
+
+    releaser = threading.Thread(target=_release_once_expired)
+    releaser.start()
+    try:
+        yield
+    finally:
+        channel.released.set()
+        releaser.join(timeout=5)
+
+
 class TestSignature:
     def test_total_timeout_is_keyword_only_and_defaults_to_none(self) -> None:
         sig = inspect.signature(GrpcIndex.upsert_from_dataframe)
@@ -101,16 +148,15 @@ class TestExpiry:
         channel = _StallingChannel(accept=2)
         index = _grpc_index(MagicMock(upsert=channel.upsert))
 
-        with pytest.raises(PineconeTimeoutError) as excinfo:
+        with _released_after_expiry(channel), pytest.raises(PineconeTimeoutError) as excinfo:
             index.upsert_from_dataframe(
                 _frame(6),
                 batch_size=1,
                 show_progress=False,
                 max_concurrency=1,
-                total_timeout=0.05,
+                total_timeout=_TOTAL_TIMEOUT,
                 on_error="raise",
             )
-        channel.released.set()
 
         response = excinfo.value.response
         assert response is not None
@@ -125,16 +171,15 @@ class TestExpiry:
         channel = _StallingChannel(accept=2)
         index = _grpc_index(MagicMock(upsert=channel.upsert))
 
-        with pytest.raises(PineconeTimeoutError) as excinfo:
+        with _released_after_expiry(channel), pytest.raises(PineconeTimeoutError) as excinfo:
             index.upsert_from_dataframe(
                 _frame(6),
                 batch_size=1,
                 show_progress=False,
                 max_concurrency=1,
-                total_timeout=0.05,
+                total_timeout=_TOTAL_TIMEOUT,
                 on_error="raise",
             )
-        channel.released.set()
 
         unsent = {item["id"] for item in excinfo.value.response.failed_items}
         assert unsent == {"v3", "v4", "v5"}
@@ -143,16 +188,15 @@ class TestExpiry:
         channel = _StallingChannel(accept=3)
         index = _grpc_index(MagicMock(upsert=channel.upsert))
 
-        with pytest.raises(PineconeTimeoutError) as excinfo:
+        with _released_after_expiry(channel), pytest.raises(PineconeTimeoutError) as excinfo:
             index.upsert_from_dataframe(
                 _frame(8),
                 batch_size=1,
                 show_progress=False,
                 max_concurrency=1,
-                total_timeout=0.05,
+                total_timeout=_TOTAL_TIMEOUT,
                 on_error="raise",
             )
-        channel.released.set()
 
         assert excinfo.value.response.upserted_count == len(channel.accepted)
 
@@ -165,16 +209,15 @@ class TestExpiry:
         channel = _StallingChannel(accept=2)
         index = _grpc_index(MagicMock(upsert=channel.upsert))
 
-        with pytest.raises(PineconeTimeoutError) as excinfo:
+        with _released_after_expiry(channel), pytest.raises(PineconeTimeoutError) as excinfo:
             index.upsert_from_dataframe(
                 _frame(6),
                 batch_size=1,
                 show_progress=False,
                 max_concurrency=1,
-                total_timeout=0.05,
+                total_timeout=_TOTAL_TIMEOUT,
                 on_error="raise",
             )
-        channel.released.set()
 
         assert channel.stalled.is_set(), "no batch was in flight when the deadline fired"
 
@@ -226,14 +269,14 @@ class TestExpiryUnderCollect:
         channel = _StallingChannel(accept=2)
         index = _grpc_index(MagicMock(upsert=channel.upsert))
 
-        response = index.upsert_from_dataframe(
-            _frame(6),
-            batch_size=1,
-            show_progress=False,
-            max_concurrency=1,
-            total_timeout=0.05,
-        )
-        channel.released.set()
+        with _released_after_expiry(channel):
+            response = index.upsert_from_dataframe(
+                _frame(6),
+                batch_size=1,
+                show_progress=False,
+                max_concurrency=1,
+                total_timeout=_TOTAL_TIMEOUT,
+            )
 
         assert response.upserted_count == 3
         assert {item["id"] for item in response.failed_items} == {"v3", "v4", "v5"}
@@ -283,16 +326,15 @@ class TestDeadlineDuringLimiterWait:
                 limiter_registry=registry,
             )
 
-        with pytest.raises(PineconeTimeoutError) as excinfo:
+        with _released_after_expiry(channel), pytest.raises(PineconeTimeoutError) as excinfo:
             index.upsert_from_dataframe(
                 _frame(6),
                 batch_size=1,
                 show_progress=False,
                 max_concurrency=1,
-                total_timeout=0.05,
+                total_timeout=_TOTAL_TIMEOUT,
                 on_error="raise",
             )
-        channel.released.set()
 
         response = excinfo.value.response
         assert response.failed_item_count >= 4, "submission kept going after the budget expired"
