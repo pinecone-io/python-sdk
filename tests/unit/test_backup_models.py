@@ -521,20 +521,10 @@ class TestNoDuplicateBackupSymbols:
         import pinecone
         import pinecone.models
         import pinecone.models.backups
-        from pinecone.preview._internal.adapters import backups as preview_backups_adapter
 
         assert pinecone.BackupModel is BackupModel
         assert pinecone.models.BackupModel is BackupModel
         assert pinecone.models.backups.BackupModel is BackupModel
-        assert preview_backups_adapter.BackupModel is BackupModel
-
-    def test_preview_backup_models_are_gone(self) -> None:
-        import pinecone.preview.models as preview_models
-
-        assert not hasattr(preview_models, "PreviewBackupModel")
-        assert not hasattr(preview_models, "PreviewCreateBackupRequest")
-        with pytest.raises(ModuleNotFoundError):
-            __import__("pinecone.preview.models.backups")
 
     def test_create_index_from_backup_request_is_exported(self) -> None:
         import pinecone

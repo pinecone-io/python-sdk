@@ -145,12 +145,12 @@ class BatchResponseInfo(StructDictMixin, Struct, kw_only=True, gc=False):
             from pinecone import Pinecone
 
             pc = Pinecone(api_key="your-api-key")
-            index = pc.preview.index(name="articles-en-preview")
+            index = pc.index(name="articles-en")
             documents = [
                 {"_id": f"article-{i:05d}", "content": f"Article {i}"}
                 for i in range(500)
             ]
-            result = index.documents.batch_upsert(
+            result = index.batch_upsert_documents(
                 namespace="articles-en",
                 documents=documents,
             )

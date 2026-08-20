@@ -31,8 +31,6 @@ from pinecone.client.backup_schedules import BackupSchedules
 from pinecone.client.backups import Backups
 from pinecone.client.indexes import Indexes
 from pinecone.client.restore_jobs import RestoreJobs
-from pinecone.preview.async_indexes import AsyncPreviewIndexes
-from pinecone.preview.indexes import PreviewIndexes
 
 BASE_URL = "https://api.test.pinecone.io"
 SCHEDULE_ID = "e88f7273-42aa-47e9-af73-593827136867"
@@ -312,20 +310,6 @@ class TestPaginators:
         assert "limit" not in route.calls[1].request.url.params
 
     @respx.mock
-    def test_preview_indexes_list_backups(self) -> None:
-        route = respx.get(f"{BASE_URL}/indexes/my-index/backups").mock(
-            side_effect=_two_pages(_BACKUP)
-        )
-        indexes = PreviewIndexes(config=PineconeConfig(api_key="test-key", host=BASE_URL))
-
-        list(indexes.list_backups("my-index", limit=5))
-
-        assert route.call_count == 2
-        assert route.calls[0].request.url.params["limit"] == "5"
-        assert route.calls[1].request.url.params["paginationToken"] == "tok-2"
-        assert "limit" not in route.calls[1].request.url.params
-
-    @respx.mock
     async def test_async_indexes_list_backups(self, async_http: AsyncHTTPClient) -> None:
         route = respx.get(f"{BASE_URL}/indexes/my-index/backups").mock(
             side_effect=_two_pages(_BACKUP)
@@ -333,20 +317,6 @@ class TestPaginators:
 
         paginator = AsyncIndexes(http=async_http).list_backups("my-index", limit=5)
         await paginator.to_list()
-
-        assert route.call_count == 2
-        assert route.calls[0].request.url.params["limit"] == "5"
-        assert route.calls[1].request.url.params["paginationToken"] == "tok-2"
-        assert "limit" not in route.calls[1].request.url.params
-
-    @respx.mock
-    async def test_async_preview_indexes_list_backups(self) -> None:
-        route = respx.get(f"{BASE_URL}/indexes/my-index/backups").mock(
-            side_effect=_two_pages(_BACKUP)
-        )
-        indexes = AsyncPreviewIndexes(config=PineconeConfig(api_key="test-key", host=BASE_URL))
-
-        await indexes.list_backups("my-index", limit=5).to_list()
 
         assert route.call_count == 2
         assert route.calls[0].request.url.params["limit"] == "5"

@@ -86,7 +86,7 @@ class BatchResult(Struct, kw_only=True):
     Examples:
         >>> from pinecone import Pinecone
         >>> pc = Pinecone(api_key="your-api-key")
-        >>> index = pc.preview.index(name="articles-en-preview")
+        >>> index = pc.index(name="articles-en")
         >>> documents = [
         ...     {
         ...         "_id": f"article-{i:05d}",
@@ -95,7 +95,7 @@ class BatchResult(Struct, kw_only=True):
         ...     }
         ...     for i in range(1000)
         ... ]
-        >>> result = index.documents.batch_upsert(
+        >>> result = index.batch_upsert_documents(
         ...     namespace="articles-en",
         ...     documents=documents,
         ... )

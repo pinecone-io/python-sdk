@@ -43,7 +43,6 @@ if TYPE_CHECKING:
     from pinecone.models.indexes.index import IndexModel
     from pinecone.models.indexes.specs import EmbedConfig
     from pinecone.models.pagination import AsyncPaginator
-    from pinecone.preview import AsyncPreview
 
 
 @keyword_only_methods
@@ -161,7 +160,6 @@ class AsyncPinecone:
         self._backup_schedules: AsyncBackupSchedules | None = None
         self._restore_jobs: AsyncRestoreJobs | None = None
         self._inference: AsyncInference | None = None
-        self._preview: AsyncPreview | None = None
         self._host_cache: dict[str, str] = {}
 
     def __repr__(self) -> str:
@@ -347,30 +345,6 @@ class AsyncPinecone:
 
             self._inference = _AsyncInference(config=self._config)
         return self._inference
-
-    @property
-    def preview(self) -> AsyncPreview:
-        """Access the Preview namespace for pre-release API features.
-
-        Lazily imported and instantiated on first access. Preview surface is
-        not covered by SemVer — signatures and behavior may change in any
-        minor SDK release.
-
-        Returns:
-            :class:`~pinecone.preview.AsyncPreview` namespace instance.
-
-        Examples:
-
-            .. code-block:: python
-
-                async with AsyncPinecone(api_key="your-api-key") as pc:
-                    await pc.preview.indexes.create(...)  # when a preview area exists
-        """
-        if self._preview is None:
-            from pinecone.preview import AsyncPreview as _AsyncPreview
-
-            self._preview = _AsyncPreview(http=self._http, config=self._config)
-        return self._preview
 
     async def create_index_from_backup(
         self,
@@ -955,7 +929,7 @@ class AsyncPinecone:
         """Close all open HTTP connections.
 
         Closes the main control-plane client and any namespace clients (inference,
-        assistants, preview) that were initialized during this session.
+        assistants) that were initialized during this session.
 
         Prefer the async context manager form (``async with AsyncPinecone(...) as pc:``)
         which calls :meth:`close` automatically on exit.
@@ -982,8 +956,6 @@ class AsyncPinecone:
             await self._assistants.close()
         if self._inference is not None:
             await self._inference.close()
-        if self._preview is not None:
-            await self._preview.close()
 
     async def __aenter__(self) -> AsyncPinecone:
         return self

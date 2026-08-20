@@ -135,7 +135,6 @@ timeout = 5
 markers = [
     "smoke: end-to-end smoke tests that hit a real Pinecone backend (see tests/smoke/README.md)",
     "integration: real-API integration tests against a live Pinecone backend",
-    "preview_integration: real-API tests against 2026-01.alpha preview endpoints (not CI-gating)",
     "api_op(op_id): conformance claim for a 2026-07 API operation (see tests/unit/conformance/README.md)",
 ]
 

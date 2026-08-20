@@ -108,8 +108,24 @@ if TYPE_CHECKING:
     from pinecone.index import Index
     from pinecone.inference.models.index_embed import IndexEmbed
     from pinecone.models.admin.api_key import APIKeyList, APIKeyModel, APIKeyRole, APIKeyWithSecret
+    from pinecone.models.admin.invite import InviteList, InviteModel, InviteStatus
     from pinecone.models.admin.organization import OrganizationList, OrganizationModel
+    from pinecone.models.admin.pagination import PaginationResponse
     from pinecone.models.admin.project import ProjectList, ProjectModel
+    from pinecone.models.admin.role_binding import (
+        PrincipalType,
+        ResourceType,
+        RoleBindingInput,
+        RoleBindingList,
+        RoleBindingModel,
+        RoleName,
+    )
+    from pinecone.models.admin.service_account import (
+        ServiceAccountList,
+        ServiceAccountModel,
+        ServiceAccountWithSecret,
+    )
+    from pinecone.models.admin.user import UserList, UserModel
     from pinecone.models.assistant.chat import (
         ChatCompletionMessage,
         ChatCompletionResponse,
@@ -118,9 +134,14 @@ if TYPE_CHECKING:
     from pinecone.models.assistant.context import ContextResponse
     from pinecone.models.assistant.evaluation import AlignmentResult
     from pinecone.models.assistant.file_model import AssistantFileModel
-    from pinecone.models.assistant.list import ListAssistantsResponse, ListFilesResponse
+    from pinecone.models.assistant.list import (
+        ListAssistantsResponse,
+        ListFilesResponse,
+        ListOperationsResponse,
+    )
     from pinecone.models.assistant.message import Message
     from pinecone.models.assistant.model import AssistantModel
+    from pinecone.models.assistant.operation import OperationModel
     from pinecone.models.assistant.options import ContextOptions
     from pinecone.models.assistant.streaming import (
         AsyncChatCompletionStream,
@@ -280,6 +301,7 @@ if TYPE_CHECKING:
     )
     from pinecone.models.vectors.sparse import SparseValues
     from pinecone.models.vectors.vector import ScoredVector, Vector
+    from pinecone.schema_builder import SchemaBuilder
     from pinecone.utils.filter_builder import Field, FilterBuilder
 
 __version__ = "9.1.0"
@@ -380,6 +402,9 @@ __all__ = [
     "IndexTags",
     "IntegerField",
     "IntegratedSpec",
+    "InviteList",
+    "InviteModel",
+    "InviteStatus",
     "LegacyMetadataField",
     "ListAssistantsResponse",
     "ListConversionException",
@@ -387,6 +412,7 @@ __all__ = [
     "ListDocumentsResponse",
     "ListFilesResponse",
     "ListNamespacesResponse",
+    "ListOperationsResponse",
     "ListResponse",
     "ListedDocumentRecord",
     "ManagedDeployment",
@@ -398,9 +424,11 @@ __all__ = [
     "NgramConfig",
     "NotFoundError",
     "NotFoundException",
+    "OperationModel",
     "OrganizationList",
     "OrganizationModel",
     "Page",
+    "PaginationResponse",
     "Paginator",
     "PaymentRequiredError",
     "Pinecone",
@@ -424,6 +452,7 @@ __all__ = [
     "PodIndexEnvironment",
     "PodSpec",
     "PodType",
+    "PrincipalType",
     "ProjectList",
     "ProjectModel",
     "QueryNamespacesResults",
@@ -441,12 +470,18 @@ __all__ = [
     "RerankConfig",
     "RerankModel",
     "RerankResult",
+    "ResourceType",
     "ResponseInfo",
     "ResponseParsingError",
     "RestoreJobList",
     "RestoreJobModel",
     "RetryConfig",
+    "RoleBindingInput",
+    "RoleBindingList",
+    "RoleBindingModel",
+    "RoleName",
     "ScalingConfigManual",
+    "SchemaBuilder",
     "ScoredVector",
     "SearchDocumentsRequest",
     "SearchDocumentsResponse",
@@ -458,6 +493,9 @@ __all__ = [
     "SearchUsage",
     "SemanticTextField",
     "ServerlessSpec",
+    "ServiceAccountList",
+    "ServiceAccountModel",
+    "ServiceAccountWithSecret",
     "ServiceError",
     "ServiceException",
     "SparseEmbedding",
@@ -483,6 +521,8 @@ __all__ = [
     "UpsertDocumentsResponse",
     "UpsertRecordsResponse",
     "UpsertResponse",
+    "UserList",
+    "UserModel",
     "Vector",
     "VectorType",
     "__version__",
@@ -608,6 +648,9 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "IndexTags": ("pinecone.models.indexes.index", "IndexTags"),
     "IntegerField": ("pinecone.models.indexes.schema", "IntegerField"),
     "IntegratedSpec": ("pinecone.models.indexes.specs", "IntegratedSpec"),
+    "InviteList": ("pinecone.models.admin.invite", "InviteList"),
+    "InviteModel": ("pinecone.models.admin.invite", "InviteModel"),
+    "InviteStatus": ("pinecone.models.admin.invite", "InviteStatus"),
     "LegacyMetadataField": ("pinecone.models.indexes.schema", "LegacyMetadataField"),
     "ListAssistantsResponse": ("pinecone.models.assistant.list", "ListAssistantsResponse"),
     "ListConversionException": ("pinecone.errors.exceptions", "ListConversionException"),
@@ -615,6 +658,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "ListDocumentsResponse": ("pinecone.models.documents.responses", "ListDocumentsResponse"),
     "ListFilesResponse": ("pinecone.models.assistant.list", "ListFilesResponse"),
     "ListNamespacesResponse": ("pinecone.models.namespaces.models", "ListNamespacesResponse"),
+    "ListOperationsResponse": ("pinecone.models.assistant.list", "ListOperationsResponse"),
     "ListResponse": ("pinecone.models.vectors.responses", "ListResponse"),
     "ListedDocumentRecord": ("pinecone.models.documents.responses", "ListedDocumentRecord"),
     "ManagedDeployment": ("pinecone.models.indexes.deployment", "ManagedDeployment"),
@@ -626,9 +670,11 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "NgramConfig": ("pinecone.models.indexes.schema", "NgramConfig"),
     "NotFoundError": ("pinecone.errors.exceptions", "NotFoundError"),
     "NotFoundException": ("pinecone.errors.exceptions", "NotFoundException"),
+    "OperationModel": ("pinecone.models.assistant.operation", "OperationModel"),
     "OrganizationList": ("pinecone.models.admin.organization", "OrganizationList"),
     "OrganizationModel": ("pinecone.models.admin.organization", "OrganizationModel"),
     "Page": ("pinecone.models.pagination", "Page"),
+    "PaginationResponse": ("pinecone.models.admin.pagination", "PaginationResponse"),
     "Paginator": ("pinecone.models.pagination", "Paginator"),
     "PaymentRequiredError": ("pinecone.errors.exceptions", "PaymentRequiredError"),
     "Pinecone": ("pinecone._client", "Pinecone"),
@@ -652,6 +698,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "PodIndexEnvironment": ("pinecone.models.enums", "PodIndexEnvironment"),
     "PodSpec": ("pinecone.models.indexes.specs", "PodSpec"),
     "PodType": ("pinecone.models.enums", "PodType"),
+    "PrincipalType": ("pinecone.models.admin.role_binding", "PrincipalType"),
     "ProjectList": ("pinecone.models.admin.project", "ProjectList"),
     "ProjectModel": ("pinecone.models.admin.project", "ProjectModel"),
     "QueryNamespacesResults": (
@@ -684,12 +731,18 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "RerankConfig": ("pinecone.models.vectors.search", "RerankConfig"),
     "RerankModel": ("pinecone.models.enums", "RerankModel"),
     "RerankResult": ("pinecone.models.inference.rerank", "RerankResult"),
+    "ResourceType": ("pinecone.models.admin.role_binding", "ResourceType"),
     "ResponseInfo": ("pinecone.models.response_info", "ResponseInfo"),
     "ResponseParsingError": ("pinecone.errors.exceptions", "ResponseParsingError"),
     "RestoreJobList": ("pinecone.models.backups.list", "RestoreJobList"),
     "RestoreJobModel": ("pinecone.models.backups.model", "RestoreJobModel"),
     "RetryConfig": ("pinecone._internal.config", "RetryConfig"),
+    "RoleBindingInput": ("pinecone.models.admin.role_binding", "RoleBindingInput"),
+    "RoleBindingList": ("pinecone.models.admin.role_binding", "RoleBindingList"),
+    "RoleBindingModel": ("pinecone.models.admin.role_binding", "RoleBindingModel"),
+    "RoleName": ("pinecone.models.admin.role_binding", "RoleName"),
     "ScalingConfigManual": ("pinecone.models.indexes.read_capacity", "ScalingConfigManual"),
+    "SchemaBuilder": ("pinecone.schema_builder", "SchemaBuilder"),
     "ScoredVector": ("pinecone.models.vectors.vector", "ScoredVector"),
     "SearchDocumentsRequest": ("pinecone.models.documents.requests", "SearchDocumentsRequest"),
     "SearchDocumentsResponse": ("pinecone.models.documents.responses", "SearchDocumentsResponse"),
@@ -701,6 +754,12 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "SearchUsage": ("pinecone.models.vectors.search", "SearchUsage"),
     "SemanticTextField": ("pinecone.models.indexes.schema", "SemanticTextField"),
     "ServerlessSpec": ("pinecone.models.indexes.specs", "ServerlessSpec"),
+    "ServiceAccountList": ("pinecone.models.admin.service_account", "ServiceAccountList"),
+    "ServiceAccountModel": ("pinecone.models.admin.service_account", "ServiceAccountModel"),
+    "ServiceAccountWithSecret": (
+        "pinecone.models.admin.service_account",
+        "ServiceAccountWithSecret",
+    ),
     "ServiceError": ("pinecone.errors.exceptions", "ServiceError"),
     "ServiceException": ("pinecone.errors.exceptions", "ServiceException"),
     "SparseEmbedding": ("pinecone.models.inference.embed", "SparseEmbedding"),
@@ -729,6 +788,8 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "UpsertDocumentsResponse": ("pinecone.models.documents.responses", "UpsertDocumentsResponse"),
     "UpsertRecordsResponse": ("pinecone.models.vectors.responses", "UpsertRecordsResponse"),
     "UpsertResponse": ("pinecone.models.vectors.responses", "UpsertResponse"),
+    "UserList": ("pinecone.models.admin.user", "UserList"),
+    "UserModel": ("pinecone.models.admin.user", "UserModel"),
     "Vector": ("pinecone.models.vectors.vector", "Vector"),
     "VectorType": ("pinecone.models.enums", "VectorType"),
 }

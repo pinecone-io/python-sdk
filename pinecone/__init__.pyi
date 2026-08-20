@@ -18,15 +18,21 @@ from pinecone.grpc.future import PineconeFuture as PineconeFuture
 from pinecone.index import Index as Index
 from pinecone.inference.models.index_embed import IndexEmbed as IndexEmbed
 from pinecone.models.admin.api_key import APIKeyList as APIKeyList, APIKeyModel as APIKeyModel, APIKeyRole as APIKeyRole, APIKeyWithSecret as APIKeyWithSecret
+from pinecone.models.admin.invite import InviteList as InviteList, InviteModel as InviteModel, InviteStatus as InviteStatus
 from pinecone.models.admin.organization import OrganizationList as OrganizationList, OrganizationModel as OrganizationModel
+from pinecone.models.admin.pagination import PaginationResponse as PaginationResponse
 from pinecone.models.admin.project import ProjectList as ProjectList, ProjectModel as ProjectModel
+from pinecone.models.admin.role_binding import PrincipalType as PrincipalType, ResourceType as ResourceType, RoleBindingInput as RoleBindingInput, RoleBindingList as RoleBindingList, RoleBindingModel as RoleBindingModel, RoleName as RoleName
+from pinecone.models.admin.service_account import ServiceAccountList as ServiceAccountList, ServiceAccountModel as ServiceAccountModel, ServiceAccountWithSecret as ServiceAccountWithSecret
+from pinecone.models.admin.user import UserList as UserList, UserModel as UserModel
 from pinecone.models.assistant.chat import ChatCompletionMessage as ChatCompletionMessage, ChatCompletionResponse as ChatCompletionResponse, ChatResponse as ChatResponse
 from pinecone.models.assistant.context import ContextResponse as ContextResponse
 from pinecone.models.assistant.evaluation import AlignmentResult as AlignmentResult
 from pinecone.models.assistant.file_model import AssistantFileModel as AssistantFileModel
-from pinecone.models.assistant.list import ListAssistantsResponse as ListAssistantsResponse, ListFilesResponse as ListFilesResponse
+from pinecone.models.assistant.list import ListAssistantsResponse as ListAssistantsResponse, ListFilesResponse as ListFilesResponse, ListOperationsResponse as ListOperationsResponse
 from pinecone.models.assistant.message import Message as Message
 from pinecone.models.assistant.model import AssistantModel as AssistantModel
+from pinecone.models.assistant.operation import OperationModel as OperationModel
 from pinecone.models.assistant.options import ContextOptions as ContextOptions
 from pinecone.models.assistant.streaming import AsyncChatCompletionStream as AsyncChatCompletionStream, AsyncChatStream as AsyncChatStream, ChatCompletionStream as ChatCompletionStream, ChatCompletionStreamChunk as ChatCompletionStreamChunk, ChatStream as ChatStream, ChatStreamChunk as ChatStreamChunk, StreamCitationChunk as StreamCitationChunk, StreamContentChunk as StreamContentChunk, StreamMessageEnd as StreamMessageEnd, StreamMessageStart as StreamMessageStart
 from pinecone.models.backups.list import BackupList as BackupList, BackupScheduleHistoryList as BackupScheduleHistoryList, BackupScheduleList as BackupScheduleList, RestoreJobList as RestoreJobList
@@ -61,6 +67,7 @@ from pinecone.models.vectors.responses import DescribeIndexStatsResponse as Desc
 from pinecone.models.vectors.search import Hit as Hit, RerankConfig as RerankConfig, SearchInputs as SearchInputs, SearchRecordsResponse as SearchRecordsResponse, SearchResult as SearchResult, SearchUsage as SearchUsage
 from pinecone.models.vectors.sparse import SparseValues as SparseValues
 from pinecone.models.vectors.vector import ScoredVector as ScoredVector, Vector as Vector
+from pinecone.schema_builder import SchemaBuilder as SchemaBuilder
 from pinecone.utils.filter_builder import Field as Field, FilterBuilder as FilterBuilder
 
 __version__: str
@@ -156,6 +163,9 @@ __all__ = [
     "IndexTags",
     "IntegerField",
     "IntegratedSpec",
+    "InviteList",
+    "InviteModel",
+    "InviteStatus",
     "LegacyMetadataField",
     "ListAssistantsResponse",
     "ListConversionException",
@@ -163,6 +173,7 @@ __all__ = [
     "ListDocumentsResponse",
     "ListFilesResponse",
     "ListNamespacesResponse",
+    "ListOperationsResponse",
     "ListResponse",
     "ListedDocumentRecord",
     "ManagedDeployment",
@@ -174,9 +185,11 @@ __all__ = [
     "NgramConfig",
     "NotFoundError",
     "NotFoundException",
+    "OperationModel",
     "OrganizationList",
     "OrganizationModel",
     "Page",
+    "PaginationResponse",
     "Paginator",
     "PaymentRequiredError",
     "Pinecone",
@@ -200,6 +213,7 @@ __all__ = [
     "PodIndexEnvironment",
     "PodSpec",
     "PodType",
+    "PrincipalType",
     "ProjectList",
     "ProjectModel",
     "QueryNamespacesResults",
@@ -217,12 +231,18 @@ __all__ = [
     "RerankConfig",
     "RerankModel",
     "RerankResult",
+    "ResourceType",
     "ResponseInfo",
     "ResponseParsingError",
     "RestoreJobList",
     "RestoreJobModel",
     "RetryConfig",
+    "RoleBindingInput",
+    "RoleBindingList",
+    "RoleBindingModel",
+    "RoleName",
     "ScalingConfigManual",
+    "SchemaBuilder",
     "ScoredVector",
     "SearchDocumentsRequest",
     "SearchDocumentsResponse",
@@ -234,6 +254,9 @@ __all__ = [
     "SearchUsage",
     "SemanticTextField",
     "ServerlessSpec",
+    "ServiceAccountList",
+    "ServiceAccountModel",
+    "ServiceAccountWithSecret",
     "ServiceError",
     "ServiceException",
     "SparseEmbedding",
@@ -259,6 +282,8 @@ __all__ = [
     "UpsertDocumentsResponse",
     "UpsertRecordsResponse",
     "UpsertResponse",
+    "UserList",
+    "UserModel",
     "Vector",
     "VectorType",
     "__version__",

@@ -170,7 +170,7 @@ jobs:
         run: uv sync --group dev
 
       - name: pytest tests/integration
-        run: uv run --no-sync pytest tests/integration -m "not preview_integration" -n 6 --dist=loadfile -v --junitxml=integration-results.xml
+        run: uv run --no-sync pytest tests/integration -n 6 --dist=loadfile -v --junitxml=integration-results.xml
 
       - name: Upload integration results
         if: always()

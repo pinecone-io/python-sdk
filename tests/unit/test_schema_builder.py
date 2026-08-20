@@ -685,15 +685,13 @@ def test_validation_applies_to_every_add_method() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_schema_builder_still_importable_from_preview_namespace() -> None:
-    from pinecone.preview import SchemaBuilder as PreviewAlias
+def test_schema_builder_importable_from_top_level() -> None:
+    from pinecone import SchemaBuilder as TopLevelAlias
 
-    assert PreviewAlias is SchemaBuilder
+    assert TopLevelAlias is SchemaBuilder
 
 
 def test_preview_schema_builder_name_is_gone() -> None:
-    import pinecone.preview
     import pinecone.schema_builder
 
     assert not hasattr(pinecone.schema_builder, "PreviewSchemaBuilder")
-    assert not hasattr(pinecone.preview, "PreviewSchemaBuilder")

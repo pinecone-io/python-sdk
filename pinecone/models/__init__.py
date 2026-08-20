@@ -11,11 +11,31 @@ if TYPE_CHECKING:
         APIKeyRole,
         APIKeyWithSecret,
     )
+    from pinecone.models.admin.invite import (  # noqa: F401
+        InviteList,
+        InviteModel,
+        InviteStatus,
+    )
     from pinecone.models.admin.organization import (  # noqa: F401
         OrganizationList,
         OrganizationModel,
     )
+    from pinecone.models.admin.pagination import PaginationResponse  # noqa: F401
     from pinecone.models.admin.project import ProjectList, ProjectModel  # noqa: F401
+    from pinecone.models.admin.role_binding import (  # noqa: F401
+        PrincipalType,
+        ResourceType,
+        RoleBindingInput,
+        RoleBindingList,
+        RoleBindingModel,
+        RoleName,
+    )
+    from pinecone.models.admin.service_account import (  # noqa: F401
+        ServiceAccountList,
+        ServiceAccountModel,
+        ServiceAccountWithSecret,
+    )
+    from pinecone.models.admin.user import UserList, UserModel  # noqa: F401
     from pinecone.models.assistant.chat import (  # noqa: F401
         ChatCitation,
         ChatCompletionChoice,
@@ -48,9 +68,11 @@ if TYPE_CHECKING:
     from pinecone.models.assistant.list import (  # noqa: F401
         ListAssistantsResponse,
         ListFilesResponse,
+        ListOperationsResponse,
     )
     from pinecone.models.assistant.message import Message  # noqa: F401
     from pinecone.models.assistant.model import AssistantModel  # noqa: F401
+    from pinecone.models.assistant.operation import OperationModel  # noqa: F401
     from pinecone.models.assistant.options import ContextOptions  # noqa: F401
     from pinecone.models.assistant.streaming import (  # noqa: F401
         ChatCompletionStreamChoice,
@@ -230,10 +252,25 @@ _LAZY_IMPORTS: dict[str, str] = {
     "APIKeyModel": "pinecone.models.admin.api_key",
     "APIKeyRole": "pinecone.models.admin.api_key",
     "APIKeyWithSecret": "pinecone.models.admin.api_key",
+    "InviteList": "pinecone.models.admin.invite",
+    "InviteModel": "pinecone.models.admin.invite",
+    "InviteStatus": "pinecone.models.admin.invite",
     "OrganizationList": "pinecone.models.admin.organization",
     "OrganizationModel": "pinecone.models.admin.organization",
+    "PaginationResponse": "pinecone.models.admin.pagination",
+    "PrincipalType": "pinecone.models.admin.role_binding",
     "ProjectList": "pinecone.models.admin.project",
     "ProjectModel": "pinecone.models.admin.project",
+    "ResourceType": "pinecone.models.admin.role_binding",
+    "RoleBindingInput": "pinecone.models.admin.role_binding",
+    "RoleBindingList": "pinecone.models.admin.role_binding",
+    "RoleBindingModel": "pinecone.models.admin.role_binding",
+    "RoleName": "pinecone.models.admin.role_binding",
+    "ServiceAccountList": "pinecone.models.admin.service_account",
+    "ServiceAccountModel": "pinecone.models.admin.service_account",
+    "ServiceAccountWithSecret": "pinecone.models.admin.service_account",
+    "UserList": "pinecone.models.admin.user",
+    "UserModel": "pinecone.models.admin.user",
     # Assistant — chat
     "ChatCitation": "pinecone.models.assistant.chat",
     "ChatCompletionChoice": "pinecone.models.assistant.chat",
@@ -263,6 +300,8 @@ _LAZY_IMPORTS: dict[str, str] = {
     "AssistantFileModel": "pinecone.models.assistant.file_model",
     "ListAssistantsResponse": "pinecone.models.assistant.list",
     "ListFilesResponse": "pinecone.models.assistant.list",
+    "ListOperationsResponse": "pinecone.models.assistant.list",
+    "OperationModel": "pinecone.models.assistant.operation",
     "Message": "pinecone.models.assistant.message",
     "AssistantModel": "pinecone.models.assistant.model",
     "ContextOptions": "pinecone.models.assistant.options",
