@@ -14,6 +14,12 @@ Run only the fastest priority-1+2 path::
 
     pytest tests/smoke/test_inference_sync.py tests/smoke/test_inference_async.py \\
            tests/smoke/test_deprecated_shims_sync.py tests/smoke/test_deprecated_shims_async.py
+
+The .env is looked up in the **main working tree**, so runs from a git
+worktree pick up the same file (see ``tests.live_suite.env_candidates``).
+Override the location with ``PINECONE_SDK_ENV_FILE=/path/to/.env``. Where a
+run's key came from, and how much of the suite it actually let run, is
+printed at the end of every session by ``pytest_terminal_summary``.
 """
 
 from __future__ import annotations
@@ -22,7 +28,6 @@ import os
 from pathlib import Path
 
 import pytest
-from dotenv import load_dotenv
 
 from pinecone import Pinecone
 
@@ -38,6 +43,11 @@ from tests.integration.conftest import (  # noqa: F401 — re-exported for tests
     unique_name,
     wait_for_ready,
 )
+from tests.live_suite import load_env, write_coverage_summary
+
+_HERE = Path(__file__).resolve().parent
+
+_CREDENTIAL_VARS = ("PINECONE_API_KEY",)
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -47,10 +57,29 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
-# Load .env from the SDK root so PINECONE_API_KEY is available even when this
-# directory is the only one collected.
-_env_path = Path(__file__).resolve().parent.parent.parent / ".env"
-load_dotenv(_env_path)
+_ENV_SOURCE = load_env(_HERE)
+
+
+def pytest_terminal_summary(
+    terminalreporter: pytest.TerminalReporter,
+    exitstatus: int,
+    config: pytest.Config,
+) -> None:
+    """Report what actually ran, and where the key came from.
+
+    17 of the 17 collectible smoke tests gate on ``PINECONE_API_KEY``, so a
+    keyless run is a wall of skips that exits 0 — indistinguishable from a
+    real pass unless something says so. The printed ``.env source`` line also
+    self-guards the lookup above: a resolution that stops reaching the main
+    working tree announces itself on every run instead of going quiet for
+    months (#295, #315).
+    """
+    write_coverage_summary(
+        terminalreporter,
+        label="smoke",
+        env_source=_ENV_SOURCE,
+        credential_vars=_CREDENTIAL_VARS,
+    )
 
 
 # ---------------------------------------------------------------------------

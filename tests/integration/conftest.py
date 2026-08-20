@@ -7,8 +7,8 @@ at the SDK root with PINECONE_API_KEY set:
     uv run pytest tests/integration/ -v -s
 
 The .env is looked up in the **main working tree**, so runs from a git
-worktree pick up the same file (see ``_env_candidates``). Override the
-location with ``PINECONE_SDK_ENV_FILE=/path/to/.env``.
+worktree pick up the same file (see ``tests.live_suite.env_candidates``).
+Override the location with ``PINECONE_SDK_ENV_FILE=/path/to/.env``.
 
 Credential-gated groups
 -----------------------
@@ -45,17 +45,15 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
-import subprocess
 import time
 import uuid
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
 import pytest
-from dotenv import load_dotenv
 
 from pinecone import AsyncPinecone, Pinecone
+from tests.live_suite import load_env, write_coverage_summary
 
 _HERE = Path(__file__).resolve().parent
 
@@ -84,64 +82,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(pytest.mark.timeout(_DEFAULT_TIMEOUT_SECONDS))
 
 
-def _main_worktree_root() -> Path | None:
-    """Repo root of the **main** working tree, even when run from a worktree.
-
-    A linked worktree's ``.git`` is a file pointing into
-    ``<main>/.git/worktrees/<name>``, so the current tree's root is *not* the
-    repo root that holds ``.env``. ``git rev-parse --git-common-dir`` resolves
-    back to the real ``.git`` directory in both cases; its parent is the main
-    checkout root. Returns ``None`` outside a git checkout.
-    """
-    git = shutil.which("git")
-    if git is None:
-        return None
-    try:
-        proc = subprocess.run(  # noqa: S603 — fixed argv, git resolved via shutil.which
-            [git, "rev-parse", "--git-common-dir"],
-            cwd=_HERE,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=True,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    raw = proc.stdout.strip()
-    if not raw:
-        return None
-    # Relative in the main tree (e.g. "../../.git"), absolute in a worktree.
-    common_dir = Path(raw)
-    if not common_dir.is_absolute():
-        common_dir = (_HERE / common_dir).resolve()
-    return common_dir.parent
-
-
-def _env_candidates() -> list[Path]:
-    """.env locations to try, most specific first."""
-    override = os.getenv("PINECONE_SDK_ENV_FILE")
-    if override:
-        return [Path(override).expanduser()]
-    candidates = [_HERE.parent.parent / ".env"]
-    main_root = _main_worktree_root()
-    if main_root is not None:
-        main_env = main_root / ".env"
-        if main_env not in candidates:
-            candidates.append(main_env)
-    return candidates
-
-
-def _load_env() -> str:
-    """Load the first .env that exists. Returns a description for the summary."""
-    candidates = _env_candidates()
-    for path in candidates:
-        if path.is_file():
-            load_dotenv(path)
-            return str(path)
-    return "none found (tried: " + ", ".join(str(p) for p in candidates) + ")"
-
-
-_ENV_SOURCE = _load_env()
+_ENV_SOURCE = load_env(_HERE)
 
 _CREDENTIAL_VARS = (
     "PINECONE_API_KEY",
@@ -149,19 +90,6 @@ _CREDENTIAL_VARS = (
     "PINECONE_CLIENT_SECRET",
     "PINECONE_DOCUMENTS_INDEX_HOST",
 )
-
-
-def _skip_reason(report: pytest.TestReport | pytest.CollectReport) -> str:
-    longrepr = report.longrepr
-    if isinstance(longrepr, tuple) and len(longrepr) == 3:
-        reason = str(longrepr[2])
-    else:
-        reason = str(longrepr)
-    return reason.removeprefix("Skipped: ").strip() or "(no reason given)"
-
-
-def _is_credential_skip(reason: str) -> bool:
-    return any(var in reason for var in _CREDENTIAL_VARS)
 
 
 def pytest_terminal_summary(
@@ -175,48 +103,12 @@ def pytest_terminal_summary(
     that nobody counts, and "integration tests green" gets read as coverage.
     See #295.
     """
-    stats = terminalreporter.stats
-    skipped = stats.get("skipped", [])
-    ran = sum(
-        len(stats.get(key, [])) for key in ("passed", "failed", "error", "xfailed", "xpassed")
+    write_coverage_summary(
+        terminalreporter,
+        label="integration",
+        env_source=_ENV_SOURCE,
+        credential_vars=_CREDENTIAL_VARS,
     )
-    collected = ran + len(skipped)
-
-    reasons: dict[str, int] = {}
-    for report in skipped:
-        reason = _skip_reason(report)
-        reasons[reason] = reasons.get(reason, 0) + 1
-    credential_skips = sum(n for reason, n in reasons.items() if _is_credential_skip(reason))
-
-    lines = [
-        f".env source: {_ENV_SOURCE}",
-        f"ran {ran} of {collected} collected"
-        + (f" ({100 * ran // collected}%)" if collected else "")
-        + f" — passed {len(stats.get('passed', []))}, "
-        f"failed {len(stats.get('failed', []))}, errors {len(stats.get('error', []))}",
-    ]
-    if reasons:
-        lines.append(f"skipped {len(skipped)}, by reason:")
-        for reason, count in sorted(reasons.items(), key=lambda kv: (-kv[1], kv[0])):
-            flag = "  <- CREDENTIALS MISSING" if _is_credential_skip(reason) else ""
-            lines.append(f"  {count:>4}  {reason}{flag}")
-    if credential_skips:
-        pct = 100 * credential_skips // collected if collected else 0
-        lines.append(
-            f"WARNING: {credential_skips} tests ({pct}% of collected) never ran because "
-            "credentials were missing. This result is NOT evidence of integration coverage."
-        )
-
-    terminalreporter.write_sep("=", "integration coverage summary")
-    for line in lines:
-        terminalreporter.write_line(line)
-
-    step_summary = os.getenv("GITHUB_STEP_SUMMARY")
-    if step_summary:
-        with open(step_summary, "a", encoding="utf-8") as fh:
-            fh.write("### Integration coverage summary\n\n```\n")
-            fh.write("\n".join(lines))
-            fh.write("\n```\n")
 
 
 # ---------------------------------------------------------------------------

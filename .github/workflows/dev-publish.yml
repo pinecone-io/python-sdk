@@ -439,8 +439,25 @@ jobs:
           pip install --upgrade pip
           pip install "${wheel}" pytest pytest-asyncio python-dotenv
 
+      # Third consumer of the nonexistent `secrets.PINECONE_API_KEY` (#315).
+      # It expands to empty, all 15 smoke tests this job collects skip themselves,
+      # pytest exits 0, and "Smoke tests: PASSED" below has been asserting a
+      # pass that never happened on every hourly run. This job is
+      # continue-on-error at both levels, so failing here stays advisory and
+      # never blocks a publish — it only stops the summary from lying.
+      - name: Preflight — smoke credentials must be present
+        id: smoke_preflight
+        continue-on-error: true
+        run: |
+          if [ -z "${PINECONE_API_KEY}" ]; then
+            echo "::error::PINECONE_API_KEY is empty — the smoke suite would skip all 15 tests this job collects and report a pass it never earned. Add a repo secret PINECONE_API_KEY scoped to a test/CI Pinecone project."
+            exit 1
+          fi
+          echo "PINECONE_API_KEY present (${#PINECONE_API_KEY} chars)"
+
       - name: Run smoke suite
         id: smoke
+        if: steps.smoke_preflight.outcome == 'success'
         continue-on-error: true
         run: |
           # The source `pinecone/` directory from actions/checkout shadows the
@@ -460,12 +477,31 @@ jobs:
       - name: Append summary
         if: always()
         run: |
-          if [ "${{ steps.smoke.outcome }}" = "success" ]; then
-            echo "## Smoke tests: PASSED" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "## Smoke tests: FAILED (informational — does not block publish)" >> "$GITHUB_STEP_SUMMARY"
-            echo "See the 'Run smoke suite' step output and the smoke-results artifact." >> "$GITHUB_STEP_SUMMARY"
-          fi
+          # Each branch names the state it actually observed. "no credentials"
+          # is claimed only when the preflight ran and failed; a preflight that
+          # never ran means an earlier step broke, which is a different story
+          # and must not be reported as a missing key.
+          case "${{ steps.smoke_preflight.outcome }}:${{ steps.smoke.outcome }}" in
+            failure:*)
+              echo "## Smoke tests: NOT RUN (no credentials)" >> "$GITHUB_STEP_SUMMARY"
+              echo "\`PINECONE_API_KEY\` is unset, so the whole suite would have skipped itself." >> "$GITHUB_STEP_SUMMARY"
+              echo "This publish carries no smoke coverage. Remediation: add a repo secret" >> "$GITHUB_STEP_SUMMARY"
+              echo "\`PINECONE_API_KEY\` scoped to a test/CI Pinecone project (#315)." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            success:success)
+              echo "## Smoke tests: PASSED" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            success:*)
+              echo "## Smoke tests: FAILED (informational — does not block publish)" >> "$GITHUB_STEP_SUMMARY"
+              echo "See the 'Run smoke suite' step output and the smoke-results artifact." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "## Smoke tests: NOT RUN (job broke before the credential check)" >> "$GITHUB_STEP_SUMMARY"
+              echo "Preflight outcome: '${{ steps.smoke_preflight.outcome }}'. An earlier step —" >> "$GITHUB_STEP_SUMMARY"
+              echo "checkout, wheel download, or install — did not succeed. This publish carries" >> "$GITHUB_STEP_SUMMARY"
+              echo "no smoke coverage, and the reason is not a missing key." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+          esac
 
       - name: Orphan cleanup
         if: always()

@@ -183,6 +183,20 @@ jobs:
   # Install the latest dev wheel from GCP Artifact Registry and smoke-test it.
   # Validates the publish/install path end-to-end (not just that the wheel was
   # built — the smoke job in dev-publish already covers that).
+  #
+  # Same missing secret as integration-tests above: `secrets.PINECONE_API_KEY`
+  # exists at neither repo nor org level, so it expands to the empty string and
+  # all 15 smoke tests this job collects (pod collections are ignored below)
+  # skip themselves — the smoke step exits 0 and
+  # the job reports success having validated the install path but exercised
+  # none of the wheel's behaviour. The preflight below turns that into an
+  # honest red. It sits *after* the install/pip-check steps on purpose: those
+  # are real signal that does not need a key, and killing the job before them
+  # would trade one blind spot for another. Advisory by construction (this
+  # workflow has no pull_request trigger), so failing on a missing key does not
+  # make a gate depend on a live key. Remediation is a one-time human action:
+  # add a repo secret PINECONE_API_KEY scoped to a test/CI Pinecone project.
+  # Tracked in #315.
   # ---------------------------------------------------------------------------
   install-tests:
     name: Install from Artifact Registry + smoke
@@ -242,6 +256,22 @@ jobs:
       # Move the source aside so `import pinecone` resolves to site-packages.
       - name: Move source pinecone/ aside (avoid shadowing installed wheel)
         run: mv pinecone _pinecone_source
+
+      - name: Preflight — smoke credentials must be present
+        run: |
+          if [ -z "${PINECONE_API_KEY}" ]; then
+            echo "::error::PINECONE_API_KEY is empty — all 15 smoke tests this job collects would skip themselves and this job would report success having exercised none of the installed wheel. Add a repo secret PINECONE_API_KEY scoped to a test/CI Pinecone project."
+            {
+              echo "### Install + smoke: install path validated, smoke NOT RUN"
+              echo
+              echo "The wheel installed cleanly and \`pip check\` passed, so the publish/install"
+              echo "path is verified. \`PINECONE_API_KEY\` is unset, so the smoke suite itself was"
+              echo "skipped in full — failing loudly instead of reporting a green run with no"
+              echo "behavioural coverage (#315)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "PINECONE_API_KEY present (${#PINECONE_API_KEY} chars)"
 
       - name: Run smoke suite
         id: smoke

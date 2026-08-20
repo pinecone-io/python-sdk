@@ -9,7 +9,11 @@ following environment variables control which scenarios run.
 
 | Variable | Effect |
 |---|---|
-| `PINECONE_API_KEY` | API key for the project under test. The whole suite is skipped if unset. Read from `.env` at the SDK root. |
+| `PINECONE_API_KEY` | API key for the project under test. The whole suite is skipped if unset. Read from `.env` in the **main working tree**, so runs from a git worktree find the same file; override with `PINECONE_SDK_ENV_FILE=/path/to/.env`. |
+
+Every run ends with a `smoke coverage summary` block naming the `.env` it
+loaded and how many tests actually ran. A run that resolved no key says so
+there rather than exiting 0 behind a wall of skips (#295, #315).
 
 ## Optional (opt-in coverage)
 
