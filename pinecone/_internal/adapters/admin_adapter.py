@@ -8,6 +8,7 @@ from pinecone._internal.adapters._decode import decode_response
 from pinecone.models.admin.api_key import APIKeyList, APIKeyModel, APIKeyWithSecret
 from pinecone.models.admin.organization import OrganizationList, OrganizationModel
 from pinecone.models.admin.project import ProjectList, ProjectModel
+from pinecone.models.admin.user import UserList, UserModel
 
 
 class _OrganizationListEnvelope(Struct, kw_only=True):
@@ -141,3 +142,37 @@ class AdminAdapter:
         """
         envelope = decode_response(data, _APIKeyListEnvelope)
         return APIKeyList(envelope.data)
+
+    @staticmethod
+    def to_user(data: bytes) -> UserModel:
+        """Decode raw JSON bytes into a :class:`UserModel`.
+
+        Args:
+            data (bytes): Raw JSON response bytes from the Admin API.
+
+        Returns:
+            :class:`UserModel`: Decoded user.
+
+        Raises:
+            :exc:`ResponseParsingError`: If ``data`` cannot be decoded into :class:`UserModel`.
+        """
+        return decode_response(data, UserModel)
+
+    @staticmethod
+    def to_user_list(data: bytes) -> UserList:
+        """Decode raw JSON bytes from a list-users response into a :class:`UserList`.
+
+        Unlike the unpaginated admin list responses, ``UserList`` is itself the
+        wire schema — it carries the ``pagination`` cursor envelope alongside
+        ``data`` — so no internal envelope struct is needed.
+
+        Args:
+            data (bytes): Raw JSON response bytes from the Admin API.
+
+        Returns:
+            :class:`UserList`: Decoded page of users plus the next-page cursor.
+
+        Raises:
+            :exc:`ResponseParsingError`: If ``data`` cannot be decoded.
+        """
+        return decode_response(data, UserList)

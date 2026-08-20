@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from pinecone.admin.api_keys import ApiKeys
     from pinecone.admin.organizations import Organizations
     from pinecone.admin.projects import Projects
+    from pinecone.admin.users import Users
 
 _OAUTH_URL: str = "https://login.pinecone.io/oauth/token"
 _OAUTH_AUDIENCE: str = "https://api.pinecone.io/"
@@ -174,6 +175,7 @@ class Admin:
         self._organizations: Organizations | None = None
         self._projects: Projects | None = None
         self._api_keys: ApiKeys | None = None
+        self._users: Users | None = None
 
     def _fetch_token(
         self,
@@ -339,8 +341,33 @@ class Admin:
             self._api_keys = _ApiKeys(http=self._http)
         return self._api_keys
 
+    @property
+    def users(self) -> Users:
+        """Access the Users namespace for organization-member operations.
+
+        Lazily imported and instantiated on first access.
+
+        Returns:
+            :class:`Users` namespace instance.
+
+        Examples:
+
+            >>> from pinecone import Admin
+            >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
+            >>> for user in admin.users.list():
+            ...     print(user.email)
+        """
+        if self._users is None:
+            from pinecone.admin.users import Users as _Users
+
+            self._users = _Users(http=self._http)
+        return self._users
+
     def __repr__(self) -> str:
-        return "Admin(organizations=<Organizations>, projects=<Projects>, api_keys=<ApiKeys>)"
+        return (
+            "Admin(organizations=<Organizations>, projects=<Projects>, "
+            "api_keys=<ApiKeys>, users=<Users>)"
+        )
 
     def close(self) -> None:
         """Close the underlying HTTP client."""
