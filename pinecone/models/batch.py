@@ -107,6 +107,12 @@ class BatchResult(Struct, kw_only=True):
             gate. A value far below your ``max_concurrency`` means the
             backend was pushing back.
         peak_inflight: The most batches this operation had in flight at once.
+        stalled: Whether the host gate's stall detector fired during this
+            operation — the adaptive limit was at the floor with consecutive
+            all-failed settles, so the remainder was abandoned rather than
+            queued against an apparently-dead backend. Abandoned batches
+            appear in ``errors`` with ``disposition="abandoned"``; the gate
+            itself re-probes after a cool-down.
 
     Examples:
         >>> from pinecone import Pinecone
@@ -144,6 +150,7 @@ class BatchResult(Struct, kw_only=True):
     throttle_event_count: int = 0
     final_limit: int | None = None
     peak_inflight: int = 0
+    stalled: bool = False
 
     @property
     def has_errors(self) -> bool:
@@ -221,6 +228,7 @@ class BatchResult(Struct, kw_only=True):
             "throttle_event_count": self.throttle_event_count,
             "final_limit": self.final_limit,
             "peak_inflight": self.peak_inflight,
+            "stalled": self.stalled,
         }
 
     def to_json(self) -> str:

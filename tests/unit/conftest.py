@@ -49,3 +49,16 @@ def _fresh_retry_budgets() -> Generator[None, None, None]:
     get_budget_registry()._reset()
     yield
     get_budget_registry()._reset()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_gate_registry() -> Generator[None, None, None]:
+    """The gate registry is process-global too. The bulk package's own
+    conftest additionally asserts quiescence; this suite-wide reset only
+    guarantees isolation — a halved limit or a stalled gate left by one test
+    must not bleed into an unrelated test file (issue #156)."""
+    from pinecone._internal.bulk.registry import get_registry
+
+    get_registry()._reset()
+    yield
+    get_registry()._reset()

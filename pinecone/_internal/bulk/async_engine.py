@@ -179,4 +179,5 @@ async def bulk_execute_async(
         throttle_event_count=gate.throttle_events - throttle_events_at_start,
         final_limit=gate.limit,
         peak_inflight=peak_inflight,
+        stalled=stalled,
     )

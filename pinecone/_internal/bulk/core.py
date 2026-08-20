@@ -41,6 +41,19 @@ margin against declaring a backend dead on a two-sample blip. Each settle
 already represents a fully retried batch, so 4 settles is ~24 wire attempts.
 """
 
+STALL_COOLDOWN_SECONDS = 30.0
+"""How long a tripped stall refuses admission before the gate probes again.
+
+A stall must be a cool-down, not a terminal state: the gate lives in a
+process-global registry, so a permanent refusal would brick the host key
+for the process lifetime after one outage (issue #150). While the cool-down
+runs, callers fail fast and abandon — the panel-intended behavior. When it
+elapses, the failure streak resets on the next request and the gate probes
+fresh from the floor: the limit is still 1, so recovery against a
+still-dead backend costs one serial batch per window, and each failed
+settle while stalled pushes the window out again.
+"""
+
 
 class AcquireOutcome(enum.Enum):
     GRANTED = "granted"
@@ -78,6 +91,7 @@ class GateCore:
         "_hold_until",
         "_inflight",
         "_limit",
+        "_stalled_until",
         "_success_streak",
         "_throttle_events",
         "_waiters",
@@ -94,6 +108,7 @@ class GateCore:
         self._epoch_settles_remaining = 0
         self._hold_until: float | None = None
         self._consecutive_failures = 0
+        self._stalled_until: float | None = None
         self._throttle_events = 0
 
     @property
@@ -137,6 +152,7 @@ class GateCore:
         queue is empty (FIFO — nobody barges past an existing waiter);
         otherwise the waiter is queued, or refused outright when stalled."""
         w = Waiter(kind)
+        self._maybe_recover(now)
         if self.stalled:
             w.stalled = True
             return w
@@ -147,6 +163,18 @@ class GateCore:
             self._bound_since_change = True
             self._waiters.append(w)
         return w
+
+    def _maybe_recover(self, now: float) -> None:
+        """A stall is a cool-down, not a verdict (issue #150): once
+        ``stalled_until`` passes, the failure streak resets and the next
+        request probes the backend from the floor. The ``None`` guard keeps
+        even an unforeseen stall-shaped state recoverable — a permanent
+        refusal in a process-global gate is the one unacceptable outcome."""
+        if not self.stalled:
+            return
+        if self._stalled_until is None or now >= self._stalled_until:
+            self._consecutive_failures = 0
+            self._stalled_until = None
 
     def release(self, now: float) -> list[Waiter]:
         """A granted slot settled (any outcome). Frees capacity, advances the
@@ -191,6 +219,7 @@ class GateCore:
         self._epoch_settles_remaining = self._inflight
         self._bound_since_change = False
         if self.stalled and not was_stalled:
+            self._stalled_until = now + STALL_COOLDOWN_SECONDS
             return self._wake_all_stalled()
         return []
 
@@ -215,6 +244,8 @@ class GateCore:
         their callers can abandon instead of waiting on a dead host."""
         was_stalled = self.stalled
         self._consecutive_failures += 1
+        if self.stalled:
+            self._stalled_until = now + STALL_COOLDOWN_SECONDS
         if self.stalled and not was_stalled:
             return self._wake_all_stalled()
         return []
