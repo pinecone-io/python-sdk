@@ -67,8 +67,7 @@ def test_serverless_dense_smoke(client: Pinecone) -> None:
         assert described.name == name
         assert described.host
 
-        listing = client.indexes.list()
-        assert any(i.name == name for i in listing.indexes)
+        assert name in {i.name for i in client.indexes.list()}
 
         assert client.indexes.exists(name) is True
         assert client.indexes.exists(f"{SMOKE_PREFIX}-does-not-exist") is False

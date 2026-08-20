@@ -6,13 +6,16 @@ left indexes, collections, or assistants behind.
 
 Usage::
 
-    cd sdks/python-sdk2
-    uv run --with python-dotenv python tests/smoke/scripts/cleanup_orphans.py
+    uv run python tests/smoke/scripts/cleanup_orphans.py
 
 Optionally pass ``--dry-run`` to print what would be deleted without
 actually deleting it.
 
-The script reads ``PINECONE_API_KEY`` from the environment / ``.env``.
+The script reads ``PINECONE_API_KEY`` from the environment / ``.env``, resolved
+through ``tests.live_suite.load_env`` so a run from a git worktree finds the
+``.env`` in the main checkout, and so the path it used is printed rather than
+guessed at. Override with ``PINECONE_SDK_ENV_FILE``.
+
 It does NOT delete any backups — backup smoke tests always clean up their
 own backups in-test, so backups are never leaked to this script.
 """
@@ -22,12 +25,14 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-
-from dotenv import load_dotenv
+from pathlib import Path
 
 from pinecone import Pinecone
+from tests.live_suite import load_env
 
 PREFIX = "smoke"
+
+_HERE = Path(__file__).resolve().parent
 
 
 def cleanup(*, dry_run: bool = False) -> int:
@@ -74,7 +79,7 @@ def cleanup(*, dry_run: bool = False) -> int:
 
     # ---- Indexes ----
     try:
-        index_names = sorted(i.name for i in pc.indexes.list().indexes if i.name.startswith(PREFIX))
+        index_names = sorted(i.name for i in pc.indexes.list() if i.name.startswith(PREFIX))
     except Exception as exc:
         print(f"ERROR listing indexes: {exc}")
         index_names = []
@@ -124,7 +129,7 @@ def cleanup(*, dry_run: bool = False) -> int:
 
 
 def main() -> int:
-    load_dotenv()
+    print(f".env source: {load_env(_HERE)}")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--dry-run",

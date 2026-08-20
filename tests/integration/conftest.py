@@ -188,6 +188,10 @@ def ensure_index_deleted(
     Unlike ``cleanup_resource``, this waits for the backend to finish the
     asynchronous delete so the name is released before the test returns,
     which reduces cross-test index-quota flakes.
+
+    Iterate the paginator; do not reach for a ``.indexes`` attribute. It has
+    none, so every poll raised and this helper leaked every index it was
+    asked to delete (#346).
     """
     try:
         client.indexes.delete(name)
@@ -197,8 +201,7 @@ def ensure_index_deleted(
     start = time.monotonic()
     while time.monotonic() - start < timeout:
         try:
-            listing = client.indexes.list()
-            existing = {i.name for i in listing.indexes}
+            existing = {i.name for i in client.indexes.list()}
             if name not in existing:
                 print(f"  Cleaned up index: {name}")
                 return

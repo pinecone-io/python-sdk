@@ -59,8 +59,7 @@ async def test_serverless_dense_smoke_async(api_key: str) -> None:
         described = await pc.indexes.describe(name)
         assert described.name == name
 
-        listing = await pc.indexes.list()
-        assert any(i.name == name for i in listing.indexes)
+        assert name in {i.name async for i in pc.indexes.list()}
 
         assert await pc.indexes.exists(name) is True
         assert await pc.indexes.exists(f"{SMOKE_PREFIX}-does-not-exist-async") is False
