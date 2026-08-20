@@ -338,6 +338,25 @@ class AsyncIndexes:
                 refused later. The field cannot be added by ``configure()``, so
                 an index created without one has to be recreated. See
                 ``docs/migration/v10-2026-07-vector-models.md``.
+                Two server-side limits have no client-side check: a field
+                ``description`` is capped at 256 **bytes** of UTF-8 rather than
+                256 characters, and a schema may declare at most 100
+                ``full_text_search`` fields. Because the server walks
+                ``fields`` as an unordered map and checks each field's name
+                before its description, a schema with more than one offending
+                field names an arbitrary one of them.
+                ``full_text_search.language`` accepts 18 values (``ar da de el
+                en es fi fr hu it nl no pt ro ru sv ta tr``, as the two-letter
+                code or the English name, default ``en``), but
+                ``stop_words=True`` is gated to a sealed 13-value subset that
+                excludes ``ar``, ``el``, ``ro``, ``ta`` and ``tr``. So
+                ``language="tr"`` alone is accepted, and adding
+                ``stemming=True, stop_words=True`` is a 400 that names the
+                English name rather than the code you sent
+                (``stop_words is not supported for language 'turkish'``).
+                Setting ``ngram`` neither rejects nor keeps a ``language``: the
+                value is accepted and replaced by the default ``en``. See
+                ``docs/migration/v10-2026-07-db-control.md``.
             name: Optional name for the index. 1-45 characters matching
                 ``^[a-z0-9]([a-z0-9-]*[a-z0-9])?$``. If omitted, the server
                 assigns one.
@@ -355,9 +374,21 @@ class AsyncIndexes:
                 default ``"disabled"``).
             tags: Optional key-value tags. Keys: 1-80 ASCII alphanumerics,
                 ``_`` or ``-``; values: 0-120 printable ASCII characters;
-                at most 20 tags.
+                at most 20 tags. ``{}`` is rejected client-side — pass ``None``
+                to send no tags. A ``""`` value means *delete this key*, and
+                the server runs that same merge on create, where there is
+                nothing to delete: ``tags={"a": ""}`` creates the index with no
+                tags rather than with an empty ``a``.
             cmek_id: Optional customer-managed encryption key ID. Incompatible
-                with pod deployments and with ``full_text_search`` fields.
+                with pod deployments and with ``full_text_search`` fields —
+                both are a per-request 400. A second, project-level rule
+                reports 412 instead: when the project enforces CMEK
+                encryption, a pod deployment or any ``full_text_search`` field
+                is refused whether or not this argument is set. The
+                per-request check runs first, so a pod request carrying a
+                ``cmek_id`` reports the 400 and the identical request without
+                it reports the 412 — dropping ``cmek_id`` changes which rule
+                you hit, not whether you pass.
             timeout: Seconds to wait for the index to become ready. ``None``
                 (default) polls indefinitely every 5 seconds. A positive int
                 polls with a deadline. ``-1`` returns immediately without
@@ -376,7 +407,11 @@ class AsyncIndexes:
             :exc:`IndexInitFailedError`: If the index fails to initialise.
             :exc:`PineconeTimeoutError`: If the index is not ready before the deadline.
             :exc:`ApiError`: If the API returns an error response; server
-                validation messages are surfaced verbatim.
+                validation messages are surfaced verbatim. Only the first
+                failure is reported, and the checks do not run in the order of
+                this signature — the ``full_text_search`` analyzer rules run
+                last of all, after the project-level 412s. See
+                ``docs/migration/v10-2026-07-db-control.md``.
 
         Examples:
             .. code-block:: python
@@ -599,7 +634,12 @@ class AsyncIndexes:
                 "dedicated": {...}}``. Applies to managed and BYOC indexes.
             deletion_protection: ``"enabled"`` or ``"disabled"``.
             tags: Tag updates, merged with existing tags on the server. Set a
-                value to ``""`` to delete that tag key.
+                value to ``""`` to delete that key; keys you do not mention are
+                left unchanged. The 20-tag cap is applied to the **merged**
+                total rather than to this request, so five new tags against an
+                index already carrying 18 is a 400 naming 23. When the merge
+                leaves no tags the index stores no tag map at all rather than
+                an empty one. ``{}`` is rejected client-side.
 
         Returns:
             :class:`IndexModel` reflecting the updated index state. Some

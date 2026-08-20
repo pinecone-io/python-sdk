@@ -289,6 +289,181 @@ index = await pc.indexes.configure(
 ::::
 :::::
 
+(create-limits)=
+
+## Create-time limits with no client-side equivalent
+
+Nothing below is checked before the request is sent, so each arrives as an
+`ApiError` carrying the server's message verbatim. Backend citations are
+`pinecone-db @ cbee5a67fe`.
+
+### Schema field limits
+
+A field `description` is capped at **256 bytes of UTF-8**, not 256 characters
+(`MAX_SCHEMA_FIELD_DESCRIPTION_BYTES` at
+`svc-global-apis/src/control_plane/http/handler/global/base/index/validate.rs:23`,
+applied to every field type at `:295-333` as `d.len() > 256` on a Rust
+`String`). A schema may declare at most **100** `full_text_search` fields
+(`validate.rs:227-246`; the bound is a setting whose default is `100` at
+`svc-global-apis/src/control_plane/http/mod.rs:134`), and that message names
+both counts. The server walks `fields` as an unordered `HashMap`
+(`.../base/index_v2/mod.rs:392-394`) and validates each field's name before
+its description, so a schema with two offending fields reports an arbitrary
+one of them — fix them all rather than resubmitting one at a time.
+
+```python
+pc.indexes.create(
+    name="movies",
+    schema={
+        "fields": {
+            "embedding": {
+                "type": "dense_vector",
+                "dimension": 1536,
+                "metric": "cosine",
+                # The cap is on len(description.encode("utf-8")), so emoji and
+                # CJK text reach 256 at a fraction of their character count.
+                "description": "Dense embedding of the movie synopsis",
+            }
+        }
+    },
+    deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
+)
+```
+
+### `language` accepts 18 values; `stop_words` is gated to 13 of them
+
+`full_text_search.language` parses against 18 values — `ar da de el en es fi
+fr hu it nl no pt ro ru sv ta tr`, each accepting the two-letter code or the
+English name, defaulting to `en` (`pc-types/src/index_schema_def.rs:433-489`).
+`stop_words: true` additionally requires the language to be in a sealed
+13-value set that excludes **`ar`, `el`, `ro`, `ta` and `tr`**
+(`.../global/v202607/indexes.rs:60-74`, resolved per API version at
+`.../global/mod.rs:34-52`, where a later version may publish a superset but
+never a subset). So `language="tr"` on its own is fine, while
+`language="tr", stemming=True, stop_words=True` is a `400` — and that message
+names the **English** name, not the code you sent: `stop_words is not
+supported for language 'turkish'`.
+
+`ngram` does not reject a `language`, it replaces it. The stored config is
+built as `FullTextSearchConfig { ngram: Some(..), ..Default::default() }`
+(`.../base/index_v2/mod.rs:322-329`) and that default is `Some(en)`
+(`index_schema_def.rs:512-518`), so a `language` sent alongside `ngram` is
+accepted and the created index reports `en`. An *unparseable* language is
+still a `400`, because the parse runs ahead of the `ngram` branch (`:269-281`);
+`stemming` or `stop_words` alongside `ngram` is rejected outright (`:292-297`).
+
+```python
+pc.indexes.create(
+    name="articles",
+    schema={
+        "fields": {
+            # Valid on its own: `tr` is one of the 18 `language` values.
+            "body": {"type": "string", "full_text_search": {"language": "tr"}},
+            # Accepted, then stored as `en` — `ngram` discards the language.
+            "title": {
+                "type": "string",
+                "full_text_search": {"ngram": {"min_gram": 2, "max_gram": 4}, "language": "tr"},
+            },
+        }
+    },
+    deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
+)
+```
+
+### CMEK is two rules with two status codes
+
+`cmek_id` has a per-request incompatibility *and* the project has a separate
+precondition, and they report differently:
+
+- **`400`, per request.** `cmek_id` with a pod deployment, or `cmek_id`
+  alongside any `full_text_search` field, is rejected by `validate_cmek_id`
+  (`.../base/index/validate.rs:80-100`). This is what `create`'s `cmek_id`
+  docstring has always described.
+- **`412`, per project.** If the project enforces CMEK encryption, a pod
+  deployment or any `full_text_search` field is rejected by
+  `validate_encryption_restrictions` (`validate.rs:195-222`) **whether or not
+  the request carries a `cmek_id`** — `Index creation failed. Pod indexes are
+  not supported in CMEK-encrypted projects` and `Index creation failed.
+  Indexes with full_text_search fields are not supported in CMEK-encrypted
+  projects`.
+
+The per-request check runs first (`.../base/index_v2/indexes.rs:485-486`), so a
+pod request that also carries `cmek_id` reports the `400`; drop the `cmek_id`
+and the identical request reports the `412` instead. Neither block above passes
+a `cmek_id`, and on a CMEK-encrypted project the `full_text_search` one is a
+`412` exactly as written.
+
+### Validation order, because the first failure is the only failure
+
+`validate_create_request` (`.../base/index_v2/indexes.rs:172-192`) runs: name →
+`cmek_id` → capacity mode → read capacity → source data → schema field names
+and descriptions → `full_text_search` field count → metadata-field
+declarations. Only then does `validate_org_and_project_state` (`:486`) reach
+the project-level `412`s above.
+
+The `full_text_search` *analyzer* rules — the `ngram` bounds, the
+`ngram`-with-`stemming`/`stop_words` rejection, `stop_words` requiring
+`stemming`, and the `stop_words` language gate — are **not** part of that
+sweep. They run last, while the stored schema is built at `:553`, after the
+project `412`s and after the tag merge. A request that is both a pod create on
+a CMEK-encrypted project and asks for `stop_words` in Turkish reports the
+`412`, never the `400`.
+
+### Tags: `""` deletes a key, and the 20-tag cap counts the merge
+
+`process_tags` (`svc-global-apis/src/commons/tags.rs:80-118`) is the same code
+path on create and on configure — create simply merges into an empty map
+(`.../base/index_v2/indexes.rs:527` passes `None` as the existing tags).
+Three consequences:
+
+- A `""` value means *delete this key*, on create as well as on configure
+  (`process_tag`, `:63-76`, maps both `null` and `""` to a removal). On create
+  there is nothing to delete, so the key is simply not stored.
+- `MAX_TAGS = 20` is checked on the **merged** total, not on the request
+  (`:107-112`). Five new tags against an index already carrying 18 is a `400`
+  reading `Maximum tags exceeded. 23 tags total requested, maximum of 20
+  allowed`, even though the request held five.
+- When the merge leaves no tags the index stores no tag map at all rather than
+  an empty one (`:113-117`).
+
+The SDK's own checks are narrower and run first: `tags={}` is a
+`PineconeValueError` before any request (pass `None` to send no tags), keys
+must match `[a-zA-Z0-9_-]{1,80}` and values must be printable ASCII within 120
+characters. Because that ASCII check runs client-side, the server's byte-based
+key and value limits (`tags.rs:18-59`) can never differ from a character count
+for tags this SDK accepts — unlike the schema `description` cap above, which
+has no client-side check at all.
+
+```python
+# `env` is stored; `owner` is sent and then deleted by the merge, so the new
+# index carries exactly one tag.
+index = pc.indexes.create(
+    name="movies",
+    schema={"fields": {"embedding": {"type": "dense_vector", "dimension": 1536, "metric": "cosine"}}},
+    deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
+    tags={"env": "prod", "owner": ""},
+)
+```
+
+The same rule on configure, where there *is* something to delete:
+
+:::::{tabs}
+::::{tab} Sync
+
+```python
+index = pc.indexes.configure("movies", tags={"team": "search", "owner": ""})
+```
+
+::::
+::::{tab} Async
+
+```python
+index = await pc.indexes.configure("movies", tags={"team": "search", "owner": ""})
+```
+
+::::
+:::::
+
 ## Data-plane note
 
 The flows above create indexes and deliberately stop there rather than

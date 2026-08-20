@@ -8,6 +8,17 @@ schedule *type* (``"time-based"``) and three cadences (``daily``, ``weekly``,
 **There is no cron support anywhere in this API**, so there is no way to ask
 for an arbitrary expression or a caller-chosen timezone.
 
+Only ``"time-based"`` is a supported type and the SDK always sends it for you,
+so :meth:`create` takes no ``type`` argument. The server does not enforce it,
+though: ``schedule.type`` is a plain string that is stored and echoed back
+unvalidated, and the 2026-07 OAS declares ``time-based`` as a documentation-only
+``x-enum`` rather than a JSON Schema ``enum``. Nothing rejects a typo, so
+:attr:`~pinecone.models.backups.schedules.BackupScheduleModel.schedule_type`
+reports whatever the schedule was created with. It is always ``"time-based"``
+for schedules created through this SDK, and not guaranteed for one created by
+another client. ``frequency`` is the opposite: a real server-side enum, checked
+here as well.
+
 Two shapes are offered for each of the two listings.
 :meth:`AsyncBackupSchedules.list` and :meth:`AsyncBackupSchedules.history`
 return one page plus its pagination token, matching
