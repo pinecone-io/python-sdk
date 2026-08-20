@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -10,7 +11,7 @@ import orjson
 
 from pinecone import __version__
 from pinecone._internal.adapters._decode import decode_response
-from pinecone._internal.config import PineconeConfig
+from pinecone._internal.config import PineconeConfig, normalize_host
 from pinecone._internal.constants import ADMIN_API_VERSION, API_VERSION_HEADER, DEFAULT_BASE_URL
 from pinecone._internal.http_client import HTTPClient, _build_socket_options, _RetryTransport
 from pinecone._internal.user_agent import build_user_agent
@@ -82,6 +83,16 @@ class Admin:
         proxy_url (str | None): HTTP proxy URL for outgoing requests.
         ssl_verify (bool): Whether to verify SSL certificates. Defaults to ``True``.
         source_tag (str | None): Tag appended to the User-Agent string for request attribution.
+        host (str | None): Admin API host. Falls back to ``PINECONE_CONTROLLER_HOST`` env var,
+            then defaults to ``https://api.pinecone.io``. A value with no scheme is prefixed
+            with ``https://``, matching :class:`~pinecone.Pinecone`. Intended for pointing the
+            client at a local simulator in tests or at a private Pinecone deployment; leave it
+            unset against production.
+        oauth_url (str | None): Full URL of the OAuth2 token endpoint, including its path.
+            Defaults to ``https://login.pinecone.io/oauth/token``. A value with no scheme is
+            prefixed with ``https://``. Intended for pointing the token exchange at a local
+            simulator in tests or at a private Pinecone deployment; leave it unset against
+            production. There is no environment-variable fallback for this parameter.
 
     Raises:
         :exc:`~pinecone.errors.exceptions.PineconeValueError`:
@@ -105,6 +116,8 @@ class Admin:
         proxy_url: str | None = None,
         ssl_verify: bool = True,
         source_tag: str | None = None,
+        host: str | None = None,
+        oauth_url: str | None = None,
     ) -> None:
         resolved_id = client_id or os.environ.get("PINECONE_CLIENT_ID", "")
         resolved_secret = client_secret or os.environ.get("PINECONE_CLIENT_SECRET", "")
@@ -128,6 +141,7 @@ class Admin:
             proxy_url=proxy_url,
             ssl_verify=ssl_verify,
             source_tag=resolved_source_tag,
+            oauth_url=normalize_host(oauth_url) or _OAUTH_URL,
         )
 
         headers: dict[str, str] = {
@@ -139,14 +153,20 @@ class Admin:
 
         config = PineconeConfig(
             api_key="",
-            host=DEFAULT_BASE_URL,
+            host=host or "",
             additional_headers=headers,
             proxy_url=proxy_url or "",
             ssl_verify=ssl_verify,
             source_tag=resolved_source_tag,
         )
+        # __post_init__ already applied the PINECONE_CONTROLLER_HOST fallback and
+        # scheme normalization; only the api.pinecone.io default is left to fill in.
+        if not config.host:
+            config = replace(config, host=DEFAULT_BASE_URL)
+
         # Prevent __post_init__ from falling back to PINECONE_API_KEY env var.
         # The Admin client authenticates via OAuth Bearer token, not Api-Key.
+        # Must follow the replace() above, which re-runs __post_init__.
         object.__setattr__(config, "api_key", "")
 
         self._http = HTTPClient(config, ADMIN_API_VERSION)
@@ -163,6 +183,7 @@ class Admin:
         proxy_url: str | None = None,
         ssl_verify: bool = True,
         source_tag: str | None = None,
+        oauth_url: str | None = None,
     ) -> str:
         """Exchange client credentials for a Bearer token.
 
@@ -172,6 +193,8 @@ class Admin:
             proxy_url: Optional HTTP proxy URL.
             ssl_verify: Whether to verify SSL certificates.
             source_tag: Optional source tag to append to the User-Agent string.
+            oauth_url: Token endpoint URL. Defaults to the production endpoint; overridden
+                when testing against a simulator or a private deployment.
 
         Returns:
             The access token string.
@@ -198,7 +221,7 @@ class Admin:
         ) as client:
             try:
                 response = client.post(
-                    _OAUTH_URL,
+                    oauth_url or _OAUTH_URL,
                     content=body,
                     headers={
                         "Content-Type": "application/json",

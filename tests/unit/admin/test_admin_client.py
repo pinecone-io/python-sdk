@@ -388,3 +388,221 @@ class TestAdminOAuthNonJsonErrorBody:
 
         assert exc_info.value.status_code == 500
         assert exc_info.value.body is None
+
+
+class TestAdminUrlOverrides:
+    """Test the host and oauth_url overrides used to target simulators."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_host_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("PINECONE_CONTROLLER_HOST", raising=False)
+
+    @respx.mock
+    def test_defaults_unchanged(self) -> None:
+        oauth = respx.post(_OAUTH_URL).mock(return_value=Response(200, json=_token_response()))
+        orgs = respx.get(f"{DEFAULT_BASE_URL}/admin/organizations").mock(
+            return_value=Response(200, json={"data": []})
+        )
+
+        admin = Admin(client_id="test-id", client_secret="test-secret")
+        admin.organizations.list()
+
+        assert admin._http._config.host == DEFAULT_BASE_URL
+        assert oauth.called
+        assert orgs.called
+        admin.close()
+
+    @respx.mock
+    def test_host_override_targets_admin_requests(self) -> None:
+        respx.post(_OAUTH_URL).mock(return_value=Response(200, json=_token_response()))
+        orgs = respx.get("http://localhost:5080/admin/organizations").mock(
+            return_value=Response(200, json={"data": []})
+        )
+
+        admin = Admin(
+            client_id="test-id",
+            client_secret="test-secret",
+            host="http://localhost:5080",
+        )
+        admin.organizations.list()
+
+        assert admin._http._config.host == "http://localhost:5080"
+        assert orgs.called
+        admin.close()
+
+    @respx.mock
+    def test_host_override_leaves_oauth_url_alone(self) -> None:
+        oauth = respx.post(_OAUTH_URL).mock(return_value=Response(200, json=_token_response()))
+
+        admin = Admin(
+            client_id="test-id",
+            client_secret="test-secret",
+            host="http://localhost:5080",
+        )
+
+        assert str(oauth.calls.last.request.url) == _OAUTH_URL
+        admin.close()
+
+    @respx.mock
+    def test_host_env_var_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PINECONE_CONTROLLER_HOST", "http://localhost:5080")
+        respx.post(_OAUTH_URL).mock(return_value=Response(200, json=_token_response()))
+
+        admin = Admin(client_id="test-id", client_secret="test-secret")
+
+        assert admin._http._config.host == "http://localhost:5080"
+        admin.close()
+
+    @respx.mock
+    def test_explicit_host_beats_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PINECONE_CONTROLLER_HOST", "http://env-host:5080")
+        respx.post(_OAUTH_URL).mock(return_value=Response(200, json=_token_response()))
+
+        admin = Admin(
+            client_id="test-id",
+            client_secret="test-secret",
+            host="http://explicit-host:5080",
+        )
+
+        assert admin._http._config.host == "http://explicit-host:5080"
+        admin.close()
+
+    @respx.mock
+    def test_host_without_scheme_gets_https(self) -> None:
+        respx.post(_OAUTH_URL).mock(return_value=Response(200, json=_token_response()))
+
+        admin = Admin(
+            client_id="test-id",
+            client_secret="test-secret",
+            host="admin.example.com",
+        )
+
+        assert admin._http._config.host == "https://admin.example.com"
+        admin.close()
+
+    @respx.mock
+    def test_oauth_url_override(self) -> None:
+        override = "http://localhost:5080/oauth/token"
+        oauth = respx.post(override).mock(return_value=Response(200, json=_token_response()))
+        production = respx.post(_OAUTH_URL).mock(
+            return_value=Response(200, json=_token_response("production-token"))
+        )
+
+        admin = Admin(
+            client_id="test-id",
+            client_secret="test-secret",
+            oauth_url=override,
+        )
+
+        assert oauth.called
+        assert not production.called
+        assert admin._http._headers["Authorization"] == "Bearer test-access-token"
+        admin.close()
+
+    @respx.mock
+    def test_oauth_url_override_leaves_host_alone(self) -> None:
+        respx.post("http://localhost:5080/oauth/token").mock(
+            return_value=Response(200, json=_token_response())
+        )
+
+        admin = Admin(
+            client_id="test-id",
+            client_secret="test-secret",
+            oauth_url="http://localhost:5080/oauth/token",
+        )
+
+        assert admin._http._config.host == DEFAULT_BASE_URL
+        admin.close()
+
+    @respx.mock
+    def test_oauth_url_without_scheme_gets_https(self) -> None:
+        oauth = respx.post("https://login.example.com/oauth/token").mock(
+            return_value=Response(200, json=_token_response())
+        )
+
+        admin = Admin(
+            client_id="test-id",
+            client_secret="test-secret",
+            oauth_url="login.example.com/oauth/token",
+        )
+
+        assert oauth.called
+        admin.close()
+
+    @respx.mock
+    def test_oauth_url_override_keeps_production_audience(self) -> None:
+        oauth = respx.post("http://localhost:5080/oauth/token").mock(
+            return_value=Response(200, json=_token_response())
+        )
+
+        admin = Admin(
+            client_id="test-id",
+            client_secret="test-secret",
+            oauth_url="http://localhost:5080/oauth/token",
+        )
+
+        import orjson
+
+        body = orjson.loads(oauth.calls.last.request.content)
+        assert body["audience"] == "https://api.pinecone.io/"
+        assert body["grant_type"] == "client_credentials"
+        admin.close()
+
+    @respx.mock
+    def test_both_overrides_target_one_simulator(self) -> None:
+        oauth = respx.post("http://localhost:5080/oauth/token").mock(
+            return_value=Response(200, json=_token_response("sim-token"))
+        )
+        orgs = respx.get("http://localhost:5080/admin/organizations").mock(
+            return_value=Response(200, json={"data": []})
+        )
+
+        admin = Admin(
+            client_id="test-id",
+            client_secret="test-secret",
+            host="http://localhost:5080",
+            oauth_url="http://localhost:5080/oauth/token",
+        )
+        admin.organizations.list()
+
+        assert oauth.called
+        assert orgs.called
+        assert orgs.calls.last.request.headers["Authorization"] == "Bearer sim-token"
+        admin.close()
+
+    @respx.mock
+    def test_default_host_path_still_suppresses_api_key_header(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Filling in the default host must not resurrect the PINECONE_API_KEY fallback."""
+        monkeypatch.setenv("PINECONE_API_KEY", "data-plane-key-12345")
+        respx.post(_OAUTH_URL).mock(return_value=Response(200, json=_token_response()))
+
+        admin = Admin(client_id="test-id", client_secret="test-secret")
+
+        assert "Api-Key" not in admin._http._headers
+        assert admin._http._config.host == DEFAULT_BASE_URL
+        admin.close()
+
+    @respx.mock
+    def test_host_override_still_suppresses_api_key_header(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PINECONE_API_KEY", "data-plane-key-12345")
+        respx.post(_OAUTH_URL).mock(return_value=Response(200, json=_token_response()))
+
+        admin = Admin(
+            client_id="test-id",
+            client_secret="test-secret",
+            host="http://localhost:5080",
+        )
+
+        assert "Api-Key" not in admin._http._headers
+        admin.close()
+
+    @respx.mock
+    def test_overrides_are_keyword_only(self) -> None:
+        respx.post(_OAUTH_URL).mock(return_value=Response(200, json=_token_response()))
+
+        with pytest.raises(TypeError):
+            Admin("test-id", "test-secret", "http://localhost:5080")  # type: ignore[misc]
