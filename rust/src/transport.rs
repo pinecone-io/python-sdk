@@ -551,7 +551,7 @@ impl GrpcChannel {
     /// Args:
     ///     endpoint: The gRPC endpoint URL (e.g. "https://my-index-abc123.svc.pinecone.io:443")
     ///     api_key: The Pinecone API key for authentication.
-    ///     api_version: The Pinecone API version string (e.g. "2025-10").
+    ///     api_version: The Pinecone API version string (e.g. "2026-07").
     ///     version: The SDK version string (e.g. "0.1.0") used in the User-Agent header.
     ///     secure: Whether to use TLS encryption (default true).
     ///     timeout_s: Request timeout in seconds (default 20.0).
@@ -1509,7 +1509,7 @@ mod tests {
 
     #[test]
     fn interceptor_attaches_all_metadata_headers() {
-        let mut interceptor = MetadataInterceptor::new("test-api-key-123", "2025-10").unwrap();
+        let mut interceptor = MetadataInterceptor::new("test-api-key-123", "2026-07").unwrap();
         let request = tonic::Request::new(());
         let result = interceptor.call(request).unwrap();
         let metadata = result.metadata();
@@ -1524,7 +1524,7 @@ mod tests {
                 .unwrap()
                 .to_str()
                 .unwrap(),
-            "2025-10"
+            "2026-07"
         );
 
         let request_id = metadata.get("x-request-id").unwrap().to_str().unwrap();
@@ -1688,7 +1688,7 @@ mod tests {
 
     #[test]
     fn each_call_gets_distinct_request_id() {
-        let mut interceptor = MetadataInterceptor::new("key", "2025-10").unwrap();
+        let mut interceptor = MetadataInterceptor::new("key", "2026-07").unwrap();
         let mut ids = HashSet::new();
 
         for _ in 0..100 {

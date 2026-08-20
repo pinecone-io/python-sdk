@@ -71,7 +71,7 @@ message UpsertRequest {
     (google.api.field_behavior) = REQUIRED
   ];
 
-  // The namespace where you upsert vectors.
+  // The namespace where you upsert records.
   string          namespace = 2;
 }
 
@@ -89,7 +89,7 @@ message DeleteRequest {
   // This indicates that all vectors in the index namespace should be deleted.
   bool            delete_all = 2;
 
-  // The namespace to delete vectors from, if applicable.
+  // The namespace to delete records from, if applicable.
   string          namespace  = 3;
 
   // If specified, the metadata filter here will be used to select the vectors to delete. This is mutually exclusive
@@ -113,7 +113,6 @@ message FetchRequest {
 
 message FetchByMetadataRequest{
     string namespace = 1;
-
     // Metadata filter
     optional google.protobuf.Struct filter = 2;
 
@@ -377,6 +376,8 @@ message NamespaceDescription {
   optional MetadataSchema schema = 3;
   // List of indexed fields in the namespace
   optional IndexedFields indexed_fields = 4;
+  // The total size of the namespace's data, in bytes.
+  uint64 size_bytes = 5;
 }
 
 message DeleteNamespaceRequest {
@@ -437,9 +438,9 @@ message MetadataSchema {
 // The `VectorService` interface is exposed by Pinecone's vector index services.
 // This service could also be called a `gRPC` service or a `REST`-like api.
 service VectorService {
-  // Upsert vectors
+  // Upsert records
   //
-  // Upsert vectors into a namespace. If a new value is upserted for an existing vector ID, it will overwrite the previous value.
+  // Upsert records into a namespace. If a new value is upserted for an existing record ID, it will overwrite the previous value.
   //
   // For guidance, examples, and limits, see [Upsert data](https://docs.pinecone.io/guides/index-data/upsert-data).
   rpc Upsert(UpsertRequest) returns (UpsertResponse) {
@@ -449,9 +450,9 @@ service VectorService {
     };
   }
 
-  // Delete vectors
+  // Delete records
   //
-  // Delete vectors by id from a single namespace.
+  // Delete records by id or by metadata from a single namespace.
   //
   // For guidance and examples, see [Delete data](https://docs.pinecone.io/guides/manage-data/delete-data).
   rpc Delete(DeleteRequest) returns (DeleteResponse) {
@@ -464,9 +465,9 @@ service VectorService {
     };
   }
 
-  // Fetch vectors
+  // Fetch records
   //
-  // Look up and return vectors by ID from a single namespace. The returned vectors include the vector data and/or metadata.
+  // Look up and return records by ID from a single namespace. The returned records include the vector data and/or metadata.
   //
   // For guidance and examples, see [Fetch data](https://docs.pinecone.io/guides/manage-data/fetch-data).
   rpc Fetch(FetchRequest) returns (FetchResponse) {
@@ -475,9 +476,9 @@ service VectorService {
     };
   }
 
-  // List vector IDs
+  // List record IDs
   //
-  // List the IDs of vectors in a single namespace of a serverless index. An optional prefix can be passed to limit the results to IDs with a common prefix.
+  // List the IDs of records in a single namespace of a serverless index. An optional prefix can be passed to limit the results to IDs with a common prefix.
   //
   // This returns up to 100 IDs at a time by default in sorted order (bitwise/"C" collation). If the `limit` parameter is set, `list` returns up to that number of IDs instead. Whenever there are additional IDs to return, the response also includes a `pagination_token` that you can use to get the next batch of IDs. When the response does not include a `pagination_token`, there are no more IDs to return.
   //
