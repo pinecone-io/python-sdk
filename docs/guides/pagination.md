@@ -165,13 +165,14 @@ while page.pagination is not None and page.pagination.next is not None:
         print(item.id)
 ```
 
-## Non-Paginated Responses
+## Single-Page Responses
 
-Not every list operation uses a paginator. `pc.indexes.list()` returns an `IndexList`
-directly — it contains all indexes in a single response with no pagination token.
+Not every list operation pages through multiple responses. `pc.indexes.list()`
+returns a `Paginator` (an `AsyncPaginator` on `AsyncPinecone`) for interface
+consistency, but the server returns all indexes in a single page, so iteration
+makes exactly one request:
 
 ```python
-result = pc.indexes.list()
-for index in result.indexes:
+for index in pc.indexes.list():
     print(index.name)
 ```

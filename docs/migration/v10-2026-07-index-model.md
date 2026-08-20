@@ -149,6 +149,31 @@ names = [idx.name for idx in pc.indexes.list()]
 An empty index name now raises `PineconeValueError` instead of returning
 `False`.
 
+## Operations: async client (AsyncPinecone.indexes)
+
+`AsyncPinecone.indexes` mirrors every change above one-for-one — same
+keyword arguments, same guided `PineconeTypeError` messages for legacy
+kwargs, same poll-until-ready default (`timeout=-1` opts out, polling awaits
+`asyncio.sleep` so the event loop is never blocked). Async-visible deltas:
+
+- `list()` (and the `pc.list_indexes()` shim) returns an
+  `AsyncPaginator[IndexModel]` and is **no longer a coroutine**. Replace
+  `(await pc.indexes.list()).names()` with
+  `[idx.name async for idx in pc.indexes.list()]`.
+- `configure()` returns the updated `IndexModel` (previously `None`).
+- `exists("")` now raises `PineconeValueError`; the old async client
+  returned `False` for an empty name (the sync client's 2025-10 behavior
+  already raised, so the two lanes now agree).
+- `create_for_model()` is new on the async namespace, replacing
+  `create(spec=IntegratedSpec(...))`.
+- The index-scoped backup methods graduated from the preview namespace:
+  `create_backup()` and `describe_backup()` are coroutines, and
+  `list_backups()` returns an `AsyncPaginator[BackupModel]` (not a
+  coroutine), with the same `include_deleted` semantics as the sync lane.
+- `await pc.create_index_from_backup(...)` gained `read_capacity`, and the
+  legacy `await pc.list_backups(...)` shim gained `include_deleted`,
+  matching the sync top-level methods.
+
 ## Deprecated request-side spec classes
 
 `ServerlessSpec`, `PodSpec`, `ByocSpec`, `IntegratedSpec`, and `EmbedConfig`

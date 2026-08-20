@@ -12,11 +12,11 @@ from pinecone import Pinecone   # imports only the Pinecone class
 
 Avoid wildcard imports (`from pinecone import *`) in performance-sensitive startup paths.
 
-### Why does `pc.indexes.list()` not support pagination?
+### Why does `pc.indexes.list()` yield only a single page?
 
 Serverless index listings return at most a few hundred entries, which fits comfortably
-in a single response. A paginated API would add complexity for no practical benefit at
-this scale.
+in a single response. The returned `Paginator` (or `AsyncPaginator`) exists for
+interface consistency with other list methods; the server sends everything in one page.
 
 ### Can I use the async client with FastAPI?
 

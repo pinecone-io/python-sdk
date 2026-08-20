@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import httpx
+import orjson
 import pytest
 import respx
 
@@ -308,6 +310,117 @@ async def test_async_create_index_from_backup_empty_backup_id_raises(pc: AsyncPi
 
     assert "backup_id" in str(exc_info.value)
     assert "non-empty" in str(exc_info.value)
+
+
+async def test_async_create_index_from_backup_empty_read_capacity_raises(
+    pc: AsyncPinecone,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        await pc.create_index_from_backup(name="my-index", backup_id="bk-1", read_capacity={})
+
+    assert "read_capacity" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# create_index_from_backup — read_capacity (2026-07, async mirror of the sync
+# tests in tests/unit/test_create_index_from_backup.py)
+# ---------------------------------------------------------------------------
+
+DEDICATED_READ_CAPACITY: dict[str, Any] = {
+    "mode": "Dedicated",
+    "dedicated": {
+        "node_type": "t1",
+        "scaling": "Manual",
+        "manual": {"shards": 2, "replicas": 2},
+    },
+}
+
+
+@respx.mock
+async def test_async_create_index_from_backup_emits_the_spec_dedicated_example(
+    pc: AsyncPinecone,
+) -> None:
+    """The body matches the OAS 'dedicated' example for create_index_from_backup_operation.
+
+    Spec: apis/_build/2026-07/db_control_2026-07.oas.yaml:1955-1968 @ 5f808858.
+    """
+    route = respx.post(f"{DEFAULT_BASE_URL}/backups/bk-drn/create-index").mock(
+        return_value=httpx.Response(202, json={"restore_job_id": "rj-drn", "index_id": "idx-drn"}),
+    )
+
+    await pc.create_index_from_backup(
+        name="restored-drn-index",
+        backup_id="bk-drn",
+        read_capacity=DEDICATED_READ_CAPACITY,
+        timeout=-1,
+    )
+
+    assert orjson.loads(route.calls.last.request.content) == {
+        "name": "restored-drn-index",
+        "read_capacity": DEDICATED_READ_CAPACITY,
+    }
+
+
+@respx.mock
+async def test_async_create_index_from_backup_omits_read_capacity_when_not_passed(
+    pc: AsyncPinecone,
+) -> None:
+    route = respx.post(f"{DEFAULT_BASE_URL}/backups/bk-ondemand/create-index").mock(
+        return_value=httpx.Response(202, json={"restore_job_id": "rj-1", "index_id": "idx-1"}),
+    )
+
+    await pc.create_index_from_backup(name="restored-index", backup_id="bk-ondemand", timeout=-1)
+
+    assert orjson.loads(route.calls.last.request.content) == {"name": "restored-index"}
+
+
+@respx.mock
+async def test_async_create_index_from_backup_body_carries_no_null_keys(
+    pc: AsyncPinecone,
+) -> None:
+    route = respx.post(f"{DEFAULT_BASE_URL}/backups/bk-nulls/create-index").mock(
+        return_value=httpx.Response(202, json={"restore_job_id": "rj-1", "index_id": "idx-1"}),
+    )
+
+    await pc.create_index_from_backup(name="restored-index", backup_id="bk-nulls", timeout=-1)
+
+    body = orjson.loads(route.calls.last.request.content)
+    assert set(body) == {"name"}
+    assert None not in body.values()
+
+
+@respx.mock
+async def test_async_create_index_from_backup_sends_json_content_type(pc: AsyncPinecone) -> None:
+    route = respx.post(f"{DEFAULT_BASE_URL}/backups/bk-ct/create-index").mock(
+        return_value=httpx.Response(202, json={"restore_job_id": "rj-1", "index_id": "idx-1"}),
+    )
+
+    await pc.create_index_from_backup(name="restored-index", backup_id="bk-ct", timeout=-1)
+
+    assert route.calls.last.request.headers["Content-Type"] == "application/json"
+
+
+@respx.mock
+async def test_async_create_index_from_backup_all_optionals_together(pc: AsyncPinecone) -> None:
+    route = respx.post(f"{DEFAULT_BASE_URL}/backups/bk-all/create-index").mock(
+        return_value=httpx.Response(202, json={"restore_job_id": "rj-1", "index_id": "idx-1"}),
+    )
+
+    await pc.create_index_from_backup(
+        name="restored-index",
+        backup_id="bk-all",
+        deletion_protection="enabled",
+        tags={"env": "prod"},
+        read_capacity={"mode": "OnDemand"},
+        timeout=-1,
+    )
+
+    assert orjson.loads(route.calls.last.request.content) == {
+        "name": "restored-index",
+        "tags": {"env": "prod"},
+        "deletion_protection": "enabled",
+        "read_capacity": {"mode": "OnDemand"},
+    }
 
 
 # ---------------------------------------------------------------------------

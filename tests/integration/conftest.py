@@ -158,8 +158,7 @@ async def async_ensure_index_deleted(
     start = time.monotonic()
     while time.monotonic() - start < timeout:
         try:
-            listing = await async_client.indexes.list()
-            existing = {i.name for i in listing.indexes}
+            existing = {i.name async for i in async_client.indexes.list()}
             if name not in existing:
                 print(f"  Cleaned up index: {name}")
                 return

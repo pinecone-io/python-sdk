@@ -28,11 +28,11 @@ The :class:`Pinecone` client manages indexes (control plane). Call
 
 Async Quick Start::
 
-    from pinecone import AsyncPinecone, ServerlessSpec
+    from pinecone import AsyncPinecone
 
     async with AsyncPinecone(api_key="your-api-key") as pc:
         # Control plane: manage indexes
-        indexes = await pc.indexes.list()
+        index_names = [idx.name async for idx in pc.indexes.list()]
 
         # Data plane: resolve host first, then create index client
         desc = await pc.indexes.describe("my-index")

@@ -38,18 +38,10 @@ if TYPE_CHECKING:
         CloudProvider,
         DeletionProtection,
         GcpRegion,
-        Metric,
-        VectorType,
     )
     from pinecone.models.indexes.index import IndexModel
-    from pinecone.models.indexes.list import IndexList
-    from pinecone.models.indexes.specs import (
-        ByocSpec,
-        EmbedConfig,
-        IntegratedSpec,
-        PodSpec,
-        ServerlessSpec,
-    )
+    from pinecone.models.indexes.specs import EmbedConfig
+    from pinecone.models.pagination import AsyncPaginator
     from pinecone.preview import AsyncPreview
 
 
@@ -188,7 +180,7 @@ class AsyncPinecone:
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    for idx in await pc.indexes.list():
+                    async for idx in pc.indexes.list():
                         print(idx.name)
         """
         if self._indexes is None:
@@ -361,12 +353,21 @@ class AsyncPinecone:
         backup_id: str,
         deletion_protection: DeletionProtection | str | None = None,
         tags: Mapping[str, str] | None = None,
+        read_capacity: dict[str, Any] | None = None,
         timeout: int | None = None,
     ) -> CreateIndexFromBackupResponse | IndexModel:
         """Create a new index by restoring from a backup.
 
         Sends a POST to ``/backups/{backup_id}/create-index`` and then
         polls until the index is ready (unless *timeout* is ``-1``).
+
+        This is the only supported way to restore a backup:
+        :meth:`AsyncPinecone.create_index` rejects ``source_backup_id=`` with
+        a message pointing here.
+
+        .. versionchanged:: 10.0
+           Added *read_capacity*, so a restore can land straight onto
+           dedicated read nodes instead of defaulting to on-demand capacity.
 
         Args:
             name (str): Name for the new index.
@@ -375,6 +376,14 @@ class AsyncPinecone:
             deletion_protection (DeletionProtection | str | None): ``"enabled"`` or
                 ``"disabled"``. Defaults to ``"disabled"`` server-side when omitted.
             tags (Mapping[str, str] | None): Optional key-value tags for the new index.
+                When omitted, the server copies the backup's own tags.
+            read_capacity (dict[str, Any] | None): Optional read capacity for the
+                restored index — ``{"mode": "OnDemand"}`` or ``{"mode": "Dedicated",
+                "dedicated": {"node_type": ..., "scaling": "Manual",
+                "manual": {"shards": ..., "replicas": ...}}}``. Omitted entirely
+                when ``None``, leaving the server's on-demand default in place.
+                Serverless backups only; the server rejects a dedicated
+                configuration too small for the backup.
             timeout (int | None): Seconds to wait for readiness. ``None`` (default)
                 blocks up to 300 s. ``-1`` returns a :class:`CreateIndexFromBackupResponse`
                 immediately (contains ``restore_job_id`` and ``index_id``) without polling.
@@ -385,11 +394,14 @@ class AsyncPinecone:
             the restored index once it is ready.
 
         Raises:
-            :exc:`PineconeValueError`: If *name* or *backup_id* is empty.
+            :exc:`PineconeValueError`: If *name* or *backup_id* is empty, or
+                *read_capacity* is an empty dict.
             :exc:`PineconeTimeoutError`: If the index is not ready within the timeout.
             :exc:`IndexInitFailedError`: If the index enters ``InitializationFailed`` state.
             :exc:`IndexTerminatedError`: If the index enters ``Terminating`` or ``Disabled`` state.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response — including 404
+                for an unknown backup, 409 when an index of that name exists, and
+                a failed precondition when the backup is not yet complete.
 
         Examples:
 
@@ -413,24 +425,51 @@ class AsyncPinecone:
                         timeout=-1,
                     )
                     print(result.restore_job_id)
+
+            .. code-block:: python
+
+                # Restore directly onto dedicated read nodes
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    index = await pc.create_index_from_backup(
+                        name="restored-drn-index",
+                        backup_id="bk-daily-20240115",
+                        read_capacity={
+                            "mode": "Dedicated",
+                            "dedicated": {
+                                "node_type": "t1",
+                                "scaling": "Manual",
+                                "manual": {"shards": 2, "replicas": 2},
+                            },
+                        },
+                    )
         """
         require_non_empty("name", name)
         require_non_empty("backup_id", backup_id)
+        if read_capacity is not None and not read_capacity:
+            raise ValidationError("read_capacity cannot be an empty dict")
 
-        body: dict[str, Any] = {"name": name}
+        dp_val: str | None = None
         if deletion_protection is not None:
             dp_val = (
                 deletion_protection.value
                 if hasattr(deletion_protection, "value")
                 else deletion_protection
             )
-            body["deletion_protection"] = dp_val
-        if tags is not None:
-            body["tags"] = tags
 
         from pinecone._internal.adapters.backups_adapter import BackupsAdapter
+        from pinecone.models.backups.model import CreateIndexFromBackupRequest
 
-        response = await self._http.post(f"/backups/{backup_id}/create-index", json=body)
+        request = CreateIndexFromBackupRequest(
+            name=name,
+            tags=dict(tags) if tags is not None else None,
+            deletion_protection=dp_val,
+            read_capacity=read_capacity,
+        )
+        response = await self._http.post(
+            f"/backups/{backup_id}/create-index",
+            content=BackupsAdapter.to_create_index_from_backup_request(request),
+            headers={"Content-Type": "application/json"},
+        )
         create_response = BackupsAdapter.to_create_index_from_backup_response(response.content)
 
         if timeout == -1:
@@ -453,15 +492,16 @@ class AsyncPinecone:
 
     async def create_index(
         self,
-        name: str,
-        spec: ServerlessSpec | PodSpec | ByocSpec | IntegratedSpec | dict[str, Any],
-        dimension: int | None = None,
-        metric: Metric | str | None = "cosine",
-        timeout: int | None = None,
-        deletion_protection: DeletionProtection | str | None = "disabled",
-        vector_type: VectorType | str = "dense",
-        tags: Mapping[str, str] | None = None,
+        *,
         schema: dict[str, Any] | None = None,
+        name: str | None = None,
+        deployment: dict[str, Any] | None = None,
+        read_capacity: dict[str, Any] | None = None,
+        deletion_protection: DeletionProtection | str | None = None,
+        tags: Mapping[str, str] | None = None,
+        cmek_id: str | None = None,
+        timeout: int | None = None,
+        **legacy_kwargs: Any,
     ) -> IndexModel:
         """Backwards-compatibility shim for :meth:`AsyncPinecone.indexes.create`.
 
@@ -469,19 +509,25 @@ class AsyncPinecone:
         should use ``await pc.indexes.create(...)`` instead of
         ``await pc.create_index(...)``.
 
+        .. versionchanged:: 10.0
+           Mirrors the 2026-07 schema-based signature of
+           :meth:`AsyncPinecone.indexes.create`. Legacy 2025-10 keyword
+           arguments (``spec``, ``dimension``, ``metric``, ``vector_type``,
+           ...) raise a :exc:`~pinecone.errors.exceptions.PineconeTypeError`
+           whose message shows the equivalent 2026-07 call.
+
         :meta private:
         """
-        resolved_dp = deletion_protection if deletion_protection is not None else "disabled"
         return await self.indexes.create(
-            name=name,
-            spec=spec,
-            dimension=dimension,
-            metric=metric if metric is not None else "cosine",
-            vector_type=vector_type,
-            deletion_protection=resolved_dp,
-            tags=tags,
             schema=schema,
+            name=name,
+            deployment=deployment,
+            read_capacity=read_capacity,
+            deletion_protection=deletion_protection,
+            tags=tags,
+            cmek_id=cmek_id,
             timeout=timeout,
+            **legacy_kwargs,
         )
 
     async def create_index_for_model(
@@ -491,46 +537,34 @@ class AsyncPinecone:
         region: AwsRegion | GcpRegion | AzureRegion | str,
         embed: IndexEmbed | EmbedConfig | dict[str, Any],
         tags: Mapping[str, str] | None = None,
-        deletion_protection: DeletionProtection | str | None = "disabled",
+        deletion_protection: DeletionProtection | str | None = None,
         read_capacity: dict[str, Any] | None = None,
         schema: dict[str, Any] | None = None,
         timeout: int | None = None,
     ) -> IndexModel:
-        """Backwards-compatibility shim for :meth:`AsyncPinecone.indexes.create`.
+        """Backwards-compatibility shim for :meth:`AsyncPinecone.indexes.create_for_model`.
 
-        Preserved to ease migration from the legacy Pinecone Python SDK. New code
-        should use ``await pc.indexes.create(...)`` with
-        ``IntegratedSpec(cloud=..., region=..., embed=EmbedConfig(...))`` instead of
+        Preserved to ease migration from the legacy Pinecone Python SDK. New
+        code should use ``await pc.indexes.create_for_model(...)`` instead of
         ``await pc.create_index_for_model(...)``.
 
         :meta private:
         """
-        from pinecone.inference.models.index_embed import IndexEmbed as _IndexEmbed
-        from pinecone.models.indexes.specs import EmbedConfig as _EmbedConfig
-        from pinecone.models.indexes.specs import IntegratedSpec as _IntegratedSpec
-
-        if isinstance(embed, _IndexEmbed):
-            embed_config: EmbedConfig = _EmbedConfig(
-                model=embed.model,
-                field_map={k: str(v) for k, v in embed.field_map.items()},
-                metric=embed.metric,
-                read_parameters=embed.read_parameters or None,
-                write_parameters=embed.write_parameters or None,
+        deletion_protection_str: str | None = None
+        if deletion_protection is not None:
+            resolved = (
+                deletion_protection.value
+                if hasattr(deletion_protection, "value")
+                else deletion_protection
             )
-        elif isinstance(embed, _EmbedConfig):
-            embed_config = embed
-        else:
-            embed_config = _EmbedConfig(**embed)
-
-        cloud_str = cloud.value if hasattr(cloud, "value") else str(cloud)
-        region_str = region.value if hasattr(region, "value") else str(region)
-        spec = _IntegratedSpec(cloud=cloud_str, region=region_str, embed=embed_config)
-        resolved_dp = deletion_protection if deletion_protection is not None else "disabled"
-        return await self.indexes.create(
+            deletion_protection_str = None if resolved == "disabled" else resolved
+        return await self.indexes.create_for_model(
             name=name,
-            spec=spec,
+            cloud=cloud.value if hasattr(cloud, "value") else str(cloud),
+            region=region.value if hasattr(region, "value") else str(region),
+            embed=embed,
+            deletion_protection=deletion_protection_str,
             tags=tags,
-            deletion_protection=resolved_dp,
             schema=schema,
             read_capacity=read_capacity,
             timeout=timeout,
@@ -547,16 +581,21 @@ class AsyncPinecone:
         """
         return await self.indexes.describe(name)
 
-    async def list_indexes(self) -> IndexList:
+    def list_indexes(self) -> AsyncPaginator[IndexModel]:
         """Backwards-compatibility shim for :meth:`AsyncPinecone.indexes.list`.
 
-        Preserved to ease migration from the legacy Pinecone Python SDK. New code
-        should use ``await pc.indexes.list()`` instead of
-        ``await pc.list_indexes()``.
+        Preserved to ease migration from the legacy Pinecone Python SDK. New
+        code should use ``pc.indexes.list()`` instead of ``pc.list_indexes()``.
+
+        .. versionchanged:: 10.0
+           Returns an :class:`~pinecone.models.pagination.AsyncPaginator`
+           instead of an ``IndexList`` and is no longer a coroutine; replace
+           ``(await pc.list_indexes()).names()`` with
+           ``[idx.name async for idx in pc.list_indexes()]``.
 
         :meta private:
         """
-        return await self.indexes.list()
+        return self.indexes.list()
 
     async def has_index(self, name: str) -> bool:
         """Backwards-compatibility shim for :meth:`AsyncPinecone.indexes.exists`.
@@ -572,31 +611,39 @@ class AsyncPinecone:
     async def configure_index(
         self,
         name: str,
-        replicas: int | None = None,
-        pod_type: str | None = None,
+        *,
+        deployment: dict[str, Any] | None = None,
+        schema: dict[str, Any] | None = None,
+        read_capacity: dict[str, Any] | None = None,
         deletion_protection: DeletionProtection | str | None = None,
         tags: Mapping[str, str] | None = None,
-        embed: dict[str, Any] | None = None,
-        read_capacity: dict[str, Any] | None = None,
-        serverless_read_capacity: dict[str, Any] | None = None,
-    ) -> None:
+        **legacy_kwargs: Any,
+    ) -> IndexModel:
         """Backwards-compatibility shim for :meth:`AsyncPinecone.indexes.configure`.
 
         Preserved to ease migration from the legacy Pinecone Python SDK. New code
         should use ``await pc.indexes.configure(...)`` instead of
         ``await pc.configure_index(...)``.
 
+        .. versionchanged:: 10.0
+           Mirrors the 2026-07 signature of
+           :meth:`AsyncPinecone.indexes.configure` (pod scaling nests under
+           ``deployment=``; ``embed=`` and ``serverless_read_capacity=`` were
+           removed) and returns the updated :class:`IndexModel` instead of
+           ``None``. Legacy keyword arguments raise a
+           :exc:`~pinecone.errors.exceptions.PineconeTypeError` whose message
+           shows the equivalent 2026-07 call.
+
         :meta private:
         """
-        await self.indexes.configure(
-            name=name,
-            replicas=replicas,
-            pod_type=pod_type,
+        return await self.indexes.configure(
+            name,
+            deployment=deployment,
+            schema=schema,
+            read_capacity=read_capacity,
             deletion_protection=deletion_protection,
             tags=tags,
-            embed=embed,
-            read_capacity=read_capacity,
-            serverless_read_capacity=serverless_read_capacity,
+            **legacy_kwargs,
         )
 
     async def delete_index(self, name: str, timeout: int | None = None) -> None:
@@ -681,6 +728,7 @@ class AsyncPinecone:
         index_name: str | None = None,
         limit: int | None = None,
         pagination_token: str | None = None,
+        include_deleted: bool | None = None,
     ) -> BackupList:
         """Backwards-compatibility shim for :meth:`AsyncPinecone.backups.list`.
 
@@ -694,6 +742,7 @@ class AsyncPinecone:
             index_name=index_name,
             limit=limit,
             pagination_token=pagination_token,
+            include_deleted=include_deleted,
         )
 
     async def describe_backup(self, *, backup_id: str) -> BackupModel:
@@ -899,7 +948,7 @@ class AsyncPinecone:
 
             >>> async def example():
             ...     async with AsyncPinecone(api_key="your-api-key") as pc:
-            ...         _ = await pc.indexes.list()
+            ...         _ = await pc.indexes.list().to_list()
             >>> asyncio.run(example())
         """
         await self._http.close()

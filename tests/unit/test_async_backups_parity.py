@@ -333,3 +333,42 @@ async def test_validation_error_parity(
 
     assert async_type is sync_type
     assert async_message == sync_message
+
+
+# ---------------------------------------------------------------------------
+# Top-level shim parity (#133, orchestrator-routed from #114): the async
+# Pinecone.create_index_from_backup gained read_capacity and the legacy
+# list_backups shim gained include_deleted — both must match the sync
+# top-level signatures parameter-for-parameter.
+# ---------------------------------------------------------------------------
+
+_SHIM_METHODS = ["create_index_from_backup", "list_backups"]
+
+
+@pytest.mark.parametrize("method_name", _SHIM_METHODS)
+def test_top_level_shim_parameter_parity(method_name: str) -> None:
+    from pinecone import Pinecone
+    from pinecone.async_client.pinecone import AsyncPinecone
+
+    sync_params = dict(inspect.signature(getattr(Pinecone, method_name)).parameters)
+    async_params = dict(inspect.signature(getattr(AsyncPinecone, method_name)).parameters)
+
+    assert set(sync_params) == set(async_params), (
+        f"{method_name}: parameter names differ — "
+        f"sync-only={set(sync_params) - set(async_params)}, "
+        f"async-only={set(async_params) - set(sync_params)}"
+    )
+
+    for name, sync_param in sync_params.items():
+        async_param = async_params[name]
+        assert sync_param.kind == async_param.kind, (
+            f"{method_name}.{name}: kind differs (sync={sync_param.kind}, async={async_param.kind})"
+        )
+        assert sync_param.default == async_param.default, (
+            f"{method_name}.{name}: default differs "
+            f"(sync={sync_param.default!r}, async={async_param.default!r})"
+        )
+        assert str(sync_param.annotation) == str(async_param.annotation), (
+            f"{method_name}.{name}: annotation differs "
+            f"(sync={sync_param.annotation}, async={async_param.annotation})"
+        )

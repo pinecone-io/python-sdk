@@ -13,7 +13,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from pinecone._internal.config import PineconeConfig
-from pinecone.errors.exceptions import ValidationError
+from pinecone.async_client.indexes import AsyncIndexes
+from pinecone.client.indexes import Indexes
+from pinecone.errors.exceptions import PineconeError, ValidationError
 from pinecone.models.batch import BatchResult
 from pinecone.models.pagination import AsyncPaginator, Paginator
 from pinecone.preview.async_documents import AsyncPreviewDocuments
@@ -145,6 +147,116 @@ def test_indexes_parameter_parity(method_name: str) -> None:
 @pytest.mark.parametrize("method_name", _INDEXES_METHODS)
 def test_indexes_return_annotation_parity(method_name: str) -> None:
     _assert_return_parity(PreviewIndexes, AsyncPreviewIndexes, method_name)
+
+
+# ---------------------------------------------------------------------------
+# Graduated Indexes vs AsyncIndexes (#133) — signature, return, and error
+# parity for the whole 2026-07 control-plane surface, including the
+# index-scoped backup methods (#114 explicitly left their async twins to
+# #133; the sync copies shipped with #113).
+# ---------------------------------------------------------------------------
+
+_GRADUATED_INDEXES_METHODS = [
+    "create",
+    "create_for_model",
+    "configure",
+    "describe",
+    "list",
+    "exists",
+    "delete",
+    "create_backup",
+    "list_backups",
+    "describe_backup",
+]
+
+
+@pytest.mark.parametrize("method_name", _GRADUATED_INDEXES_METHODS)
+def test_graduated_indexes_parameter_parity(method_name: str) -> None:
+    _assert_signature_parity(Indexes, AsyncIndexes, method_name)
+
+
+@pytest.mark.parametrize("method_name", _GRADUATED_INDEXES_METHODS)
+def test_graduated_indexes_return_annotation_parity(method_name: str) -> None:
+    _assert_return_parity(Indexes, AsyncIndexes, method_name)
+
+
+def _make_sync_indexes() -> Indexes:
+    return Indexes(http=MagicMock())
+
+
+def _make_async_indexes() -> AsyncIndexes:
+    return AsyncIndexes(http=AsyncMock())
+
+
+def _sync_indexes_error(fn: Any, *args: Any, **kwargs: Any) -> str:
+    with pytest.raises(PineconeError) as exc_info:
+        fn(*args, **kwargs)
+    return str(exc_info.value)
+
+
+async def _async_indexes_error(fn: Any, *args: Any, **kwargs: Any) -> str:
+    with pytest.raises(PineconeError) as exc_info:
+        await fn(*args, **kwargs)
+    return str(exc_info.value)
+
+
+_GRADUATED_ERROR_CASES: dict[str, tuple[str, tuple[Any, ...], dict[str, Any]]] = {
+    "create-missing-schema": ("create", (), {"name": "x"}),
+    "create-empty-schema": ("create", (), {"schema": {}}),
+    "create-legacy-spec": (
+        "create",
+        (),
+        {"name": "movies", "dimension": 1536, "spec": {"serverless": {}}},
+    ),
+    "create-source-backup-id": (
+        "create",
+        (),
+        {"schema": {"fields": {"e": {"type": "dense_vector"}}}, "source_backup_id": "bkp-1"},
+    ),
+    "create-invalid-deletion-protection": (
+        "create",
+        (),
+        {"schema": {"fields": {"e": {"type": "dense_vector"}}}, "deletion_protection": "on"},
+    ),
+    "configure-no-params": ("configure", ("test-index",), {}),
+    "configure-legacy-replicas": ("configure", ("test-index",), {"replicas": 4}),
+    "configure-legacy-embed": ("configure", ("test-index",), {"embed": {"model": "m"}}),
+    "configure-legacy-serverless-read-capacity": (
+        "configure",
+        ("test-index",),
+        {"serverless_read_capacity": {"mode": "OnDemand"}},
+    ),
+    "configure-deployment-type": (
+        "configure",
+        ("test-index",),
+        {"deployment": {"deployment_type": "pod"}},
+    ),
+    "describe-empty-name": ("describe", ("",), {}),
+    "exists-empty-name": ("exists", ("",), {}),
+    "delete-empty-name": ("delete", ("",), {}),
+    "create-for-model-missing-model": (
+        "create_for_model",
+        (),
+        {"name": "x", "cloud": "aws", "region": "us-east-1", "embed": {"field_map": {"text": "t"}}},
+    ),
+    "create-backup-empty-index-name": ("create_backup", ("",), {}),
+    "list-backups-empty-index-name": ("list_backups", ("",), {}),
+    "list-backups-zero-limit": ("list_backups", ("my-index",), {"limit": 0}),
+    "describe-backup-empty-id": ("describe_backup", ("",), {}),
+}
+
+
+@pytest.mark.parametrize("case_name", sorted(_GRADUATED_ERROR_CASES))
+async def test_graduated_indexes_error_message_parity(case_name: str) -> None:
+    """Invalid input raises byte-identical messages on the sync and async lanes."""
+    method_name, args, kwargs = _GRADUATED_ERROR_CASES[case_name]
+    sync_indexes = _make_sync_indexes()
+    async_indexes = _make_async_indexes()
+
+    sync_msg = _sync_indexes_error(getattr(sync_indexes, method_name), *args, **kwargs)
+    async_msg = await _async_indexes_error(getattr(async_indexes, method_name), *args, **kwargs)
+
+    assert sync_msg == async_msg
 
 
 # ---------------------------------------------------------------------------
