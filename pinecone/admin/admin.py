@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 from dataclasses import replace
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -20,11 +23,14 @@ from pinecone.errors.exceptions import (
     PineconeConnectionError,
     PineconeTimeoutError,
     ResponseParsingError,
+    UnauthorizedError,
     ValidationError,
 )
 from pinecone.models.admin.token import TokenResponse
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pinecone.admin.api_keys import ApiKeys
     from pinecone.admin.invites import Invites
     from pinecone.admin.organizations import Organizations
@@ -35,6 +41,127 @@ if TYPE_CHECKING:
 
 _OAUTH_URL: str = "https://login.pinecone.io/oauth/token"
 _OAUTH_AUDIENCE: str = "https://api.pinecone.io/"
+_TOKEN_REFRESH_MARGIN_SECONDS: float = 300.0
+
+
+def _refresh_deadline(expires_in: int | None) -> float | None:
+    """Monotonic time at which a token minted now should be replaced.
+
+    Replacement happens ``_TOKEN_REFRESH_MARGIN_SECONDS`` ahead of the stated
+    expiry so a request already in flight cannot outlive the credential it was
+    sent with. The margin is halved down for tokens shorter than twice the
+    margin, so a short-lived token is not born already stale — which would
+    otherwise re-fetch on every single request.
+
+    ``None`` means "no deadline": the token endpoint reported no usable
+    ``expires_in``, so there is nothing to count down from and expiry is left
+    to the 401 retry.
+    """
+    if expires_in is None or expires_in <= 0:
+        return None
+    margin = min(_TOKEN_REFRESH_MARGIN_SECONDS, expires_in / 2)
+    return time.monotonic() + expires_in - margin
+
+
+class _TokenRefreshingHTTPClient(HTTPClient):
+    """:class:`HTTPClient` that keeps the Admin OAuth Bearer token current.
+
+    The token endpoint issues short-lived tokens — 10 hours in production — and
+    the Bearer value is baked into the headers the underlying httpx client was
+    built with. Left alone, an :class:`Admin` held past that lifetime would
+    return bare 401s forever. So the live token is consulted before every
+    request, re-minted a margin ahead of its expiry, and a request that still
+    comes back 401 is retried exactly once against a freshly minted token.
+
+    Refresh is serialized on a lock and the deadline re-checked inside it, so N
+    threads waking to an expired token cost one token exchange rather than N.
+    ``stream`` is deliberately not wrapped: no admin operation streams.
+    """
+
+    def __init__(
+        self,
+        config: PineconeConfig,
+        api_version: str,
+        *,
+        mint: Callable[[], TokenResponse],
+        token: str,
+        expires_in: int | None,
+    ) -> None:
+        super().__init__(config, api_version)
+        self._mint = mint
+        self._token = token
+        self._deadline = _refresh_deadline(expires_in)
+        self._token_lock = threading.Lock()
+
+    def _apply_token(self, token: str) -> None:
+        """Rewrite the Bearer header everywhere :class:`HTTPClient` cached a copy."""
+        header = f"Bearer {token}"
+        self._headers["Authorization"] = header
+        self._post_default_headers["Authorization"] = header
+        self._post_default_headers_obj["Authorization"] = header
+        self._client.headers["Authorization"] = header
+
+    def _mint_locked(self) -> str:
+        response = self._mint()
+        self._token = response.access_token
+        self._deadline = _refresh_deadline(response.expires_in)
+        self._apply_token(self._token)
+        return self._token
+
+    def _current_token(self, stale: str | None = None) -> str:
+        """Return the token to use, minting a replacement when the old one is spent.
+
+        With *stale* set — the 401 path — a replacement is minted only if the
+        token that failed is still the current one; a thread that lost the race
+        gets the winner's token instead of triggering a second exchange.
+        """
+        with self._token_lock:
+            if stale is not None:
+                if stale != self._token:
+                    return self._token
+                return self._mint_locked()
+            if self._deadline is not None and time.monotonic() >= self._deadline:
+                return self._mint_locked()
+            return self._token
+
+    def _with_refresh(self, call: Callable[[], httpx.Response]) -> httpx.Response:
+        used = self._current_token()
+        try:
+            return call()
+        except UnauthorizedError:
+            if self._current_token(stale=used) == used:
+                raise
+            return call()
+
+    def get(
+        self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
+    ) -> httpx.Response:
+        bound = super().get
+        return self._with_refresh(lambda: bound(path, timeout=timeout, **kwargs))
+
+    def post(
+        self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
+    ) -> httpx.Response:
+        bound = super().post
+        return self._with_refresh(lambda: bound(path, timeout=timeout, **kwargs))
+
+    def put(
+        self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
+    ) -> httpx.Response:
+        bound = super().put
+        return self._with_refresh(lambda: bound(path, timeout=timeout, **kwargs))
+
+    def patch(
+        self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
+    ) -> httpx.Response:
+        bound = super().patch
+        return self._with_refresh(lambda: bound(path, timeout=timeout, **kwargs))
+
+    def delete(
+        self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
+    ) -> httpx.Response:
+        bound = super().delete
+        return self._with_refresh(lambda: bound(path, timeout=timeout, **kwargs))
 
 
 class Admin:
@@ -74,6 +201,16 @@ class Admin:
 
         These differ from the API keys used by :class:`~pinecone.Pinecone`; they are scoped to
         your organization and used exclusively for admin operations.
+
+    .. note::
+        **Token lifetime** — the Bearer token is short-lived (currently 10 hours). The client
+        tracks the ``expires_in`` it was issued with and re-fetches transparently shortly
+        before expiry, and retries a request once against a freshly minted token if one still
+        comes back 401, so a long-lived :class:`Admin` keeps working indefinitely without any
+        caller action. Refresh is serialized, so threads sharing one :class:`Admin` cost a
+        single token exchange between them rather than one each. Supplying your own
+        ``Authorization`` entry in ``additional_headers`` opts out of refresh entirely — the
+        token is then yours to manage.
 
     Args:
         client_id (str | None): OAuth2 client ID. Falls back to ``PINECONE_CLIENT_ID`` env var.
@@ -139,7 +276,8 @@ class Admin:
 
         resolved_source_tag = source_tag or ""
 
-        token = self._fetch_token(
+        mint = partial(
+            self._fetch_token,
             resolved_id,
             resolved_secret,
             proxy_url=proxy_url,
@@ -147,9 +285,10 @@ class Admin:
             source_tag=resolved_source_tag,
             oauth_url=normalize_host(oauth_url) or _OAUTH_URL,
         )
+        token = mint()
 
         headers: dict[str, str] = {
-            "Authorization": f"Bearer {token}",
+            "Authorization": f"Bearer {token.access_token}",
             API_VERSION_HEADER: ADMIN_API_VERSION,
         }
         if additional_headers:
@@ -173,7 +312,19 @@ class Admin:
         # Must follow the replace() above, which re-runs __post_init__.
         object.__setattr__(config, "api_key", "")
 
-        self._http = HTTPClient(config, ADMIN_API_VERSION)
+        caller_pinned_auth = bool(additional_headers and "Authorization" in additional_headers)
+
+        self._http: HTTPClient
+        if caller_pinned_auth:
+            self._http = HTTPClient(config, ADMIN_API_VERSION)
+        else:
+            self._http = _TokenRefreshingHTTPClient(
+                config,
+                ADMIN_API_VERSION,
+                mint=mint,
+                token=token.access_token,
+                expires_in=token.expires_in,
+            )
 
         self._organizations: Organizations | None = None
         self._projects: Projects | None = None
@@ -192,8 +343,13 @@ class Admin:
         ssl_verify: bool = True,
         source_tag: str | None = None,
         oauth_url: str | None = None,
-    ) -> str:
+    ) -> TokenResponse:
         """Exchange client credentials for a Bearer token.
+
+        Called once during construction and again by
+        :class:`_TokenRefreshingHTTPClient` whenever the live token needs
+        replacing, so the refresh path reuses exactly the request the initial
+        exchange made.
 
         Args:
             client_id: OAuth2 client ID.
@@ -205,7 +361,8 @@ class Admin:
                 when testing against a simulator or a private deployment.
 
         Returns:
-            The access token string.
+            The decoded token response, carrying the access token and the
+            ``expires_in`` its lifetime is tracked from.
 
         Raises:
             ApiError: If the token request fails.
@@ -278,7 +435,7 @@ class Admin:
                 body=missing_body,
             )
 
-        return token.access_token
+        return token
 
     @property
     def organizations(self) -> Organizations:
