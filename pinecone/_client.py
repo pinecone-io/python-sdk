@@ -17,6 +17,7 @@ from pinecone.errors.exceptions import ValidationError
 if TYPE_CHECKING:
     from pinecone.client._assistant_namespace_proxy import _AssistantNamespaceProxy
     from pinecone.client.assistants import Assistants
+    from pinecone.client.backup_schedules import BackupSchedules
     from pinecone.client.backups import Backups
     from pinecone.client.collections import Collections
     from pinecone.client.indexes import Indexes
@@ -154,6 +155,7 @@ class Pinecone:
         self._indexes: Indexes | None = None
         self._collections: Collections | None = None
         self._backups: Backups | None = None
+        self._backup_schedules: BackupSchedules | None = None
         self._restore_jobs: RestoreJobs | None = None
         self._inference: Inference | None = None
         self._assistants: Assistants | None = None
@@ -221,6 +223,25 @@ class Pinecone:
 
             self._backups = _Backups(http=self._http)
         return self._backups
+
+    @property
+    def backup_schedules(self) -> BackupSchedules:
+        """Access the BackupSchedules namespace for automatic, recurring backups.
+
+        Lazily imported and instantiated on first access.
+
+        Returns:
+            :class:`BackupSchedules` namespace instance.
+
+        Examples:
+
+            >>> schedules = pc.backup_schedules.list(index_name="my-index")  # doctest: +SKIP
+        """
+        if self._backup_schedules is None:
+            from pinecone.client.backup_schedules import BackupSchedules as _BackupSchedules
+
+            self._backup_schedules = _BackupSchedules(http=self._http)
+        return self._backup_schedules
 
     @property
     def restore_jobs(self) -> RestoreJobs:

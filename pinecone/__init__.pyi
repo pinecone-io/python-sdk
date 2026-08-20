@@ -29,8 +29,9 @@ from pinecone.models.assistant.message import Message as Message
 from pinecone.models.assistant.model import AssistantModel as AssistantModel
 from pinecone.models.assistant.options import ContextOptions as ContextOptions
 from pinecone.models.assistant.streaming import AsyncChatCompletionStream as AsyncChatCompletionStream, AsyncChatStream as AsyncChatStream, ChatCompletionStream as ChatCompletionStream, ChatCompletionStreamChunk as ChatCompletionStreamChunk, ChatStream as ChatStream, ChatStreamChunk as ChatStreamChunk, StreamCitationChunk as StreamCitationChunk, StreamContentChunk as StreamContentChunk, StreamMessageEnd as StreamMessageEnd, StreamMessageStart as StreamMessageStart
-from pinecone.models.backups.list import BackupList as BackupList, RestoreJobList as RestoreJobList
+from pinecone.models.backups.list import BackupList as BackupList, BackupScheduleHistoryList as BackupScheduleHistoryList, BackupScheduleList as BackupScheduleList, RestoreJobList as RestoreJobList
 from pinecone.models.backups.model import BackupModel as BackupModel, CreateIndexFromBackupRequest as CreateIndexFromBackupRequest, CreateIndexFromBackupResponse as CreateIndexFromBackupResponse, RestoreJobModel as RestoreJobModel
+from pinecone.models.backups.schedules import BackupScheduleHistoryItem as BackupScheduleHistoryItem, BackupScheduleModel as BackupScheduleModel, CreateBackupScheduleRequest as CreateBackupScheduleRequest, UpdateBackupScheduleRequest as UpdateBackupScheduleRequest
 from pinecone.models.collections.list import CollectionList as CollectionList
 from pinecone.models.collections.model import CollectionModel as CollectionModel
 from pinecone.models.documents.document import Document as Document, DocumentRecord as DocumentRecord, UpdateDocumentRecord as UpdateDocumentRecord
@@ -83,6 +84,10 @@ __all__ = [
     "AzureRegion",
     "BackupList",
     "BackupModel",
+    "BackupScheduleHistoryItem",
+    "BackupScheduleHistoryList",
+    "BackupScheduleList",
+    "BackupScheduleModel",
     "BatchResponseInfo",
     "BooleanField",
     "ByocDeployment",
@@ -102,6 +107,7 @@ __all__ = [
     "ConflictError",
     "ContextOptions",
     "ContextResponse",
+    "CreateBackupScheduleRequest",
     "CreateIndexFromBackupRequest",
     "CreateIndexFromBackupResponse",
     "CreateIndexRequest",
@@ -242,6 +248,7 @@ __all__ = [
     "TextQuery",
     "UnauthorizedError",
     "UnauthorizedException",
+    "UpdateBackupScheduleRequest",
     "UpdateDocumentRecord",
     "UpdateDocumentsRequest",
     "UpdateDocumentsResponse",

@@ -228,11 +228,148 @@ A backup with a restore job still in flight cannot be deleted; the API returns
 restore to finish, then delete.
 
 
+## Schedule automatic backups
+
+Everything above takes a backup when *you* ask for one. A **backup schedule**
+attaches a recurring cadence to an index, so backups keep happening without a
+caller. Schedules live on `pc.backup_schedules`.
+
+Scheduled backups are a plan entitlement. Where the API enforces it, the check
+runs before the index is even looked up, so a project without the entitlement
+gets `403` rather than a `404` for a missing index. The SDK appends a
+clarification to that `403` and keeps the backend's own message as the prefix.
+
+```python
+schedule = pc.backup_schedules.create(
+    index_name="product-search",
+    name="daily-compliance-backup",
+    frequency="daily",       # daily | weekly | monthly
+    retention_days=90,
+)
+print(schedule.schedule_id)
+print(schedule.next_scheduled_run)   # a datetime, not a string
+```
+
+There is **no cron support** anywhere in this API. `frequency` accepts exactly
+`daily`, `weekly`, or `monthly`, and the SDK rejects anything else before
+sending a request. The run time is chosen server-side and reported through
+`next_scheduled_run`; there is no way to pick an hour or a timezone.
+
+`retention_days` must be at least 1. Its upper bound is your project's
+`max_backup_retention_days` (365 by default), which the SDK does not know
+per-project, so a too-large value is rejected by the server with a message
+naming the real limit.
+
+Only **one enabled schedule per index** is allowed. Creating a second one fails
+with `409` and a message telling you to disable or delete the first. Pod-based
+indexes cannot be scheduled at all and are rejected with `400`.
+
+```{important}
+Keep the schedule `name` to **28 characters or fewer.** Each run names its
+backup `"{name}-{run timestamp}"`, and that timestamp suffix is a fixed 17
+characters (`-YYYYMMDDTHHMMSSZ`) against a 45-character resource name limit.
+Nothing validates this — the API declares no length limit on a schedule name,
+and the create-schedule path does not check the derived backup name either — so
+a longer name is accepted here and then produces backup names the backup
+endpoints themselves would have rejected. The failure surfaces later, on the
+runs, rather than on `create`. The SDK does not enforce the limit, because
+doing so would reject names the API accepts.
+```
+
+### List the schedules on an index
+
+Schedules are always listed per index — there is no project-wide schedule
+listing. Disabled schedules are included.
+
+```python
+for schedule in pc.backup_schedules.iter_schedules(index_name="product-search"):
+    print(schedule.schedule_id, schedule.frequency, schedule.enabled)
+```
+
+`iter_schedules` walks every page. `list` returns a single page plus a
+`pagination` token if you would rather drive pagination yourself:
+
+```python
+page = pc.backup_schedules.list(index_name="product-search", limit=10)
+print(page.names())
+print([s.schedule_id for s in page.enabled_schedules()])
+print(page.pagination)   # None on the final page
+```
+
+### Describe, update, and delete a schedule
+
+```python
+schedule = pc.backup_schedules.describe(schedule_id="sched-abc123")
+```
+
+`update` is a sparse PATCH: only the arguments you pass are sent, so anything
+you omit is left unchanged rather than reset.
+
+```python
+paused = pc.backup_schedules.update(schedule_id="sched-abc123", enabled=False)
+assert paused.next_scheduled_run is None
+
+pc.backup_schedules.update(
+    schedule_id="sched-abc123", frequency="weekly", retention_days=30
+)
+```
+
+```{warning}
+Re-enabling a disabled schedule with `enabled=True` **immediately enqueues a
+backup run** — it is not a free toggle. It also recomputes
+`next_scheduled_run` from the moment of the update rather than resuming the old
+slot, so a disable/re-enable cycle shifts the cadence. And because only one
+schedule per index may be enabled, re-enabling fails with `409` when another
+one already is.
+```
+
+```python
+pc.backup_schedules.delete(schedule_id="sched-abc123")
+```
+
+Deleting a schedule stops future runs. Backups it already produced are **not**
+deleted; they age out on their own retention window.
+
+```{important}
+`delete` is not safe to retry blindly. Success answers `204` with no body, and
+a second attempt on the same `schedule_id` answers `404` — so a retry after a
+dropped response looks identical to deleting something that was never there.
+Treat a `404` following a delete attempt as success.
+```
+
+### Inspect what a schedule has produced
+
+```python
+for run in pc.backup_schedules.iter_history(schedule_id="sched-abc123"):
+    print(run.backup_id, run.status, run.record_count)
+```
+
+History rows describe backup *snapshots*, not the schedule. A row appears as
+soon as a run is planned, so the listing mixes completed runs with ones that
+have not started; `run.is_scheduled` and `history.scheduled()` pick out the
+latter. As with the schedule listing, `history` returns one page and
+`iter_history` walks all of them — prefer the iterator here, because a daily
+schedule with a 90-day retention window has far more rows than one page holds.
+
+```{note}
+Against today's backend, schedule history is served by the shared backup
+handler, which never reports the `Scheduled` status and does not send
+`scheduled_execution_at` at all. Those fields are typed and will populate when
+the backend graduates; until then `scheduled_execution_at` reads as `None` and
+`name` / `record_count` / `namespace_count` / `size_bytes` can come back
+`None` on freshly created rows.
+```
+
+
 ## See also
 
 - {class}`~pinecone.models.backups.model.BackupModel` — backup response model
 - {class}`~pinecone.models.backups.list.BackupList` — backup list response
 - {class}`~pinecone.models.backups.model.RestoreJobModel` — restore job model
 - {class}`~pinecone.models.backups.list.RestoreJobList` — restore job list response
+- {class}`~pinecone.models.backups.schedules.BackupScheduleModel` — schedule response model
+- {class}`~pinecone.models.backups.list.BackupScheduleList` — schedule list response
+- {class}`~pinecone.models.backups.schedules.BackupScheduleHistoryItem` — one run produced by a schedule
+- {class}`~pinecone.models.backups.list.BackupScheduleHistoryList` — schedule history response
 - {doc}`/how-to/indexes/serverless` — serverless index management
 - {doc}`/how-to/indexes/pod` — pod-based index management

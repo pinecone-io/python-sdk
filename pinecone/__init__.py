@@ -132,12 +132,23 @@ if TYPE_CHECKING:
         StreamMessageEnd,
         StreamMessageStart,
     )
-    from pinecone.models.backups.list import BackupList, RestoreJobList
+    from pinecone.models.backups.list import (
+        BackupList,
+        BackupScheduleHistoryList,
+        BackupScheduleList,
+        RestoreJobList,
+    )
     from pinecone.models.backups.model import (
         BackupModel,
         CreateIndexFromBackupRequest,
         CreateIndexFromBackupResponse,
         RestoreJobModel,
+    )
+    from pinecone.models.backups.schedules import (
+        BackupScheduleHistoryItem,
+        BackupScheduleModel,
+        CreateBackupScheduleRequest,
+        UpdateBackupScheduleRequest,
     )
     from pinecone.models.collections.list import CollectionList
     from pinecone.models.collections.model import CollectionModel
@@ -295,6 +306,10 @@ __all__ = [
     "AzureRegion",
     "BackupList",
     "BackupModel",
+    "BackupScheduleHistoryItem",
+    "BackupScheduleHistoryList",
+    "BackupScheduleList",
+    "BackupScheduleModel",
     "BatchResponseInfo",
     "BooleanField",
     "ByocDeployment",
@@ -314,6 +329,7 @@ __all__ = [
     "ConflictError",
     "ContextOptions",
     "ContextResponse",
+    "CreateBackupScheduleRequest",
     "CreateIndexFromBackupRequest",
     "CreateIndexFromBackupResponse",
     "CreateIndexRequest",
@@ -454,6 +470,7 @@ __all__ = [
     "TextQuery",
     "UnauthorizedError",
     "UnauthorizedException",
+    "UpdateBackupScheduleRequest",
     "UpdateDocumentRecord",
     "UpdateDocumentsRequest",
     "UpdateDocumentsResponse",
@@ -491,6 +508,16 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "AzureRegion": ("pinecone.db_control.enums.clouds", "AzureRegion"),
     "BackupList": ("pinecone.models.backups.list", "BackupList"),
     "BackupModel": ("pinecone.models.backups.model", "BackupModel"),
+    "BackupScheduleHistoryItem": (
+        "pinecone.models.backups.schedules",
+        "BackupScheduleHistoryItem",
+    ),
+    "BackupScheduleHistoryList": (
+        "pinecone.models.backups.list",
+        "BackupScheduleHistoryList",
+    ),
+    "BackupScheduleList": ("pinecone.models.backups.list", "BackupScheduleList"),
+    "BackupScheduleModel": ("pinecone.models.backups.schedules", "BackupScheduleModel"),
     "BatchResponseInfo": ("pinecone.models.response_info", "BatchResponseInfo"),
     "BooleanField": ("pinecone.models.indexes.schema", "BooleanField"),
     "ByocDeployment": ("pinecone.models.indexes.deployment", "ByocDeployment"),
@@ -516,6 +543,10 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "ConflictError": ("pinecone.errors.exceptions", "ConflictError"),
     "ContextOptions": ("pinecone.models.assistant.options", "ContextOptions"),
     "ContextResponse": ("pinecone.models.assistant.context", "ContextResponse"),
+    "CreateBackupScheduleRequest": (
+        "pinecone.models.backups.schedules",
+        "CreateBackupScheduleRequest",
+    ),
     "CreateIndexFromBackupRequest": (
         "pinecone.models.backups.model",
         "CreateIndexFromBackupRequest",
@@ -680,6 +711,10 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "TextQuery": ("pinecone.models.documents.score_by", "TextQuery"),
     "UnauthorizedError": ("pinecone.errors.exceptions", "UnauthorizedError"),
     "UnauthorizedException": ("pinecone.errors.exceptions", "UnauthorizedException"),
+    "UpdateBackupScheduleRequest": (
+        "pinecone.models.backups.schedules",
+        "UpdateBackupScheduleRequest",
+    ),
     "UpdateDocumentRecord": ("pinecone.models.documents.document", "UpdateDocumentRecord"),
     "UpdateDocumentsRequest": ("pinecone.models.documents.requests", "UpdateDocumentsRequest"),
     "UpdateDocumentsResponse": ("pinecone.models.documents.responses", "UpdateDocumentsResponse"),
