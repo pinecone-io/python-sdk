@@ -98,6 +98,21 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Integration tests against a real Pinecone backend.
+  #
+  # This job is advisory by construction: Release Readiness has no
+  # pull_request trigger, so nothing here gates a merge or a publish. It is
+  # deliberately NOT a gate — per the release constraint that no CI gate may
+  # depend on a live API key. Unit tests (on-push.yml) are the gate.
+  #
+  # `secrets.PINECONE_API_KEY` does not currently exist at repo or org level,
+  # so it expands to the empty string and every keyed test skips itself: a
+  # keyless run reports success with ~543/648 (~94%) of the suite inert. The
+  # preflight step below turns that silent green into a loud red, because an
+  # inert pass is worse than an honest failure when this workflow's green
+  # result is the manual release go/no-go signal. Remediation is a one-time
+  # human action: add a repo secret PINECONE_API_KEY scoped to a
+  # test/CI Pinecone project, or dispatch with skip_integration=true.
+  # Tracked in #295.
   # ---------------------------------------------------------------------------
   integration-tests:
     name: Integration tests (real backend)
@@ -109,6 +124,20 @@ jobs:
     env:
       PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
     steps:
+      - name: Preflight — integration credentials must be present
+        run: |
+          if [ -z "${PINECONE_API_KEY}" ]; then
+            echo "::error::PINECONE_API_KEY is empty — ~94% of tests/integration would skip themselves and the job would report a meaningless success. Add a repo secret PINECONE_API_KEY, or dispatch with skip_integration=true to acknowledge the gap."
+            {
+              echo "### Integration tests: NOT RUN"
+              echo
+              echo "\`PINECONE_API_KEY\` is unset, so the suite would have been ~94% inert."
+              echo "Failing loudly instead of reporting a green run with no coverage (#295)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "PINECONE_API_KEY present (${#PINECONE_API_KEY} chars)"
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Install protoc
