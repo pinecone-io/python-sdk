@@ -10,6 +10,7 @@ fresh gate per example.
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from hypothesis import given, settings
@@ -29,10 +30,12 @@ def _run(
 ) -> tuple[BatchResult, int]:
     get_registry()._reset()
     items = [{"id": str(i)} for i in range(n_items)]
+    calls_lock = threading.Lock()
     calls = {"n": 0}
 
     def operation(batch: list[dict[str, Any]]) -> dict[str, int]:
-        calls["n"] += 1
+        with calls_lock:
+            calls["n"] += 1
         first_index = int(batch[0]["id"]) // batch_size
         if first_index in failing_batches:
             raise RuntimeError(f"scripted failure for batch {first_index}")
