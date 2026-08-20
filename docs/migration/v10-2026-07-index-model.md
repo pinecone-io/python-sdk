@@ -3,6 +3,12 @@
 The index response models now follow the Pinecone `2026-07` API shapes.
 This is a breaking change to `IndexModel` and its exports.
 
+For the **request** side — the field-by-field `create_index` /
+`configure_index` / `create_index_for_model` tables, the `read_capacity`
+keyword warning, and executed before/after code for each create and
+configure flow — see
+[db_control create/configure](v10-2026-07-db-control.md).
+
 ## Control plane now negotiates 2026-07
 
 Every control-plane request (indexes, collections, backups, backup
