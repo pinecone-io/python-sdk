@@ -29,7 +29,11 @@ from pinecone.models.assistant.chat import ChatCompletionResponse, ChatResponse
 from pinecone.models.assistant.context import ContextResponse
 from pinecone.models.assistant.evaluation import AlignmentResult
 from pinecone.models.assistant.file_model import AssistantFileModel
-from pinecone.models.assistant.list import ListAssistantsResponse, ListFilesResponse
+from pinecone.models.assistant.list import (
+    ListAssistantsResponse,
+    ListFilesResponse,
+    ListOperationsResponse,
+)
 from pinecone.models.assistant.message import Message
 from pinecone.models.assistant.model import AssistantModel
 from pinecone.models.assistant.operation import OperationModel
@@ -53,9 +57,20 @@ _CREATE_POLL_INTERVAL_SECONDS = 0.5
 _DELETE_POLL_INTERVAL_SECONDS = 5
 _UPLOAD_POLL_INTERVAL_SECONDS = 5
 
+# Checked client-side because the backend answers an unparseable filter with a
+# 400 that does not enumerate what it would have accepted.
+_VALID_OPERATION_TYPES = ("upload_file", "upsert_file", "update_file_metadata", "delete_file")
+_VALID_OPERATION_STATUSES = ("Processing", "Completed", "Failed")
+
 
 def _operation_target(file_id: str | None) -> str:
     return f"file {file_id!r}" if file_id is not None else "the file"
+
+
+def _validate_choice(name: str, value: str, valid: tuple[str, ...]) -> str:
+    if value not in valid:
+        raise PineconeValueError(f"{name} must be one of {valid!r}, got {value!r}")
+    return value
 
 
 def _operation_failure_message(action: str, file_id: str | None, operation: OperationModel) -> str:
@@ -197,7 +212,6 @@ class Assistants(AssistantsLegacyNamespaceMixin):
 
     def _poll_operation_until_done(
         self,
-        data_http: HTTPClient,
         assistant_name: str,
         operation_id: str,
         timeout: float | None,
@@ -206,7 +220,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         file_id: str | None = None,
         poll_interval: float = _UPLOAD_POLL_INTERVAL_SECONDS,
     ) -> OperationModel:
-        """Poll ``GET /operations/{assistant_name}/{operation_id}`` until it is done.
+        """Poll :meth:`describe_operation` until the operation is done.
 
         Returns the terminal :class:`OperationModel`. Raises
         :exc:`PineconeError` when the operation reports ``"Failed"``, quoting
@@ -215,8 +229,9 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         """
         start = time.monotonic()
         while True:
-            response = data_http.get(f"/operations/{assistant_name}/{operation_id}")
-            operation = self._adapter.to_operation(response.content)
+            operation = self.describe_operation(
+                assistant_name=assistant_name, operation_id=operation_id
+            )
 
             if operation.status != "Processing":
                 if operation.status == "Failed":
@@ -369,7 +384,6 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             return self.describe_file(assistant_name=assistant_name, file_id=uploaded_id)
 
         self._poll_operation_until_done(
-            data_http,
             assistant_name,
             operation.operation_id,
             timeout,
@@ -597,7 +611,6 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             return
 
         self._poll_operation_until_done(
-            data_http,
             assistant_name,
             operation.operation_id,
             timeout,
@@ -605,6 +618,191 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             file_id=file_id,
             poll_interval=_DELETE_POLL_INTERVAL_SECONDS,
         )
+
+    def describe_operation(
+        self,
+        *,
+        assistant_name: str,
+        operation_id: str,
+    ) -> OperationModel:
+        """Get the current status of a long-running assistant operation.
+
+        The file write endpoints — :meth:`upload_file` and :meth:`delete_file` —
+        answer ``202`` with an operation id and finish server-side. Those
+        methods poll for you, so reach for this one when you asked them *not*
+        to: ``timeout=-1`` returns as soon as the request is accepted, and this
+        is how you follow what it started. It is also how you find the file a
+        fire-and-forget upload created, via :attr:`OperationModel.file_id`.
+
+        Args:
+            assistant_name: Name of the assistant that owns the operation.
+            operation_id: Identifier of the operation to describe, as returned
+                in the ``operation_id`` of a 202 envelope or by
+                :meth:`list_operations`.
+
+        Returns:
+            :class:`OperationModel` with ``status``, ``operation_type``,
+            ``file_id``, ``percent_complete``, ``created_at``,
+            ``completed_on``, ``ingestion_units`` and ``error``. ``status`` is
+            ``"Processing"``, ``"Completed"`` or ``"Failed"``; ``error``
+            carries the reason only for ``"Failed"``.
+
+        Raises:
+            :exc:`NotFoundError`: If the assistant or the operation does not
+                exist. Both successful and failed operations are retained for
+                30 days after they finish, and are 404 afterwards.
+            :exc:`ApiError`: If the API returns an error response.
+
+        Examples:
+            >>> operation = pc.assistants.describe_operation(
+            ...     assistant_name="my-assistant",
+            ...     operation_id="op-1234-abcd-5678",
+            ... )
+            >>> operation.status  # doctest: +SKIP
+            'Processing'
+            >>> operation.percent_complete  # doctest: +SKIP
+            42
+        """
+        data_http = self._data_plane_http(assistant_name)
+        logger.info("Describing operation %r in assistant %r", operation_id, assistant_name)
+        response = data_http.get(f"/operations/{assistant_name}/{operation_id}")
+        return self._adapter.to_operation(response.content)
+
+    def list_operations(
+        self,
+        *,
+        assistant_name: str,
+        operation_type: str | None = None,
+        status: str | None = None,
+        limit: int | None = None,
+        pagination_token: str | None = None,
+    ) -> Paginator[OperationModel]:
+        """List an assistant's operations with lazy pagination.
+
+        Covers operations that are still in progress as well as ones that
+        finished — both successes and failures are retained for 30 days after
+        completion.
+
+        Args:
+            assistant_name: Name of the assistant whose operations to list.
+            operation_type: Restrict the listing to one kind of operation. One
+                of ``"upload_file"``, ``"upsert_file"``,
+                ``"update_file_metadata"`` or ``"delete_file"``.
+            status: Restrict the listing to one status. One of
+                ``"Processing"``, ``"Completed"`` or ``"Failed"``
+                (case-sensitive).
+            limit: Maximum number of operations to yield across all pages.
+                ``None`` (default) yields all of them.
+            pagination_token: Token to resume pagination from a previous call.
+
+        Returns:
+            :class:`Paginator` over :class:`OperationModel` objects. Supports
+            ``for`` loops, ``.to_list()``, ``.pages()``, and ``limit``.
+
+        Raises:
+            :exc:`PineconeValueError`: If *operation_type* or *status* is not
+                one of the values above.
+            :exc:`NotFoundError`: If the assistant does not exist.
+            :exc:`ApiError`: If the API returns an error response.
+
+        Examples:
+            .. code-block:: python
+
+                for op in pc.assistants.list_operations(assistant_name="my-assistant"):
+                    print(op.operation_id, op.status, op.percent_complete)
+
+                pending = pc.assistants.list_operations(
+                    assistant_name="my-assistant",
+                    operation_type="upload_file",
+                    status="Processing",
+                ).to_list()
+        """
+        logger.info("Listing operations for assistant %r", assistant_name)
+
+        def fetch_page(token: str | None) -> Page[OperationModel]:
+            result = self.list_operations_page(
+                assistant_name=assistant_name,
+                operation_type=operation_type,
+                status=status,
+                pagination_token=token,
+            )
+            return Page(items=result.operations, pagination_token=result.next)
+
+        return Paginator(fetch_page=fetch_page, initial_token=pagination_token, limit=limit)
+
+    def list_operations_page(
+        self,
+        *,
+        assistant_name: str,
+        operation_type: str | None = None,
+        status: str | None = None,
+        page_size: int | None = None,
+        pagination_token: str | None = None,
+    ) -> ListOperationsResponse:
+        """List one page of an assistant's operations with explicit pagination control.
+
+        Only the parameters that are explicitly provided are sent in the
+        request. Omitted parameters are not included as query params.
+
+        Args:
+            assistant_name: Name of the assistant whose operations to list.
+            operation_type: Restrict the listing to one kind of operation. One
+                of ``"upload_file"``, ``"upsert_file"``,
+                ``"update_file_metadata"`` or ``"delete_file"``.
+            status: Restrict the listing to one status. One of
+                ``"Processing"``, ``"Completed"`` or ``"Failed"``
+                (case-sensitive).
+            page_size: Maximum number of operations in this page, sent as the
+                ``limit`` query parameter. The API accepts 1-100 and defaults
+                to 50; a larger value is rejected with a 400.
+            pagination_token: Token from a previous response to fetch the next
+                page.
+
+        Returns:
+            :class:`ListOperationsResponse` with an ``operations`` list and an
+            optional ``next`` continuation token.
+
+        Raises:
+            :exc:`PineconeValueError`: If *operation_type* or *status* is not
+                one of the values above.
+            :exc:`NotFoundError`: If the assistant does not exist.
+            :exc:`ApiError`: If the API returns an error response.
+
+        Examples:
+            .. code-block:: python
+
+                page = pc.assistants.list_operations_page(
+                    assistant_name="my-assistant",
+                    status="Failed",
+                    page_size=10,
+                )
+                for op in page.operations:
+                    print(op.operation_id, op.error)
+                token = page.next
+        """
+        params: dict[str, str | int] = {}
+        if operation_type is not None:
+            params["operation_type"] = _validate_choice(
+                "operation_type", operation_type, _VALID_OPERATION_TYPES
+            )
+        if status is not None:
+            params["status"] = _validate_choice("status", status, _VALID_OPERATION_STATUSES)
+        if page_size is not None:
+            params["limit"] = page_size
+        if pagination_token is not None:
+            params["pagination_token"] = pagination_token
+
+        data_http = self._data_plane_http(assistant_name)
+        logger.info("Listing operations page for assistant %r", assistant_name)
+        response = data_http.get(f"/operations/{assistant_name}", params=params)
+        result = self._adapter.to_operation_list(response.content)
+        logger.debug(
+            "Listed %d operations for assistant %r (has_next=%s)",
+            len(result.operations),
+            assistant_name,
+            result.next is not None,
+        )
+        return result
 
     def create(
         self,

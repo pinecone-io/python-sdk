@@ -30,7 +30,7 @@ from pinecone.errors.exceptions import (
     PineconeValueError,
 )
 from pinecone.models.assistant.file_model import AssistantFileModel
-from pinecone.models.assistant.list import ListAssistantsResponse
+from pinecone.models.assistant.list import ListAssistantsResponse, ListOperationsResponse
 from pinecone.models.assistant.model import AssistantModel
 from pinecone.models.pagination import Page, Paginator
 from tests.factories import (
@@ -39,6 +39,7 @@ from tests.factories import (
     make_assistant_response,
     make_context_response,
     make_file_operation_response,
+    make_operation_list_response,
     make_operation_response,
 )
 
@@ -3828,3 +3829,226 @@ def test_too_many_requests_surfaces_server_message() -> None:
     assert err.error_code == "TOO_MANY_REQUESTS"
     assert err.message == "Too many get or list assistant requests, try again later"
     assert "Too many get or list assistant requests" in str(err)
+
+
+# ---------------------------------------------------------------------------
+# describe_operation() / list_operations()
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+def test_describe_operation_targets_the_data_plane(assistants: Assistants) -> None:
+    """The operations endpoints live on the assistant's host, not the control plane."""
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    route = respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
+        return_value=httpx.Response(200, json=make_file_operation_response()),
+    )
+
+    result = assistants.describe_operation(
+        assistant_name="test-assistant", operation_id="op-abc123"
+    )
+
+    assert result.operation_id == "op-abc123"
+    assert result.operation_type == "upload_file"
+    assert result.file_id == "file-abc123"
+    request = route.calls.last.request
+    assert request.method == "GET"
+    assert str(request.url) == f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123"
+    assert request.headers["x-pinecone-api-version"] == ASSISTANT_API_VERSION
+
+
+@respx.mock
+def test_describe_operation_reuses_the_cached_data_plane_client(assistants: Assistants) -> None:
+    """Repeated describes cost one control-plane host lookup, not one each."""
+    describe_assistant = respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
+        return_value=httpx.Response(200, json=make_file_operation_response()),
+    )
+
+    for _ in range(3):
+        assistants.describe_operation(assistant_name="test-assistant", operation_id="op-abc123")
+
+    assert describe_assistant.call_count == 1
+
+
+@respx.mock
+@patch("pinecone.client.assistants.time.sleep")
+def test_the_polling_loop_goes_through_describe_operation(
+    mock_sleep: object, assistants: Assistants
+) -> None:
+    """#125's internal poll is the public method now, so patching it is observable."""
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    respx.post(f"{DATA_PLANE_URL}/files/test-assistant").mock(
+        return_value=httpx.Response(202, json=make_file_operation_response()),
+    )
+    respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
+        return_value=httpx.Response(200, json=make_assistant_file_response()),
+    )
+
+    with patch.object(
+        Assistants,
+        "describe_operation",
+        wraps=assistants.describe_operation,
+    ) as spy:
+        respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
+            side_effect=[
+                httpx.Response(200, json=make_file_operation_response(status="Processing")),
+                httpx.Response(200, json=make_file_operation_response(status="Completed")),
+            ],
+        )
+        assistants.upload_file(assistant_name="test-assistant", file_stream=io.BytesIO(b"data"))
+
+    assert spy.call_count == 2
+    for call in spy.call_args_list:
+        assert call.kwargs == {
+            "assistant_name": "test-assistant",
+            "operation_id": "op-abc123",
+        }
+
+
+@respx.mock
+def test_describe_operation_surfaces_a_server_error(assistants: Assistants) -> None:
+    """A 500 from the operations endpoint is not swallowed into a fake status."""
+    from pinecone.errors.exceptions import ApiError
+
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
+        return_value=httpx.Response(
+            500,
+            json={"status": 500, "error": {"code": "UNKNOWN", "message": "Internal server error"}},
+        ),
+    )
+
+    with pytest.raises(ApiError) as exc_info:
+        assistants.describe_operation(assistant_name="test-assistant", operation_id="op-abc123")
+
+    assert exc_info.value.status_code == 500
+
+
+@respx.mock
+def test_list_operations_page_returns_the_model_and_the_token(assistants: Assistants) -> None:
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    route = respx.get(f"{DATA_PLANE_URL}/operations/test-assistant").mock(
+        return_value=httpx.Response(
+            200,
+            json=make_operation_list_response(
+                [make_file_operation_response(), make_file_operation_response(id="op-def456")],
+                next_token="tok-2",
+            ),
+        ),
+    )
+
+    page = assistants.list_operations_page(assistant_name="test-assistant")
+
+    assert isinstance(page, ListOperationsResponse)
+    assert [op.operation_id for op in page.operations] == ["op-abc123", "op-def456"]
+    assert page.next == "tok-2"
+    request = route.calls.last.request
+    assert request.headers["x-pinecone-api-version"] == ASSISTANT_API_VERSION
+
+
+@respx.mock
+def test_list_operations_page_omits_unset_parameters(assistants: Assistants) -> None:
+    """Only what the caller asked for goes on the wire."""
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    route = respx.get(f"{DATA_PLANE_URL}/operations/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_operation_list_response()),
+    )
+
+    assistants.list_operations_page(assistant_name="test-assistant", status="Completed")
+
+    params = route.calls.last.request.url.params
+    assert dict(params) == {"status": "Completed"}
+
+
+@respx.mock
+def test_list_operations_returns_a_paginator_with_pages(assistants: Assistants) -> None:
+    """``pages()`` exposes the raw pages, matching ``list_files``."""
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    respx.get(f"{DATA_PLANE_URL}/operations/test-assistant").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json=make_operation_list_response(
+                    [make_file_operation_response()], next_token="tok-2"
+                ),
+            ),
+            httpx.Response(
+                200, json=make_operation_list_response([make_file_operation_response(id="op-def")])
+            ),
+        ],
+    )
+
+    paginator = assistants.list_operations(assistant_name="test-assistant")
+    assert isinstance(paginator, Paginator)
+
+    pages = list(paginator.pages())
+    assert [p.pagination_token for p in pages] == ["tok-2", None]
+    assert [op.operation_id for page in pages for op in page.items] == ["op-abc123", "op-def"]
+
+
+@respx.mock
+def test_list_operations_page_surfaces_the_backend_limit_ceiling(
+    assistants: Assistants,
+) -> None:
+    """page_size is not validated client-side; the backend's 400 says the ceiling."""
+    from pinecone.errors.exceptions import ApiError
+
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    route = respx.get(f"{DATA_PLANE_URL}/operations/test-assistant").mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "status": 400,
+                "error": {"code": "INVALID_ARGUMENT", "message": "Limit cannot exceed 100"},
+            },
+        ),
+    )
+
+    with pytest.raises(ApiError) as exc_info:
+        assistants.list_operations_page(assistant_name="test-assistant", page_size=101)
+
+    assert exc_info.value.message == "Limit cannot exceed 100"
+    assert route.calls.last.request.url.params["limit"] == "101"
+
+
+@pytest.mark.parametrize("bad", ["upload", "UploadFile", "", "upload_file "])
+def test_list_operations_rejects_an_unknown_operation_type(
+    assistants: Assistants, bad: str
+) -> None:
+    with pytest.raises(PineconeValueError) as exc_info:
+        assistants.list_operations_page(assistant_name="test-assistant", operation_type=bad)
+
+    message = str(exc_info.value)
+    assert message.startswith("operation_type must be one of (")
+    for valid in ("upload_file", "upsert_file", "update_file_metadata", "delete_file"):
+        assert repr(valid) in message
+    assert repr(bad) in message
+
+
+@pytest.mark.parametrize("bad", ["completed", "Succeeded", "PartiallyFailed", ""])
+def test_list_operations_rejects_an_unknown_status(assistants: Assistants, bad: str) -> None:
+    with pytest.raises(PineconeValueError) as exc_info:
+        assistants.list_operations_page(assistant_name="test-assistant", status=bad)
+
+    message = str(exc_info.value)
+    assert message.startswith("status must be one of (")
+    for valid in ("Processing", "Completed", "Failed"):
+        assert repr(valid) in message
+    assert repr(bad) in message

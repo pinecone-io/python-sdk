@@ -55,6 +55,55 @@ print(file.name)   # "data.pdf"
 print(file.status) # "Processing" → "Available"
 ```
 
+## Track long-running operations
+
+File writes are asynchronous server-side. `upload_file` and `delete_file` poll for
+you and only return once the work is done, so most callers never need this. But
+`timeout=-1` makes them return as soon as the request is accepted — and these two
+methods are how you follow what was started.
+
+`describe_operation` reports one operation:
+
+```python
+operation = pc.assistants.describe_operation(
+    assistant_name="my-assistant",
+    operation_id="op-1234-abcd-5678",
+)
+print(operation.status)           # "Processing" | "Completed" | "Failed"
+print(operation.percent_complete) # 0-100
+print(operation.file_id)          # the file this operation is about
+print(operation.error)            # the reason, when status is "Failed"
+```
+
+`list_operations` returns a lazy paginator over everything in flight and
+everything that recently finished — both successes and failures are kept for 30
+days:
+
+```python
+for op in pc.assistants.list_operations(assistant_name="my-assistant"):
+    print(op.operation_id, op.operation_type, op.status)
+```
+
+Filter with `operation_type` (`"upload_file"`, `"upsert_file"`,
+`"update_file_metadata"`, `"delete_file"`) and `status` (`"Processing"`,
+`"Completed"`, `"Failed"` — case-sensitive). An unrecognized value raises
+{exc}`~pinecone.errors.exceptions.PineconeValueError` listing the ones that work,
+before anything is sent:
+
+```python
+stuck = pc.assistants.list_operations(
+    assistant_name="my-assistant",
+    operation_type="upload_file",
+    status="Processing",
+).to_list()
+```
+
+`limit` caps how many operations the paginator yields in total. For explicit
+page-at-a-time control use `list_operations_page`, which takes `page_size` (1-100,
+default 50) and returns a
+{class}`~pinecone.models.assistant.list.ListOperationsResponse` whose `next` is
+the token for the following page.
+
 ## Chat
 
 Send a conversation and receive a response:

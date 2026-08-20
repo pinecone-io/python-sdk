@@ -435,6 +435,24 @@ def make_file_operation_response(**overrides: Any) -> dict[str, Any]:
     return base
 
 
+def make_operation_list_response(
+    operations: list[dict[str, Any]] | None = None,
+    next_token: str | None = None,
+) -> dict[str, Any]:
+    """Return the ``OperationList`` dict ``GET /operations/{name}`` answers with.
+
+    ``pagination`` is omitted entirely when *next_token* is ``None``: the
+    backend declares it ``skip_serializing_if = Option::is_none``, so an
+    exhausted listing has no key rather than a null one.
+    """
+    body: dict[str, Any] = {
+        "operations": operations if operations is not None else [make_file_operation_response()],
+    }
+    if next_token is not None:
+        body["pagination"] = {"next": next_token}
+    return body
+
+
 def make_context_response(**overrides: Any) -> dict[str, Any]:
     """Return a ContextModel dict (assistant_data ``POST /chat/{name}/context``)."""
     base: dict[str, Any] = {

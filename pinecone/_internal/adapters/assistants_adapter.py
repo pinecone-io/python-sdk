@@ -9,7 +9,11 @@ from pinecone.models.assistant.chat import ChatCompletionResponse, ChatResponse,
 from pinecone.models.assistant.context import ContextResponse
 from pinecone.models.assistant.evaluation import AlignmentResult, AlignmentScores, EntailmentResult
 from pinecone.models.assistant.file_model import AssistantFileModel
-from pinecone.models.assistant.list import ListAssistantsResponse, ListFilesResponse
+from pinecone.models.assistant.list import (
+    ListAssistantsResponse,
+    ListFilesResponse,
+    ListOperationsResponse,
+)
 from pinecone.models.assistant.model import AssistantModel
 from pinecone.models.assistant.operation import OperationModel
 
@@ -76,6 +80,11 @@ class AssistantsAdapter:
     def to_operation(data: bytes) -> OperationModel:
         """Decode raw JSON bytes into an OperationModel."""
         return decode_response(data, OperationModel)
+
+    @staticmethod
+    def to_operation_list(data: bytes) -> ListOperationsResponse:
+        """Decode raw JSON bytes into a ListOperationsResponse."""
+        return decode_response(data, ListOperationsResponse)
 
     @staticmethod
     def to_file_list(data: bytes) -> ListFilesResponse:
