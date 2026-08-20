@@ -12,6 +12,7 @@ from pinecone._internal.adapters._decode import convert_response, decode_respons
 from pinecone.errors.exceptions import ResponseParsingError
 from pinecone.models.indexes.index import IndexModel
 from pinecone.models.indexes.list import IndexList
+from pinecone.models.indexes.requests import ConfigureIndexRequest, CreateIndexRequest
 from pinecone.models.indexes.schema import UNTYPED_FIELD_TAG
 
 _logger = logging.getLogger(__name__)
@@ -61,8 +62,27 @@ def _enrich_parse_error(exc: ResponseParsingError) -> ResponseParsingError:
     return exc
 
 
+def _drop_none(obj: Any) -> Any:
+    """Recursively drop None values from dicts so unset optionals stay off the wire."""
+    if isinstance(obj, dict):
+        return {k: _drop_none(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_drop_none(item) for item in obj]
+    return obj
+
+
 class IndexesAdapter:
     """Transforms raw API JSON into IndexModel / IndexList instances."""
+
+    @staticmethod
+    def to_create_request(request: CreateIndexRequest) -> bytes:
+        """Encode a CreateIndexRequest as JSON bytes with no null-valued keys."""
+        return orjson.dumps(_drop_none(msgspec.to_builtins(request)))
+
+    @staticmethod
+    def to_configure_request(request: ConfigureIndexRequest) -> bytes:
+        """Encode a ConfigureIndexRequest as sparse JSON bytes with no null-valued keys."""
+        return orjson.dumps(_drop_none(msgspec.to_builtins(request)))
 
     @staticmethod
     def to_index_model(data: bytes) -> IndexModel:

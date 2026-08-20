@@ -39,18 +39,10 @@ if TYPE_CHECKING:
         CloudProvider,
         DeletionProtection,
         GcpRegion,
-        Metric,
-        VectorType,
     )
     from pinecone.models.indexes.index import IndexModel
-    from pinecone.models.indexes.list import IndexList
-    from pinecone.models.indexes.specs import (
-        ByocSpec,
-        EmbedConfig,
-        IntegratedSpec,
-        PodSpec,
-        ServerlessSpec,
-    )
+    from pinecone.models.indexes.specs import EmbedConfig
+    from pinecone.models.pagination import Paginator
     from pinecone.preview import Preview
 
 
@@ -564,34 +556,41 @@ class Pinecone:
 
     def create_index(
         self,
-        name: str,
-        spec: ServerlessSpec | PodSpec | ByocSpec | IntegratedSpec | dict[str, Any],
-        dimension: int | None = None,
-        metric: Metric | str | None = "cosine",
-        timeout: int | None = None,
-        deletion_protection: DeletionProtection | str | None = "disabled",
-        vector_type: VectorType | str = "dense",
-        tags: Mapping[str, str] | None = None,
+        *,
         schema: dict[str, Any] | None = None,
+        name: str | None = None,
+        deployment: dict[str, Any] | None = None,
+        read_capacity: dict[str, Any] | None = None,
+        deletion_protection: DeletionProtection | str | None = None,
+        tags: Mapping[str, str] | None = None,
+        cmek_id: str | None = None,
+        timeout: int | None = None,
+        **legacy_kwargs: Any,
     ) -> IndexModel:
         """Backwards-compatibility shim for :meth:`Pinecone.indexes.create`.
 
         Preserved to ease migration from the legacy Pinecone Python SDK. New code
         should use ``pc.indexes.create()`` instead of ``pc.create_index()``.
 
+        .. versionchanged:: 10.0
+           Mirrors the 2026-07 schema-based signature of
+           :meth:`Pinecone.indexes.create`. Legacy 2025-10 keyword arguments
+           (``spec``, ``dimension``, ``metric``, ``vector_type``, ...) raise
+           a :exc:`~pinecone.errors.exceptions.PineconeTypeError` whose
+           message shows the equivalent 2026-07 call.
+
         :meta private:
         """
-        resolved_dp = deletion_protection if deletion_protection is not None else "disabled"
         return self.indexes.create(
-            name=name,
-            spec=spec,
-            dimension=dimension,
-            metric=metric if metric is not None else "cosine",
-            vector_type=vector_type,
-            deletion_protection=resolved_dp,
-            tags=tags,
             schema=schema,
+            name=name,
+            deployment=deployment,
+            read_capacity=read_capacity,
+            deletion_protection=deletion_protection,
+            tags=tags,
+            cmek_id=cmek_id,
             timeout=timeout,
+            **legacy_kwargs,
         )
 
     def create_index_for_model(
@@ -601,46 +600,34 @@ class Pinecone:
         region: AwsRegion | GcpRegion | AzureRegion | str,
         embed: IndexEmbed | EmbedConfig | dict[str, Any],
         tags: Mapping[str, str] | None = None,
-        deletion_protection: DeletionProtection | str | None = "disabled",
+        deletion_protection: DeletionProtection | str | None = None,
         read_capacity: dict[str, Any] | None = None,
         schema: dict[str, Any] | None = None,
         timeout: int | None = None,
     ) -> IndexModel:
-        """Backwards-compatibility shim for :meth:`Pinecone.indexes.create`.
+        """Backwards-compatibility shim for :meth:`Pinecone.indexes.create_for_model`.
 
         Preserved to ease migration from the legacy Pinecone Python SDK. New
-        code should use ``pc.indexes.create()`` with an ``IntegratedSpec``
-        (``IntegratedSpec(cloud=..., region=..., embed=EmbedConfig(...))``)
-        instead of ``pc.create_index_for_model()``.
+        code should use ``pc.indexes.create_for_model()`` instead of
+        ``pc.create_index_for_model()``.
 
         :meta private:
         """
-        from pinecone.inference.models.index_embed import IndexEmbed as _IndexEmbed
-        from pinecone.models.indexes.specs import EmbedConfig as _EmbedConfig
-        from pinecone.models.indexes.specs import IntegratedSpec as _IntegratedSpec
-
-        if isinstance(embed, _IndexEmbed):
-            embed_config: EmbedConfig = _EmbedConfig(
-                model=embed.model,
-                field_map={k: str(v) for k, v in embed.field_map.items()},
-                metric=embed.metric,
-                read_parameters=embed.read_parameters or None,
-                write_parameters=embed.write_parameters or None,
+        deletion_protection_str: str | None = None
+        if deletion_protection is not None:
+            resolved = (
+                deletion_protection.value
+                if hasattr(deletion_protection, "value")
+                else deletion_protection
             )
-        elif isinstance(embed, _EmbedConfig):
-            embed_config = embed
-        else:
-            embed_config = _EmbedConfig(**embed)
-
-        cloud_str = cloud.value if hasattr(cloud, "value") else str(cloud)
-        region_str = region.value if hasattr(region, "value") else str(region)
-        spec = _IntegratedSpec(cloud=cloud_str, region=region_str, embed=embed_config)
-        resolved_dp = deletion_protection if deletion_protection is not None else "disabled"
-        return self.indexes.create(
+            deletion_protection_str = None if resolved == "disabled" else resolved
+        return self.indexes.create_for_model(
             name=name,
-            spec=spec,
+            cloud=cloud.value if hasattr(cloud, "value") else str(cloud),
+            region=region.value if hasattr(region, "value") else str(region),
+            embed=embed,
+            deletion_protection=deletion_protection_str,
             tags=tags,
-            deletion_protection=resolved_dp,
             schema=schema,
             read_capacity=read_capacity,
             timeout=timeout,
@@ -656,11 +643,16 @@ class Pinecone:
         """
         return self.indexes.describe(name)
 
-    def list_indexes(self) -> IndexList:
+    def list_indexes(self) -> Paginator[IndexModel]:
         """Backwards-compatibility shim for :meth:`Pinecone.indexes.list`.
 
         Preserved to ease migration from the legacy Pinecone Python SDK. New
         code should use ``pc.indexes.list()`` instead of ``pc.list_indexes()``.
+
+        .. versionchanged:: 10.0
+           Returns a :class:`~pinecone.models.pagination.Paginator` instead
+           of an ``IndexList``; replace ``pc.list_indexes().names()`` with
+           ``[idx.name for idx in pc.list_indexes()]``.
 
         :meta private:
         """
@@ -679,47 +671,37 @@ class Pinecone:
     def configure_index(
         self,
         name: str,
-        replicas: int | None = None,
-        pod_type: str | None = None,
+        *,
+        deployment: dict[str, Any] | None = None,
+        schema: dict[str, Any] | None = None,
+        read_capacity: dict[str, Any] | None = None,
         deletion_protection: DeletionProtection | str | None = None,
         tags: Mapping[str, str] | None = None,
-        embed: dict[str, Any] | None = None,
-        read_capacity: dict[str, Any] | None = None,
-        serverless_read_capacity: dict[str, Any] | None = None,
-    ) -> None:
+        **legacy_kwargs: Any,
+    ) -> IndexModel:
         """Backwards-compatibility shim for :meth:`Pinecone.indexes.configure`.
 
         Preserved to ease migration from the legacy Pinecone Python SDK. New code
         should use ``pc.indexes.configure()`` instead of ``pc.configure_index()``.
 
-        Args:
-            name (str): Name of the index to configure.
-            replicas (int | None): Number of replicas. Only applies to pod-based indexes.
-                Defaults to ``None`` (no change).
-            pod_type (str | None): Pod type (e.g. ``"p1.x1"``). Only applies to pod-based
-                indexes. Defaults to ``None`` (no change).
-            deletion_protection (DeletionProtection | str | None): Whether to enable deletion
-                protection (``"enabled"`` or ``"disabled"``). Defaults to ``None`` (no change).
-            tags (Mapping[str, str] | None): Key-value tags to apply to the index. Defaults to
-                ``None`` (no change).
-            embed (dict[str, Any] | None): Integrated inference embedding configuration.
-                Defaults to ``None`` (no change).
-            read_capacity (dict[str, Any] | None): Read capacity settings for the index.
-                Defaults to ``None`` (no change).
-            serverless_read_capacity (dict[str, Any] | None): Serverless read capacity settings.
-                Defaults to ``None`` (no change).
+        .. versionchanged:: 10.0
+           Mirrors the 2026-07 signature of :meth:`Pinecone.indexes.configure`
+           (pod scaling nests under ``deployment=``; ``embed=`` and
+           ``serverless_read_capacity=`` were removed) and returns the updated
+           :class:`IndexModel` instead of ``None``. Legacy keyword arguments
+           raise a :exc:`~pinecone.errors.exceptions.PineconeTypeError` whose
+           message shows the equivalent 2026-07 call.
 
         :meta private:
         """
-        self.indexes.configure(
-            name=name,
-            replicas=replicas,
-            pod_type=pod_type,
+        return self.indexes.configure(
+            name,
+            deployment=deployment,
+            schema=schema,
+            read_capacity=read_capacity,
             deletion_protection=deletion_protection,
             tags=tags,
-            embed=embed,
-            read_capacity=read_capacity,
-            serverless_read_capacity=serverless_read_capacity,
+            **legacy_kwargs,
         )
 
     def delete_index(self, name: str, timeout: int | None = None) -> None:

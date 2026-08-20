@@ -10,7 +10,7 @@ import pytest
 from pinecone import Pinecone
 from pinecone.inference.models.index_embed import IndexEmbed
 from pinecone.models.enums import CloudProvider
-from pinecone.models.indexes.specs import EmbedConfig, IntegratedSpec, ServerlessSpec
+from pinecone.models.indexes.specs import EmbedConfig, ServerlessSpec
 
 
 class TestPineconeRepr:
@@ -43,50 +43,37 @@ def _make_pc_with_mock_indexes() -> tuple[Pinecone, MagicMock]:
 
 def test_pinecone_create_index_delegate_forwards() -> None:
     pc, mock_indexes = _make_pc_with_mock_indexes()
+    schema = {"fields": {"embedding": {"type": "dense_vector", "dimension": 4, "metric": "cosine"}}}
     pc.create_index(
         name="x",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        dimension=4,
+        schema=schema,
+        deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
     )
     mock_indexes.create.assert_called_once()
     _, kwargs = mock_indexes.create.call_args
-    assert kwargs["metric"] == "cosine"
-    assert kwargs["vector_type"] == "dense"
-    assert kwargs["deletion_protection"] == "disabled"
+    assert kwargs["name"] == "x"
+    assert kwargs["schema"] == schema
+    assert kwargs["deployment"] == {
+        "deployment_type": "managed",
+        "cloud": "aws",
+        "region": "us-east-1",
+    }
+    assert kwargs["deletion_protection"] is None
 
 
-def test_pinecone_create_index_delegate_with_explicit_metric_and_vector_type_forwards_verbatim() -> (
-    None
-):
+def test_pinecone_create_index_delegate_forwards_legacy_kwargs_for_interception() -> None:
     pc, mock_indexes = _make_pc_with_mock_indexes()
     pc.create_index(
         name="x",
         spec=ServerlessSpec(cloud="aws", region="us-east-1"),
         dimension=4,
-        metric="euclidean",
-        vector_type="sparse",
     )
     _, kwargs = mock_indexes.create.call_args
-    assert kwargs["metric"] == "euclidean"
-    assert kwargs["vector_type"] == "sparse"
+    assert kwargs["dimension"] == 4
+    assert isinstance(kwargs["spec"], ServerlessSpec)
 
 
-def test_pinecone_create_index_delegate_with_none_deletion_protection_defaults_to_disabled() -> (
-    None
-):
-    pc, mock_indexes = _make_pc_with_mock_indexes()
-    pc.create_index(
-        name="x",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        deletion_protection=None,
-    )
-    _, kwargs = mock_indexes.create.call_args
-    assert kwargs["deletion_protection"] == "disabled"
-
-
-def test_pinecone_create_index_for_model_delegate_with_index_embed_converts_to_embed_config() -> (
-    None
-):
+def test_pinecone_create_index_for_model_delegate_forwards_index_embed() -> None:
     pc, mock_indexes = _make_pc_with_mock_indexes()
     index_embed = IndexEmbed(
         model="multilingual-e5-large",
@@ -98,16 +85,13 @@ def test_pinecone_create_index_for_model_delegate_with_index_embed_converts_to_e
         region="us-east-1",
         embed=index_embed,
     )
-    _, kwargs = mock_indexes.create.call_args
-    spec = kwargs["spec"]
-    assert isinstance(spec, IntegratedSpec)
-    assert isinstance(spec.embed, EmbedConfig)
-    assert spec.embed.model == "multilingual-e5-large"
-    assert spec.embed.field_map == {"text": "my_field"}
-    assert spec.cloud == "aws"
+    _, kwargs = mock_indexes.create_for_model.call_args
+    assert kwargs["cloud"] == "aws"
+    assert kwargs["region"] == "us-east-1"
+    assert kwargs["embed"] is index_embed
 
 
-def test_pinecone_create_index_for_model_delegate_with_embed_config_passes_through() -> None:
+def test_pinecone_create_index_for_model_delegate_forwards_embed_config() -> None:
     pc, mock_indexes = _make_pc_with_mock_indexes()
     embed_config = EmbedConfig(
         model="multilingual-e5-large",
@@ -119,28 +103,21 @@ def test_pinecone_create_index_for_model_delegate_with_embed_config_passes_throu
         region="us-east-1",
         embed=embed_config,
     )
-    _, kwargs = mock_indexes.create.call_args
-    spec = kwargs["spec"]
-    assert isinstance(spec, IntegratedSpec)
-    assert spec.embed is embed_config
-    assert spec.cloud == "aws"
+    _, kwargs = mock_indexes.create_for_model.call_args
+    assert kwargs["embed"] is embed_config
 
 
-def test_pinecone_create_index_for_model_delegate_with_dict_constructs_embed_config() -> None:
+def test_pinecone_create_index_for_model_delegate_drops_disabled_deletion_protection() -> None:
     pc, mock_indexes = _make_pc_with_mock_indexes()
     pc.create_index_for_model(
         name="my-index",
         cloud=CloudProvider.AWS,
         region="us-east-1",
         embed={"model": "m", "field_map": {"text": "a"}},
+        deletion_protection="disabled",
     )
-    _, kwargs = mock_indexes.create.call_args
-    spec = kwargs["spec"]
-    assert isinstance(spec, IntegratedSpec)
-    assert isinstance(spec.embed, EmbedConfig)
-    assert spec.embed.model == "m"
-    assert spec.embed.field_map == {"text": "a"}
-    assert spec.cloud == "aws"
+    _, kwargs = mock_indexes.create_for_model.call_args
+    assert kwargs["deletion_protection"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -231,38 +208,33 @@ class TestConfigureIndex:
         pc, mock_indexes = _make_pc_with_mock_indexes_delegates()
         pc.configure_index(
             "my-index",
-            replicas=3,
-            pod_type="p2.x2",
+            deployment={"replicas": 3, "pod_type": "p2.x2"},
             deletion_protection="enabled",
             tags={"env": "prod"},
-            embed={"model": "m"},
-            read_capacity={"read_units": 5},
+            read_capacity={"mode": "OnDemand"},
         )
         mock_indexes.configure.assert_called_once_with(
-            name="my-index",
-            replicas=3,
-            pod_type="p2.x2",
+            "my-index",
+            deployment={"replicas": 3, "pod_type": "p2.x2"},
+            schema=None,
+            read_capacity={"mode": "OnDemand"},
             deletion_protection="enabled",
             tags={"env": "prod"},
-            embed={"model": "m"},
-            read_capacity={"read_units": 5},
-            serverless_read_capacity=None,
         )
 
-    def test_serverless_read_capacity_forwarded(self) -> None:
+    def test_legacy_kwargs_forwarded_for_interception(self) -> None:
         pc, mock_indexes = _make_pc_with_mock_indexes_delegates()
         pc.configure_index(
             "my-index",
             serverless_read_capacity={"mode": "OnDemand"},
         )
         mock_indexes.configure.assert_called_once_with(
-            name="my-index",
-            replicas=None,
-            pod_type=None,
+            "my-index",
+            deployment=None,
+            schema=None,
+            read_capacity=None,
             deletion_protection=None,
             tags=None,
-            embed=None,
-            read_capacity=None,
             serverless_read_capacity={"mode": "OnDemand"},
         )
 

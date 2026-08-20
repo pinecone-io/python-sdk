@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import re
+from collections.abc import Mapping, Sequence
 from typing import Any, overload
 
 from pinecone.errors.exceptions import ValidationError
@@ -75,3 +76,43 @@ def require_valid_resource_name(name: str, value: str) -> None:
         raise ValidationError(
             f"{name} contains invalid characters; must be lowercase alphanumeric and hyphens only"
         )
+
+
+_TAG_KEY_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+_MAX_TAGS = 20
+_MAX_TAG_KEY_LEN = 80
+_MAX_TAG_VAL_LEN = 120
+
+
+def validate_index_tags(tags: Mapping[str, str] | None) -> None:
+    """Validate index tags against the 2026-07 IndexTags contract.
+
+    Keys: 1-80 ASCII alphanumerics, ``_`` or ``-``. Values: 0-120 printable
+    ASCII characters. At most 20 tags. Raises
+    :class:`~pinecone.errors.exceptions.PineconeValueError` naming the
+    offending key and the limit.
+    """
+    if tags is None:
+        return
+    if len(tags) > _MAX_TAGS:
+        raise ValidationError(f"tags exceeded the maximum of {_MAX_TAGS}. Got {len(tags)} tags.")
+    for key, value in tags.items():
+        if not key:
+            raise ValidationError("tags contains an empty key; tag keys must be 1-80 characters.")
+        if len(key) > _MAX_TAG_KEY_LEN:
+            raise ValidationError(
+                f"Tag key {key!r} exceeds the {_MAX_TAG_KEY_LEN}-character limit."
+            )
+        if not _TAG_KEY_RE.match(key):
+            raise ValidationError(
+                f"Tag key {key!r} has invalid characters. Must be alphanumeric or '_', '-'."
+            )
+        if len(value) > _MAX_TAG_VAL_LEN:
+            raise ValidationError(
+                f"Tag value for key {key!r} exceeds the {_MAX_TAG_VAL_LEN}-character limit."
+            )
+        if not value.isascii() or not value.isprintable():
+            raise ValidationError(
+                f"Tag value for key {key!r} contains invalid characters. "
+                "Only printable ASCII characters are allowed."
+            )
