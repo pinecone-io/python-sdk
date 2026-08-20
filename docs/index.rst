@@ -19,6 +19,7 @@ Pinecone Python SDK
    guides/retries
    guides/pagination
    guides/performance
+   guides/bulk-ingest
 
 .. toctree::
    :maxdepth: 1

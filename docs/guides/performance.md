@@ -90,15 +90,15 @@ retries happen automatically per batch.
 response = index.upsert(
     vectors=large_list,    # any length
     batch_size=100,        # vectors per request
-    max_concurrency=4,     # parallel in-flight requests (default 4, range 1–64)
+    max_concurrency=8,     # parallel in-flight requests (default 8, range 1–64)
 )
 print(response.upserted_count)         # successful items
 print(response.failed_item_count)      # 0 if everything succeeded
 ```
 
 `AsyncIndex.upsert()` accepts the same `batch_size` and `max_concurrency` kwargs.
-`Index.upsert_from_dataframe()` accepts `batch_size` but not `max_concurrency` — it batches
-sequentially rather than in parallel.
+`upsert_from_dataframe()` accepts `batch_size`, `max_concurrency`, and `total_timeout`
+with the same meanings on all three clients (REST sync, asyncio, gRPC).
 `Index.upsert_records()` does **not** accept `batch_size` or `max_concurrency` — it
 sends a single NDJSON request per call, so chunk the record list yourself and call
 `upsert_records()` once per chunk.
@@ -141,15 +141,14 @@ parallelism — v8 gRPC was already efficient at the request level.
 
 ### Tuning `max_concurrency`
 
-The default of `4` is calibrated to capture ~70% of the achievable speedup with
-modest pressure on the cluster — safe to use without tuning. Push higher only when
-you have a reason and can measure the result on your workload:
+The default is a flat `8` on every method and transport — identical on your laptop
+and your production hosts, so throughput is reproducible across machines. Push higher
+only when you have a reason and can measure the result on your workload:
 
 | `max_concurrency` | When to use it |
 |---:|---|
 | `1` | Strict per-second quota, or you want sequential semantics for ordering |
-| `4` *(default)* | General use; ~70% of the win, no tuning required |
-| `8` | Large bulk loads on a well-provisioned index — typically the sweet spot |
+| `8` *(default)* | General use, including large bulk loads — no tuning required |
 | `16–32` | Diminishing returns; the cluster (not the SDK) is usually the bottleneck above ~16 |
 | `>32` | Rarely worth it for a single client; consider sharding the work across multiple clients instead |
 
