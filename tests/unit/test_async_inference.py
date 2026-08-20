@@ -10,6 +10,7 @@ import pytest
 import respx
 
 from pinecone._internal.config import PineconeConfig
+from pinecone._internal.constants import API_VERSION_HEADER
 from pinecone.async_client.inference import AsyncInference
 from pinecone.errors.exceptions import ValidationError
 from pinecone.models.enums import EmbedModel, RerankModel
@@ -415,6 +416,83 @@ async def test_async_get_model_conflict_raises(inference: AsyncInference) -> Non
 async def test_async_get_model_unexpected_kwarg_raises(inference: AsyncInference) -> None:
     with pytest.raises(TypeError, match="unexpected keyword arguments"):
         await inference.get_model(model_alias="foo")
+
+
+# ---------------------------------------------------------------------------
+# API version header
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_all_operations_send_the_2026_07_version_header(
+    inference: AsyncInference,
+) -> None:
+    embed = respx.post(f"{BASE_URL}/embed").mock(
+        return_value=httpx.Response(200, json=make_embed_response()),
+    )
+    rerank = respx.post(f"{BASE_URL}/rerank").mock(
+        return_value=httpx.Response(200, json=make_rerank_response()),
+    )
+    list_models = respx.get(f"{BASE_URL}/models").mock(
+        return_value=httpx.Response(200, json=make_model_list_response()),
+    )
+    get_model = respx.get(f"{BASE_URL}/models/multilingual-e5-large").mock(
+        return_value=httpx.Response(200, json=make_model_info()),
+    )
+
+    await inference.embed("multilingual-e5-large", ["hello"])
+    await inference.rerank("bge-reranker-v2-m3", "q", ["a", "b"])
+    await inference.list_models()
+    await inference.get_model(model="multilingual-e5-large")
+
+    for route in (embed, rerank, list_models, get_model):
+        assert route.calls.last.request.headers[API_VERSION_HEADER] == "2026-07"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_model_resource_sends_the_2026_07_version_header(
+    inference: AsyncInference,
+) -> None:
+    list_models = respx.get(f"{BASE_URL}/models").mock(
+        return_value=httpx.Response(200, json=make_model_list_response()),
+    )
+    get_model = respx.get(f"{BASE_URL}/models/multilingual-e5-large").mock(
+        return_value=httpx.Response(200, json=make_model_info()),
+    )
+
+    await inference.model.list()
+    await inference.model.get("multilingual-e5-large")
+
+    for route in (list_models, get_model):
+        assert route.calls.last.request.headers[API_VERSION_HEADER] == "2026-07"
+
+
+# ---------------------------------------------------------------------------
+# pinecone.inference.inference_asyncio
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_inference_asyncio_shim_resolves_and_sends_2026_07(
+    config: PineconeConfig,
+) -> None:
+    from pinecone.inference.inference_asyncio import AsyncioInference
+
+    assert AsyncioInference is AsyncInference
+
+    route = respx.post(f"{BASE_URL}/embed").mock(
+        return_value=httpx.Response(200, json=make_embed_response()),
+    )
+    shimmed = AsyncioInference(config=config)
+    try:
+        await shimmed.embed("multilingual-e5-large", ["hello"])
+    finally:
+        await shimmed.close()
+
+    assert route.calls.last.request.headers[API_VERSION_HEADER] == "2026-07"
 
 
 # ---------------------------------------------------------------------------
