@@ -55,10 +55,27 @@ for backup in backups:
     print(backup.backup_id, backup.name, backup.status)
 ```
 
-`pagination` is `None` on the final page. `limit` ranges from 1 to 100 and is
-**ignored when `pagination_token` is given** — the token already carries the page
-size it was minted with, so passing a different one alongside it would skip or
-repeat rows.
+`limit` ranges from 1 to 100, and the server applies its own default of 100 when
+you omit it.
+
+Pagination here is **offset-based, not cursor-based**: the token is
+base64url-encoded JSON of the shape `{"limit": N, "offset": M}` — a position in
+the result set, not a stable cursor over a snapshot. Three consequences:
+
+- `limit` applies **even alongside a token**, replacing the page size the token
+  was minted with while keeping its offset. Send the same `limit` for the whole
+  walk, or only on the first call: changing it mid-walk resizes the window at a
+  fixed offset and can skip or repeat rows.
+- Backups created or deleted between requests shift every later offset, so a
+  walk can miss rows and return others twice. De-duplicate by `backup_id`
+  rather than trusting the sequence.
+- A malformed or truncated token is rejected with `400` rather than restarting
+  the listing.
+
+`pagination` is `None` only when a page comes back *shorter* than `limit`, so a
+final page that happens to be exactly `limit` long still carries a token —
+following it costs one extra request that returns nothing. Terminate on
+`pagination is None`, as the loop above does.
 
 Filtering by index is the same single-page contract, so the same loop applies:
 
@@ -174,14 +191,33 @@ index = pc.create_index_from_backup(
 )
 ```
 
-A restore defaults to on-demand read capacity. Pass `read_capacity` to land the
-restored index straight onto dedicated read nodes instead, skipping a
-`configure` round trip after the restore:
+### What a restore does and does not carry over
+
+`tags` behaves as documented: pass them and they win, omit them and the restored
+index inherits the backup's tags. `deletion_protection` is taken from the request
+only — it is never inherited from the source index.
+
+````{warning}
+**`read_capacity` is accepted on the request but has no effect today.** The
+`2026-07` OAS declares `read_capacity` on the restore body, and the SDK sends
+what you pass, but the backend's restore handler does not read the field: it
+hardcodes on-demand capacity for a serverless restore and a fixed `B1`
+tier with one shard and one replica for a BYOC restore, whatever the source
+index or the request asked for.
+
+The SDK keeps the spec-shaped parameter rather than rejecting it client-side,
+so the call still succeeds — it just silently lands on defaults. Until the
+backend honours the field, size a restored index with a `configure` call
+**after** the restore rather than expecting the restore to land on dedicated
+capacity:
 
 ```python
 index = pc.create_index_from_backup(
     name="product-search-restored",
     backup_id="bk-abc123",
+)
+pc.indexes.configure(
+    "product-search-restored",
     read_capacity={
         "mode": "Dedicated",
         "dedicated": {
@@ -192,9 +228,17 @@ index = pc.create_index_from_backup(
     },
 )
 ```
+````
 
-Dedicated capacity is a serverless-backup feature, and the server rejects a
-configuration too small to hold the backup.
+Two more server-side gates are worth knowing before you call:
+
+- **The backup must be finished.** A backup that is not complete is refused
+  with `412`. The message reads `Backup {backup_id} is not completed`, naming
+  the store's raw `Completed` status rather than the `Ready` status the SDK
+  surfaces on `BackupModel` — so a `412` here means "`status` is not yet
+  `Ready`", not that you passed the wrong value anywhere.
+- **Pod backups cannot be restored.** A backup whose source index was a pod
+  index is refused with `400` "Backups from pod indexes are not supported".
 
 `create_index_from_backup` is the only supported way to restore a backup —
 `pc.create_index(source_backup_id=...)` raises a `PineconeTypeError` pointing
@@ -222,8 +266,9 @@ for job in jobs:
     print(job.restore_job_id, job.status, job.percent_complete)
 ```
 
-`pagination` is `None` on the final page, and `limit` is ignored when
-`pagination_token` is given.
+Restore-job pagination is offset-based in the same way as backup pagination
+above, so the same rules apply: `pagination` is `None` on the final page,
+`limit` applies even alongside a token, and a malformed token is a `400`.
 
 ```{warning}
 Against today's backend **this listing can silently drop restore jobs, stop
@@ -252,12 +297,30 @@ job = pc.restore_jobs.describe(job_id="rj-xyz789")
 print(job.restore_job_id)
 print(job.backup_id)
 print(job.target_index_name)
-print(job.status)         # e.g. "Running", "Completed"
+print(job.status)         # "Pending" | "Completed" | "Failed" | "Cancelled"
 print(job.percent_complete)
 print(job.completed_at)
 ```
 
 `describe` returns a {class}`~pinecone.models.backups.model.RestoreJobModel`.
+
+`status` has exactly four values: `Pending`, `Completed`, `Failed`, and
+`Cancelled`. **There is no in-progress state** — a restore that is actively
+running reports `Pending`, so polling for a `Running`-style value never
+terminates. `percent_complete` is `100` once `status` is `Completed` and `None`
+at every other point: it reports completion, not progress, and cannot drive a
+progress bar. `completed_at` is populated on the same condition. Poll `status`
+for a terminal value instead:
+
+```python
+import time
+
+while True:
+    job = pc.restore_jobs.describe(job_id="rj-xyz789")
+    if job.status in ("Completed", "Failed", "Cancelled"):
+        break
+    time.sleep(5)
+```
 
 ```{warning}
 **A 404 from `describe` cannot be trusted to mean "no such restore job".**

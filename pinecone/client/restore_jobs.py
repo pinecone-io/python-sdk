@@ -51,19 +51,23 @@ class RestoreJobs:
     ) -> RestoreJobList:
         """List one page of the project's restore jobs.
 
-        Supports cursor-based pagination. This returns a **single page** and
-        does not auto-fetch: :class:`RestoreJobList` carries a ``pagination``
-        token but never follows it, so iterating the return value sees at most
-        one page. Drive the token yourself to walk the rest — see *Examples*.
+        Pagination is **offset-based**, not cursor-based: the token is
+        base64url-encoded JSON of the shape ``{"limit": N, "offset": M}``. This
+        returns a **single page** and does not auto-fetch:
+        :class:`RestoreJobList` carries a ``pagination`` token but never follows
+        it, so iterating the return value sees at most one page. Drive the token
+        yourself to walk the rest — see *Examples*.
 
         Args:
             limit (int | None): Maximum number of results per page. When ``None``,
-                the backend applies its own default (100). **Ignored when
-                *pagination_token* is given**: the token already carries the
-                page size it was minted with, and sending a different one
-                alongside it would skip or repeat rows.
-            pagination_token (str | None): Token for cursor-based pagination.
-                Takes precedence over *limit* — see above.
+                the backend applies its own default (100). Applies **even
+                alongside** *pagination_token*, replacing the page size the
+                token was minted with while keeping its offset — so send the
+                same *limit* for the whole walk, or only on the first call.
+            pagination_token (str | None): Offset token naming the next page,
+                taken from ``RestoreJobList.pagination.next``. A malformed or
+                truncated token is rejected with ``400`` (:exc:`ApiError`)
+                rather than restarting the listing.
 
         Returns:
             A :class:`RestoreJobList` supporting iteration, len(), and index access.
@@ -139,6 +143,13 @@ class RestoreJobs:
 
         Returns:
             A :class:`RestoreJobModel` with full restore job details.
+            ``status`` is one of ``"Pending"``, ``"Completed"``, ``"Failed"``,
+            or ``"Cancelled"``. There is **no in-progress state**: a restore
+            that is actively running reports ``"Pending"``, so do not poll for
+            a ``"Running"``-style value. ``percent_complete`` is ``100`` once
+            ``status`` is ``"Completed"`` and ``None`` at every other point —
+            it reports completion, not progress, and cannot be used to draw a
+            progress bar. ``completed_at`` is populated on the same condition.
 
         Raises:
             :exc:`PineconeValueError`: If *job_id* is empty.

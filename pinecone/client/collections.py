@@ -48,6 +48,10 @@ class Collections:
         Returns immediately after the API call without polling for
         readiness.
 
+        Collections are a **pod-only** feature. The source index must be a pod
+        index and must already be ``Ready``; see the note below for the exact
+        checks and the order the server applies them in.
+
         Args:
             name (str): Name for the new collection.
             source (str): Name of the source index.
@@ -56,11 +60,30 @@ class Collections:
             A CollectionModel describing the created collection.
 
         Raises:
-            ValidationError: If *name* is empty, longer than 45 characters, contains
-                characters outside ``[a-z0-9-]``, or starts/ends with a hyphen.
-                Also raised if *source* is empty.
-            ApiError: If the API returns an error response (e.g. authentication
-                failure or server error).
+            PineconeValueError: If *name* is empty, longer than 45 characters,
+                contains characters outside ``[a-z0-9-]``, or starts/ends with
+                a hyphen. Also raised if *source* is empty.
+            NotFoundError: If *source* does not name an index in this project.
+            ApiError: If the API returns another error response (e.g. the
+                ``400``\\ s in the note below, authentication failure, or a
+                server error).
+
+        .. note::
+           The server checks the source index in this order and stops at the
+           first failure:
+
+           1. **Existence.** An unknown *source* is ``404``.
+           2. **Readiness.** A source index that is not yet ``Ready`` is
+              ``400`` "Source index is not ready". This is checked *before*
+              the capacity-mode check, so a serverless index that is still
+              initialising reports a readiness failure rather than naming the
+              real problem.
+           3. **Capacity mode.** Only pod indexes can be collected. A
+              serverless *or* BYOC source is ``400`` "Cannot create
+              collections from serverless indexes" — the message says
+              "serverless" for a BYOC source too.
+
+           A per-project collection quota is enforced after these checks.
 
         Examples:
             >>> col = pc.collections.create(name="my-collection", source="my-index")
@@ -111,7 +134,7 @@ class Collections:
             vector_count, and environment.
 
         Raises:
-            ValidationError: If *name* is empty.
+            PineconeValueError: If *name* is empty.
             NotFoundError: If the collection does not exist.
             ApiError: If the API returns another error response.
 
@@ -134,7 +157,7 @@ class Collections:
             name (str): The name of the collection to delete.
 
         Raises:
-            ValidationError: If *name* is empty.
+            PineconeValueError: If *name* is empty.
             NotFoundError: If the collection does not exist.
             ApiError: If the API returns another error response.
 
