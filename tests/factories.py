@@ -173,6 +173,40 @@ def make_describe_index_stats_response(**overrides: Any) -> dict[str, Any]:
     return base
 
 
+def make_namespace_description_response(**overrides: Any) -> dict[str, Any]:
+    """Return a NamespaceDescription dict (db_data 2026-07 ``GET /namespaces/{ns}``)."""
+    base: dict[str, Any] = {
+        "name": "test-namespace",
+        "record_count": 42,
+        "schema": {"fields": {"genre": {"filterable": True}}},
+        "indexed_fields": {"fields": ["genre", "year"]},
+        "size_bytes": 1048576,
+    }
+    base.update(overrides)
+    return base
+
+
+def make_namespace_description_grpc_dict(**overrides: Any) -> dict[str, Any]:
+    """Return the same namespace as :func:`make_namespace_description_response`, in
+    the shape ``GrpcChannel`` hands to ``_dict_to_namespace_description``.
+
+    The two shapes are not interchangeable: ``namespace_description_to_py_dict``
+    (rust/src/transport.rs) emits ``indexed_fields`` as a bare list of names,
+    where the REST JSON nests it under a ``fields`` key. Anything decoding one
+    shape with the other's reader silently loses the indexed fields, so the
+    parity tests compare the resulting models rather than the input dicts.
+    """
+    base: dict[str, Any] = {
+        "name": "test-namespace",
+        "record_count": 42,
+        "schema": {"fields": {"genre": {"filterable": True}}},
+        "indexed_fields": ["genre", "year"],
+        "size_bytes": 1048576,
+    }
+    base.update(overrides)
+    return base
+
+
 # ---------------------------------------------------------------------------
 # Inference factories
 # ---------------------------------------------------------------------------
