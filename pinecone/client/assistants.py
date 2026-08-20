@@ -32,6 +32,7 @@ from pinecone.models.assistant.file_model import AssistantFileModel
 from pinecone.models.assistant.list import ListAssistantsResponse, ListFilesResponse
 from pinecone.models.assistant.message import Message
 from pinecone.models.assistant.model import AssistantModel
+from pinecone.models.assistant.operation import OperationModel
 from pinecone.models.assistant.options import ContextOptions
 from pinecone.models.assistant.streaming import (
     ChatCompletionStream,
@@ -51,6 +52,25 @@ _VALID_REGIONS = ("us", "eu")
 _CREATE_POLL_INTERVAL_SECONDS = 0.5
 _DELETE_POLL_INTERVAL_SECONDS = 5
 _UPLOAD_POLL_INTERVAL_SECONDS = 5
+
+
+def _operation_target(file_id: str | None) -> str:
+    return f"file {file_id!r}" if file_id is not None else "the file"
+
+
+def _operation_failure_message(action: str, file_id: str | None, operation: OperationModel) -> str:
+    """The failure text a caller sees when a file operation reports ``"Failed"``.
+
+    The server's ``error_message`` is quoted verbatim: it is the only part that
+    says *why* ("Uploaded file can only currently be either a pdf or txt file"),
+    and paraphrasing it is the difference between a caller fixing the input and
+    a caller guessing.
+    """
+    detail = operation.error or "the server reported no error message"
+    return (
+        f"{action} of {_operation_target(file_id)} failed "
+        f"(operation_id={operation.operation_id!r}): {detail}"
+    )
 
 
 class Assistants(AssistantsLegacyNamespaceMixin):
@@ -175,80 +195,44 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             )
         return self._data_plane_clients[assistant_name]
 
-    def _list_files_http(self, assistant_name: str) -> HTTPClient:
-        """Return an uncached HTTPClient for the assistant's data-plane host."""
-        from pinecone._internal.config import PineconeConfig as _PineconeConfig
-        from pinecone._internal.http_client import HTTPClient as _HTTPClient
-
-        assistant = self.describe(name=assistant_name)
-        if not assistant.host:
-            raise PineconeValueError(f"Assistant '{assistant_name}' has no data-plane host")
-        data_config = _PineconeConfig(
-            api_key=self._config.api_key,
-            host=f"{assistant.host.rstrip('/')}/assistant",
-            timeout=self._config.timeout,
-            additional_headers=self._config.additional_headers,
-            source_tag=self._config.source_tag or "",
-            proxy_url=self._config.proxy_url or "",
-            proxy_headers=self._config.proxy_headers,
-            ssl_ca_certs=self._config.ssl_ca_certs,
-            ssl_verify=self._config.ssl_verify,
-            connection_pool_maxsize=self._config.connection_pool_maxsize,
-            retry_config=self._config.retry_config,
-        )
-        return _HTTPClient(data_config, ASSISTANT_API_VERSION)
-
-    def _upsert_http(self, assistant_name: str) -> HTTPClient:
-        """Return an HTTPClient targeting the assistant's data-plane host for upserts."""
-        from pinecone._internal.config import PineconeConfig as _PineconeConfig
-        from pinecone._internal.http_client import HTTPClient as _HTTPClient
-
-        assistant = self.describe(name=assistant_name)
-        if not assistant.host:
-            raise PineconeValueError(f"Assistant '{assistant_name}' has no data-plane host")
-        data_config = _PineconeConfig(
-            api_key=self._config.api_key,
-            host=f"{assistant.host.rstrip('/')}/assistant",
-            timeout=self._config.timeout,
-            additional_headers=self._config.additional_headers,
-            source_tag=self._config.source_tag or "",
-            proxy_url=self._config.proxy_url or "",
-            proxy_headers=self._config.proxy_headers,
-            ssl_ca_certs=self._config.ssl_ca_certs,
-            ssl_verify=self._config.ssl_verify,
-            connection_pool_maxsize=self._config.connection_pool_maxsize,
-            retry_config=self._config.retry_config,
-        )
-        return _HTTPClient(data_config, ASSISTANT_API_VERSION)
-
     def _poll_operation_until_done(
         self,
-        upsert_http: HTTPClient,
+        data_http: HTTPClient,
         assistant_name: str,
         operation_id: str,
         timeout: float | None,
-    ) -> None:
-        """Poll ``GET /operations/{assistant_name}/{operation_id}`` until done."""
+        *,
+        action: str,
+        file_id: str | None = None,
+        poll_interval: float = _UPLOAD_POLL_INTERVAL_SECONDS,
+    ) -> OperationModel:
+        """Poll ``GET /operations/{assistant_name}/{operation_id}`` until it is done.
+
+        Returns the terminal :class:`OperationModel`. Raises
+        :exc:`PineconeError` when the operation reports ``"Failed"``, quoting
+        the server's ``error_message`` verbatim, and
+        :exc:`PineconeTimeoutError` when *timeout* elapses first.
+        """
         start = time.monotonic()
         while True:
-            response = upsert_http.get(f"/operations/{assistant_name}/{operation_id}")
-            op_model = self._adapter.to_operation(response.content)
+            response = data_http.get(f"/operations/{assistant_name}/{operation_id}")
+            operation = self._adapter.to_operation(response.content)
 
-            if op_model.status != "Processing":
-                if op_model.status == "Failed":
-                    error_msg = op_model.error or "Unknown operation error"
-                    raise PineconeError(
-                        f"Upsert operation failed for operation '{operation_id}': {error_msg}"
-                    )
-                return
+            if operation.status != "Processing":
+                if operation.status == "Failed":
+                    raise PineconeError(_operation_failure_message(action, file_id, operation))
+                return operation
 
             if timeout is not None:
                 elapsed = time.monotonic() - start
                 if elapsed >= timeout:
                     raise PineconeTimeoutError(
-                        f"Upsert operation timed out after {timeout}s (operation_id={operation_id})"
+                        f"{action} of {_operation_target(file_id)} did not finish within "
+                        f"{timeout}s (operation_id={operation_id!r}, "
+                        f"percent_complete={operation.percent_complete}). The operation is "
+                        "still running server-side; call describe_operation() to follow it."
                     )
-            time.sleep(_UPLOAD_POLL_INTERVAL_SECONDS)
+            time.sleep(poll_interval)
 
     def upload_file(
         self,
@@ -267,6 +251,12 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         Uploads a file from a local path or an in-memory byte stream, then
         polls until server-side processing completes.
 
+        On ``2026-07`` both the upload (``POST /files/{name}``) and the
+        upsert (``PUT /files/{name}/{file_id}``) answer ``202`` with an
+        operation envelope rather than the file. The handshake — read the
+        operation, resolve the file id, poll the operation, then describe the
+        file — happens inside this method, so the return type is unchanged.
+
         Args:
             assistant_name: Name of the target assistant.
             file_path: Path to a local file to upload. Mutually exclusive
@@ -275,10 +265,15 @@ class Assistants(AssistantsLegacyNamespaceMixin):
                 with *file_path*. Use *file_name* to set the filename.
             file_name: Filename to associate with *file_stream*. Ignored
                 when *file_path* is provided.
-            metadata: Optional metadata dictionary. Sent as a JSON string.
+            metadata: Optional metadata dictionary, at most 16KB once
+                JSON-encoded. Sent as a ``metadata`` multipart form field —
+                on ``2026-07`` the metadata query parameter is rejected.
             multimodal: Whether to enable multimodal processing for PDFs.
-            file_id: Optional caller-specified file identifier for upsert
-                behavior.
+                Sent as a ``multimodal`` query parameter.
+            file_id: Optional caller-specified file identifier. When given,
+                the file is upserted with ``PUT /files/{name}/{file_id}``,
+                replacing any existing file with that identifier. Must be
+                1-128 characters of ``[A-Za-z0-9_-]``.
             timeout: Seconds to wait for processing to complete. ``None``
                 (default) polls indefinitely. Use ``-1`` to return
                 immediately after upload with one describe call. Raises
@@ -295,7 +290,8 @@ class Assistants(AssistantsLegacyNamespaceMixin):
                 exist.
             :exc:`PineconeTimeoutError`: If processing does not complete
                 before *timeout*.
-            :exc:`PineconeError`: If server-side processing fails.
+            :exc:`PineconeError`: If server-side processing fails, or if the
+                accepted upload does not identify the file it created.
 
         Examples:
             >>> file = pc.assistants.upload_file(
@@ -326,90 +322,61 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         try:
             data_http = self._data_plane_http(assistant_name)
 
-            params: dict[str, str] = {}
+            form: dict[str, Any] = {"file": (upload_name, handle)}
             if metadata is not None:
-                params["metadata"] = _json.dumps(metadata)
+                form["metadata"] = (None, _json.dumps(metadata))
+            params: dict[str, str] = {}
             if multimodal is not None:
                 params["multimodal"] = str(multimodal).lower()
 
             if file_id is not None:
-                # Use the 2026-04 upsert endpoint: PUT /files/{assistant_name}/{file_id}
-                upsert_http = self._upsert_http(assistant_name)
+                action = "Upsert"
                 logger.info(
                     "Upserting file %r (id=%s) to assistant %r",
                     upload_name,
                     file_id,
                     assistant_name,
                 )
-                # v202604 rejects metadata as a query param; send it as a multipart field instead.
-                upsert_files: dict[str, Any] = {"file": (upload_name, handle)}
-                if metadata is not None:
-                    upsert_files["metadata"] = (None, _json.dumps(metadata))
-                upsert_query: dict[str, str] = {}
-                if multimodal is not None:
-                    upsert_query["multimodal"] = str(multimodal).lower()
-                upsert_response = upsert_http.put(
-                    f"/files/{assistant_name}/{file_id}",
-                    files=upsert_files,
-                    params=upsert_query,
+                response = data_http.put(
+                    f"/files/{assistant_name}/{file_id}", files=form, params=params
                 )
-                op_model = self._adapter.to_operation(upsert_response.content)
-                operation_id = op_model.operation_id
-                if timeout == -1:
-                    return self.describe_file(assistant_name=assistant_name, file_id=file_id)
-                self._poll_operation_until_done(upsert_http, assistant_name, operation_id, timeout)
-                return self.describe_file(assistant_name=assistant_name, file_id=file_id)
-
-            logger.info("Uploading file %r to assistant %r", upload_name, assistant_name)
-            response = data_http.post(
-                f"/files/{assistant_name}",
-                files={"file": (upload_name, handle)},
-                params=params,
-            )
-            file_model = self._adapter.to_file(response.content)
-            logger.debug(
-                "Uploaded file %r (id=%s, status=%s)",
-                upload_name,
-                file_model.id,
-                file_model.status,
-            )
+            else:
+                action = "Upload"
+                logger.info("Uploading file %r to assistant %r", upload_name, assistant_name)
+                response = data_http.post(f"/files/{assistant_name}", files=form, params=params)
+            operation = self._adapter.to_operation(response.content)
         finally:
             if opened_file is not None:
                 opened_file.close()
 
+        uploaded_id = file_id if file_id is not None else operation.file_id
+        if uploaded_id is None:
+            raise PineconeError(
+                f"{action} of {upload_name!r} was accepted (operation_id="
+                f"{operation.operation_id!r}) but the response did not name the file it "
+                "created, so there is nothing to describe. Call describe_operation() with "
+                "that operation id to find the file."
+            )
+        logger.debug(
+            "%s of %r accepted (file_id=%s, operation_id=%s)",
+            action,
+            upload_name,
+            uploaded_id,
+            operation.operation_id,
+        )
+
         if timeout == -1:
-            return self.describe_file(assistant_name=assistant_name, file_id=file_model.id)
+            return self.describe_file(assistant_name=assistant_name, file_id=uploaded_id)
 
-        return self._poll_file_until_processed(data_http, assistant_name, file_model.id, timeout)
-
-    def _poll_file_until_processed(
-        self,
-        data_http: HTTPClient,
-        assistant_name: str,
-        file_id: str,
-        timeout: float | None,
-    ) -> AssistantFileModel:
-        """Poll ``GET /files/{assistant_name}/{file_id}`` until processing completes."""
-        start = time.monotonic()
-        while True:
-            response = data_http.get(f"/files/{assistant_name}/{file_id}")
-            file_model = self._adapter.to_file(response.content)
-
-            if file_model.status != "Processing":
-                if file_model.status == "ProcessingFailed":
-                    raise PineconeError(
-                        f"File processing failed for '{file_id}'. Call describe_operation() "
-                        "for the failure reason."
-                    )
-                return file_model
-
-            if timeout is not None:
-                elapsed = time.monotonic() - start
-                if elapsed >= timeout:
-                    raise PineconeTimeoutError(
-                        f"File processing timed out after {timeout}s (operation_id={file_id})"
-                    )
-            time.sleep(_UPLOAD_POLL_INTERVAL_SECONDS)
+        self._poll_operation_until_done(
+            data_http,
+            assistant_name,
+            operation.operation_id,
+            timeout,
+            action=action,
+            file_id=uploaded_id,
+        )
+        return self.describe_file(assistant_name=assistant_name, file_id=uploaded_id)
 
     def describe_file(
         self,
@@ -552,7 +519,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
 
         import json as _json
 
-        list_http = self._list_files_http(assistant_name)
+        list_http = self._data_plane_http(assistant_name)
         params: dict[str, str | int] = {}
         if page_size is not None:
             params["limit"] = page_size
@@ -581,26 +548,30 @@ class Assistants(AssistantsLegacyNamespaceMixin):
     ) -> None:
         """Delete a file from a Pinecone assistant.
 
-        Sends a DELETE request, then polls every 5 seconds until the file is
-        confirmed gone (404 from describe_file). Other errors during polling
-        propagate immediately.
+        On ``2026-07`` deletion is genuinely asynchronous. The API answers
+        either ``202`` with an operation envelope — deletion is pending, and
+        this method polls that operation every 5 seconds until it finishes —
+        or ``204`` with no body, which the backend uses for a file it could
+        remove at once (one that previously failed processing, or was already
+        being deleted). Both are success; only the ``202`` case polls.
 
         Args:
             assistant_name: Name of the assistant that owns the file.
             file_id: Unique identifier of the file to delete.
-            timeout: Seconds to wait for the file to be deleted. Use ``None``
-                (default) to poll indefinitely. Use ``-1`` to return
-                immediately without polling. Use a positive value to poll with
-                a deadline. Raises :exc:`PineconeTimeoutError` if the file
-                is not gone before the deadline.
+            timeout: Seconds to wait for the deletion to finish. Use ``None``
+                (default) to poll indefinitely. Use ``-1`` to return as soon
+                as the request is accepted — the file may still exist when
+                this returns. Use a positive value to poll with a deadline.
+                Raises :exc:`PineconeTimeoutError` if the deletion is not
+                done before the deadline.
 
         Returns:
             ``None``
 
         Raises:
-            :exc:`PineconeError`: If server-side file deletion fails.
-            :exc:`PineconeTimeoutError`: If the file still exists after
-                *timeout* seconds.
+            :exc:`PineconeError`: If the deletion operation reports failure.
+            :exc:`PineconeTimeoutError`: If the deletion has not finished
+                after *timeout* seconds.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -611,28 +582,29 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         """
         data_http = self._data_plane_http(assistant_name)
         logger.info("Deleting file %r from assistant %r", file_id, assistant_name)
-        data_http.delete(f"/files/{assistant_name}/{file_id}")
-        logger.debug("Deleted file %r from assistant %r", file_id, assistant_name)
+        response = data_http.delete(f"/files/{assistant_name}/{file_id}")
+
+        if response.status_code == 204 or not response.content:
+            logger.debug("File %r was deleted immediately (no operation)", file_id)
+            return
+
+        operation = self._adapter.to_operation(response.content)
+        logger.debug(
+            "Deletion of file %r accepted (operation_id=%s)", file_id, operation.operation_id
+        )
 
         if timeout == -1:
             return
 
-        start = time.monotonic()
-        while True:
-            try:
-                file_model = self.describe_file(assistant_name=assistant_name, file_id=file_id)
-            except NotFoundError:
-                return
-            if file_model.status not in ("Deleting", None):
-                raise PineconeError(
-                    f"File deletion failed for '{file_id}': the file is in state "
-                    f"{file_model.status!r}. Call describe_operation() for the failure reason."
-                )
-            if timeout is not None:
-                elapsed = time.monotonic() - start
-                if elapsed >= timeout:
-                    raise PineconeTimeoutError(f"File '{file_id}' still exists after {timeout}s")
-            time.sleep(_DELETE_POLL_INTERVAL_SECONDS)
+        self._poll_operation_until_done(
+            data_http,
+            assistant_name,
+            operation.operation_id,
+            timeout,
+            action="Deletion",
+            file_id=file_id,
+            poll_interval=_DELETE_POLL_INTERVAL_SECONDS,
+        )
 
     def create(
         self,

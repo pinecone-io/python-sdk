@@ -28,6 +28,7 @@ Pinecone Python SDK
    migration/v10-2026-07-backup-models
    migration/v10-2026-07-assistant-models
    migration/v10-2026-07-assistant-chat
+   migration/v10-2026-07-assistant-files
    migration/v10-2026-07-vector-models
    migration/v9-migration
    migration/v9.2-grpc-partial-failures

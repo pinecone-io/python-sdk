@@ -410,6 +410,31 @@ def make_operation_response(**overrides: Any) -> dict[str, Any]:
     return base
 
 
+def make_file_operation_response(**overrides: Any) -> dict[str, Any]:
+    """Return the full ``2026-07`` OperationModel dict a file endpoint answers with.
+
+    This is the 202 envelope ``POST /files/{name}``, ``PUT /files/{name}/{id}``
+    and ``DELETE /files/{name}/{id}`` return, and the body
+    ``GET /operations/{name}/{id}`` repeats while polling. Unlike
+    :func:`make_operation_response` — kept deliberately minimal as the
+    ``2026-04`` backward-compatibility fixture — this carries every field the
+    ``2026-07`` schema requires, so it can back a conformance claim.
+    """
+    base: dict[str, Any] = {
+        "id": "op-abc123",
+        "operation_type": "upload_file",
+        "file_id": "file-abc123",
+        "status": "Processing",
+        "created_on": "2026-07-01T12:00:00Z",
+        "completed_on": None,
+        "percent_complete": 0,
+        "error_message": None,
+        "ingestion_units": None,
+    }
+    base.update(overrides)
+    return base
+
+
 def make_context_response(**overrides: Any) -> dict[str, Any]:
     """Return a ContextModel dict (assistant_data ``POST /chat/{name}/context``)."""
     base: dict[str, Any] = {
