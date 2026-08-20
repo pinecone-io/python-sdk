@@ -132,6 +132,11 @@ async def test_async_no_throttle_no_amplification() -> None:
     assert scenario.request_amplification() == pytest.approx(1.0)
 
 
+# Async mirror of test_retry_storm_sync.py's marker, for the same reason: the
+# retry_after_seconds=2.0 smear puts a ~3.15s wall-clock ceiling under this one.
+# Measured 2.96s with 0.1% of it CPU. Scoped rather than module-level, and via a
+# decorator rather than `pytestmark`, which this module already spends on asyncio.
+@pytest.mark.timeout(20)
 async def test_async_retry_after_smear_upper_bound_respected() -> None:
     config = StormConfig(
         n_clients=5,

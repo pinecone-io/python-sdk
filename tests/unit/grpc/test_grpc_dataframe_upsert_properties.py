@@ -162,6 +162,14 @@ class TestUpsertFromDataframePartitionProperties:
         )
         assert result.upserted_count == n_rows
 
+    # Same CPU-bound hypothesis profile as test_batches_form_a_valid_partition
+    # above, which is why #306 gave that one 60s. CI durations (added in #327)
+    # show why these two need a marker too: they run 0.70s / 0.73s locally but
+    # 1.82-1.86s / 1.69-2.19s on the runners, a ~3x amplification that leaves
+    # only 2.3x under the 5s default — and their marked sibling reaches 6.22s
+    # there, so the profile demonstrably clears 5s. 30s is ~14x the CI maximum;
+    # it is half the sibling's 60s because the measurement is ~3x smaller.
+    @pytest.mark.timeout(30)
     @settings(max_examples=150, deadline=None)
     @given(payload=_payloads())
     def test_every_row_reaches_channel_with_payload_intact(self, payload) -> None:
@@ -177,6 +185,7 @@ class TestUpsertFromDataframePartitionProperties:
         expected = {f"v{i}": (tuple(values[i]), metas[i]) for i in range(len(values))}
         assert got == expected
 
+    @pytest.mark.timeout(30)
     @settings(max_examples=100, deadline=None)
     @given(payload=_payloads(), other_batch_size=st.integers(min_value=1, max_value=10))
     def test_upserted_set_is_invariant_under_batch_size(

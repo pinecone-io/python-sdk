@@ -971,6 +971,14 @@ def test_report_mode_end_to_end() -> None:
     assert 0 <= grpc_covered <= grpc_total
 
 
+# The #327 sweep for unit tests near the 5s ceiling turned this up as the only
+# genuinely CPU-bound one: two `scripts/api_coverage.py` subprocesses, each an
+# interpreter start plus a parse of every 2026-07 OAS. Measured 1.65s at 94% CPU,
+# so unlike the eight wall-clock-bound tests #327 marked, it scales with runner
+# speed — the same profile as the grpc dataframe property test that amplified
+# >3.3x local->CI and blew the 5s default (#306). 3x margin is not enough on that
+# profile; 30s is ~18x.
+@pytest.mark.timeout(30)
 def test_gaps_mode_end_to_end() -> None:
     report = _run([sys.executable, str(SCRIPT_PATH), "--report"])
     assert report.returncode == 0, report.stdout + report.stderr

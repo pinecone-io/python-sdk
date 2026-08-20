@@ -129,6 +129,14 @@ def test_no_throttle_no_amplification() -> None:
     assert scenario.request_amplification() == pytest.approx(1.0)
 
 
+# Alone among this module's tests, this one sets retry_after_seconds=2.0, and the
+# smear can stretch a Retry-After by 1.5x — so real sleeps put a ~3.15s ceiling
+# (0.1s window + 2.0 * 1.5 + jitter) under it, which the assertion below is itself
+# checking. Measured 2.97s with 0.1% of it CPU: wall clock, not compute, so it
+# does not amplify on a slower runner. 20s is ~6.7x, the ratio #306 used on
+# test_storm_parity.py (4.27s -> 30s). Scoped, not module-level: the rest of the
+# module runs at 1.41-1.48s and keeps the 5s default.
+@pytest.mark.timeout(20)
 def test_retry_after_smear_upper_bound_respected() -> None:
     config = StormConfig(
         n_clients=5,

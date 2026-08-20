@@ -147,7 +147,11 @@ jobs:
         run: uv sync --group dev
 
       - name: pytest tests/unit
-        run: uv run pytest tests/unit -x -v
+        # --durations makes the runner's own timings visible per Python version.
+        # The scoped pytest.mark.timeout values are sized against measured
+        # runtimes (#327), and without this the only way to check a claimed
+        # margin against real CI hardware is to push a throwaway commit.
+        run: uv run pytest tests/unit -x -v --durations=25 --durations-min=0.5
 
   # ---------------------------------------------------------------------------
   # Rust check / clippy / fmt

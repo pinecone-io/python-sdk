@@ -25,6 +25,15 @@ pd = pytest.importorskip("pandas")
 
 _MOCK_GRPC_MODULE_PATH = "pinecone._grpc"
 
+# Every test that lets the deadline fire pays `_StallingChannel.released.wait(
+# timeout=2)` below: a fixed 2.0s of wall clock that does not shrink on a faster
+# machine or stretch on a slower one. Measured 2.01s per test, of which 0.3-0.5%
+# is CPU, so the global 5s unit default is only ~2.5x on a constant. 15s is
+# ~7.5x, the ratio #306 used on test_storm_parity.py (4.27s -> 30s). Class-scoped
+# rather than module-level: unlike storm parity's module fixture, nothing here is
+# order-dependent, so the four tests that never stall keep the 5s guard.
+_DEADLINE_TIMEOUT = pytest.mark.timeout(15)
+
 
 def _grpc_index(mock_channel: MagicMock) -> GrpcIndex:
     mock_module = MagicMock()
@@ -86,6 +95,7 @@ class TestSignature:
         assert result.upserted_count == 4
 
 
+@_DEADLINE_TIMEOUT
 class TestExpiry:
     def test_expiry_raises_with_the_partial_result_attached(self) -> None:
         channel = _StallingChannel(accept=2)
@@ -208,6 +218,7 @@ class TestNothingLeftToRetry:
         assert result.failed_items == []
 
 
+@_DEADLINE_TIMEOUT
 class TestExpiryUnderCollect:
     """Expiry follows on_error, like any other partial failure."""
 
@@ -242,6 +253,7 @@ class TestGenerousDeadline:
         assert result.failed_item_count == 0
 
 
+@_DEADLINE_TIMEOUT
 class TestDeadlineDuringLimiterWait:
     """The budget has to bound the wait for a concurrency slot, not just the work.
 
