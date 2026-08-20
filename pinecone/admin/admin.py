@@ -26,6 +26,7 @@ from pinecone.models.admin.token import TokenResponse
 
 if TYPE_CHECKING:
     from pinecone.admin.api_keys import ApiKeys
+    from pinecone.admin.invites import Invites
     from pinecone.admin.organizations import Organizations
     from pinecone.admin.projects import Projects
     from pinecone.admin.users import Users
@@ -176,6 +177,7 @@ class Admin:
         self._projects: Projects | None = None
         self._api_keys: ApiKeys | None = None
         self._users: Users | None = None
+        self._invites: Invites | None = None
 
     def _fetch_token(
         self,
@@ -363,10 +365,32 @@ class Admin:
             self._users = _Users(http=self._http)
         return self._users
 
+    @property
+    def invites(self) -> Invites:
+        """Access the Invites namespace for organization-invite operations.
+
+        Lazily imported and instantiated on first access.
+
+        Returns:
+            :class:`Invites` namespace instance.
+
+        Examples:
+
+            >>> from pinecone import Admin
+            >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
+            >>> for invite in admin.invites.list():
+            ...     print(invite.email, invite.status)
+        """
+        if self._invites is None:
+            from pinecone.admin.invites import Invites as _Invites
+
+            self._invites = _Invites(http=self._http)
+        return self._invites
+
     def __repr__(self) -> str:
         return (
             "Admin(organizations=<Organizations>, projects=<Projects>, "
-            "api_keys=<ApiKeys>, users=<Users>)"
+            "api_keys=<ApiKeys>, users=<Users>, invites=<Invites>)"
         )
 
     def close(self) -> None:

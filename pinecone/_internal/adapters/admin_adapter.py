@@ -6,6 +6,7 @@ from msgspec import Struct
 
 from pinecone._internal.adapters._decode import decode_response
 from pinecone.models.admin.api_key import APIKeyList, APIKeyModel, APIKeyWithSecret
+from pinecone.models.admin.invite import InviteList, InviteModel
 from pinecone.models.admin.organization import OrganizationList, OrganizationModel
 from pinecone.models.admin.project import ProjectList, ProjectModel
 from pinecone.models.admin.user import UserList, UserModel
@@ -142,6 +143,41 @@ class AdminAdapter:
         """
         envelope = decode_response(data, _APIKeyListEnvelope)
         return APIKeyList(envelope.data)
+
+    @staticmethod
+    def to_invite(data: bytes) -> InviteModel:
+        """Decode raw JSON bytes into an :class:`InviteModel`.
+
+        Args:
+            data (bytes): Raw JSON response bytes from the Admin API.
+
+        Returns:
+            :class:`InviteModel`: Decoded invite.
+
+        Raises:
+            :exc:`ResponseParsingError`: If ``data`` cannot be decoded into :class:`InviteModel`.
+        """
+        return decode_response(data, InviteModel)
+
+    @staticmethod
+    def to_invite_list(data: bytes) -> InviteList:
+        """Decode raw JSON bytes from a list-invites response into an :class:`InviteList`.
+
+        Like ``UserList`` and unlike the unpaginated admin list responses,
+        ``InviteList`` is itself the wire schema — it carries the ``pagination``
+        cursor envelope alongside ``data`` — so no internal envelope struct is
+        needed.
+
+        Args:
+            data (bytes): Raw JSON response bytes from the Admin API.
+
+        Returns:
+            :class:`InviteList`: Decoded page of invites plus the next-page cursor.
+
+        Raises:
+            :exc:`ResponseParsingError`: If ``data`` cannot be decoded.
+        """
+        return decode_response(data, InviteList)
 
     @staticmethod
     def to_user(data: bytes) -> UserModel:

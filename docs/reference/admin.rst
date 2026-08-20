@@ -1,7 +1,7 @@
 Admin
 =====
 
-The ``Admin`` client manages organizations, projects, API keys, and users.  It uses OAuth2
+The ``Admin`` client manages organizations, projects, API keys, users, and invites.  It uses OAuth2
 client credentials (service account) rather than an API key, and is the right tool
 for control-plane operations such as creating projects and rotating keys.
 
@@ -43,6 +43,15 @@ Users
 -----
 
 .. autoclass:: pinecone.admin.users.Users
+   :members:
+   :undoc-members: False
+   :show-inheritance:
+
+
+Invites
+-------
+
+.. autoclass:: pinecone.admin.invites.Invites
    :members:
    :undoc-members: False
    :show-inheritance:
