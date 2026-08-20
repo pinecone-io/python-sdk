@@ -25,10 +25,15 @@ class StreamMessageStart(
         type: Discriminator value ``"message_start"``.
         model: The model used to generate the response.
         role: The role of the message author (e.g. ``"assistant"``).
+        context_snippet_count: Number of retrieved context snippets that were
+            provided to the model, or ``None`` if the server did not report it.
+            Arrives before any content, so a value of ``0`` lets callers react
+            to "no relevant context found" without waiting for the full stream.
     """
 
     model: str
     role: str
+    context_snippet_count: int | None = None
 
     @property
     def type(self) -> str:
@@ -37,7 +42,12 @@ class StreamMessageStart(
 
     @safe_display
     def __repr__(self) -> str:
-        return f"StreamMessageStart(model={self.model!r}, role={self.role!r})"
+        snippet_part = (
+            f", context_snippet_count={self.context_snippet_count}"
+            if self.context_snippet_count is not None
+            else ""
+        )
+        return f"StreamMessageStart(model={self.model!r}, role={self.role!r}{snippet_part})"
 
     @safe_display
     def _repr_pretty_(self, p: Any, cycle: bool) -> None:
@@ -49,6 +59,9 @@ class StreamMessageStart(
             p.text(f"model={self.model!r},")
             p.breakable()
             p.text(f"role={self.role!r},")
+            if self.context_snippet_count is not None:
+                p.breakable()
+                p.text(f"context_snippet_count={self.context_snippet_count},")
 
     @safe_display
     def _repr_html_(self) -> str:
@@ -56,6 +69,8 @@ class StreamMessageStart(
         builder.row("Type:", self.type)
         builder.row("Model:", self.model)
         builder.row("Role:", self.role)
+        if self.context_snippet_count is not None:
+            builder.row("Context snippets:", self.context_snippet_count)
         return builder.build()
 
 
@@ -767,8 +782,11 @@ class ChatCompletionStreamChoice(StructDictMixin, Struct, kw_only=True):
     Attributes:
         index: The index of this choice in the choices list.
         delta: The delta message for this choice.
-        finish_reason: The reason the model stopped generating,
-            or ``None`` if generation is ongoing.
+        finish_reason: The reason the model stopped generating, or ``None`` if
+            generation is ongoing. When set it is one of ``"stop"`` (the model
+            finished), ``"length"`` (the token limit was reached),
+            ``"content_filter"`` (content filtering rules blocked the output),
+            or ``"tool_calls"`` (a tool call was triggered).
     """
 
     index: int
