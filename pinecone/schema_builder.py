@@ -16,6 +16,14 @@ Create-schema rules at API version ``2026-07``:
   declarations.
 - ``semantic_text`` fields are not accepted in create schemas at ``2026-07``
   and the builder does not offer a method for them.
+- ``integer`` is a **response-only** field type: it appears in describe/list
+  responses for indexes that pre-date numeric normalisation, but the create
+  schema has no ``integer`` variant and the server rejects one with a ``422``.
+  The builder offers no method for it and refuses it client-side wherever a
+  raw field dict can carry a ``type`` key (see :meth:`SchemaBuilder.add_custom_field`
+  and the ``additional_options`` parameters), so a describe-then-create
+  round-trip fails locally with an explanatory error instead of a server
+  ``422``.
 """
 
 from __future__ import annotations
@@ -71,6 +79,16 @@ _DESCRIPTION_MAX_BYTES = 256
 _DIMENSION_MIN = 1
 _DIMENSION_MAX = 20000
 
+_RESPONSE_ONLY_FIELD_TYPES: dict[str, str] = {
+    "integer": (
+        "'integer' appears only in describe/list responses, for indexes created "
+        "before numeric values were normalised to float; the create schema has no "
+        "integer variant. Drop the field from the create schema (numeric metadata "
+        "is indexed for filtering automatically at upsert time), or, on a pod "
+        "index, declare it with add_float_field()"
+    )
+}
+
 
 def _validate_field_name(name: str) -> None:
     from pinecone.errors.exceptions import PineconeValueError
@@ -113,6 +131,30 @@ def _validate_description(name: str, description: str | None) -> None:
         )
 
 
+def _validate_field_type(name: str, field: dict[str, Any]) -> None:
+    """Reject field types the create-index schema does not accept.
+
+    ``_RESPONSE_ONLY_FIELD_TYPES`` holds wire ``type`` values the API returns
+    from describe/list but rejects on create, mapped to the remediation clause
+    for that type. Copying a described schema straight into a create request
+    is the way these reach the builder, so the message names the field, says
+    the type is response-only, and states what to do instead — the server's
+    own rejection is a plain-text ``422`` with no such guidance.
+    """
+    from pinecone.errors.exceptions import PineconeValueError
+
+    field_type = field.get("type")
+    if not isinstance(field_type, str):
+        return
+    remediation = _RESPONSE_ONLY_FIELD_TYPES.get(field_type)
+    if remediation is None:
+        return
+    raise PineconeValueError(
+        f"Field '{name}' has type '{field_type}', which is response-only and is "
+        f"not accepted when creating an index: {remediation}."
+    )
+
+
 def _normalize_fts_language(language: str) -> str:
     """Return the canonical short-code form of a language input.
 
@@ -152,6 +194,14 @@ class SchemaBuilder:
     :meth:`add_string_list_field`, and :meth:`add_string_field` without
     full-text search).
 
+    There is no ``add_integer_field``. ``integer`` is a response-only field
+    type at ``2026-07`` — it is returned by describe/list but has no create
+    variant — so the builder rejects it wherever a raw ``type`` key can reach
+    a field dict (:meth:`add_custom_field`, or ``additional_options``),
+    raising :exc:`~pinecone.errors.exceptions.PineconeValueError` rather than
+    letting the server answer with a ``422``. Use :meth:`add_float_field` for
+    numeric fields.
+
     Examples:
         >>> from pinecone.schema_builder import SchemaBuilder
         >>> schema = (
@@ -164,6 +214,10 @@ class SchemaBuilder:
 
     def __init__(self) -> None:
         self._fields: dict[str, dict[str, Any]] = {}
+
+    def _set_field(self, name: str, field: dict[str, Any]) -> None:
+        _validate_field_type(name, field)
+        self._fields[name] = field
 
     def add_dense_vector_field(
         self,
@@ -213,7 +267,7 @@ class SchemaBuilder:
         if description is not None:
             field["description"] = description
         field.update(additional_options)
-        self._fields[name] = field
+        self._set_field(name, field)
         return self
 
     def add_sparse_vector_field(
@@ -248,7 +302,7 @@ class SchemaBuilder:
         if description is not None:
             field["description"] = description
         field.update(additional_options)
-        self._fields[name] = field
+        self._set_field(name, field)
         return self
 
     def add_string_field(
@@ -391,7 +445,7 @@ class SchemaBuilder:
         if description is not None:
             field["description"] = description
         field.update(additional_options)
-        self._fields[name] = field
+        self._set_field(name, field)
         return self
 
     def add_string_list_field(
@@ -445,7 +499,7 @@ class SchemaBuilder:
         if description is not None:
             field["description"] = description
         field.update(additional_options)
-        self._fields[name] = field
+        self._set_field(name, field)
         return self
 
     def add_boolean_field(
@@ -494,7 +548,7 @@ class SchemaBuilder:
         if description is not None:
             field["description"] = description
         field.update(additional_options)
-        self._fields[name] = field
+        self._set_field(name, field)
         return self
 
     def add_float_field(
@@ -517,9 +571,11 @@ class SchemaBuilder:
            BYOC indexes, include numeric values in documents instead; they
            are indexed for filtering automatically at upsert time.
 
-        The wire type is ``"float"``. The Pinecone API does not have a
-        separate integer type; integers are stored and filtered as
-        double-precision floats.
+        The wire type is ``"float"`` — the only numeric type a create schema
+        accepts. The create schema has no integer type; integers are stored
+        and filtered as double-precision floats. (Describe/list responses can
+        still return ``integer`` for indexes that pre-date that
+        normalisation; see :class:`~pinecone.models.indexes.schema.IntegerField`.)
 
         Args:
             name: Field name. Replaces any existing field with the same name.
@@ -540,7 +596,7 @@ class SchemaBuilder:
         if description is not None:
             field["description"] = description
         field.update(additional_options)
-        self._fields[name] = field
+        self._set_field(name, field)
         return self
 
     def add_custom_field(
@@ -552,7 +608,21 @@ class SchemaBuilder:
 
         Use when you need a field type the SDK does not yet model, or when
         experimenting with new API features before the SDK adds support.
-        Only the field name is validated; the definition is not.
+        The field name is validated and the definition's ``type`` is checked
+        against the response-only types listed below; nothing else about the
+        definition is validated.
+
+        .. important::
+
+           ``{"type": "integer"}`` is rejected client-side. ``integer`` is a
+           response-only field type: it comes back from describe/list for
+           indexes created before numeric values were normalised to float,
+           but the ``2026-07`` create schema has no integer variant and the
+           server answers a create request carrying one with a ``422``. When
+           replaying a described schema into a create request, drop integer
+           fields (numeric metadata is indexed for filtering automatically at
+           upsert time) or, on a pod index, declare them with
+           :meth:`add_float_field`.
 
         Args:
             name: Field name. Replaces any existing field with the same name.
@@ -560,9 +630,14 @@ class SchemaBuilder:
 
         Returns:
             ``self`` for method chaining.
+
+        Raises:
+            PineconeValueError: If the field name is invalid, or if
+                ``field_definition["type"]`` is a response-only type such as
+                ``"integer"``.
         """
         _validate_field_name(name)
-        self._fields[name] = field_definition
+        self._set_field(name, field_definition)
         return self
 
     def build(self) -> dict[str, dict[str, Any]]:

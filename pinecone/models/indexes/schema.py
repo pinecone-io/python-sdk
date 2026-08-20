@@ -258,11 +258,24 @@ class BooleanField(Struct, tag="boolean", tag_field="type", kw_only=True):
 
 
 class IntegerField(Struct, tag="integer", tag_field="type", kw_only=True):
-    """Legacy integer field.
+    """Legacy integer field. **Response-only — not accepted on create.**
 
     Numeric values are normalised to ``float`` at upsert time in current
     indexes; ``integer`` appears only in responses for indexes that
     pre-date that normalisation.
+
+    .. important::
+
+       The ``2026-07`` create-index schema has no ``integer`` field type.
+       Sending one is rejected by the server with a ``422`` whose body is
+       plain text, not a structured API error. A describe-then-create
+       round-trip must therefore drop integer fields (numeric metadata is
+       indexed for filtering automatically at upsert time) or re-declare
+       them as ``float``. :class:`~pinecone.schema_builder.SchemaBuilder`
+       offers no method for this type and refuses ``{"type": "integer"}``
+       passed through
+       :meth:`~pinecone.schema_builder.SchemaBuilder.add_custom_field`,
+       so the failure surfaces client-side with an explanation.
 
     Attributes:
         description: Optional human-readable description.
@@ -281,10 +294,11 @@ class FloatField(Struct, tag="float", tag_field="type", kw_only=True):
     """Numeric (float) field for metadata filtering.
 
     Numeric fields store double-precision floating-point values and can be
-    used for range filtering (e.g. ``year >= 2020``).  There is no separate
-    integer type in the API — integers are stored and filtered as floats.
-    Not declared at index creation; appears in responses for fields
-    indexed automatically at upsert time.
+    used for range filtering (e.g. ``year >= 2020``).  Create schemas have no
+    separate integer type — integers are stored and filtered as floats, and
+    ``float`` is the only numeric type name the API accepts.  Not declared at
+    index creation on managed or BYOC indexes; appears in responses for
+    fields indexed automatically at upsert time.
 
     Attributes:
         description: Optional human-readable description of the field.
