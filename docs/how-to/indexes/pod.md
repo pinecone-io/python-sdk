@@ -171,6 +171,6 @@ pc.indexes.delete("product-search")
 
 - {class}`~pinecone.models.IndexModel` — full index response model
 - {class}`~pinecone.models.indexes.specs.PodSpec` — request-side pod spec
-- {class}`~pinecone.models.indexes.index.PodSpecInfo` — response-side pod spec
+- {class}`~pinecone.models.indexes.deployment.PodDeployment` — response-side pod deployment
 - {doc}`/how-to/indexes/serverless` — serverless index management
 - {doc}`/how-to/indexes/backups-and-restore` — create and restore backups

@@ -24,6 +24,7 @@ Pinecone Python SDK
    :maxdepth: 1
    :caption: Migration & FAQ
 
+   migration/v10-2026-07-index-model
    migration/v9-migration
    migration/v9.2-grpc-partial-failures
    faq

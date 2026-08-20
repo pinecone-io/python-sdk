@@ -20,7 +20,7 @@ Index Models
    :members:
    :show-inheritance:
 
-.. autoclass:: pinecone.models.indexes.index.IndexSpec
+.. autoclass:: pinecone.models.indexes.index.IndexStatus
    :members:
    :show-inheritance:
 
@@ -44,19 +44,117 @@ Index Models
    :members:
    :show-inheritance:
 
-.. autoclass:: pinecone.models.indexes.index.ServerlessSpecInfo
+.. autoclass:: pinecone.models.indexes.requests.CreateIndexRequest
    :members:
    :show-inheritance:
 
-.. autoclass:: pinecone.models.indexes.index.PodSpecInfo
+.. autoclass:: pinecone.models.indexes.requests.ConfigureIndexRequest
    :members:
    :show-inheritance:
 
-.. autoclass:: pinecone.models.indexes.index.ByocSpecInfo
+Index Schema Models
+-------------------
+
+``IndexModel.schema`` describes every field in the index.  These types replace
+the removed ``IndexModel.dimension``, ``.metric``, ``.vector_type`` and
+``.embed`` attributes.
+
+.. autoclass:: pinecone.models.indexes.schema.IndexSchema
    :members:
    :show-inheritance:
 
-.. autoclass:: pinecone.models.indexes.index.ModelIndexEmbed
+.. autodata:: pinecone.models.indexes.schema.IndexSchemaField
+
+.. autoclass:: pinecone.models.indexes.schema.DenseVectorField
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.schema.SparseVectorField
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.schema.SemanticTextField
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.schema.StringField
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.schema.StringListField
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.schema.BooleanField
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.schema.IntegerField
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.schema.FloatField
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.schema.LegacyMetadataField
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.schema.FullTextSearchConfig
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.schema.NgramConfig
+   :members:
+   :show-inheritance:
+
+Index Deployment Models
+-----------------------
+
+``IndexModel.deployment`` describes where and how the index runs.  These types
+replace the removed ``IndexSpec``, ``ServerlessSpecInfo``, ``PodSpecInfo`` and
+``ByocSpecInfo``.
+
+.. autodata:: pinecone.models.indexes.deployment.IndexDeployment
+
+.. autoclass:: pinecone.models.indexes.deployment.ManagedDeployment
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.deployment.PodDeployment
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.deployment.ByocDeployment
+   :members:
+   :show-inheritance:
+
+Read Capacity Models
+--------------------
+
+``IndexModel.read_capacity`` replaces the removed
+``IndexSpec.serverless.read_capacity``.
+
+.. autodata:: pinecone.models.indexes.read_capacity.ReadCapacityResponse
+
+.. autoclass:: pinecone.models.indexes.read_capacity.ReadCapacityOnDemandResponse
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.read_capacity.ReadCapacityDedicatedResponse
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.read_capacity.ReadCapacityDedicatedConfig
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.read_capacity.ReadCapacityStatus
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.read_capacity.ScalingConfigManual
    :members:
    :show-inheritance:
 
