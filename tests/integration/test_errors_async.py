@@ -2,6 +2,11 @@
 
 Tests verify that the async SDK raises typed, human-readable exceptions rather
 than raw HTTP errors or generic exceptions.
+
+As of 2026-07 ``indexes.list()`` returns a lazy ``AsyncPaginator`` and is no
+longer a coroutine, so it must not be awaited directly; a test expecting a
+transport error from a paginated operation awaits the paginator's ``.to_list()``
+inside the ``pytest.raises`` block — otherwise nothing is sent and nothing raises.
 """
 
 from __future__ import annotations
@@ -24,7 +29,7 @@ async def test_bad_api_key_raises_typed_exception_async() -> None:
     """AsyncPinecone(api_key="invalid") + indexes.list() raises UnauthorizedError (not raw HTTP error)."""
     async with AsyncPinecone(api_key="invalid-key-12345") as bad_client:
         with pytest.raises(UnauthorizedError) as exc_info:
-            await bad_client.indexes.list()
+            await bad_client.indexes.list().to_list()
 
     err = exc_info.value
     assert isinstance(err, ApiError)
@@ -39,7 +44,7 @@ async def test_bad_api_key_error_message_is_human_readable_async() -> None:
     """UnauthorizedError from a bad API key has a non-empty, informative message."""
     async with AsyncPinecone(api_key="totally-wrong-key-xyz") as bad_client:
         with pytest.raises(UnauthorizedError) as exc_info:
-            await bad_client.indexes.list()
+            await bad_client.indexes.list().to_list()
 
     err = exc_info.value
     msg = str(err)
@@ -449,7 +454,7 @@ async def test_api_error_exposes_status_reason_headers_body_async(
     # --- 1. UnauthorizedError (401) from a bad API key ---
     async with AsyncPinecone(api_key="invalid-key-for-attribute-test") as bad_client:
         with pytest.raises(UnauthorizedError) as exc_info:
-            await bad_client.indexes.list()
+            await bad_client.indexes.list().to_list()
 
     err = exc_info.value
     assert err.status_code == 401

@@ -2,6 +2,11 @@
 
 Tests verify that the SDK raises typed, human-readable exceptions rather than
 raw HTTP errors or generic exceptions.
+
+As of 2026-07 ``indexes.list()`` returns a lazy ``Paginator`` and issues no HTTP
+request until consumed, so a test expecting a transport error from a paginated
+operation must drive the paginator (``.to_list()``) inside the ``pytest.raises``
+block — otherwise nothing is sent and nothing raises.
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ def test_bad_api_key_raises_typed_exception() -> None:
     """Pinecone(api_key="invalid") + indexes.list() raises UnauthorizedError (not raw HTTP error)."""
     bad_client = Pinecone(api_key="invalid-key-12345")
     with pytest.raises(UnauthorizedError) as exc_info:
-        bad_client.indexes.list()
+        bad_client.indexes.list().to_list()
 
     err = exc_info.value
     assert isinstance(err, ApiError)
@@ -44,7 +49,7 @@ def test_bad_api_key_error_message_is_human_readable() -> None:
     """UnauthorizedError from a bad API key has a non-empty, informative message."""
     bad_client = Pinecone(api_key="totally-wrong-key-xyz")
     with pytest.raises(UnauthorizedError) as exc_info:
-        bad_client.indexes.list()
+        bad_client.indexes.list().to_list()
 
     err = exc_info.value
     # Message should exist and not just be a raw status code
@@ -519,7 +524,7 @@ def test_api_error_exposes_status_reason_headers_body_rest(client: Pinecone) -> 
     # --- 1. UnauthorizedError (401) from a bad API key ---
     bad_client = Pinecone(api_key="invalid-key-for-attribute-test")
     with pytest.raises(UnauthorizedError) as exc_info:
-        bad_client.indexes.list()
+        bad_client.indexes.list().to_list()
 
     err = exc_info.value
     # status_code is correct int
