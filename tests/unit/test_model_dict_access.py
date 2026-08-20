@@ -93,15 +93,21 @@ class TestImportModelDictAccess:
 
 class TestIndexModelDictAccess:
     def test_contains_and_getitem(self) -> None:
+        from pinecone.models.indexes.deployment import ManagedDeployment
+        from pinecone.models.indexes.schema import DenseVectorField, IndexSchema
+
         model = IndexModel(
             name="idx",
-            metric="cosine",
             host="host.example.com",
             status=IndexStatus(ready=True, state="Ready"),
-            spec={"serverless": {"cloud": "aws", "region": "us-east-1"}},
+            schema=IndexSchema(
+                fields={"embedding": DenseVectorField(dimension=3, metric="cosine")}
+            ),
+            deployment=ManagedDeployment(cloud="aws", region="us-east-1"),
+            deletion_protection="disabled",
         )
         assert "name" in model
-        assert "spec" in model
+        assert "deployment" in model
         assert "nonexistent" not in model
         assert model["name"] == "idx"
         with pytest.raises(KeyError):

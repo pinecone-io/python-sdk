@@ -50,7 +50,6 @@ class IndexList:
 
     def __repr__(self) -> str:
         summaries = ", ".join(
-            f"<name={idx.name!r}, dim={idx.dimension}, ready={idx.status.ready}>"
-            for idx in self._indexes
+            f"<name={idx.name!r}, ready={idx.status.ready}>" for idx in self._indexes
         )
         return f"IndexList([{summaries}])"

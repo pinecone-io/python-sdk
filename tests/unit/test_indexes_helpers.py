@@ -16,7 +16,9 @@ from pinecone._internal.indexes_helpers import (
     validate_read_capacity,
 )
 from pinecone.errors.exceptions import IndexInitFailedError, IndexTerminatedError, ValidationError
-from pinecone.models.indexes.index import IndexModel, IndexSpec, IndexStatus, ServerlessSpecInfo
+from pinecone.models.indexes.deployment import ManagedDeployment
+from pinecone.models.indexes.index import IndexModel, IndexStatus
+from pinecone.models.indexes.schema import DenseVectorField, IndexSchema
 from pinecone.models.indexes.specs import ByocSpec, EmbedConfig, IntegratedSpec, ServerlessSpec
 
 
@@ -371,10 +373,9 @@ def test_build_integrated_body_method_schema_bare_input_gets_wrapped() -> None:
 def _make_index(state: str, ready: bool = False) -> IndexModel:
     return IndexModel(
         name="test-index",
-        dimension=1536,
-        metric="cosine",
         host="test-index.svc.pinecone.io",
-        spec=IndexSpec(serverless=ServerlessSpecInfo(cloud="aws", region="us-east-1")),
+        schema=IndexSchema(fields={"embedding": DenseVectorField(dimension=1536, metric="cosine")}),
+        deployment=ManagedDeployment(cloud="aws", region="us-east-1"),
         status=IndexStatus(ready=ready, state=state),
         deletion_protection="disabled",
         tags=None,

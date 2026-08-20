@@ -7,15 +7,14 @@ from typing import Any
 import msgspec
 import pytest
 
-from pinecone.models.indexes.index import (
-    ByocSpecInfo,
-    IndexModel,
-    IndexSpec,
-    IndexStatus,
-    PodSpecInfo,
-    ServerlessSpecInfo,
+from pinecone.models.indexes.deployment import (
+    ByocDeployment,
+    ManagedDeployment,
+    PodDeployment,
 )
+from pinecone.models.indexes.index import IndexModel, IndexStatus
 from pinecone.models.indexes.list import IndexList
+from pinecone.models.indexes.schema import DenseVectorField
 from pinecone.models.indexes.specs import ByocSpec, PodSpec, ServerlessSpec
 from tests.factories import make_index_list_response, make_index_response
 
@@ -37,30 +36,26 @@ class TestIndexModel:
         data = make_index_response()
         model = msgspec.convert(data, IndexModel)
         assert model.name == "test-index"
-        assert model.dimension == 1536
-        assert model.metric == "cosine"
         assert model.host == "https://test-index-abc1234.svc.us-east1-gcp.pinecone.io"
         assert model.deletion_protection == "disabled"
-        assert model.vector_type == "dense"
         assert model.status.ready is True
         assert model.status.state == "Ready"
-        assert isinstance(model.spec, IndexSpec)
-        assert model.spec.serverless is not None
-        assert isinstance(model.spec.serverless, ServerlessSpecInfo)
-        assert model.spec.serverless.cloud == "aws"
-        assert model.spec.serverless.region == "us-east-1"
-        assert model.spec.pod is None
-        assert model.spec.byoc is None
-        assert model.tags == {}
+        assert isinstance(model.deployment, ManagedDeployment)
+        assert model.deployment.cloud == "aws"
+        assert model.deployment.region == "us-east-1"
+        embedding = model.schema.fields["embedding"]
+        assert isinstance(embedding, DenseVectorField)
+        assert embedding.dimension == 1536
+        assert embedding.metric == "cosine"
+        assert model.tags is None
 
     def test_bracket_access(self) -> None:
         data = make_index_response()
         model = msgspec.convert(data, IndexModel)
         assert model["name"] == "test-index"
-        assert model["dimension"] == 1536
-        assert model["metric"] == "cosine"
         assert model["host"] == model.host
         assert model["status"].ready is True
+        assert model["deployment"] is model.deployment
 
     def test_bracket_access_missing_key(self) -> None:
         data = make_index_response()
@@ -68,109 +63,66 @@ class TestIndexModel:
         with pytest.raises(KeyError, match="nonexistent"):
             model["nonexistent"]
 
-    def test_optional_dimension_none(self) -> None:
-        data = make_index_response()
-        del data["dimension"]
-        model = msgspec.convert(data, IndexModel)
-        assert model.dimension is None
-
     def test_optional_tags_none(self) -> None:
         data = make_index_response()
         del data["tags"]
         model = msgspec.convert(data, IndexModel)
         assert model.tags is None
 
-    def test_default_vector_type(self) -> None:
-        data = make_index_response()
-        del data["vector_type"]
+    def test_tags_null_decodes_to_none(self) -> None:
+        data = make_index_response(tags=None)
         model = msgspec.convert(data, IndexModel)
-        assert model.vector_type == "dense"
+        assert model.tags is None
 
-    def test_default_deletion_protection(self) -> None:
-        data = make_index_response()
-        del data["deletion_protection"]
+    def test_tags_populated(self) -> None:
+        data = make_index_response(tags={"env": "prod"})
         model = msgspec.convert(data, IndexModel)
-        assert model.deletion_protection == "disabled"
+        assert model.tags == {"env": "prod"}
+        assert model.tags.to_dict() == {"env": "prod"}  # type: ignore[union-attr]
 
-    def test_pod_spec(self) -> None:
+    def test_pod_deployment(self) -> None:
         data = make_index_response(
-            spec={
-                "pod": {
-                    "environment": "us-east1-gcp",
-                    "pod_type": "p1.x1",
-                    "replicas": 1,
-                    "shards": 1,
-                    "pods": 1,
-                }
+            deployment={
+                "deployment_type": "pod",
+                "environment": "us-east1-gcp",
+                "pod_type": "p1.x1",
+                "replicas": 2,
+                "shards": 1,
             }
         )
         model = msgspec.convert(data, IndexModel)
-        assert model.spec.pod is not None
-        assert isinstance(model.spec.pod, PodSpecInfo)
-        assert model.spec.pod.environment == "us-east1-gcp"
-        assert model.spec.pod.pod_type == "p1.x1"
-        assert model.spec.pod.replicas == 1
-        assert model.spec.pod.shards == 1
-        assert model.spec.pod.pods == 1
-        assert model.spec.pod.metadata_config is None
-        assert model.spec.pod.source_collection is None
-        assert model.spec.serverless is None
+        assert isinstance(model.deployment, PodDeployment)
+        assert model.deployment.environment == "us-east1-gcp"
+        assert model.deployment.pod_type == "p1.x1"
+        assert model.deployment.replicas == 2
+        assert model.deployment.shards == 1
 
-    def test_byoc_spec(self) -> None:
+    def test_byoc_deployment(self) -> None:
         data = make_index_response(
-            spec={
-                "byoc": {
-                    "environment": "aws-us-east-1-b921",
-                    "read_capacity": {"mode": "OnDemand"},
-                }
+            deployment={"deployment_type": "byoc", "environment": "aws-us-east-1-b921"}
+        )
+        model = msgspec.convert(data, IndexModel)
+        assert isinstance(model.deployment, ByocDeployment)
+        assert model.deployment.environment == "aws-us-east-1-b921"
+
+    def test_managed_deployment_environment(self) -> None:
+        data = make_index_response(
+            deployment={
+                "deployment_type": "managed",
+                "cloud": "aws",
+                "region": "us-east-1",
+                "environment": "aped-4627-b74a",
             }
         )
         model = msgspec.convert(data, IndexModel)
-        assert model.spec.byoc is not None
-        assert isinstance(model.spec.byoc, ByocSpecInfo)
-        assert model.spec.byoc.environment == "aws-us-east-1-b921"
-        assert model.spec.byoc.read_capacity == {"mode": "OnDemand"}
-        assert model.spec.serverless is None
-        assert model.spec.pod is None
+        assert isinstance(model.deployment, ManagedDeployment)
+        assert model.deployment.environment == "aped-4627-b74a"
 
-    def test_byoc_spec_no_read_capacity(self) -> None:
-        data = make_index_response(spec={"byoc": {"environment": "aws-us-east-1-b921"}})
+    def test_read_capacity_absent(self) -> None:
+        data = make_index_response()
+        del data["read_capacity"]
         model = msgspec.convert(data, IndexModel)
-        assert model.spec.byoc is not None
-        assert model.spec.byoc.read_capacity is None
-
-    def test_index_model_byoc_schema_decoded(self) -> None:
-        """ByocSpecInfo must expose schema when returned by backend."""
-        raw = (
-            b'{"name":"test","metric":"cosine","host":null,'
-            b'"status":{"ready":true,"state":"Ready"},'
-            b'"spec":{"byoc":{"environment":"byoc-aws-abc123",'
-            b'"schema":{"fields":[{"name":"genre","type":"string"}]}}},'
-            b'"deletion_protection":"disabled","vector_type":"dense"}'
-        )
-        model = msgspec.json.decode(raw, type=IndexModel)
-        assert model.spec.byoc is not None
-        assert model.spec.byoc.schema is not None
-        assert model.spec.byoc.schema["fields"][0]["name"] == "genre"
-
-    def test_index_model_byoc_schema_absent(self) -> None:
-        """ByocSpecInfo.schema is None when backend omits the field."""
-        raw = (
-            b'{"name":"test","metric":"cosine","host":null,'
-            b'"status":{"ready":true,"state":"Ready"},'
-            b'"spec":{"byoc":{"environment":"byoc-aws-abc123"}},'
-            b'"deletion_protection":"disabled","vector_type":"dense"}'
-        )
-        model = msgspec.json.decode(raw, type=IndexModel)
-        assert model.spec.byoc is not None
-        assert model.spec.byoc.schema is None
-
-    def test_enum_string_values(self) -> None:
-        """Both enum values and plain strings work since we store as str."""
-        data = make_index_response(metric="euclidean", vector_type="sparse")
-        model = msgspec.convert(data, IndexModel)
-        assert model.metric == "euclidean"
-        assert model.vector_type == "sparse"
+        assert model.read_capacity is None
 
     def test_host_bare_gets_https_prefix(self) -> None:
         """IndexModel normalizes bare hostname to https:// on construction."""
@@ -186,78 +138,61 @@ class TestIndexModel:
 
     def test_index_model_null_host(self) -> None:
         """IndexModel must decode null host from backend without raising."""
-        raw = b'{"name":"test","metric":"cosine","host":null,"status":{"ready":false,"state":"Initializing"},"spec":{"serverless":{"cloud":"aws","region":"us-east-1"}},"deletion_protection":"disabled","vector_type":"dense"}'
-        model = msgspec.json.decode(raw, type=IndexModel)
+        data = make_index_response(host=None)
+        model = msgspec.convert(data, IndexModel)
         assert model.host is None
-        assert model.name == "test"
+        assert model.name == "test-index"
 
     def test_index_model_missing_host(self) -> None:
         """IndexModel must decode when host field is absent from backend response."""
-        raw = b'{"name":"test","metric":"cosine","status":{"ready":false,"state":"Initializing"},"spec":{"serverless":{"cloud":"aws","region":"us-east-1"}},"deletion_protection":"disabled","vector_type":"dense"}'
-        model = msgspec.json.decode(raw, type=IndexModel)
+        data = make_index_response()
+        del data["host"]
+        model = msgspec.convert(data, IndexModel)
         assert model.host is None
-        assert model.name == "test"
-
-    def test_index_model_non_null_host_normalized(self) -> None:
-        """IndexModel still normalizes non-null host with https://."""
-        raw = b'{"name":"test","metric":"cosine","host":"index-host.pinecone.io","status":{"ready":true,"state":"Ready"},"spec":{"serverless":{"cloud":"aws","region":"us-east-1"}},"deletion_protection":"disabled","vector_type":"dense"}'
-        model = msgspec.json.decode(raw, type=IndexModel)
-        assert model.host == "https://index-host.pinecone.io"
-
-    def test_index_model_pod_spec_null_replicas(self) -> None:
-        """PodSpecInfo must decode null replicas/shards/pods from backend."""
-        raw = (
-            b'{"name":"test","metric":"cosine","host":null,'
-            b'"status":{"ready":false,"state":"Initializing"},'
-            b'"spec":{"pod":{"environment":"us-east1-gcp","pod_type":"p1",'
-            b'"replicas":null,"shards":null,"pods":1}},'
-            b'"deletion_protection":"disabled","vector_type":"dense"}'
-        )
-        model = msgspec.json.decode(raw, type=IndexModel)
-        assert model.spec.pod is not None
-        assert model.spec.pod.replicas is None
-        assert model.spec.pod.shards is None
-        assert model.spec.pod.pods == 1
-
-    def test_index_model_pod_spec_explicit_replicas(self) -> None:
-        """PodSpecInfo still decodes explicit replicas/shards correctly."""
-        raw = (
-            b'{"name":"test","metric":"cosine","host":null,'
-            b'"status":{"ready":false,"state":"Initializing"},'
-            b'"spec":{"pod":{"environment":"us-east1-gcp","pod_type":"p1",'
-            b'"replicas":2,"shards":1,"pods":2}},'
-            b'"deletion_protection":"disabled","vector_type":"dense"}'
-        )
-        model = msgspec.json.decode(raw, type=IndexModel)
-        assert model.spec.pod is not None
-        assert model.spec.pod.replicas == 2
-        assert model.spec.pod.shards == 1
-        assert model.spec.pod.pods == 2
 
     def test_index_model_private_host_decoded(self) -> None:
         """IndexModel must expose private_host when returned by backend."""
-        raw = (
-            b'{"name":"test","metric":"cosine",'
-            b'"host":"test.svc.pinecone.io",'
-            b'"private_host":"test.svc.private.pinecone.io",'
-            b'"status":{"ready":true,"state":"Ready"},'
-            b'"spec":{"serverless":{"cloud":"aws","region":"us-east-1"}},'
-            b'"deletion_protection":"disabled","vector_type":"dense"}'
-        )
-        model = msgspec.json.decode(raw, type=IndexModel)
+        data = make_index_response(private_host="test.svc.private.pinecone.io")
+        model = msgspec.convert(data, IndexModel)
         assert model.private_host == "https://test.svc.private.pinecone.io"
-        assert model.host == "https://test.svc.pinecone.io"
 
     def test_index_model_private_host_absent(self) -> None:
         """IndexModel.private_host is None when backend omits the field."""
-        raw = (
-            b'{"name":"test","metric":"cosine","host":"test.svc.pinecone.io",'
-            b'"status":{"ready":true,"state":"Ready"},'
-            b'"spec":{"serverless":{"cloud":"aws","region":"us-east-1"}},'
-            b'"deletion_protection":"disabled","vector_type":"dense"}'
-        )
-        model = msgspec.json.decode(raw, type=IndexModel)
+        data = make_index_response()
+        model = msgspec.convert(data, IndexModel)
         assert model.private_host is None
+
+    def test_source_fields_decoded(self) -> None:
+        data = make_index_response(
+            source_collection="movie-embeddings",
+            source_backup_id="670e8400-e29b-41d4-a716-446655440000",
+            cmek_id="arn:aws:kms:us-east-1:123456789012:key/mrk-abc123",
+        )
+        model = msgspec.convert(data, IndexModel)
+        assert model.source_collection == "movie-embeddings"
+        assert model.source_backup_id == "670e8400-e29b-41d4-a716-446655440000"
+        assert model.cmek_id == "arn:aws:kms:us-east-1:123456789012:key/mrk-abc123"
+
+    @pytest.mark.parametrize("removed", ["dimension", "metric", "vector_type", "spec", "embed"])
+    def test_removed_attribute_names_replacement(self, removed: str) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        with pytest.raises(AttributeError, match="removed in the 2026-07"):
+            getattr(model, removed)
+
+    def test_removed_dimension_hint_names_schema_path(self) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        with pytest.raises(AttributeError, match="schema"):
+            model.dimension
+
+    def test_removed_spec_hint_names_deployment(self) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        with pytest.raises(AttributeError, match="deployment"):
+            model.spec
+
+    def test_unknown_attribute_plain_error(self) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        with pytest.raises(AttributeError, match="no attribute"):
+            model.bogus_attribute
 
 
 class TestIndexList:
@@ -476,25 +411,45 @@ class TestReExports:
 
     def test_import_from_models(self) -> None:
         from pinecone.models import (
+            ByocDeployment,
             ByocSpec,
-            ByocSpecInfo,
+            IndexDeployment,
             IndexList,
             IndexModel,
-            IndexSpec,
+            IndexSchema,
             IndexStatus,
+            ManagedDeployment,
+            PodDeployment,
             PodSpec,
-            PodSpecInfo,
+            ReadCapacityResponse,
             ServerlessSpec,
-            ServerlessSpecInfo,
         )
 
-        assert IndexModel is not None
-        assert IndexSpec is not None
-        assert IndexStatus is not None
-        assert IndexList is not None
-        assert ServerlessSpec is not None
-        assert ServerlessSpecInfo is not None
-        assert PodSpec is not None
-        assert PodSpecInfo is not None
-        assert ByocSpec is not None
-        assert ByocSpecInfo is not None
+        for symbol in (
+            ByocDeployment,
+            ByocSpec,
+            IndexDeployment,
+            IndexList,
+            IndexModel,
+            IndexSchema,
+            IndexStatus,
+            ManagedDeployment,
+            PodDeployment,
+            PodSpec,
+            ReadCapacityResponse,
+            ServerlessSpec,
+        ):
+            assert symbol is not None
+
+    def test_removed_names_gone_from_models(self) -> None:
+        import pinecone.models as models
+
+        for removed in (
+            "ByocSpecInfo",
+            "IndexSpec",
+            "PodSpecInfo",
+            "ServerlessSpecInfo",
+        ):
+            assert removed not in models.__all__
+            with pytest.raises(AttributeError):
+                getattr(models, removed)

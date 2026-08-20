@@ -84,16 +84,17 @@ def test_describe_index(indexes: Indexes) -> None:
 
     assert isinstance(result, IndexModel)
     assert result.name == "test-index"
-    assert result.dimension == 1536
-    assert result.metric == "cosine"
     assert result.host == "https://test-index-abc1234.svc.us-east1-gcp.pinecone.io"
-    assert result.vector_type == "dense"
     assert result.deletion_protection == "disabled"
     assert result.status.ready is True
     assert result.status.state == "Ready"
+    assert result.deployment.cloud == "aws"  # type: ignore[union-attr]
+    embedding = result.schema.fields["embedding"]
+    assert embedding.dimension == 1536  # type: ignore[union-attr]
+    assert embedding.metric == "cosine"  # type: ignore[union-attr]
     # bracket access
     assert result["name"] == "test-index"
-    assert result["dimension"] == 1536
+    assert result["schema"] is result.schema
 
 
 @respx.mock
@@ -163,85 +164,43 @@ def test_exists_empty_name_returns_false(indexes: Indexes) -> None:
 
 
 # ---------------------------------------------------------------------------
-# IndexModel.created_at decode tests
+# resilient list decode
 # ---------------------------------------------------------------------------
 
 
-def test_index_model_decodes_created_at() -> None:
-    import msgspec
+@respx.mock
+def test_list_skips_unparseable_index_with_warning(
+    indexes: Indexes, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
 
-    from pinecone.models.indexes.index import IndexModel
-
-    payload = b"""{
-        "name": "x", "metric": "cosine", "host": "h",
-        "status": {"ready": true, "state": "Ready"},
-        "spec": {"serverless": {"cloud": "aws", "region": "us-east-1"}},
-        "vector_type": "dense",
-        "created_at": "2026-04-29T10:00:00Z"
-    }"""
-    model = msgspec.json.decode(payload, type=IndexModel)
-    assert model.created_at == "2026-04-29T10:00:00Z"
-
-
-def test_index_model_created_at_defaults_to_none() -> None:
-    import msgspec
-
-    from pinecone.models.indexes.index import IndexModel
-
-    payload = b"""{
-        "name": "x", "metric": "cosine", "host": "h",
-        "status": {"ready": true, "state": "Ready"},
-        "spec": {"serverless": {"cloud": "aws", "region": "us-east-1"}},
-        "vector_type": "dense"
-    }"""
-    model = msgspec.json.decode(payload, type=IndexModel)
-    assert model.created_at is None
-
-
-def test_serverless_spec_decodes_read_capacity_on_demand() -> None:
-    import msgspec
-
-    from pinecone.models.indexes.index import ServerlessSpecInfo
-
-    payload = b'{"cloud": "aws", "region": "us-east-1", "read_capacity": {"mode": "OnDemand"}}'
-    spec = msgspec.json.decode(payload, type=ServerlessSpecInfo)
-    assert spec.read_capacity == {"mode": "OnDemand"}
-    assert spec.schema is None
-    assert spec.source_collection is None
-
-
-def test_serverless_spec_decodes_metadata_schema() -> None:
-    import msgspec
-
-    from pinecone.models.indexes.index import ServerlessSpecInfo
-
-    payload = b'{"cloud": "aws", "region": "us-east-1", "schema": {"fields": {"genre": {"filterable": true}}}}'
-    spec = msgspec.json.decode(payload, type=ServerlessSpecInfo)
-    assert spec.schema == {"fields": {"genre": {"filterable": True}}}
-
-
-def test_serverless_spec_optional_fields_default_to_none() -> None:
-    import msgspec
-
-    from pinecone.models.indexes.index import ServerlessSpecInfo
-
-    payload = b'{"cloud": "aws", "region": "us-east-1"}'
-    spec = msgspec.json.decode(payload, type=ServerlessSpecInfo)
-    assert spec.read_capacity is None
-    assert spec.schema is None
-    assert spec.source_collection is None
-
-
-def test_serverless_spec_to_dict_includes_new_fields() -> None:
-    from pinecone.models.indexes.index import ServerlessSpecInfo
-
-    s = ServerlessSpecInfo(
-        cloud="aws",
-        region="us-east-1",
-        read_capacity={"mode": "OnDemand"},
-        schema={"fields": {"g": {"filterable": True}}},
+    good = make_index_response(name="good-index")
+    bad = make_index_response(name="bad-index")
+    bad["schema"] = {"fields": {"weird": {"type": "quantum_vector"}}}
+    respx.get(f"{BASE_URL}/indexes").mock(
+        return_value=httpx.Response(200, json={"indexes": [good, bad]}),
     )
-    d = s.to_dict()
-    assert d["read_capacity"] == {"mode": "OnDemand"}
-    assert d["schema"] == {"fields": {"g": {"filterable": True}}}
-    assert d["source_collection"] is None
+
+    with caplog.at_level(logging.WARNING):
+        result = indexes.list()
+
+    assert result.names() == ["good-index"]
+    assert any("bad-index" in record.getMessage() for record in caplog.records)
+
+
+@respx.mock
+def test_list_decodes_legacy_untyped_schema_fields(indexes: Indexes) -> None:
+    legacy = make_index_response(name="legacy-index")
+    legacy["schema"] = {"fields": {"old_meta": {"filterable": True}}}
+    respx.get(f"{BASE_URL}/indexes").mock(
+        return_value=httpx.Response(200, json={"indexes": [legacy]}),
+    )
+
+    result = indexes.list()
+
+    assert result.names() == ["legacy-index"]
+    from pinecone.models.indexes.schema import LegacyMetadataField
+
+    field = result[0].schema.fields["old_meta"]
+    assert isinstance(field, LegacyMetadataField)
+    assert field.filterable is True

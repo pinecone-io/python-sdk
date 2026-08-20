@@ -1,13 +1,20 @@
-"""Index and IndexStatus response models."""
+"""Index and IndexStatus response models (2026-07 API)."""
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
+import msgspec
 from msgspec import Struct
 
 from pinecone._internal.config import normalize_host
-from pinecone.models._mixin import StructDictMixin, _struct_to_dict_recursive
+from pinecone.models._display import render_table
+from pinecone.models._mixin import StructDictMixin
+from pinecone.models.indexes.deployment import IndexDeployment
+from pinecone.models.indexes.read_capacity import ReadCapacityResponse
+from pinecone.models.indexes.schema import IndexSchema, _strip_untyped_tags
+
+__all__ = ["IndexModel", "IndexStatus", "IndexTags"]
 
 
 class IndexStatus(StructDictMixin, Struct, kw_only=True):
@@ -15,169 +22,99 @@ class IndexStatus(StructDictMixin, Struct, kw_only=True):
 
     Attributes:
         ready: Whether the index is ready to accept requests.
-        state: Current state of the index (e.g. ``"Ready"``, ``"Initializing"``).
+        state: Current state of the index. Possible values:
+            ``"Initializing"``, ``"InitializationFailed"``, ``"ScalingUp"``,
+            ``"ScalingDown"``, ``"ScalingUpPodSize"``, ``"ScalingDownPodSize"``,
+            ``"Terminating"``, ``"Ready"``, or ``"Disabled"``.
     """
 
     ready: bool
     state: str
 
 
-class ServerlessSpecInfo(StructDictMixin, Struct, kw_only=True):
-    """Response-side serverless deployment configuration.
-
-    Attributes:
-        cloud: Cloud provider (e.g. ``"aws"``, ``"gcp"``, ``"azure"``).
-        region: Cloud region (e.g. ``"us-east-1"``).
-        read_capacity: Read capacity configuration (``OnDemand`` or
-            ``Dedicated``), or ``None`` if the server response omits it.
-            When set, contains a ``"mode"`` key plus mode-specific fields.
-        source_collection: Source collection name if the index was
-            created from a collection, or ``None``.
-        schema: Metadata indexing schema, or ``None`` if all metadata
-            fields are indexed (the default).
-    """
-
-    cloud: str
-    region: str
-    read_capacity: dict[str, Any] | None = None
-    source_collection: str | None = None
-    schema: dict[str, Any] | None = None
-
-
-class PodSpecInfo(StructDictMixin, Struct, kw_only=True):
-    """Response-side pod deployment configuration.
-
-    Attributes:
-        environment: Deployment environment (e.g. ``"us-east1-gcp"``).
-        pod_type: Pod type (e.g. ``"p1.x1"``).
-        replicas: Number of replicas, or ``None`` if not set by the user.
-        shards: Number of shards, or ``None`` if not set by the user.
-        pods: Total number of pods, or ``None`` if not set by the user.
-        metadata_config: Metadata indexing configuration, or ``None``.
-        source_collection: Source collection name, or ``None``.
-    """
-
-    environment: str
-    pod_type: str
-    replicas: int | None = None
-    shards: int | None = None
-    pods: int | None = None
-    metadata_config: dict[str, list[str]] | None = None
-    source_collection: str | None = None
-
-
-class ByocSpecInfo(StructDictMixin, Struct, kw_only=True):
-    """Response-side BYOC (bring your own cloud) deployment configuration.
-
-    Attributes:
-        environment: BYOC environment identifier.
-        read_capacity: Read capacity configuration, or ``None``.
-        schema: Metadata indexing schema, or ``None`` if all metadata
-            fields are indexed (the default).
-    """
-
-    environment: str
-    read_capacity: dict[str, Any] | None = None
-    schema: dict[str, Any] | None = None
-
-
-class IndexSpec(StructDictMixin, Struct, kw_only=True):
-    """Deployment specification for an index.
-
-    Exactly one of ``serverless``, ``pod``, or ``byoc`` will be set.
-
-    Attributes:
-        serverless: Serverless deployment config, or ``None``.
-        pod: Pod-based deployment config, or ``None``.
-        byoc: BYOC deployment config, or ``None``.
-    """
-
-    serverless: ServerlessSpecInfo | None = None
-    pod: PodSpecInfo | None = None
-    byoc: ByocSpecInfo | None = None
-
-
-class ModelIndexEmbed(StructDictMixin, Struct, kw_only=True):
-    """Embedding configuration for a model-backed (integrated) index.
-
-    Attributes:
-        model (str): The name of the embedding model used by this index.
-        metric (str | None): Distance metric, or ``None`` if inferred from the model.
-        dimension (int | None): Vector dimension, or ``None`` if inferred from the model.
-        vector_type (str | None): Vector type (``"dense"`` or ``"sparse"``), or ``None``.
-        field_map (dict[str, str] | None): Mapping of document field names to embedding
-            input roles, or ``None``.
-        read_parameters (dict[str, Any] | None): Model-specific parameters for read
-            (query) operations, or ``None``.
-        write_parameters (dict[str, Any] | None): Model-specific parameters for write
-            (upsert) operations, or ``None``.
-    """
-
-    model: str
-    metric: str | None = None
-    dimension: int | None = None
-    vector_type: str | None = None
-    field_map: dict[str, str] | None = None
-    read_parameters: dict[str, Any] | None = None
-    write_parameters: dict[str, Any] | None = None
-
-
 class IndexTags(dict):  # type: ignore[type-arg]
-    """A dict subclass for index tags that adds a ``to_dict()`` helper.
-
-    Backwards-compatible with legacy SDK code that called ``.tags.to_dict()``.
-    """
+    """A dict subclass for index tags that adds a ``to_dict()`` helper."""
 
     def to_dict(self) -> dict[str, str]:
         return dict(self)
 
 
+_REMOVED_FIELD_HINTS: dict[str, str] = {
+    "dimension": (
+        "read it from the schema's dense_vector field instead, e.g. "
+        "next(f.dimension for f in index.schema.fields.values() "
+        "if type(f).__name__ == 'DenseVectorField')"
+    ),
+    "metric": (
+        "read it from the schema's vector field instead, e.g. "
+        "index.schema.fields['<field-name>'].metric"
+    ),
+    "vector_type": (
+        "inspect the schema's field types instead: a DenseVectorField in "
+        "index.schema.fields means dense, a SparseVectorField means sparse"
+    ),
+    "spec": (
+        "use index.deployment instead — a ManagedDeployment, PodDeployment, "
+        "or ByocDeployment tagged on deployment_type; read_capacity is now "
+        "top-level at index.read_capacity"
+    ),
+    "embed": (
+        "integrated-embedding configuration now appears as a SemanticTextField "
+        "in index.schema.fields"
+    ),
+    "created_at": "the 2026-07 API does not return a creation timestamp",
+}
+
+
 class IndexModel(Struct, kw_only=True):
-    """Response model for a Pinecone index.
+    """Response model for a Pinecone index (2026-07 API).
 
     Attributes:
         name: The name of the index.
-        metric: Distance metric used for similarity search (e.g. ``"cosine"``,
-            ``"euclidean"``, ``"dotproduct"``).
-        host: The hostname where this index is served, or ``None`` if the index
-            is still initializing and has not yet been assigned a host.
-        private_host: The private-endpoint hostname for this index when the project
-            has Private Endpoints configured, or ``None`` otherwise. Clients inside
-            a VPC should connect to this host instead of ``host``.
+        host: The hostname where this index is served, or ``None`` if the
+            index is still initializing and has not yet been assigned a host.
+        private_host: The private-endpoint hostname for this index when the
+            project has Private Endpoints configured, or ``None`` otherwise.
+            Clients inside a VPC should connect to this host instead of
+            ``host``.
         status: Current status of the index.
-        spec: Deployment specification containing either ``serverless``,
-            ``pod``, or ``byoc`` configuration.
-        vector_type: Type of vectors stored (default: ``"dense"``).
-        dimension: Dimensionality of vectors in the index, or ``None`` for
-            indexes that infer dimension from the first upsert.
+        schema: Field-level schema definition (vector, text, and metadata
+            fields), keyed by field name.
+        deployment: Deployment configuration — a
+            :class:`~pinecone.models.indexes.deployment.ManagedDeployment`,
+            :class:`~pinecone.models.indexes.deployment.PodDeployment`, or
+            :class:`~pinecone.models.indexes.deployment.ByocDeployment`,
+            discriminated on ``deployment_type``.
         deletion_protection: Whether deletion protection is enabled
             (``"enabled"`` or ``"disabled"``).
+        read_capacity: Read capacity configuration and status, or ``None``
+            if the server response omits it.
         tags: User-defined key-value tags attached to the index, or ``None``
-            if no tags are set.
-        embed: Embedding configuration for model-backed (integrated) indexes,
-            populated for indexes created with integrated inference and ``None``
-            otherwise. See :class:`ModelIndexEmbed`.
-        created_at: ISO-8601 timestamp of when the index was created, or
-            ``None`` if the server response did not include it. Stored as
-            a string; parse with ``datetime.fromisoformat`` if you need
-            a ``datetime`` object.
+            if no tags are set (the API returns ``"tags": null`` rather
+            than ``{}``).
+        source_collection: Name of the collection this index was created
+            from, or ``None``.
+        source_backup_id: ID of the backup this index was restored from,
+            or ``None``.
+        cmek_id: ID of the customer-managed encryption key protecting this
+            index, or ``None`` if CMEK is not configured.
     """
 
     name: str
-    metric: str
     status: IndexStatus
-    spec: IndexSpec
+    schema: IndexSchema
+    deployment: IndexDeployment
+    deletion_protection: str
     host: str | None = None
-    private_host: str | None = None
-    vector_type: str = "dense"
-    dimension: int | None = None
-    deletion_protection: str = "disabled"
+    read_capacity: ReadCapacityResponse | None = None
     tags: dict[str, str] | None = None
-    embed: ModelIndexEmbed | None = None
-    created_at: str | None = None
+    private_host: str | None = None
+    source_collection: str | None = None
+    source_backup_id: str | None = None
+    cmek_id: str | None = None
 
     def __post_init__(self) -> None:
-        """Normalize host and private_host to always include https:// scheme."""
+        """Normalize hosts to include the https:// scheme; wrap tags in IndexTags."""
         if self.host is not None:
             self.host = normalize_host(self.host)
         if self.private_host is not None:
@@ -186,45 +123,120 @@ class IndexModel(Struct, kw_only=True):
             self.tags = IndexTags(self.tags)
 
     def __getattr__(self, name: str) -> Any:
-        """Raise AttributeError for unknown attributes (legacy dict-style delegation)."""
+        if name in _REMOVED_FIELD_HINTS:
+            raise AttributeError(
+                f"IndexModel.{name} was removed in the 2026-07 Pinecone API: "
+                f"{_REMOVED_FIELD_HINTS[name]}. See docs/migration/v10-2026-07-index-model.md."
+            )
         raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
 
     def __getitem__(self, key: str) -> Any:
-        """Support bracket access (e.g. index['name'])."""
         if key not in self.__struct_fields__:
             raise KeyError(key)
         return getattr(self, key)
 
     def __contains__(self, key: object) -> bool:
-        """Support ``in`` operator (e.g. ``'name' in index``)."""
         return key in self.__struct_fields__
+
+    def __dir__(self) -> list[str]:
+        attrs = set(super().__dir__())
+        public = {name for name in attrs if not name.startswith("_")}
+        return sorted(public)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a plain dict representation, recursively converting nested fields.
 
-        Returns:
-            Dictionary with all top-level fields, where nested ``spec``, ``status``,
-            and ``embed`` structs are also converted to plain dicts recursively.
-            Optional fields (``dimension``, ``tags``, ``embed``, ``private_host``) that
-            are ``None`` are included in the output with their ``None`` values.
-
-        Examples:
-            >>> from pinecone.models.indexes.index import (
-            ...     IndexModel, IndexSpec, IndexStatus, ServerlessSpecInfo
-            ... )
-            >>> index = IndexModel(
-            ...     name="my-index",
-            ...     metric="cosine",
-            ...     host="my-index-xyz.svc.pinecone.io",
-            ...     status=IndexStatus(ready=True, state="Ready"),
-            ...     spec=IndexSpec(serverless=ServerlessSpecInfo(cloud="aws", region="us-east-1")),
-            ... )
-            >>> d = index.to_dict()
-            >>> d["name"]
-            'my-index'
-            >>> type(d["spec"])
-            <class 'dict'>
-            >>> d["spec"]["serverless"]
-            {'cloud': 'aws', 'region': 'us-east-1'}
+        Nested structs (``status``, ``schema``, ``deployment``,
+        ``read_capacity``) become plain dicts. Tagged-union members include
+        their discriminator key (``deployment_type``, ``mode``, ``type``);
+        legacy untyped schema fields are emitted without a ``type`` key,
+        matching the wire format. Optional fields that are ``None`` are
+        included with their ``None`` values.
         """
-        return cast(dict[str, Any], _struct_to_dict_recursive(self))
+        result: dict[str, Any] = {
+            field: _to_builtins_stripped(getattr(self, field)) for field in self.__struct_fields__
+        }
+        return result
+
+    def __repr__(self) -> str:
+        dep_name = type(self.deployment).__name__.replace("Deployment", "")
+        parts = [
+            f"name={self.name!r}",
+            f"status={self.status.state!r}",
+            f"host={self.host!r}",
+            f"deployment={dep_name!r}",
+            f"deletion_protection={self.deletion_protection!r}",
+        ]
+        if self.schema.fields:
+            parts.append(f"schema_fields={len(self.schema.fields)}")
+        if self.tags:
+            parts.append(f"tags={len(self.tags)} items")
+        if self.private_host is not None:
+            parts.append(f"private_host={self.private_host!r}")
+        return f"IndexModel({', '.join(parts)})"
+
+    def _repr_pretty_(self, p: Any, cycle: bool) -> None:
+        """Pretty-printer support for IPython."""
+        if cycle:
+            p.text("IndexModel(...)")
+            return
+        p.text("IndexModel(")
+        with p.group(2, "", ")"):
+            p.breakable()
+            p.text(f"name={self.name!r},")
+            p.breakable()
+            p.text(f"status={self.status.state!r},")
+            p.breakable()
+            p.text(f"host={self.host!r},")
+            p.breakable()
+            p.text(f"deployment={self.deployment!r},")
+            p.breakable()
+            p.text(f"deletion_protection={self.deletion_protection!r},")
+            p.breakable()
+            p.text(f"schema=IndexSchema(fields={len(self.schema.fields)} fields),")
+            if self.read_capacity is not None:
+                p.breakable()
+                p.text(f"read_capacity={self.read_capacity!r},")
+            if self.tags:
+                p.breakable()
+                p.text(f"tags={self.tags!r},")
+            if self.private_host is not None:
+                p.breakable()
+                p.text(f"private_host={self.private_host!r},")
+
+    def _repr_html_(self) -> str:
+        """Jupyter notebook HTML representation."""
+        dep_name = type(self.deployment).__name__.replace("Deployment", "")
+        dep_detail = ""
+        if hasattr(self.deployment, "cloud") and hasattr(self.deployment, "region"):
+            cloud = getattr(self.deployment, "cloud", "")
+            region = getattr(self.deployment, "region", "")
+            dep_detail = f" ({cloud}/{region})"
+        elif hasattr(self.deployment, "environment"):
+            dep_detail = f" ({getattr(self.deployment, 'environment', '')})"
+
+        rows: list[tuple[str, str | int]] = [
+            ("Name:", self.name),
+            ("Status:", self.status.state),
+            ("Ready:", "Yes" if self.status.ready else "No"),
+            ("Deployment:", f"{dep_name}{dep_detail}"),
+            ("Host:", self.host if self.host is not None else "not yet assigned"),
+            ("Deletion Protection:", self.deletion_protection),
+            ("Schema fields:", len(self.schema.fields)),
+        ]
+        if self.read_capacity is not None:
+            rows.append(
+                ("Read capacity:", getattr(self.read_capacity, "mode", str(self.read_capacity)))
+            )
+        if self.tags:
+            tags_str = ", ".join(f"{k}={v}" for k, v in self.tags.items())
+            rows.append(("Tags:", tags_str))
+        return render_table("IndexModel", rows)
+
+
+def _to_builtins_stripped(value: Any) -> Any:
+    if isinstance(value, Struct):
+        return _strip_untyped_tags(msgspec.to_builtins(value))
+    if isinstance(value, dict):
+        return dict(value)
+    return value

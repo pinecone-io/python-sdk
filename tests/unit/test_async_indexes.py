@@ -107,16 +107,16 @@ async def test_describe_index(async_indexes: AsyncIndexes) -> None:
 
     assert isinstance(result, IndexModel)
     assert result.name == "test-index"
-    assert result.dimension == 1536
-    assert result.metric == "cosine"
     assert result.host == "https://test-index-abc1234.svc.us-east1-gcp.pinecone.io"
-    assert result.vector_type == "dense"
     assert result.deletion_protection == "disabled"
     assert result.status.ready is True
     assert result.status.state == "Ready"
-    # bracket access
+    assert result.deployment.cloud == "aws"  # type: ignore[union-attr]
+    embedding = result.schema.fields["embedding"]
+    assert embedding.dimension == 1536  # type: ignore[union-attr]
+    assert embedding.metric == "cosine"  # type: ignore[union-attr]
     assert result["name"] == "test-index"
-    assert result["dimension"] == 1536
+    assert result["schema"] is result.schema
 
 
 @respx.mock

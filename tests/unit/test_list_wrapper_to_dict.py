@@ -11,8 +11,10 @@ from pinecone.models.collections.list import CollectionList
 from pinecone.models.collections.model import CollectionModel
 from pinecone.models.imports.list import ImportList
 from pinecone.models.imports.model import ImportModel
-from pinecone.models.indexes.index import IndexModel, IndexSpec, IndexStatus, ServerlessSpecInfo
+from pinecone.models.indexes.deployment import ManagedDeployment
+from pinecone.models.indexes.index import IndexModel, IndexStatus
 from pinecone.models.indexes.list import IndexList
+from pinecone.models.indexes.schema import DenseVectorField, IndexSchema
 from pinecone.models.vectors.responses import Pagination
 
 
@@ -41,10 +43,11 @@ def _make_restore_job() -> RestoreJobModel:
 def _make_index() -> IndexModel:
     return IndexModel(
         name="test-index",
-        metric="cosine",
         host="test.svc.pinecone.io",
         status=IndexStatus(ready=True, state="Ready"),
-        spec=IndexSpec(serverless=ServerlessSpecInfo(cloud="aws", region="us-east-1")),
+        schema=IndexSchema(fields={"embedding": DenseVectorField(dimension=3, metric="cosine")}),
+        deployment=ManagedDeployment(cloud="aws", region="us-east-1"),
+        deletion_protection="disabled",
     )
 
 
@@ -142,7 +145,8 @@ class TestIndexListToDict:
         assert item["name"] == "test-index"
         assert isinstance(item["status"], dict)
         assert item["status"]["ready"] is True
-        assert isinstance(item["spec"], dict)
+        assert isinstance(item["deployment"], dict)
+        assert item["deployment"]["deployment_type"] == "managed"
 
 
 class TestImportListToDict:

@@ -14,26 +14,31 @@ from typing import Any
 
 
 def make_index_response(**overrides: Any) -> dict[str, Any]:
-    """Return a single IndexModel dict (db_control ``GET /indexes/{name}``)."""
+    """Return a single IndexModel dict (db_control 2026-07 ``GET /indexes/{name}``)."""
     base: dict[str, Any] = {
         "name": "test-index",
-        "dimension": 1536,
-        "metric": "cosine",
         "host": "test-index-abc1234.svc.us-east1-gcp.pinecone.io",
         "deletion_protection": "disabled",
-        "tags": {},
-        "spec": {
-            "serverless": {
-                "cloud": "aws",
-                "region": "us-east-1",
-                "read_capacity": {
-                    "mode": "OnDemand",
-                    "status": {"state": "Ready"},
+        "tags": None,
+        "deployment": {
+            "deployment_type": "managed",
+            "cloud": "aws",
+            "region": "us-east-1",
+        },
+        "schema": {
+            "fields": {
+                "embedding": {
+                    "type": "dense_vector",
+                    "dimension": 1536,
+                    "metric": "cosine",
                 },
             },
         },
+        "read_capacity": {
+            "mode": "OnDemand",
+            "status": {"state": "Ready", "current_shards": None, "current_replicas": None},
+        },
         "status": {"ready": True, "state": "Ready"},
-        "vector_type": "dense",
     }
     base.update(overrides)
     return base

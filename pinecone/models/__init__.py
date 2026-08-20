@@ -83,15 +83,45 @@ if TYPE_CHECKING:
     )
     from pinecone.models.imports.list import ImportList  # noqa: F401
     from pinecone.models.imports.model import ImportModel, StartImportResponse  # noqa: F401
+    from pinecone.models.indexes.deployment import (  # noqa: F401
+        ByocDeployment,
+        IndexDeployment,
+        ManagedDeployment,
+        PodDeployment,
+    )
     from pinecone.models.indexes.index import (  # noqa: F401
-        ByocSpecInfo,
         IndexModel,
-        IndexSpec,
         IndexStatus,
-        PodSpecInfo,
-        ServerlessSpecInfo,
+        IndexTags,
     )
     from pinecone.models.indexes.list import IndexList  # noqa: F401
+    from pinecone.models.indexes.read_capacity import (  # noqa: F401
+        ReadCapacityDedicatedConfig,
+        ReadCapacityDedicatedResponse,
+        ReadCapacityOnDemandResponse,
+        ReadCapacityResponse,
+        ReadCapacityStatus,
+        ScalingConfigManual,
+    )
+    from pinecone.models.indexes.requests import (  # noqa: F401
+        ConfigureIndexRequest,
+        CreateIndexRequest,
+    )
+    from pinecone.models.indexes.schema import (  # noqa: F401
+        BooleanField,
+        DenseVectorField,
+        FloatField,
+        FullTextSearchConfig,
+        IndexSchema,
+        IndexSchemaField,
+        IntegerField,
+        LegacyMetadataField,
+        NgramConfig,
+        SemanticTextField,
+        SparseVectorField,
+        StringField,
+        StringListField,
+    )
     from pinecone.models.indexes.specs import (  # noqa: F401
         ByocSpec,
         EmbedConfig,
@@ -224,13 +254,35 @@ _LAZY_IMPORTS: dict[str, str] = {
     "ImportModel": "pinecone.models.imports.model",
     "StartImportResponse": "pinecone.models.imports.model",
     # Indexes
-    "ByocSpecInfo": "pinecone.models.indexes.index",
     "IndexModel": "pinecone.models.indexes.index",
-    "IndexSpec": "pinecone.models.indexes.index",
     "IndexStatus": "pinecone.models.indexes.index",
-    "PodSpecInfo": "pinecone.models.indexes.index",
-    "ServerlessSpecInfo": "pinecone.models.indexes.index",
+    "IndexTags": "pinecone.models.indexes.index",
     "IndexList": "pinecone.models.indexes.list",
+    "ByocDeployment": "pinecone.models.indexes.deployment",
+    "IndexDeployment": "pinecone.models.indexes.deployment",
+    "ManagedDeployment": "pinecone.models.indexes.deployment",
+    "PodDeployment": "pinecone.models.indexes.deployment",
+    "ReadCapacityDedicatedConfig": "pinecone.models.indexes.read_capacity",
+    "ReadCapacityDedicatedResponse": "pinecone.models.indexes.read_capacity",
+    "ReadCapacityOnDemandResponse": "pinecone.models.indexes.read_capacity",
+    "ReadCapacityResponse": "pinecone.models.indexes.read_capacity",
+    "ReadCapacityStatus": "pinecone.models.indexes.read_capacity",
+    "ScalingConfigManual": "pinecone.models.indexes.read_capacity",
+    "ConfigureIndexRequest": "pinecone.models.indexes.requests",
+    "CreateIndexRequest": "pinecone.models.indexes.requests",
+    "BooleanField": "pinecone.models.indexes.schema",
+    "DenseVectorField": "pinecone.models.indexes.schema",
+    "FloatField": "pinecone.models.indexes.schema",
+    "FullTextSearchConfig": "pinecone.models.indexes.schema",
+    "IndexSchema": "pinecone.models.indexes.schema",
+    "IndexSchemaField": "pinecone.models.indexes.schema",
+    "IntegerField": "pinecone.models.indexes.schema",
+    "LegacyMetadataField": "pinecone.models.indexes.schema",
+    "NgramConfig": "pinecone.models.indexes.schema",
+    "SemanticTextField": "pinecone.models.indexes.schema",
+    "SparseVectorField": "pinecone.models.indexes.schema",
+    "StringField": "pinecone.models.indexes.schema",
+    "StringListField": "pinecone.models.indexes.schema",
     "ByocSpec": "pinecone.models.indexes.specs",
     "EmbedConfig": "pinecone.models.indexes.specs",
     "IntegratedSpec": "pinecone.models.indexes.specs",
