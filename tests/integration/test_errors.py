@@ -11,6 +11,8 @@ block — otherwise nothing is sent and nothing raises.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from pinecone import GrpcIndex, Index, Pinecone, PineconeValueError
@@ -22,8 +24,11 @@ from pinecone.errors import (
     PineconeTimeoutError,
     UnauthorizedError,
 )
-from pinecone.models.indexes.specs import ServerlessSpec
 from tests.integration.conftest import cleanup_resource, poll_until, unique_name
+from tests.integration.index_shapes import DENSE_FIELD, MANAGED_AWS, dense_schema
+
+_DENSE_SCHEMA_2D = dense_schema(2)
+_DENSE_SCHEMA_3D = dense_schema(3)
 
 # ---------------------------------------------------------------------------
 # error-bad-api-key
@@ -97,52 +102,71 @@ def test_delete_nonexistent_index_raises_not_found(client: Pinecone) -> None:
 
 @pytest.mark.integration
 def test_dimension_mismatch_raises_typed_error_rest(client: Pinecone) -> None:
-    """Upsert a 3-dim vector into a 2-dim index raises ApiError (status_code=400, REST sync)."""
+    """Upserting a 3-dim vector into a 2-dim field raises ApiError (status_code=400, REST sync).
+
+    The write goes through the documents API: a schema-bearing index rejects the
+    vector write endpoints outright, so upsert(vectors=...) would return 400 for
+    the wrong reason and the assertion would hold no matter what dimension was
+    sent. The correctly-sized document at the end is the control that keeps this
+    test honest — it must succeed, proving the 400 above is about the dimension.
+    """
     name = unique_name("idx")
     try:
         client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA_2D,
+            deployment=MANAGED_AWS,
             timeout=300,
         )
         index = client.index(name=name)
 
         with pytest.raises(ApiError) as exc_info:
-            index.upsert(vectors=[{"id": "dim-v1", "values": [0.1, 0.2, 0.3]}])
+            index.upsert_documents(
+                namespace="dim-ns",
+                documents=[{"_id": "dim-v1", DENSE_FIELD: [0.1, 0.2, 0.3]}],
+            )
 
         err = exc_info.value
         assert err.status_code == 400
-        # Error message must be human-readable
         msg = str(err)
-        assert len(msg) > 0
+        assert "dimension" in msg.lower()
         assert not msg.strip().isdigit()
+
+        index.upsert_documents(
+            namespace="dim-ns",
+            documents=[{"_id": "dim-ok", DENSE_FIELD: [0.1, 0.2]}],
+        )
     finally:
         cleanup_resource(lambda: client.indexes.delete(name), name, "index")
 
 
 @pytest.mark.integration
-def test_dimension_mismatch_raises_typed_error_grpc(client: Pinecone) -> None:
-    """Upsert a 3-dim vector into a 2-dim index raises ApiError (status_code=400, gRPC)."""
+def test_grpc_vector_write_rejected_on_schema_index(client: Pinecone) -> None:
+    """A gRPC vector-API write to a schema-bearing index raises ApiError (status_code=400).
+
+    Replaces a gRPC dimension-mismatch check that 2026-07 makes unreachable:
+    every index carries a document schema, GrpcIndex exposes no documents write
+    method, and the vector write path is refused before any dimension is
+    examined. The refusal itself is what is assertable here, so this pins the
+    message that points callers at the documents API.
+    """
     name = unique_name("idx")
     try:
         client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA_2D,
+            deployment=MANAGED_AWS,
             timeout=300,
         )
         index = client.index(name=name, grpc=True)
 
         with pytest.raises(ApiError) as exc_info:
-            index.upsert(vectors=[{"id": "dim-v1", "values": [0.1, 0.2, 0.3]}])
+            index.upsert(vectors=[{"id": "dim-v1", "values": [0.1, 0.2]}])
 
         err = exc_info.value
         assert err.status_code == 400
         msg = str(err)
-        assert len(msg) > 0
+        assert "documents" in msg.lower()
         assert not msg.strip().isdigit()
     finally:
         cleanup_resource(lambda: client.indexes.delete(name), name, "index")
@@ -160,18 +184,16 @@ def test_duplicate_index_raises_conflict_error(client: Pinecone) -> None:
     try:
         client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA_2D,
+            deployment=MANAGED_AWS,
             timeout=300,
         )
 
         with pytest.raises(ConflictError) as exc_info:
             client.indexes.create(
                 name=name,
-                dimension=2,
-                metric="cosine",
-                spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+                schema=_DENSE_SCHEMA_2D,
+                deployment=MANAGED_AWS,
                 timeout=-1,  # skip waiting — index already exists
             )
 
@@ -234,101 +256,68 @@ def test_create_index_invalid_name_rest(client: Pinecone) -> None:
 
     Verifies unified-index-0045: the SDK raises PineconeValueError for names
     that are too long (>45 characters) or contain disallowed characters (anything
-    other than lowercase letters, digits, and hyphens).  Validation fires
-    synchronously in validate_create_inputs() before any HTTP request is made,
-    so no index resource is created and no cleanup is required.
+    other than lowercase letters, digits, and hyphens). Validation fires
+    synchronously in require_valid_resource_name() before any HTTP request is
+    made, so no index resource is created and no cleanup is required.
 
-    Cases checked:
-    - name with 46 characters (one over the limit)
-    - name with uppercase letters
-    - name with an underscore
-    - name with a dot
-    - name with a space
+    A valid ``schema`` must be supplied: create() validates the schema before
+    the name, so omitting it would make the raise come from the missing-schema
+    guard and prove nothing about name validation.
     """
-    spec = ServerlessSpec(cloud="aws", region="us-east-1")
+    invalid_names = ["a" * 46, "MyIndex", "my_index", "my.index", "my index"]
 
-    # 46-character name — one character over the 45-character limit
-    long_name = "a" * 46
-    with pytest.raises(PineconeValueError):
-        client.indexes.create(
-            name=long_name,
-            dimension=2,
-            spec=spec,
-        )
-
-    # uppercase letters are not allowed
-    with pytest.raises(PineconeValueError):
-        client.indexes.create(
-            name="MyIndex",
-            dimension=2,
-            spec=spec,
-        )
-
-    # underscore is not allowed (only hyphens)
-    with pytest.raises(PineconeValueError):
-        client.indexes.create(
-            name="my_index",
-            dimension=2,
-            spec=spec,
-        )
-
-    # dot is not allowed
-    with pytest.raises(PineconeValueError):
-        client.indexes.create(
-            name="my.index",
-            dimension=2,
-            spec=spec,
-        )
-
-    # space is not allowed
-    with pytest.raises(PineconeValueError):
-        client.indexes.create(
-            name="my index",
-            dimension=2,
-            spec=spec,
-        )
+    for name in invalid_names:
+        with pytest.raises(PineconeValueError):
+            client.indexes.create(name=name, schema=_DENSE_SCHEMA_2D)
 
 
-# error-invalid-spec-dict-key  (unified-index-0044)
+# error-invalid-deployment-dict  (unified-index-0044)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-def test_create_index_invalid_spec_dict_key(client: Pinecone) -> None:
-    """indexes.create() with a spec dict missing a recognized key raises PineconeValueError.
+def test_create_index_empty_deployment_dict_rejected_client_side() -> None:
+    """indexes.create(deployment={}) raises PineconeValueError before any API call.
 
-    Verifies unified-index-0044: the SDK rejects spec dicts that do not contain
-    a 'serverless', 'pod', or 'byoc' key.  Validation fires synchronously before
-    any HTTP request is made, so no index resource is created or cleaned up.
-
-    Three cases are checked:
-    - empty dict: no key at all
-    - dict with an unrecognized key: {"invalid": {...}}
-    - dict with a case-wrong key: {"SERVERLESS": {...}} (case-sensitive match)
+    Covers the client-side half of unified-index-0044: the empty dict is the
+    only deployment shape the SDK still rejects on its own. Uses a fake host so
+    no network call is required.
     """
-    # empty spec dict
-    with pytest.raises(PineconeValueError):
-        client.indexes.create(
-            name="test-idx-spec",
-            dimension=2,
-            spec={},
-        )
+    client = Pinecone(api_key="testkey", host="https://fake-control.pinecone.io")
 
-    # unrecognized key — value doesn't matter, key is what's checked
     with pytest.raises(PineconeValueError):
-        client.indexes.create(
-            name="test-idx-spec",
-            dimension=2,
-            spec={"invalid": {"cloud": "aws", "region": "us-east-1"}},
-        )
+        client.indexes.create(name="test-idx-deployment", schema=_DENSE_SCHEMA_2D, deployment={})
 
-    # case-sensitive: 'SERVERLESS' is not recognized (must be lowercase)
-    with pytest.raises(PineconeValueError):
-        client.indexes.create(
-            name="test-idx-spec",
-            dimension=2,
-            spec={"SERVERLESS": {"cloud": "aws", "region": "us-east-1"}},
-        )
+
+@pytest.mark.integration
+def test_create_index_unrecognized_deployment_key_rejected_by_server(client: Pinecone) -> None:
+    """A non-empty deployment dict with no valid discriminator is rejected with 422.
+
+    Covers the server-side half of unified-index-0044. A deployment dict is a
+    ``deployment_type``-discriminated union deserialized with
+    ``deny_unknown_fields``, so a dict carrying no ``deployment_type`` key is
+    syntactically valid JSON that cannot be deserialized into the target type —
+    which the control plane answers with 422, not 400.
+
+    Both dicts below are non-empty, so the SDK forwards them and the rejection
+    is genuinely the server's. No index resource is created, so no cleanup is
+    required.
+    """
+    bad_deployments: list[dict[str, Any]] = [
+        {"invalid": {"cloud": "aws", "region": "us-east-1"}},
+        {"SERVERLESS": {"cloud": "aws", "region": "us-east-1"}},
+    ]
+
+    for deployment in bad_deployments:
+        with pytest.raises(ApiError) as exc_info:
+            client.indexes.create(
+                name="test-idx-deployment",
+                schema=_DENSE_SCHEMA_2D,
+                deployment=deployment,
+                timeout=-1,
+            )
+        assert exc_info.value.status_code == 422
+        assert str(exc_info.value)
 
 
 @pytest.mark.integration
@@ -644,29 +633,33 @@ def test_grpc_query_too_short_timeout_raises(client: Pinecone) -> None:
        DEADLINE_EXCEEDED, which the Rust transport maps to PineconeTimeoutError.
     3. A subsequent query with a generous timeout succeeds — confirming the
        timeout is per-call and does not permanently break the channel.
+
+    Seeding goes through the REST documents API because GrpcIndex has no
+    documents write method and a schema-bearing index refuses gRPC vector
+    writes. gRPC *reads* are unaffected, which is all this test needs.
     """
     name = unique_name("idx")
+    namespace = "grpc-timeout-ns"
     try:
         client.indexes.create(
             name=name,
-            dimension=3,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA_3D,
+            deployment=MANAGED_AWS,
             timeout=300,
+        )
+        client.index(name=name).upsert_documents(
+            namespace=namespace,
+            documents=[
+                {"_id": "t1", DENSE_FIELD: [0.1, 0.2, 0.3]},
+                {"_id": "t2", DENSE_FIELD: [0.4, 0.5, 0.6]},
+                {"_id": "t3", DENSE_FIELD: [0.7, 0.8, 0.9]},
+            ],
         )
         grpc_idx = client.index(name=name, grpc=True)
 
-        grpc_idx.upsert(
-            vectors=[
-                ("t1", [0.1, 0.2, 0.3]),
-                ("t2", [0.4, 0.5, 0.6]),
-                ("t3", [0.7, 0.8, 0.9]),
-            ]
-        )
-
         # Wait until the upserted vectors are queryable
         poll_until(
-            lambda: grpc_idx.query(vector=[0.1, 0.2, 0.3], top_k=3),
+            lambda: grpc_idx.query(vector=[0.1, 0.2, 0.3], top_k=3, namespace=namespace),
             lambda r: len(r.matches) > 0,
             timeout=60,
             description="vectors queryable via gRPC",
@@ -674,10 +667,10 @@ def test_grpc_query_too_short_timeout_raises(client: Pinecone) -> None:
 
         # Sub-microsecond deadline — must fire before the server responds
         with pytest.raises(PineconeTimeoutError):
-            grpc_idx.query(vector=[0.1, 0.2, 0.3], top_k=3, timeout=0.000001)
+            grpc_idx.query(vector=[0.1, 0.2, 0.3], top_k=3, namespace=namespace, timeout=0.000001)
 
         # Generous timeout: proves the channel is healthy and the knob is per-call
-        result = grpc_idx.query(vector=[0.1, 0.2, 0.3], top_k=3, timeout=30)
+        result = grpc_idx.query(vector=[0.1, 0.2, 0.3], top_k=3, namespace=namespace, timeout=30)
         assert result.matches is not None
     finally:
         cleanup_resource(lambda: client.indexes.delete(name), name, "index")

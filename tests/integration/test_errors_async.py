@@ -11,12 +11,16 @@ inside the ``pytest.raises`` block — otherwise nothing is sent and nothing rai
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from pinecone import AsyncIndex, AsyncPinecone, PineconeValueError
 from pinecone.errors import ApiError, ConflictError, NotFoundError, PineconeError, UnauthorizedError
-from pinecone.models.indexes.specs import ServerlessSpec
 from tests.integration.conftest import async_cleanup_resource, unique_name
+from tests.integration.index_shapes import DENSE_FIELD, MANAGED_AWS, dense_schema
+
+_DENSE_SCHEMA_2D = dense_schema(2)
 
 # ---------------------------------------------------------------------------
 # error-bad-api-key
@@ -99,14 +103,20 @@ async def test_delete_nonexistent_index_raises_not_found_async(
 async def test_dimension_mismatch_raises_typed_error_async(
     async_client: AsyncPinecone,
 ) -> None:
-    """Upsert a 3-dim vector into a 2-dim index raises ApiError (status_code=400, REST async)."""
+    """Upserting a 3-dim vector into a 2-dim field raises ApiError (status_code=400, REST async).
+
+    The write goes through the documents API: a schema-bearing index rejects the
+    vector write endpoints outright, so upsert(vectors=...) would return 400 for
+    the wrong reason and the assertion would hold no matter what dimension was
+    sent. The correctly-sized document at the end is the control that keeps this
+    test honest — it must succeed, proving the 400 above is about the dimension.
+    """
     name = unique_name("idx")
     try:
         await async_client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA_2D,
+            deployment=MANAGED_AWS,
             timeout=300,
         )
         # Populate host cache so pc.index(name=...) can resolve it
@@ -114,13 +124,21 @@ async def test_dimension_mismatch_raises_typed_error_async(
         index = await async_client.index(name=name)
 
         with pytest.raises(ApiError) as exc_info:
-            await index.upsert(vectors=[{"id": "dim-v1", "values": [0.1, 0.2, 0.3]}])
+            await index.upsert_documents(
+                namespace="dim-ns",
+                documents=[{"_id": "dim-v1", DENSE_FIELD: [0.1, 0.2, 0.3]}],
+            )
 
         err = exc_info.value
         assert err.status_code == 400
         msg = str(err)
-        assert len(msg) > 0
+        assert "dimension" in msg.lower()
         assert not msg.strip().isdigit()
+
+        await index.upsert_documents(
+            namespace="dim-ns",
+            documents=[{"_id": "dim-ok", DENSE_FIELD: [0.1, 0.2]}],
+        )
     finally:
         await async_cleanup_resource(lambda: async_client.indexes.delete(name), name, "index")
 
@@ -140,18 +158,16 @@ async def test_duplicate_index_raises_conflict_error_async(
     try:
         await async_client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA_2D,
+            deployment=MANAGED_AWS,
             timeout=300,
         )
 
         with pytest.raises(ConflictError) as exc_info:
             await async_client.indexes.create(
                 name=name,
-                dimension=2,
-                metric="cosine",
-                spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+                schema=_DENSE_SCHEMA_2D,
+                deployment=MANAGED_AWS,
                 timeout=-1,  # skip waiting — index already exists
             )
 
@@ -204,97 +220,74 @@ async def test_invalid_index_host_raises_value_error_async() -> None:
 async def test_create_index_invalid_name_async(async_client: AsyncPinecone) -> None:
     """async indexes.create() rejects invalid index names before any API call.
 
-    Verifies unified-index-0045 for the async transport: validate_create_inputs()
-    raises PineconeValueError synchronously before the first await, so no real
-    HTTP request is made and no index resource needs cleanup.
+    Verifies unified-index-0045 for the async transport: PineconeValueError is
+    raised by require_valid_resource_name() synchronously before the first
+    await, so no real HTTP request is made and no index resource needs cleanup.
 
-    Cases checked:
-    - name with 46 characters (one over the 45-character limit)
-    - name with uppercase letters
-    - name with an underscore
-    - name with a dot
-    - name with a space
+    A valid ``schema`` must be supplied: create() validates the schema before
+    the name, so omitting it would make the raise come from the missing-schema
+    guard and prove nothing about name validation.
     """
-    spec = ServerlessSpec(cloud="aws", region="us-east-1")
+    invalid_names = ["a" * 46, "MyIndex", "my_index", "my.index", "my index"]
 
-    # 46-character name — one character over the 45-character limit
-    long_name = "a" * 46
-    with pytest.raises(PineconeValueError):
-        await async_client.indexes.create(
-            name=long_name,
-            dimension=2,
-            spec=spec,
-        )
-
-    # uppercase letters are not allowed
-    with pytest.raises(PineconeValueError):
-        await async_client.indexes.create(
-            name="MyIndex",
-            dimension=2,
-            spec=spec,
-        )
-
-    # underscore is not allowed (only hyphens)
-    with pytest.raises(PineconeValueError):
-        await async_client.indexes.create(
-            name="my_index",
-            dimension=2,
-            spec=spec,
-        )
-
-    # dot is not allowed
-    with pytest.raises(PineconeValueError):
-        await async_client.indexes.create(
-            name="my.index",
-            dimension=2,
-            spec=spec,
-        )
-
-    # space is not allowed
-    with pytest.raises(PineconeValueError):
-        await async_client.indexes.create(
-            name="my index",
-            dimension=2,
-            spec=spec,
-        )
+    for name in invalid_names:
+        with pytest.raises(PineconeValueError):
+            await async_client.indexes.create(name=name, schema=_DENSE_SCHEMA_2D)
 
 
 # ---------------------------------------------------------------------------
-# error-invalid-spec-dict-key  (unified-index-0044)
+# error-invalid-deployment-dict  (unified-index-0044)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
 @pytest.mark.anyio
-async def test_create_index_invalid_spec_dict_key_async(async_client: AsyncPinecone) -> None:
-    """async indexes.create() with a spec dict missing a recognized key raises PineconeValueError.
+async def test_create_index_empty_deployment_dict_rejected_client_side_async() -> None:
+    """async indexes.create(deployment={}) raises PineconeValueError before any await.
 
-    Verifies unified-index-0044 for the async transport: validation fires before
-    any awaited HTTP request, so no index resource is created.
+    Covers the client-side half of unified-index-0044 for the async transport:
+    the empty dict is the only deployment shape the SDK still rejects on its
+    own. Uses a fake host so no network call is required.
     """
-    # empty spec dict
-    with pytest.raises(PineconeValueError):
-        await async_client.indexes.create(
-            name="test-idx-spec",
-            dimension=2,
-            spec={},
-        )
+    async with AsyncPinecone(api_key="testkey", host="https://fake-control.pinecone.io") as client:
+        with pytest.raises(PineconeValueError):
+            await client.indexes.create(
+                name="test-idx-deployment", schema=_DENSE_SCHEMA_2D, deployment={}
+            )
 
-    # unrecognized key
-    with pytest.raises(PineconeValueError):
-        await async_client.indexes.create(
-            name="test-idx-spec",
-            dimension=2,
-            spec={"invalid": {"cloud": "aws", "region": "us-east-1"}},
-        )
 
-    # case-sensitive: 'SERVERLESS' is not recognized
-    with pytest.raises(PineconeValueError):
-        await async_client.indexes.create(
-            name="test-idx-spec",
-            dimension=2,
-            spec={"SERVERLESS": {"cloud": "aws", "region": "us-east-1"}},
-        )
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_create_index_unrecognized_deployment_key_rejected_by_server_async(
+    async_client: AsyncPinecone,
+) -> None:
+    """A non-empty deployment dict with no valid discriminator is rejected with 422.
+
+    Covers the server-side half of unified-index-0044 for the async transport.
+    A deployment dict is a ``deployment_type``-discriminated union deserialized
+    with ``deny_unknown_fields``, so a dict carrying no ``deployment_type`` key
+    is syntactically valid JSON that cannot be deserialized into the target
+    type — which the control plane answers with 422, not 400.
+
+    Both dicts below are non-empty, so the SDK forwards them and the rejection
+    is genuinely the server's. No index resource is created, so no cleanup is
+    required.
+    """
+    bad_deployments: list[dict[str, Any]] = [
+        {"invalid": {"cloud": "aws", "region": "us-east-1"}},
+        {"SERVERLESS": {"cloud": "aws", "region": "us-east-1"}},
+    ]
+
+    for deployment in bad_deployments:
+        with pytest.raises(ApiError) as exc_info:
+            await async_client.indexes.create(
+                name="test-idx-deployment",
+                schema=_DENSE_SCHEMA_2D,
+                deployment=deployment,
+                timeout=-1,
+            )
+        assert exc_info.value.status_code == 422
+        assert str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
