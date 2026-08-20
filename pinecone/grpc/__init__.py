@@ -5,9 +5,7 @@ from __future__ import annotations
 import builtins
 import logging
 import os
-import threading
 import warnings
-from collections import OrderedDict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Literal
@@ -18,8 +16,8 @@ if TYPE_CHECKING:
 from pinecone._internal.adapters.imports_adapter import ImportsAdapter
 from pinecone._internal.adapters.vectors_adapter import VectorsAdapter, extract_response_info
 from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
-from pinecone._internal.batch import batch_execute
 from pinecone._internal.batching import validate_batch_size
+from pinecone._internal.bulk import bulk_execute_sync
 from pinecone._internal.config import PineconeConfig, RetryConfig
 from pinecone._internal.constants import DATA_PLANE_API_VERSION
 from pinecone._internal.data_plane_helpers import _build_search_records_body, _validate_host
@@ -168,10 +166,6 @@ def _dict_to_namespace_description(data: dict[str, Any]) -> NamespaceDescription
 # gRPC's retry defaults, which differ from REST's (3 / 0.25s / 60s). The counts and
 # floor are what the Rust layer has always used; only the cap changed, from 1.6s — a
 # value small enough to swallow a `grpc-retry-pushback-ms: 30000` hint from the server.
-# Distinct concurrency values a handle keeps pools for. Callers realistically use
-# one or two; the cap only matters for code that varies it per call.
-_MAX_CACHED_BATCH_EXECUTORS = 4
-
 _GRPC_DEFAULT_MAX_RETRIES = 5
 _GRPC_DEFAULT_BACKOFF_FACTOR = 0.1
 _GRPC_DEFAULT_MAX_WAIT = 60.0
@@ -211,6 +205,14 @@ def _upsert_response_from(batch_result: BatchResult) -> UpsertResponse:
         failed_batch_count=batch_result.failed_batch_count,
         errors=batch_result.errors,
     )
+
+
+def _bulk_gate_registry() -> Any:
+    """Deferred import: the bulk registry pulls in gate machinery this module
+    only needs once a client is constructed, not at import time."""
+    from pinecone._internal.bulk import get_registry
+
+    return get_registry()
 
 
 def _limiter_host(host: str) -> str:
@@ -367,10 +369,16 @@ class GrpcIndex:
             backoff_factor=_GRPC_DEFAULT_BACKOFF_FACTOR,
             max_wait=_GRPC_DEFAULT_MAX_WAIT,
         )
-        # RetryConfig.on_throttle is how REST carries the limiter hook; honor it when
-        # the explicit argument is absent so threading a client-built config does not
-        # silently drop the callback.
-        resolved_on_throttle = on_throttle or self._retry_config.on_throttle
+        # The bulk gate must always hear throttles — it is how admission adapts —
+        # so the transport callback feeds the process-global registry first and
+        # any caller-supplied hook (explicit argument, or threaded through a
+        # client-built RetryConfig) second, as observability.
+        user_on_throttle = on_throttle or self._retry_config.on_throttle
+
+        def resolved_on_throttle(throttled_host: str) -> None:
+            _bulk_gate_registry().report_throttled(throttled_host)
+            if user_on_throttle is not None:
+                user_on_throttle(throttled_host)
 
         self._channel: GrpcChannelProtocol = GrpcChannel(
             endpoint,
@@ -389,8 +397,6 @@ class GrpcIndex:
         )
 
         self._executor = ThreadPoolExecutor()
-        self._batch_executors: OrderedDict[int, ThreadPoolExecutor] = OrderedDict()
-        self._batch_executor_lock = threading.Lock()
 
         # REST HTTP client for records operations (integrated inference).
         # upsert_records and search use REST endpoints with no gRPC equivalent.
@@ -413,31 +419,6 @@ class GrpcIndex:
     def host(self) -> str:
         """The data plane host URL for this index."""
         return self._host
-
-    def _get_batch_executor(self, max_concurrency: int) -> ThreadPoolExecutor:
-        """Return the pool of this size, creating it once.
-
-        Pools are kept per size rather than resized in place. upsert() and
-        upsert_from_dataframe() have different concurrency defaults and can run
-        concurrently on one index handle; shutting a pool down because the other
-        caller asked for a different size would raise "cannot schedule new
-        futures after shutdown" in whichever one was still submitting.
-        """
-        with self._batch_executor_lock:
-            executor = self._batch_executors.pop(max_concurrency, None)
-            if executor is None:
-                executor = ThreadPoolExecutor(
-                    max_concurrency,
-                    thread_name_prefix="pinecone-grpc-batch-upsert",
-                )
-                # Evict least-recently-used rather than growing without bound: a
-                # caller varying max_concurrency could otherwise accumulate 64
-                # pools and their threads for the life of the handle.
-                while len(self._batch_executors) >= _MAX_CACHED_BATCH_EXECUTORS:
-                    _, evicted = self._batch_executors.popitem(last=False)
-                    evicted.shutdown(wait=False)
-            self._batch_executors[max_concurrency] = executor
-            return executor
 
     def upsert(
         self,
@@ -537,15 +518,13 @@ class GrpcIndex:
         def _operation(chunk: builtins.list[dict[str, Any]]) -> dict[str, Any]:
             return self._channel.upsert(chunk, namespace or None, timeout_s=timeout)
 
-        batch_result = batch_execute(
+        batch_result = bulk_execute_sync(
             items=items,
             operation=_operation,
             batch_size=batch_size,
             max_concurrency=max_concurrency,
             show_progress=show_progress,
             desc="Upserting",
-            executor=self._get_batch_executor(max_concurrency),
-            limiter_registry=self._limiter_registry,
             host=self._limiter_host,
         )
 
@@ -1366,15 +1345,13 @@ class GrpcIndex:
         def _upsert_batch(batch: builtins.list[dict[str, Any]]) -> dict[str, Any]:
             return self._channel.upsert(batch, namespace or None, timeout_s=timeout)
 
-        batch_result = batch_execute(
+        batch_result = bulk_execute_sync(
             items=records,
             operation=_upsert_batch,
             batch_size=batch_size,
             max_concurrency=resolved_concurrency,
             show_progress=show_progress,
             desc="Upserting",
-            executor=self._get_batch_executor(resolved_concurrency),
-            limiter_registry=self._limiter_registry,
             host=self._limiter_host,
             total_timeout=total_timeout,
         )
@@ -2307,11 +2284,6 @@ class GrpcIndex:
     def close(self) -> None:
         """Close the underlying gRPC channel, REST client, and release resources."""
         self._executor.shutdown(wait=True)
-        with self._batch_executor_lock:
-            executors = list(self._batch_executors.values())
-            self._batch_executors.clear()
-        for executor in executors:
-            executor.shutdown(wait=False)
         self._http.close()
         if hasattr(self._channel, "close"):
             self._channel.close()

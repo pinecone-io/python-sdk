@@ -14,6 +14,7 @@ import pytest
 
 from pinecone.errors.exceptions import PineconeValueError
 from pinecone.grpc import GrpcIndex, _default_max_concurrency
+from pinecone.models.batch import BatchResult
 from pinecone.models.vectors.responses import UpsertResponse
 
 _MOCK_GRPC_MODULE_PATH = "pinecone._grpc"
@@ -333,6 +334,19 @@ class TestGrpcDataframeMissingCells:
         assert "sparse_values" not in sent["v2"]
 
 
+def _one_batch_result(item_count: int) -> BatchResult:
+    return BatchResult(
+        total_item_count=item_count,
+        successful_item_count=item_count,
+        failed_item_count=0,
+        total_batch_count=1,
+        successful_batch_count=1,
+        failed_batch_count=0,
+        errors=[],
+        response_info=None,
+    )
+
+
 class TestGrpcDataframeConcurrency:
     """Submission is bounded, and the bound is a parameter."""
 
@@ -349,15 +363,11 @@ class TestGrpcDataframeConcurrency:
         df = pd.DataFrame({"id": ["v1", "v2"], "values": [[0.1], [0.2]]})
         mock_channel.upsert.return_value = {"upserted_count": 1}
 
-        with patch.object(
-            GrpcIndex,
-            "_get_batch_executor",
-            autospec=True,
-            side_effect=GrpcIndex._get_batch_executor,
-        ) as spy:
+        with patch("pinecone.grpc.bulk_execute_sync", autospec=True, wraps=None) as spy:
+            spy.return_value = _one_batch_result(2)
             grpc_index.upsert_from_dataframe(df, batch_size=1, show_progress=False)
 
-        assert spy.call_args[0][1] == _default_max_concurrency()
+        assert spy.call_args[1]["max_concurrency"] == _default_max_concurrency()
 
     def test_explicit_max_concurrency_is_forwarded(
         self, grpc_index: GrpcIndex, mock_channel: MagicMock
@@ -366,17 +376,13 @@ class TestGrpcDataframeConcurrency:
         df = pd.DataFrame({"id": ["v1", "v2"], "values": [[0.1], [0.2]]})
         mock_channel.upsert.return_value = {"upserted_count": 1}
 
-        with patch.object(
-            GrpcIndex,
-            "_get_batch_executor",
-            autospec=True,
-            side_effect=GrpcIndex._get_batch_executor,
-        ) as spy:
+        with patch("pinecone.grpc.bulk_execute_sync", autospec=True, wraps=None) as spy:
+            spy.return_value = _one_batch_result(2)
             grpc_index.upsert_from_dataframe(
                 df, batch_size=1, show_progress=False, max_concurrency=3
             )
 
-        assert spy.call_args[0][1] == 3
+        assert spy.call_args[1]["max_concurrency"] == 3
 
     @pytest.mark.parametrize("bad", [0, -1, 65])
     def test_out_of_range_max_concurrency_raises(self, grpc_index: GrpcIndex, bad: int) -> None:
@@ -424,37 +430,6 @@ class TestGrpcDataframeConcurrency:
         assert sig.parameters["df"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
 
 
-class TestBatchExecutorIsNotSharedAcrossSizes:
-    """upsert() defaults to 4 workers, upsert_from_dataframe() to min(32, cpu+4)."""
-
-    def test_different_sizes_get_different_pools(self, grpc_index: GrpcIndex) -> None:
-        four = grpc_index._get_batch_executor(4)
-        sixteen = grpc_index._get_batch_executor(16)
-
-        assert four is not sixteen
-
-    def test_same_size_reuses_one_pool(self, grpc_index: GrpcIndex) -> None:
-        assert grpc_index._get_batch_executor(8) is grpc_index._get_batch_executor(8)
-
-    def test_asking_for_another_size_does_not_shut_the_first_down(
-        self, grpc_index: GrpcIndex
-    ) -> None:
-        """Shutting it down mid-submit raises "cannot schedule new futures"."""
-        four = grpc_index._get_batch_executor(4)
-        grpc_index._get_batch_executor(16)
-
-        assert four.submit(lambda: "still usable").result() == "still usable"
-
-    def test_close_shuts_down_every_pool(self, grpc_index: GrpcIndex) -> None:
-        pools = [grpc_index._get_batch_executor(n) for n in (2, 4, 8)]
-
-        grpc_index.close()
-
-        for pool in pools:
-            with pytest.raises(RuntimeError):
-                pool.submit(lambda: None)
-
-
 class TestGrpcDataframeDoesNotStarveTheSharedExecutor:
     def test_batches_do_not_queue_on_the_shared_async_executor(
         self, grpc_index: GrpcIndex, mock_channel: MagicMock
@@ -498,7 +473,9 @@ class TestGrpcDataframeProgressTracksCompletion:
             def close(self) -> None:
                 pass
 
-        with patch("pinecone._internal.batch._create_progress_bar", return_value=_RecordingBar()):
+        with patch(
+            "pinecone._internal.bulk.engine._create_progress_bar", return_value=_RecordingBar()
+        ):
             grpc_index.upsert_from_dataframe(df, batch_size=2, show_progress=True)
 
         assert sum(updates) == 3

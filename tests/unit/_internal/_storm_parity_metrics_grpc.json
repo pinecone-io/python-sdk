@@ -1,7 +1,7 @@
 {
   "transport": "grpc",
   "n_clients": 50,
-  "dispersion_width": 0.3711970909498632,
-  "first_success_relative": 1.044463471043855,
+  "dispersion_width": 0.3765172499988694,
+  "first_success_relative": 1.0471422499977052,
   "request_amplification": 3.0
 }
