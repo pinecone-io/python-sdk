@@ -50,7 +50,12 @@ class OperationModel(
         percent_complete: Progress of the operation as a percentage from 0 to 100,
             or ``None`` when the server did not report progress.
         error: Error message if the operation failed, or ``None``
-            (JSON field: ``error_message``).
+            (JSON field: ``error_message``). Goes stale across a retry: the
+            backend writes this column with ``COALESCE``, so it is never
+            cleared once set — a retried operation that is back to
+            ``"Processing"``, or that eventually succeeds, still carries the
+            earlier attempt's text. Read it only when ``status`` is
+            ``"Failed"``.
         ingestion_units: Ingestion units consumed by this operation, reported once a
             file ingestion operation has completed, or ``None``.
     """

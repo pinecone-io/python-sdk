@@ -235,7 +235,11 @@ class ChatResponse(StructDictMixin, Struct, kw_only=True):
         finish_reason: The reason the model stopped generating — one of
             ``"stop"`` (the model finished), ``"length"`` (the token limit was
             reached), ``"content_filter"`` (content filtering rules blocked the
-            output), or ``"tool_calls"`` (a tool call was triggered).
+            output), ``"tool_calls"`` (a tool call was triggered), or the
+            literal string ``"null"``. The backend enum carries that fifth
+            ``null`` variant and serializes it as the JSON string ``"null"``,
+            not as JSON ``null``; the 2026-07 OAS ``x-enum`` omits it, which is
+            why this is typed ``str`` rather than a closed set.
         citations: List of citations linking response text to source documents.
         context_snippet_count: Number of retrieved context snippets that were
             provided to the model, or ``None`` if the server did not report it.
@@ -359,7 +363,11 @@ class ChatCompletionChoice(StructDictMixin, Struct, kw_only=True):
         finish_reason: The reason the model stopped generating — one of
             ``"stop"`` (the model finished), ``"length"`` (the token limit was
             reached), ``"content_filter"`` (content filtering rules blocked the
-            output), or ``"tool_calls"`` (a tool call was triggered).
+            output), ``"tool_calls"`` (a tool call was triggered), or the
+            literal string ``"null"``. The backend enum carries that fifth
+            ``null`` variant and serializes it as the JSON string ``"null"``,
+            not as JSON ``null``; the 2026-07 OAS ``x-enum`` omits it, which is
+            why this is typed ``str`` rather than a closed set.
     """
 
     index: int

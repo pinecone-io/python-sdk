@@ -254,8 +254,12 @@ class StreamMessageEnd(StructDictMixin, Struct, kw_only=True, tag="message_end",
         finish_reason: The reason generation stopped — one of ``"stop"`` (the
             model finished), ``"length"`` (the token limit was reached),
             ``"content_filter"`` (content filtering rules blocked the output),
-            or ``"tool_calls"`` (a tool call was triggered). ``None`` only for
-            payloads recorded before the field was documented.
+            ``"tool_calls"`` (a tool call was triggered), or the literal string
+            ``"null"``. The backend enum carries that fifth ``null`` variant
+            and serializes it as the JSON string ``"null"``, not as JSON
+            ``null``; the 2026-07 OAS ``x-enum`` omits it. Python ``None`` is
+            distinct, and only appears for payloads recorded before the field
+            was documented.
         content_filter_results: Safety classifications reported by the LLM
             provider, or ``None`` when the provider returned none. The payload
             carries a ``spec`` key naming the provider (e.g. ``"openai"``,
@@ -853,7 +857,10 @@ class ChatCompletionStreamChoice(StructDictMixin, Struct, kw_only=True):
             generation is ongoing. When set it is one of ``"stop"`` (the model
             finished), ``"length"`` (the token limit was reached),
             ``"content_filter"`` (content filtering rules blocked the output),
-            or ``"tool_calls"`` (a tool call was triggered).
+            ``"tool_calls"`` (a tool call was triggered), or the literal string
+            ``"null"`` — the backend enum's fifth variant, serialized as the
+            JSON string ``"null"`` rather than JSON ``null``, and absent from
+            the 2026-07 OAS ``x-enum``. Python ``None`` is distinct from it.
     """
 
     index: int

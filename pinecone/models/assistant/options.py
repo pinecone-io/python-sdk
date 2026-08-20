@@ -17,8 +17,12 @@ class ContextOptions(StructDictMixin, Struct, kw_only=True):
     apply its own defaults.
 
     Attributes:
-        top_k: Maximum number of context snippets to retrieve.
-        snippet_size: Target size (in tokens) for each context snippet.
+        top_k: Maximum number of context snippets to retrieve. The backend
+            accepts 1-64; ``0`` and values above 64 are each rejected with a
+            400 (the spec documents a default of 16).
+        snippet_size: Target size (in tokens) for each context snippet. The
+            backend accepts 512-8192; anything outside that range is rejected
+            with a 400 (the spec documents a default of 2048).
         multimodal: Whether to include multimodal (image) content in
             retrieved context.
         include_binary_content: Whether to include binary file content

@@ -273,19 +273,30 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
         status. The assistant starts in ``"Initializing"`` status.
 
         Args:
-            name (str): Name for the new assistant. Must be 1-63 characters,
-                start and end with an alphanumeric character, and consist only
-                of lowercase alphanumeric characters or hyphens.
+            name (str): Name for the new assistant. The backend accepts 1-63
+                *bytes* drawn from ``[A-Za-z0-9-]``, starting and ending with
+                an alphanumeric character — uppercase is allowed, even though
+                the 2026-07 OAS documents lowercase only. A violation comes
+                back as 400 ``"Invalid assistant name"``. Not validated
+                client-side.
             instructions (str | None): Optional directive for the assistant.
                 Maximum 16 KB.
             metadata (dict[str, Any] | None): Optional metadata dictionary.
                 When omitted or ``None``, no metadata is sent and the assistant
                 is created without metadata (``None``).
             region (str): Region to deploy the assistant in. Must be ``"us"``
-                or ``"eu"`` (case-sensitive). Defaults to ``"us"``.
+                or ``"eu"`` (case-sensitive). Defaults to ``"us"``. ``"eu"`` is
+                gated twice, and each gate is a 400 rather than a 403: on a
+                Free plan (``"Cannot specify region as EU for free tier"``),
+                and on a deployment whose default environment is not a
+                production one (``"Cannot specify region as EU in this
+                environment"``).
             environment (str | None): Optional environment override. Restricted
                 to Pinecone-internal org plans; passing this on a non-internal
-                plan raises a 403 error from the backend.
+                plan raises a 403 error from the backend. Silently discarded
+                when the effective region is ``"eu"``: the backend derives the
+                environment from the region in that case and ignores the value
+                you passed.
             timeout (float | None): Seconds to wait for the assistant to become
                 ready. Use ``None`` (default) to poll indefinitely. Use ``-1``
                 to return immediately without polling. Use ``0`` or a positive
@@ -298,7 +309,10 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :exc:`PineconeValueError`: If *region* is not ``"us"`` or ``"eu"``.
             :exc:`PineconeTimeoutError`: If the assistant does not become ready
                 before the deadline.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response. Exhausting
+                the per-project assistant allowance is a 429, not a 403: the
+                backend answers ``RESOURCE_EXHAUSTED`` with a message naming
+                your plan's limit, your current count, and an upgrade link.
 
         Examples:
             .. code-block:: python
@@ -453,6 +467,10 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
 
         Args:
             page_size (int | None): Maximum number of assistants per page.
+                The backend accepts 1-1000 and defaults to 50 — wider than the
+                2026-07 OAS, which documents a maximum of 100. ``0`` is refused
+                with 400 ``"Limit must be at least 1"`` and anything above 1000
+                with 400 ``"Limit cannot exceed 1000"``.
             pagination_token (str | None): Token from a previous response
                 to fetch the next page.
 
@@ -732,6 +750,12 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :exc:`NotFoundError`: If the file does not exist.
             :exc:`ApiError`: If the API returns an error response.
 
+        Note:
+            This applies no age filter, unlike :meth:`list_files`: a
+            ``"ProcessingFailed"`` file whose ``created_on`` is more than 7
+            days old is still returned here after it has dropped out of the
+            listing.
+
         Examples:
 
             .. code-block:: python
@@ -763,7 +787,13 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
 
         Args:
             assistant_name: Name of the assistant whose files to list.
-            page_size: Maximum number of files per page.
+            page_size: Maximum number of files per page, sent as the
+                ``limit`` query parameter. The backend accepts 1-100 (the
+                ceiling is server config rather than a fixed constant) and
+                defaults to 50. ``0`` and an over-large value are rejected
+                with the *same* 400, whose message carries a stray double
+                space: ``"File limit exceeds maximum allowed for list files
+                request.  max: 100"``.
             pagination_token: Token from a previous response to fetch the
                 next page.
             filter: Optional metadata filter expression. Serialized to a JSON
@@ -857,6 +887,12 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
 
         Raises:
             :exc:`ApiError`: If the API returns an error response.
+
+        Note:
+            Files that failed processing age out of this listing: the backend
+            excludes any ``"ProcessingFailed"`` file whose ``created_on`` is
+            more than 7 days old. Such a file is not gone — it stays
+            retrievable by id through :meth:`describe_file`.
 
         Examples:
 
@@ -956,6 +992,10 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             metadata: Optional metadata dictionary, at most 16KB once
                 JSON-encoded. Sent as a ``metadata`` multipart form field —
                 on ``2026-07`` the metadata query parameter is rejected.
+                Values must be a string, number, boolean, or list of strings:
+                a nested object is rejected with a 400, as is any key starting
+                with ``$`` (reserved for filter operators). Not validated
+                client-side.
             multimodal: Whether to enable multimodal processing for PDFs.
                 Sent as a ``multimodal`` query parameter.
             file_id: Optional caller-specified file identifier. When given,
@@ -1166,13 +1206,17 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :class:`OperationModel` with ``status``, ``operation_type``,
             ``file_id``, ``percent_complete``, ``created_at``,
             ``completed_on``, ``ingestion_units`` and ``error``. ``status`` is
-            ``"Processing"``, ``"Completed"`` or ``"Failed"``; ``error``
-            carries the reason only for ``"Failed"``.
+            ``"Processing"``, ``"Completed"`` or ``"Failed"``. Read ``error``
+            only when ``status`` is ``"Failed"``: a retried operation keeps the
+            previous attempt's text, so a non-``None`` ``error`` is not by
+            itself evidence of failure.
 
         Raises:
             :exc:`NotFoundError`: If the assistant or the operation does not
-                exist. Both successful and failed operations are retained for
-                30 days after they finish, and are 404 afterwards.
+                exist. Operation rows are dropped by a row-deletion policy 60
+                days after ``updated_on`` — not 30 days after completion — so a
+                finished operation stays describable until then, and 404s
+                afterwards.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -1202,8 +1246,8 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
         """List an assistant's operations with lazy async pagination.
 
         Covers operations that are still in progress as well as ones that
-        finished — both successes and failures are retained for 30 days after
-        completion.
+        finished — both successes and failures are retained until 60 days
+        after ``updated_on``, not 30 days after completion.
 
         Args:
             assistant_name: Name of the assistant whose operations to list.
@@ -1277,8 +1321,10 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 ``"Processing"``, ``"Completed"`` or ``"Failed"``
                 (case-sensitive).
             page_size: Maximum number of operations in this page, sent as the
-                ``limit`` query parameter. The API accepts 1-100 and defaults
-                to 50; a larger value is rejected with a 400.
+                ``limit`` query parameter. The API accepts 0-100 and defaults
+                to 50. Unlike the files listing, this path has no zero-check,
+                so ``0`` is accepted rather than rejected; only a value above
+                100 is refused, with 400 ``"Limit cannot exceed 100"``.
             pagination_token: Token from a previous response to fetch the next
                 page.
 
@@ -1354,12 +1400,18 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             messages: Conversation messages to use for context retrieval.
                 Mutually exclusive with *query*. Empty list is treated as not
                 provided. Dicts are converted to :class:`Message` objects.
+                Roles are case-sensitive ``"user"`` or ``"assistant"`` and
+                content must be non-blank — see :class:`Message`.
             filter: Metadata filter restricting which documents contribute
                 context. Omitted from request when ``None``.
-            top_k: Maximum number of context snippets to return. Omitted
-                from request when ``None``.
-            snippet_size: Maximum snippet size in tokens. Omitted from
-                request when ``None``.
+            top_k: Maximum number of context snippets to return. The
+                backend accepts 1-64; ``0`` and values above 64 are each
+                rejected with a 400 (the spec documents a default of 16).
+                Omitted from request when ``None``.
+            snippet_size: Maximum snippet size in tokens. The backend accepts
+                512-8192; anything outside that range is rejected with a 400
+                (the spec documents a default of 2048). Omitted from request
+                when ``None``.
             multimodal: Whether to include image-related context snippets.
                 Omitted from request when ``None``.
             include_binary_content: Whether image snippets include base64
@@ -1371,7 +1423,10 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
 
         Raises:
             :exc:`PineconeValueError`: If both or neither of *query* and
-                *messages* are provided (or if they are empty).
+                *messages* are provided (or if they are empty), or if *top_k*
+                or *snippet_size* is negative. Only the sign is checked
+                client-side, so ``top_k=0`` reaches the API and comes back a
+                400.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -1446,7 +1501,9 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             assistant_name (str): Name of the assistant to chat with.
             messages (list[Message | dict[str, str]]): Conversation messages.
                 Dicts are converted to :class:`Message` objects; role defaults
-                to ``"user"`` when not present.
+                to ``"user"`` when not present. Roles are case-sensitive
+                ``"user"`` or ``"assistant"`` and content must be non-blank —
+                see :class:`Message`. Neither is checked client-side.
             model (str): Large language model to use. Defaults to ``"gpt-4o"``.
                 The models the ``2026-07`` API documents for this endpoint are
                 ``"gpt-4o"``, ``"gpt-4.1"``, ``"gpt-5"``, ``"o4-mini"``,
@@ -1456,7 +1513,7 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 them to ``"claude-sonnet-4-5"``, so migrate to that name.
                 The value is not validated client-side: the backend is
                 authoritative and gains models between SDK releases, and it
-                rejects an unknown name with a 400 whose message lists the
+                rejects an unknown name with a 422 whose message lists the
                 values it accepts.
             stream (bool): If ``True``, return an :class:`AsyncChatStream`.
                 Defaults to ``False``.
@@ -1482,7 +1539,11 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
         Raises:
             :exc:`PineconeValueError`: If both ``stream=True`` and
                 ``json_response=True`` are specified.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response. An assistant
+                with no processed files answers 400 ``"No files found. If files
+                were uploaded, they may still be processing"``, and that check
+                runs *before* message and role validation — so on a brand-new
+                assistant it masks a malformed ``messages`` payload.
 
         Note:
             An SSE read timeout measures the gap between tokens. This endpoint
@@ -1650,7 +1711,9 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             assistant_name (str): Name of the assistant to chat with.
             messages (list[Message | dict[str, str]]): Conversation messages.
                 Dicts are converted to :class:`Message` objects; role defaults
-                to ``"user"`` when not present.
+                to ``"user"`` when not present. Roles are case-sensitive
+                ``"user"`` or ``"assistant"`` and content must be non-blank —
+                see :class:`Message`. Neither is checked client-side.
             model (str): Large language model to use. Defaults to ``"gpt-4o"``.
                 The models the ``2026-07`` API documents for this endpoint are
                 ``"gpt-4o"``, ``"gpt-4.1"``, ``"o4-mini"``,
@@ -1662,7 +1725,7 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 backend silently remaps them to ``"claude-sonnet-4-5"``, so
                 migrate to that name. The value is not validated client-side:
                 the backend is authoritative and gains models between SDK
-                releases, and it rejects an unknown name with a 400 whose
+                releases, and it rejects an unknown name with a 422 whose
                 message lists the values it accepts.
             stream (bool): If ``True``, return an
                 :class:`AsyncChatCompletionStream`. Defaults to ``False``.
@@ -1680,7 +1743,11 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :class:`AsyncChatCompletionStream` for streaming requests.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response. An assistant
+                with no processed files answers 400 ``"No files found. If files
+                were uploaded, they may still be processing"``, and that check
+                runs *before* message and role validation — so on a brand-new
+                assistant it masks a malformed ``messages`` payload.
 
         Note:
             An SSE read timeout measures the gap between tokens, and this
@@ -1836,7 +1903,23 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             results, and token usage statistics.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response. This plane
+                answers unusually in three ways: the endpoint is gated by plan,
+                so Free and Builder answer 400 ``"Endpoint not supported for
+                your plan. Upgrade to standard plan for access."``; a body the
+                evaluation forwarder cannot parse surfaces as a 500 rather than
+                a 4xx; and an unrecognised path returns a bare ``text/plain``
+                ``"Invalid path"`` with no JSON error envelope, which leaves
+                :attr:`ApiError.body` as ``None`` instead of a parsed error.
+
+        Note:
+            Evaluation requests always go to the US host
+            (``https://prod-1-data.ke.pinecone.io/assistant``), including for an
+            assistant created with ``region="eu"``, unless
+            ``PINECONE_PLUGIN_ASSISTANT_DATA_HOST`` overrides it. The 2026-07
+            evaluation spec declares an EU server alongside the US one; the SDK
+            does not currently select it. Tracked in
+            https://github.com/pinecone-io/python-sdk-internal/issues/263.
 
         Examples:
 

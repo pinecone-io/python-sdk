@@ -15,8 +15,15 @@ class Message(StructDictMixin, Struct, kw_only=True):
     """A message to send to an assistant.
 
     Attributes:
-        content: The text content of the message.
-        role: The role of the message author. Defaults to ``"user"``.
+        content: The text content of the message. Must not be blank — the
+            backend trims before checking, so ``""`` and a whitespace-only
+            string alike come back 400 ``"Message content cannot be empty"``.
+        role: The role of the message author. Defaults to ``"user"``. The
+            backend accepts only the exact strings ``"user"`` and
+            ``"assistant"``, compared case-sensitively: ``"User"`` is rejected
+            with 400 ``"Role 'User' is not valid"``, and ``""`` with 400
+            ``"Role cannot be empty"``. Neither field is validated
+            client-side.
     """
 
     content: str
