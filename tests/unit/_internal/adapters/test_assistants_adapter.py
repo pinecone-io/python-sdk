@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import msgspec
 import orjson
 import pytest
 
@@ -25,13 +26,33 @@ _VALID_PAYLOAD: dict[str, object] = {
 }
 
 
+class TestToAlignmentResultPositive:
+    def test_decodes_the_spec_response_shape(self) -> None:
+        result = AssistantsAdapter.to_alignment_result(orjson.dumps(_VALID_PAYLOAD))
+        assert result.scores.correctness == 0.9
+        assert result.scores.completeness == 0.8
+        assert result.scores.alignment == 0.85
+        assert [(f.fact, f.entailment, f.reasoning) for f in result.facts] == [
+            ("The sky is blue.", "entailed", "")
+        ]
+        assert result.usage.total_tokens == 15
+
+    def test_coerces_numeric_strings(self) -> None:
+        payload = {
+            **_VALID_PAYLOAD,
+            "metrics": {"correctness": "0.42", "completeness": 0.8, "alignment": 0.85},
+        }
+        result = AssistantsAdapter.to_alignment_result(orjson.dumps(payload))
+        assert result.scores.correctness == 0.42
+
+
 class TestToAlignmentResultNegative:
     def test_metrics_not_dict_raises_response_parsing_error(self) -> None:
         payload = {**_VALID_PAYLOAD, "metrics": [1, 2, 3]}
         data = orjson.dumps(payload)
         with pytest.raises(ResponseParsingError, match="Failed to parse") as exc_info:
             AssistantsAdapter.to_alignment_result(data)
-        assert isinstance(exc_info.value.cause, TypeError)
+        assert isinstance(exc_info.value.cause, msgspec.ValidationError)
         assert "metrics" in str(exc_info.value.cause)
 
     def test_reasoning_not_dict_raises_response_parsing_error(self) -> None:
@@ -39,7 +60,8 @@ class TestToAlignmentResultNegative:
         data = orjson.dumps(payload)
         with pytest.raises(ResponseParsingError, match="Failed to parse") as exc_info:
             AssistantsAdapter.to_alignment_result(data)
-        assert isinstance(exc_info.value.cause, TypeError)
+        assert isinstance(exc_info.value.cause, msgspec.ValidationError)
+        assert "reasoning" in str(exc_info.value.cause)
 
     def test_evaluated_facts_not_list_raises_response_parsing_error(self) -> None:
         payload = {
@@ -49,21 +71,24 @@ class TestToAlignmentResultNegative:
         data = orjson.dumps(payload)
         with pytest.raises(ResponseParsingError, match="Failed to parse") as exc_info:
             AssistantsAdapter.to_alignment_result(data)
-        assert isinstance(exc_info.value.cause, TypeError)
+        assert isinstance(exc_info.value.cause, msgspec.ValidationError)
+        assert "evaluated_facts" in str(exc_info.value.cause)
 
     def test_usage_not_dict_raises_response_parsing_error(self) -> None:
         payload = {**_VALID_PAYLOAD, "usage": 42}
         data = orjson.dumps(payload)
         with pytest.raises(ResponseParsingError, match="Failed to parse") as exc_info:
             AssistantsAdapter.to_alignment_result(data)
-        assert isinstance(exc_info.value.cause, TypeError)
+        assert isinstance(exc_info.value.cause, msgspec.ValidationError)
+        assert "usage" in str(exc_info.value.cause)
 
     def test_missing_key_raises_response_parsing_error(self) -> None:
         payload = {k: v for k, v in _VALID_PAYLOAD.items() if k != "metrics"}
         data = orjson.dumps(payload)
         with pytest.raises(ResponseParsingError, match="Failed to parse") as exc_info:
             AssistantsAdapter.to_alignment_result(data)
-        assert isinstance(exc_info.value.cause, KeyError)
+        assert isinstance(exc_info.value.cause, msgspec.ValidationError)
+        assert "metrics" in str(exc_info.value.cause)
 
     def test_invalid_numeric_string_raises_response_parsing_error(self) -> None:
         payload = {
@@ -77,4 +102,5 @@ class TestToAlignmentResultNegative:
         data = orjson.dumps(payload)
         with pytest.raises(ResponseParsingError, match="Failed to parse") as exc_info:
             AssistantsAdapter.to_alignment_result(data)
-        assert isinstance(exc_info.value.cause, ValueError)
+        assert isinstance(exc_info.value.cause, msgspec.ValidationError)
+        assert "correctness" in str(exc_info.value.cause)

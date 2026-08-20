@@ -115,7 +115,10 @@ def test_create_assistant_region_validation(assistants: Assistants) -> None:
     """Invalid region raises PineconeValueError before any HTTP call."""
     with pytest.raises(PineconeValueError, match="region") as exc_info:
         assistants.create(name="test-assistant", region="ap-southeast-1")
-    assert "ap-southeast-1" in str(exc_info.value)
+    message = str(exc_info.value)
+    assert "ap-southeast-1" in message
+    assert "'us'" in message
+    assert "'eu'" in message
 
 
 def test_create_assistant_region_case_sensitive(assistants: Assistants) -> None:
@@ -3679,3 +3682,44 @@ def test_chat_completion_stream_chunk_usage_absent() -> None:
     chunk = msgspec.convert(raw, ChatCompletionStreamChunk)
 
     assert chunk.usage is None
+
+
+# ---------------------------------------------------------------------------
+# 2026-07 error codes
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+def test_too_many_requests_surfaces_server_message() -> None:
+    """A 429 TOO_MANY_REQUESTS keeps the server's code and message."""
+    from pinecone._internal.config import RetryConfig
+    from pinecone.errors.exceptions import RateLimitError
+
+    config = PineconeConfig(
+        api_key="test-key", host=BASE_URL, retry_config=RetryConfig(max_retries=0)
+    )
+    client = Assistants(config=config)
+    respx.get(f"{BASE_URL}/assistant/assistants/my-assistant").mock(
+        return_value=httpx.Response(
+            429,
+            json={
+                "error": {
+                    "code": "TOO_MANY_REQUESTS",
+                    "message": "Too many get or list assistant requests, try again later",
+                },
+                "status": 429,
+            },
+        )
+    )
+
+    try:
+        with pytest.raises(RateLimitError) as exc_info:
+            client.describe(name="my-assistant")
+    finally:
+        client.close()
+
+    err = exc_info.value
+    assert err.status_code == 429
+    assert err.error_code == "TOO_MANY_REQUESTS"
+    assert err.message == "Too many get or list assistant requests, try again later"
+    assert "Too many get or list assistant requests" in str(err)

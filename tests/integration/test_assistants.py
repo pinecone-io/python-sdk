@@ -2240,8 +2240,8 @@ def test_pagination_next_token_populated(client: Pinecone) -> None:
         page = client.assistants.list_page(page_size=2)
         assert isinstance(page, ListAssistantsResponse)
 
-        # --- Raw HTTP inspection to verify wire-format key (v202604 endpoint) ---
-        raw_response = client.assistants._http_v202604.get("/assistants", params={"limit": 2})
+        # --- Raw HTTP inspection to verify wire-format key ---
+        raw_response = client.assistants._http.get("/assistants", params={"limit": 2})
         raw_body = _json.loads(raw_response.content)
 
         has_nested_pagination = "pagination" in raw_body and isinstance(

@@ -15,7 +15,6 @@ import orjson
 from pinecone._internal.adapters.assistants_adapter import AssistantsAdapter
 from pinecone._internal.constants import (
     ASSISTANT_API_VERSION,
-    ASSISTANT_API_VERSION_2026_04,
     ASSISTANT_EVALUATION_BASE_URL,
     DEFAULT_BASE_URL,
 )
@@ -95,7 +94,6 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             retry_config=config.retry_config,
         )
         self._http = _HTTPClient(cp_config, ASSISTANT_API_VERSION)
-        self._http_v202604 = _HTTPClient(cp_config, ASSISTANT_API_VERSION_2026_04)
         self._adapter = AssistantsAdapter()
         self._data_plane_clients: dict[str, HTTPClient] = {}
 
@@ -138,7 +136,6 @@ class Assistants(AssistantsLegacyNamespaceMixin):
     def close(self) -> None:
         """Close the underlying HTTP client and any cached data-plane clients."""
         self._http.close()
-        self._http_v202604.close()
         self._eval_http.close()
         for client in self._data_plane_clients.values():
             client.close()
@@ -179,7 +176,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         return self._data_plane_clients[assistant_name]
 
     def _list_files_http(self, assistant_name: str) -> HTTPClient:
-        """Return an HTTPClient for the assistant's data-plane host using v202604."""
+        """Return an uncached HTTPClient for the assistant's data-plane host."""
         from pinecone._internal.config import PineconeConfig as _PineconeConfig
         from pinecone._internal.http_client import HTTPClient as _HTTPClient
 
@@ -199,10 +196,10 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             connection_pool_maxsize=self._config.connection_pool_maxsize,
             retry_config=self._config.retry_config,
         )
-        return _HTTPClient(data_config, ASSISTANT_API_VERSION_2026_04)
+        return _HTTPClient(data_config, ASSISTANT_API_VERSION)
 
     def _upsert_http(self, assistant_name: str) -> HTTPClient:
-        """Return an HTTPClient targeting the assistant's data-plane host for 2026-04 upserts."""
+        """Return an HTTPClient targeting the assistant's data-plane host for upserts."""
         from pinecone._internal.config import PineconeConfig as _PineconeConfig
         from pinecone._internal.http_client import HTTPClient as _HTTPClient
 
@@ -222,7 +219,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             connection_pool_maxsize=self._config.connection_pool_maxsize,
             retry_config=self._config.retry_config,
         )
-        return _HTTPClient(data_config, ASSISTANT_API_VERSION_2026_04)
+        return _HTTPClient(data_config, ASSISTANT_API_VERSION)
 
     def _poll_operation_until_done(
         self,
@@ -880,7 +877,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             params["pagination_token"] = pagination_token
 
         logger.info("Listing assistants page")
-        response = self._http_v202604.get("/assistants", params=params)
+        response = self._http.get("/assistants", params=params)
         result = self._adapter.to_assistant_list(response.content)
         for item in result.assistants:
             self._attach_ref(item)

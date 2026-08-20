@@ -148,13 +148,14 @@ class ClaimRecorder:
             raise ConformanceError(f"{op_id} is a gRPC rpc; use assert_grpc_request")
         actual_method = str(request.method).upper()
         actual_path = request.url.path
+        expected_path = entry["base_path"] + entry["path"]
         if actual_method != entry["method"]:
             raise ConformanceError(
                 f"{op_id}: expected method {entry['method']}, request used {actual_method}"
             )
-        if not _path_template_regex(entry["path"]).match(actual_path):
+        if not _path_template_regex(expected_path).match(actual_path):
             raise ConformanceError(
-                f"{op_id}: path {actual_path!r} does not match spec template {entry['path']!r}"
+                f"{op_id}: path {actual_path!r} does not match spec template {expected_path!r}"
             )
         self._satisfied.add((op_id, "request"))
 

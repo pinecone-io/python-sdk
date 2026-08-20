@@ -115,22 +115,78 @@ def test_parse_oas_file_extracts_operations(tmp_path: Path) -> None:
         "widgets:list_widgets": {
             "kind": "http",
             "method": "GET",
+            "base_path": "",
             "path": "/widgets",
             "success_body": True,
         },
         "widgets:create_widget": {
             "kind": "http",
             "method": "POST",
+            "base_path": "",
             "path": "/widgets",
             "success_body": True,
         },
         "widgets:delete_widget": {
             "kind": "http",
             "method": "DELETE",
+            "base_path": "",
             "path": "/widgets/{widget_id}",
             "success_body": False,
         },
     }
+
+
+def test_parse_oas_file_records_the_server_base_path(tmp_path: Path) -> None:
+    oas = tmp_path / "widgets_2026-07.oas.yaml"
+    oas.write_text(
+        textwrap.dedent(
+            """
+            openapi: 3.0.3
+            servers:
+            - url: https://api.pinecone.io/widget
+            - url: https://eu.api.pinecone.io/widget
+            paths:
+              /widgets:
+                get:
+                  operationId: list_widgets
+                  responses:
+                    '200':
+                      description: ok
+            """
+        )
+    )
+    ops = cov.parse_oas_file(oas)
+    assert ops["widgets:list_widgets"]["base_path"] == "/widget"
+
+
+def test_parse_oas_file_rejects_servers_that_disagree_on_base_path(tmp_path: Path) -> None:
+    oas = tmp_path / "widgets_2026-07.oas.yaml"
+    oas.write_text(
+        textwrap.dedent(
+            """
+            openapi: 3.0.3
+            servers:
+            - url: https://api.pinecone.io/widget
+            - url: https://api.pinecone.io/gadget
+            paths:
+              /widgets:
+                get:
+                  operationId: list_widgets
+                  responses:
+                    '200':
+                      description: ok
+            """
+        )
+    )
+    with pytest.raises(cov.SpecError, match="disagree on a base path"):
+        cov.parse_oas_file(oas)
+
+
+def test_assert_request_requires_the_server_base_path() -> None:
+    recorder = ClaimRecorder(["assistant_control:list_assistants"])
+    with pytest.raises(ConformanceError, match="does not match spec template"):
+        recorder.assert_request(_request("GET", "/assistants"))
+    recorder.assert_request(_request("GET", "/assistant/assistants"))
 
 
 def test_parse_oas_file_requires_operation_ids(tmp_path: Path) -> None:

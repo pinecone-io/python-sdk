@@ -53,8 +53,12 @@ test ends; the `claim` fixture fails the test at teardown otherwise:
 1. **Method + path** — `claim.assert_request(request)` checks the *actual*
    request against the method and path template recorded in the manifest (from
    the OAS itself), so the test cannot assert a different endpoint than it
-   claims. For gRPC rpcs use `claim.assert_grpc_request(full_method)` with the
-   invoked full method name (e.g. `/VectorService/Upsert`).
+   claims. The expected path is the manifest's `base_path` (the path component
+   of the spec's `servers` URL — `/assistant` for the assistant surfaces, empty
+   for the rest) followed by the operation's path, so surfaces mounted under a
+   prefix are still compared whole rather than by suffix. For gRPC rpcs use
+   `claim.assert_grpc_request(full_method)` with the invoked full method name
+   (e.g. `/VectorService/Upsert`).
 2. **API version** — `claim.assert_api_version(request_or_headers_or_metadata)`
    requires `X-Pinecone-Api-Version: 2026-07` on the wire (gRPC: in call
    metadata). The expected value is hardcoded here on purpose: it must not be

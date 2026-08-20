@@ -47,6 +47,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
@@ -90,10 +91,30 @@ def declares_success_body(operation: dict[str, Any]) -> bool:
     return False
 
 
+def server_base_path(doc: dict[str, Any], name: str) -> str:
+    """The path component shared by every ``servers`` URL of a spec.
+
+    ``assistant_control`` and ``assistant_evaluation`` mount their operations
+    under ``/assistant``, so the path a request actually carries is this plus
+    the operation's path. Recorded in the manifest so ``assert_request`` keeps
+    comparing whole paths instead of suffixes.
+    """
+    servers = doc.get("servers") or []
+    bases = {
+        urlparse(server["url"]).path.rstrip("/")
+        for server in servers
+        if isinstance(server, dict) and isinstance(server.get("url"), str)
+    }
+    if len(bases) > 1:
+        raise SpecError(f"{name}: servers disagree on a base path: {sorted(bases)}")
+    return bases.pop() if bases else ""
+
+
 def parse_oas_file(path: Path) -> OperationMap:
     surface = path.name.removesuffix(f"_{API_VERSION}.oas.yaml")
     with path.open() as f:
         doc = yaml.safe_load(f)
+    base_path = server_base_path(doc, path.name)
     ops: OperationMap = {}
     for url_path, path_item in (doc.get("paths") or {}).items():
         if not isinstance(path_item, dict):
@@ -111,6 +132,7 @@ def parse_oas_file(path: Path) -> OperationMap:
             ops[op_id] = {
                 "kind": "http",
                 "method": method.upper(),
+                "base_path": base_path,
                 "path": url_path,
                 "success_body": declares_success_body(operation),
             }

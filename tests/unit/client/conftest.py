@@ -36,7 +36,6 @@ def mock_assistants() -> Assistants:
 
     # Stub the HTTP clients so no real requests go out.
     obj._http = MagicMock()  # type: ignore[attr-defined]
-    obj._http_v202604 = MagicMock()  # type: ignore[attr-defined]
 
     # Stub the adapter so it returns canned responses.
     mock_adapter = MagicMock()
