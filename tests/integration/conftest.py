@@ -65,7 +65,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Replace the global 5s timeout with a live-backend-sized one here (#306).
+    """Size the timeout for a live backend (#306) and reject asyncio marks (#313).
 
     ``timeout = 5`` is sized for unit tests, which mock every sleep away; a
     real round trip cannot honour it. Tests carrying their own marker are
@@ -73,13 +73,30 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
     Path-filtered because pytest hands a conftest hook the entire session's
     item list, not only the items collected beneath that conftest — an
-    unfiltered loop would hand ``tests/unit`` the integration default too.
+    unfiltered loop would hand ``tests/unit`` the integration default too, and
+    would reject ``tests/smoke``'s remaining asyncio marks as if they were ours.
     """
+    offenders = []
     for item in items:
         if _HERE not in item.path.parents:
             continue
         if item.get_closest_marker("timeout") is None:
             item.add_marker(pytest.mark.timeout(_DEFAULT_TIMEOUT_SECONDS))
+        if item.get_closest_marker("asyncio") is not None:
+            offenders.append(item.nodeid)
+
+    if offenders:
+        listing = "\n  ".join(offenders)
+        raise pytest.UsageError(
+            "pytest.mark.asyncio is not allowed in tests/integration (#313):\n  "
+            f"{listing}\n"
+            "pytest-asyncio closes the event loop before running async fixture "
+            "teardown, so the `await pc.close()` in the `async_client` fixture "
+            "below raises 'RuntimeError: Event loop is closed' and every test "
+            "sharing the fixture errors in teardown. Use pytest.mark.anyio, "
+            "which sequences fixture finalization inside the loop's lifetime. "
+            "See commit bd074083."
+        )
 
 
 _ENV_SOURCE = load_env(_HERE)

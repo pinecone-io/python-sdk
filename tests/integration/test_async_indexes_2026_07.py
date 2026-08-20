@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 
 from pinecone import AsyncPinecone
-from pinecone.errors import NotFoundError, PineconeError
+from pinecone.errors import ApiError, NotFoundError, PineconeError
 from pinecone.models.indexes.index import IndexModel
 
 pytestmark = [pytest.mark.integration]
@@ -106,7 +106,33 @@ async def test_create_without_name_assigns_one(async_client: AsyncPinecone) -> N
 async def test_bare_string_field_rejected_by_server(
     async_client: AsyncPinecone, index_name: str
 ) -> None:
-    with pytest.raises(PineconeError, match="search"):
+    """A string field is accepted only with ``full_text_search``; the two
+    unaccepted shapes are refused at different layers.
+
+    ``{"type": "string"}`` matches neither variant of the server's untagged
+    ``CreateStringSchemaField`` union — ``full_text_search`` is missing for the
+    text-search variant, ``filterable`` is a required bool on the metadata
+    variant — so it fails deserialization with 422 and never reaches schema
+    validation, which is where the documented "fields used for search" 400
+    lives. The two rejections are each other's positive control: a blanket
+    refusal of index creation would answer both with one identical status.
+    """
+    with pytest.raises(ApiError) as bare:
         await async_client.indexes.create(
             name=index_name, schema={"fields": {"title": {"type": "string"}}}, timeout=-1
         )
+    assert bare.value.status_code == 422
+
+    with pytest.raises(ApiError) as filter_only:
+        await async_client.indexes.create(
+            name=index_name,
+            schema={
+                "fields": {
+                    "embedding": {"type": "dense_vector", "dimension": 4, "metric": "cosine"},
+                    "title": {"type": "string", "filterable": True},
+                }
+            },
+            timeout=-1,
+        )
+    assert filter_only.value.status_code == 400
+    assert "only accepts fields used for search" in str(filter_only.value)

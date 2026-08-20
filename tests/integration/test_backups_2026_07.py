@@ -54,6 +54,16 @@ def _ready_backup(client: Pinecone, backup_id: str) -> BackupModel:
 
 
 def test_index_scoped_backup_lifecycle(client: Pinecone, index_name: str) -> None:
+    """``BackupModel.schema`` is ``None`` for a 2026-07 index, by design.
+
+    The wire field carries the source index's legacy ``metadata_config``, not
+    its 2026-07 field schema, and a schema-based index has no metadata_config —
+    metadata is indexed automatically at upsert. The server therefore answers
+    ``"schema": null`` even for a Ready backup of an index created with
+    ``schema=``. Asserting ``is None`` rather than tolerating either value
+    keeps this a real claim: if the backend ever starts populating it, this
+    line fires and someone re-reads the contract.
+    """
     client.indexes.create(name=index_name, schema=_DENSE_SCHEMA, timeout=300)
 
     created = client.indexes.create_backup(index_name, name=f"{index_name}-bk")
@@ -63,7 +73,7 @@ def test_index_scoped_backup_lifecycle(client: Pinecone, index_name: str) -> Non
     backup_id = created.backup_id
     try:
         ready = _ready_backup(client, backup_id)
-        assert ready.schema is not None
+        assert ready.schema is None
         assert ready.dense_dimension in (4, None)
         assert ready.source_index_deleted_at is None
 
