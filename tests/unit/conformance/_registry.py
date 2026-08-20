@@ -197,8 +197,11 @@ class ClaimRecorder:
         ``optional_absent`` names top-level optional fields to strip for the
         absent-field leg: the reduced payload must still decode, and the
         model must not invent values for the stripped keys. It must name at
-        least one field whenever the schema has any optional field, so the
-        absent-field contract cannot be skipped by omission.
+        least one field whenever the payload carries any optional field, so
+        the absent-field contract cannot be skipped by omission. A payload
+        that carries none — the spec declares only required properties, or
+        only ones this model treats as required — has already proved every
+        optional field tolerates absence just by decoding.
         """
         op_id = self._resolve(op)
         entry = self._ops[op_id]
@@ -212,10 +215,11 @@ class ClaimRecorder:
         optional_fields = {
             field.encode_name for field in msgspec.structs.fields(model_cls) if not field.required
         }
-        if optional_fields and not optional_absent:
+        payload_optional = optional_fields & set(payload)
+        if payload_optional and not optional_absent:
             raise ConformanceError(
-                f"{op_id}: {model_cls.__name__} has optional fields "
-                f"{sorted(optional_fields)}; optional_absent must exercise at least one"
+                f"{op_id}: the payload carries optional {model_cls.__name__} fields "
+                f"{sorted(payload_optional)}; optional_absent must exercise at least one"
             )
         unknown_fields = set(optional_absent) - optional_fields
         if unknown_fields:
@@ -251,13 +255,21 @@ class ClaimRecorder:
 
         self._satisfied.add((op_id, "roundtrip"))
 
-    def assert_no_response_body(self, returned: Any, *, op: str | None = None) -> None:
+    def assert_no_response_body(
+        self, returned: Any, *, client_side: Sequence[str] = (), op: str | None = None
+    ) -> None:
         """The empty-body leg of the schema contract, for 202/204-style operations.
 
         Satisfies the ``roundtrip`` category only for operations the spec gives
         no success response body. ``returned`` is the SDK call's return value and
         must be ``None``: the alternative — round-tripping a throwaway empty
         model — would let any operation dodge the schema category.
+
+        ``client_side`` is the escape hatch for the SDK methods that answer a
+        bodyless operation with a struct they build themselves — a caller-side
+        count, header-derived response metadata. It must name every field that
+        comes back populated; any other populated field could only have come
+        from a body the spec does not declare, so it fails.
         """
         op_id = self._resolve(op)
         entry = self._ops[op_id]
@@ -268,10 +280,30 @@ class ClaimRecorder:
                 f"{op_id}: the spec declares a success response body; use assert_roundtrip"
             )
         if returned is not None:
-            raise ConformanceError(
-                f"{op_id}: spec declares no success response body, but the SDK returned "
-                f"{returned!r} instead of None"
-            )
+            if not client_side:
+                raise ConformanceError(
+                    f"{op_id}: spec declares no success response body, but the SDK returned "
+                    f"{returned!r} instead of None"
+                )
+            if not isinstance(returned, msgspec.Struct):
+                raise ConformanceError(
+                    f"{op_id}: client_side only describes msgspec structs, not {type(returned)}"
+                )
+            names = {field.name for field in msgspec.structs.fields(type(returned))}
+            unknown = sorted(set(client_side) - names)
+            if unknown:
+                raise ConformanceError(
+                    f"{op_id}: client_side names fields {unknown} that "
+                    f"{type(returned).__name__} does not have"
+                )
+            populated = {name for name in names if getattr(returned, name) is not None}
+            unexpected = sorted(populated - set(client_side))
+            if unexpected:
+                raise ConformanceError(
+                    f"{op_id}: spec declares no success response body, but "
+                    f"{type(returned).__name__} came back with {unexpected} populated, which "
+                    "client_side does not account for"
+                )
         self._satisfied.add((op_id, "roundtrip"))
 
     def assert_satisfied(self) -> None:

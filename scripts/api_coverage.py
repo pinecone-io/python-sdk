@@ -76,7 +76,42 @@ class SpecError(RuntimeError):
     """A spec file could not be parsed into an unambiguous operation list."""
 
 
-def declares_success_body(operation: dict[str, Any]) -> bool:
+_SHAPE_KEYWORDS = ("properties", "items", "additionalProperties", "allOf", "oneOf", "anyOf", "enum")
+
+
+def _deref(schema: Any, doc: dict[str, Any], seen: frozenset[str] = frozenset()) -> Any:
+    while isinstance(schema, dict) and isinstance(schema.get("$ref"), str):
+        ref = schema["$ref"]
+        if not ref.startswith("#/") or ref in seen:
+            return schema
+        seen = seen | {ref}
+        target: Any = doc
+        for part in ref.removeprefix("#/").split("/"):
+            if not isinstance(target, dict) or part not in target:
+                return schema
+            target = target[part]
+        schema = target
+    return schema
+
+
+def _conveys_fields(schema: Any, doc: dict[str, Any]) -> bool:
+    """Whether *schema* describes any field a model could carry or lose.
+
+    A bare ``type: object`` with no ``properties`` — what db_data's
+    ``DeleteResponse`` and ``CancelImportResponse`` are — describes nothing, so
+    there is no round-trip to make. Counting it as a body would force a test to
+    invent a throwaway empty model, which is the inflation ``success_body``
+    exists to prevent.
+    """
+    schema = _deref(schema, doc)
+    if not isinstance(schema, dict):
+        return False
+    if any(schema.get(keyword) for keyword in _SHAPE_KEYWORDS):
+        return True
+    return schema.get("type") not in (None, "object")
+
+
+def declares_success_body(operation: dict[str, Any], doc: dict[str, Any]) -> bool:
     """Whether any 2xx response of *operation* declares a response body.
 
     Recorded in the manifest so ``ClaimRecorder`` can distinguish an operation
@@ -86,8 +121,9 @@ def declares_success_body(operation: dict[str, Any]) -> bool:
     for status, response in (operation.get("responses") or {}).items():
         if not str(status).startswith("2") or not isinstance(response, dict):
             continue
-        if response.get("content"):
-            return True
+        for media in (response.get("content") or {}).values():
+            if isinstance(media, dict) and _conveys_fields(media.get("schema"), doc):
+                return True
     return False
 
 
@@ -134,7 +170,7 @@ def parse_oas_file(path: Path) -> OperationMap:
                 "method": method.upper(),
                 "base_path": base_path,
                 "path": url_path,
-                "success_body": declares_success_body(operation),
+                "success_body": declares_success_body(operation, doc),
             }
     if not ops:
         raise SpecError(f"{path.name}: no operations found")

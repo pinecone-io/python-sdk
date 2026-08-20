@@ -88,6 +88,11 @@ def test_parse_oas_file_extracts_operations(tmp_path: Path) -> None:
                         application/json:
                           schema:
                             type: object
+                            properties:
+                              data:
+                                type: array
+                                items:
+                                  type: string
                 post:
                   operationId: create_widget
                   responses:
@@ -95,7 +100,7 @@ def test_parse_oas_file_extracts_operations(tmp_path: Path) -> None:
                       content:
                         application/json:
                           schema:
-                            type: object
+                            $ref: '#/components/schemas/Widget'
               /widgets/{widget_id}:
                 delete:
                   operationId: delete_widget
@@ -107,6 +112,28 @@ def test_parse_oas_file_extracts_operations(tmp_path: Path) -> None:
                         application/json:
                           schema:
                             type: object
+                            properties:
+                              error:
+                                type: string
+              /widgets/{widget_id}/retire:
+                post:
+                  operationId: retire_widget
+                  responses:
+                    '200':
+                      content:
+                        application/json:
+                          schema:
+                            $ref: '#/components/schemas/RetireWidgetResponse'
+            components:
+              schemas:
+                Widget:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                RetireWidgetResponse:
+                  description: The response for the retire operation.
+                  type: object
             """
         )
     )
@@ -131,6 +158,13 @@ def test_parse_oas_file_extracts_operations(tmp_path: Path) -> None:
             "method": "DELETE",
             "base_path": "",
             "path": "/widgets/{widget_id}",
+            "success_body": False,
+        },
+        "widgets:retire_widget": {
+            "kind": "http",
+            "method": "POST",
+            "base_path": "",
+            "path": "/widgets/{widget_id}/retire",
             "success_body": False,
         },
     }
@@ -372,7 +406,9 @@ def test_recorder_roundtrip_detects_lost_fields() -> None:
 def test_recorder_roundtrip_requires_optional_absent_leg() -> None:
     recorder = ClaimRecorder(["db_control:list_indexes"])
     with pytest.raises(ConformanceError, match="optional_absent must exercise at least one"):
-        recorder.assert_roundtrip(SampleModel, {"name": "idx", "dimension": 2}, optional_absent=[])
+        recorder.assert_roundtrip(
+            SampleModel, {"name": "idx", "dimension": 2, "pagination": "tok"}, optional_absent=[]
+        )
     with pytest.raises(ConformanceError, match="non-optional or unknown"):
         recorder.assert_roundtrip(
             SampleModel, {"name": "idx", "dimension": 2}, optional_absent=["name"]
@@ -386,6 +422,11 @@ def test_recorder_roundtrip_requires_optional_absent_leg() -> None:
 def test_recorder_roundtrip_allows_required_only_models() -> None:
     recorder = ClaimRecorder(["db_control:list_indexes"])
     recorder.assert_roundtrip(RequiredOnlyModel, {"name": "idx"}, optional_absent=[])
+
+
+def test_recorder_roundtrip_allows_a_payload_with_no_optional_field() -> None:
+    recorder = ClaimRecorder(["db_control:list_indexes"])
+    recorder.assert_roundtrip(SampleModel, {"name": "idx", "dimension": 2}, optional_absent=[])
 
 
 def test_recorder_unsatisfied_claims_fail() -> None:

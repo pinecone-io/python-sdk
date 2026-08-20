@@ -67,9 +67,12 @@ test ends; the `claim` fixture fails the test at teardown otherwise:
 3. **Schema round-trip** — `claim.assert_roundtrip(ModelCls, payload,
    optional_absent=[...])` decodes the payload into the msgspec model,
    re-encodes it, and requires nothing to be lost. `optional_absent` must name
-   at least one optional field whenever the schema has any: the reduced
+   at least one optional field whenever the payload carries any: the reduced
    payload (those fields stripped) must still decode, and the model must not
-   invent values for them.
+   invent values for them. A payload that carries no optional field at all —
+   the spec declares only required properties, or only ones this model treats
+   as required — needs no `optional_absent`, because decoding it has already
+   proved every optional field tolerates absence.
 
    Operations whose spec declares no success response body — 202/204 deletes
    and the like — satisfy this category with
@@ -78,7 +81,15 @@ test ends; the `claim` fixture fails the test at teardown otherwise:
    the test's choice: the manifest records `success_body` per operation from
    the OAS, and each method refuses the operations the other one owns. So an
    operation with a real response schema cannot dodge the round-trip by
-   claiming to have no body.
+   claiming to have no body. A 2xx whose schema is a bare `type: object` with
+   no properties counts as no body: there is no field to lose, and modelling
+   one would be the inflation `success_body` exists to prevent.
+
+   A few SDK methods answer a bodyless operation with a struct they build
+   themselves — `upsert_records` returns a caller-side record count. Those pass
+   `client_side=[...]`, naming every field that comes back populated; any other
+   populated field could only have come from a body the spec does not declare,
+   and fails.
 
 Additional rules:
 
