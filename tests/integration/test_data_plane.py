@@ -13,7 +13,7 @@ import pytest
 import respx
 
 from pinecone import GrpcIndex, Index, Pinecone
-from pinecone.errors import ApiError, ConflictError, PineconeValueError
+from pinecone.errors import ApiError, ConflictError, NotFoundError, PineconeValueError
 from pinecone.errors.exceptions import ValidationError
 from pinecone.grpc.future import PineconeFuture
 from pinecone.models.indexes.specs import ServerlessSpec
@@ -900,6 +900,10 @@ def test_namespace_crud_lifecycle_rest(client: Pinecone, shared_index_dim2: str)
     - unified-ns-0004: Can delete a namespace by name.
     - unified-ns-0005: Can list all namespaces with optional prefix filtering.
     - unified-ns-0008: Namespace list response omits pagination token on the final page.
+
+    ``size_bytes`` is asserted as a non-negative int rather than an exact value:
+    the backend documents it as approximate (see #198), so a fresh namespace may
+    report 0 whether or not size tracking has caught up.
     """
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     ns_name = f"{ns}-alpha"
@@ -910,12 +914,22 @@ def test_namespace_crud_lifecycle_rest(client: Pinecone, shared_index_dim2: str)
     assert isinstance(created, NamespaceDescription)
     assert created.name == ns_name
     assert created.record_count == 0  # unified-ns-0002
+    assert isinstance(created.size_bytes, int) and created.size_bytes >= 0
 
     # 2. Describe namespace — returns same details
     described = index.describe_namespace(name=ns_name)
     assert isinstance(described, NamespaceDescription)
     assert described.name == ns_name
     assert isinstance(described.record_count, int)
+    assert isinstance(described.size_bytes, int) and described.size_bytes >= 0
+
+    # 2b. Creating the reserved default namespace is refused client-side
+    with pytest.raises(ValidationError, match="reserved and cannot be created"):
+        index.create_namespace(name="__default__")
+
+    # 2c. Describing a namespace that does not exist is a 404
+    with pytest.raises(NotFoundError):
+        index.describe_namespace(name=f"{ns}-absent")
 
     # 3. Namespace appears in list_namespaces_paginated with prefix match
     list_resp = index.list_namespaces_paginated(prefix=f"{ns}-", limit=100)
@@ -1657,22 +1671,32 @@ def test_create_namespace_error_paths_rest(client: Pinecone, shared_index_dim2: 
     """create_namespace() rejects invalid names client-side and raises ConflictError for duplicates.
 
     Verifies claims:
-    - unified-ns-0010: Namespace creation is rejected when name is empty or whitespace-only.
+    - unified-ns-0010: Namespace creation is rejected when the name breaks the
+      ASCII / no-NUL / 1-512 rule, or names the reserved ``__default__``.
     - unified-ns-0012: Creating a namespace that already exists raises a ConflictError (HTTP 409).
 
     No integration test covered these error paths; only unit tests (test-ns-0009) exercised them.
+
+    A whitespace-only name is deliberately absent: the rule is ASCII/no-NUL/1-512,
+    not "non-blank", so ``"   "`` is a legal name the server accepts. Asserting a
+    rejection here would both fail and leave a stray namespace on the shared index.
     """
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     ns_name = f"{ns}-alpha"
     index = client.index(name=shared_index_dim2)
 
-    # unified-ns-0010: empty name → client-side PineconeValueError (no API call made)
+    # unified-ns-0010: each of these is refused client-side, so no API call is made
     with pytest.raises(PineconeValueError):
         index.create_namespace(name="")
 
-    # unified-ns-0010: whitespace-only name → client-side PineconeValueError
     with pytest.raises(PineconeValueError):
-        index.create_namespace(name="   ")
+        index.create_namespace(name="naïve")
+
+    with pytest.raises(PineconeValueError):
+        index.create_namespace(name="a" * 513)
+
+    with pytest.raises(PineconeValueError):
+        index.create_namespace(name="__default__")
 
     # Precondition for ns-0012: create the namespace successfully
     created = index.create_namespace(name=ns_name)

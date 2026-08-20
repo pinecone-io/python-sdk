@@ -7,6 +7,7 @@ import os
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import quote
 
 if TYPE_CHECKING:
     import pandas as pd  # type: ignore[import-untyped]
@@ -32,7 +33,15 @@ from pinecone._internal.documents_helpers import (
     _validate_documents,
 )
 from pinecone._internal.keyword_only import keyword_only_methods
-from pinecone._internal.validation import require_in_range, require_positive
+from pinecone._internal.validation import (
+    require_creatable_namespace_name,
+    require_in_range,
+    require_positive,
+    require_valid_namespace_limit,
+    require_valid_namespace_name,
+    require_valid_namespace_prefix,
+    require_valid_namespace_schema,
+)
 from pinecone._internal.vector_factory import VectorFactory
 from pinecone.errors.exceptions import PineconeValueError, ValidationError
 from pinecone.models.batch import BatchResult
@@ -1689,17 +1698,26 @@ class Index:
         """Create a named namespace in the index.
 
         Args:
-            name (str): Name for the new namespace (must be non-empty).
-            schema (dict[str, Any] | None): Optional schema configuration
-                with metadata field indexing settings.
+            name (str): Name for the new namespace. Must be ASCII, must not
+                contain the NUL character, and must be 1-512 characters long.
+                ``__default__`` is reserved and cannot be created: it names the
+                namespace requests address when they omit a namespace, so it
+                always exists.
+            schema (dict[str, Any] | None): Optional metadata-index configuration,
+                ``{"fields": {<field>: {"filterable": True}}}``. By default every
+                metadata field is indexed; when *schema* is given, only the listed
+                fields are. ``filterable`` is required on each field and must be
+                ``True`` — to leave a field unindexed, omit it from ``fields``.
 
         Returns:
-            :class:`NamespaceDescription` with the namespace name and record count.
+            :class:`NamespaceDescription` with the namespace name, record count,
+            schema, indexed fields, and ``size_bytes``.
 
         Raises:
-            :exc:`PineconeValueError`: If the name is not a string or is empty/whitespace.
-            :exc:`ApiError`: If the API returns an error response (e.g. 409 conflict
-                when namespace already exists).
+            :exc:`ValidationError`: If *name* violates the rules above, or *schema*
+                is malformed. Raised before any HTTP request is made.
+            :exc:`ConflictError`: 409 — a namespace of that name already exists.
+            :exc:`ApiError`: If the API returns any other error response.
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1709,20 +1727,18 @@ class Index:
             .. code-block:: python
 
                 ns = idx.create_namespace(name="movies-en")
-                print(ns.name, ns.record_count)
+                print(ns.name, ns.record_count, ns.size_bytes)
 
                 ns = idx.create_namespace(
                     name="movies-en",
                     schema={"fields": {"genre": {"filterable": True}}},
                 )
         """
-        if not isinstance(name, str):
-            raise ValidationError("namespace name must be a string")
-        if not name or not name.strip():
-            raise ValidationError("namespace name must be a non-empty string")
+        require_creatable_namespace_name("name", name)
 
         body: dict[str, Any] = {"name": name}
         if schema is not None:
+            require_valid_namespace_schema("schema", schema)
             body["schema"] = schema
 
         logger.info("Creating namespace %r", name)
@@ -1737,16 +1753,31 @@ class Index:
     ) -> NamespaceDescription:
         """Describe a namespace by name.
 
+        This operation is rate limited per index, independently of the other
+        namespace operations. Prefer :meth:`list_namespaces` when describing more
+        than one namespace: it returns the same information for every namespace
+        in a single request and is not subject to that limit.
+
         Args:
-            name (str): Name of the namespace to describe.
+            name (str): Name of the namespace to describe. Must be ASCII, must not
+                contain the NUL character, and must be 1-512 characters long. Pass
+                ``__default__`` to describe the namespace that requests address
+                when they omit a namespace.
 
         Returns:
             :class:`NamespaceDescription` with the namespace name, record count,
-            and schema information.
+            schema, indexed fields, and ``size_bytes``. ``size_bytes`` is
+            approximate: data written before size tracking reads as 0, and
+            recently deleted data may still be counted; compaction converges the
+            value.
 
         Raises:
-            :exc:`PineconeValueError`: If the name is not a string or is empty/whitespace.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ValidationError`: If *name* violates the rules above. Raised
+                before any HTTP request is made.
+            :exc:`NotFoundError`: 404 — no namespace of that name exists on the index.
+            :exc:`RateLimitError`: 429 — this operation's per-index limit was
+                exceeded. Use :meth:`list_namespaces` to describe many namespaces.
+            :exc:`ApiError`: If the API returns any other error response.
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1755,7 +1786,9 @@ class Index:
             .. code-block:: python
 
                 ns = idx.describe_namespace(name="movies-en")
-                print(ns.name, ns.record_count)
+                print(ns.name, ns.record_count, ns.size_bytes)
+
+                default_ns = idx.describe_namespace(name="__default__")
         """
         legacy_namespace: str | None = kwargs.pop("namespace", None)
         if kwargs:
@@ -1765,13 +1798,10 @@ class Index:
         if name is not None and legacy_namespace is not None:
             raise ValidationError("Provide either name= or namespace=, not both")
         effective: str = name if name is not None else (legacy_namespace or "")
-        if not isinstance(effective, str):
-            raise ValidationError("namespace name must be a string")
-        if not effective or not effective.strip():
-            raise ValidationError("namespace name must be a non-empty string")
+        require_valid_namespace_name("name", effective)
 
         logger.info("Describing namespace %r", effective)
-        response = self._http.get(f"/namespaces/{effective}")
+        response = self._http.get(f"/namespaces/{quote(effective, safe='')}")
         return self._adapter.to_namespace_description(response.content)
 
     def delete_namespace(
@@ -1783,15 +1813,20 @@ class Index:
     ) -> None:
         """Delete a namespace by name, removing all its vectors.
 
+        Deleting a namespace is irreversible; all data in it is permanently deleted.
+
         Args:
-            name (str): Name of the namespace to delete.
+            name (str): Name of the namespace to delete. Must be ASCII, must not
+                contain the NUL character, and must be 1-512 characters long.
 
         Returns:
             None — a successful delete returns no payload.
 
         Raises:
-            :exc:`PineconeValueError`: If the name is not a string or is empty/whitespace.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ValidationError`: If *name* violates the rules above. Raised
+                before any HTTP request is made.
+            :exc:`NotFoundError`: 404 — no namespace of that name exists on the index.
+            :exc:`ApiError`: If the API returns any other error response.
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1809,13 +1844,10 @@ class Index:
         if name is not None and legacy_namespace is not None:
             raise ValidationError("Provide either name= or namespace=, not both")
         effective: str = name if name is not None else (legacy_namespace or "")
-        if not isinstance(effective, str):
-            raise ValidationError("namespace name must be a string")
-        if not effective or not effective.strip():
-            raise ValidationError("namespace name must be a non-empty string")
+        require_valid_namespace_name("name", effective)
 
         logger.info("Deleting namespace %r", effective)
-        self._http.delete(f"/namespaces/{effective}", timeout=timeout)
+        self._http.delete(f"/namespaces/{quote(effective, safe='')}", timeout=timeout)
 
     def list_namespaces_paginated(
         self,
@@ -1827,15 +1859,20 @@ class Index:
         """Fetch a single page of namespace descriptions.
 
         Args:
-            prefix (str | None): Return only namespaces whose names start with this prefix.
-            limit (int | None): Maximum number of namespaces to return in this page.
+            prefix (str | None): Return only namespaces whose names start with this
+                prefix. Must be ASCII, must not contain the NUL character, and must
+                be at most 512 characters. The empty prefix matches every namespace.
+            limit (int | None): Maximum number of namespaces to return in this page,
+                1-100. Defaults to 100 server-side.
             pagination_token (str | None): Token from a previous response to fetch the next page.
 
         Returns:
             :class:`ListNamespacesResponse` with namespace descriptions, pagination info,
-            and total count.
+            and total count. Each description carries ``size_bytes``.
 
         Raises:
+            :exc:`ValidationError`: If *prefix* or *limit* violates the rules above.
+                Raised before any HTTP request is made.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -1844,12 +1881,14 @@ class Index:
 
                 response = idx.list_namespaces_paginated(prefix="prod-", limit=10)
                 for ns in response.namespaces:
-                    print(ns.name, ns.record_count)
+                    print(ns.name, ns.record_count, ns.size_bytes)
         """
         params: dict[str, Any] = {}
         if prefix is not None:
+            require_valid_namespace_prefix("prefix", prefix)
             params["prefix"] = prefix
         if limit is not None:
+            require_valid_namespace_limit("limit", limit)
             params["limit"] = limit
         if pagination_token is not None:
             params["paginationToken"] = pagination_token
@@ -1870,19 +1909,31 @@ class Index:
         automatically follows pagination tokens until all pages have been
         retrieved.
 
+        Because it describes every namespace in one request per page, this is the
+        operation to reach for over repeated :meth:`describe_namespace` calls,
+        which are rate limited per index.
+
         Args:
-            prefix (str | None): Return only namespaces whose names start with this prefix.
-            limit (int | None): Maximum number of namespaces to return per page.
+            prefix (str | None): Return only namespaces whose names start with this
+                prefix. Must be ASCII, must not contain the NUL character, and must
+                be at most 512 characters. The empty prefix matches every namespace.
+            limit (int | None): Maximum number of namespaces to return per page, 1-100.
 
         Yields:
-            :class:`ListNamespacesResponse` for each page of results.
+            :class:`ListNamespacesResponse` for each page of results. Each
+            :class:`NamespaceDescription` carries ``size_bytes``.
+
+        Raises:
+            :exc:`ValidationError`: If *prefix* or *limit* violates the rules above.
+                Raised on first iteration, before any HTTP request is made.
+            :exc:`ApiError`: If the API returns an error response.
 
         Examples:
             .. code-block:: python
 
                 for page in idx.list_namespaces(prefix="prod-"):
                     for ns in page.namespaces:
-                        print(ns.name, ns.record_count)
+                        print(ns.name, ns.record_count, ns.size_bytes)
         """
         pagination_token: str | None = None
         while True:

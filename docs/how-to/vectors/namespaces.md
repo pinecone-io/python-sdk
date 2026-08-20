@@ -76,7 +76,14 @@ for page in index.list_namespaces():
         print(ns.name, ns.record_count)
 ```
 
-Each {class}`~pinecone.models.NamespaceDescription` has `name` and `record_count` fields.
+Each {class}`~pinecone.models.NamespaceDescription` carries `name`, `record_count`,
+`size_bytes`, and — when the namespace restricts which metadata fields are indexed —
+`schema` and `indexed_fields`.
+
+`size_bytes` is approximate: data written before size tracking reads as `0`, and recently
+deleted data may still be counted; compaction converges the value. `0` is also what the
+field reads as against a server older than 2026-07, so treat it as "no size reported"
+rather than "the namespace is empty".
 
 Filter by prefix to list a subset of namespaces:
 
@@ -128,7 +135,20 @@ index.delete_namespace(name="catalog-staging")
 ns = index.describe_namespace(name="catalog-us")
 print(ns.name)
 print(ns.record_count)
+print(ns.size_bytes)
 ```
+
+Pass `__default__` to describe the namespace that requests address when they omit one:
+
+```python
+ns = index.describe_namespace(name="__default__")
+```
+
+This operation is rate limited per index, independently of the other namespace
+operations. To describe more than one namespace, use `list_namespaces()` instead — it
+returns the same information for every namespace in a single request and is not subject
+to that limit. Fanning out `describe_namespace` calls will raise
+{exc}`~pinecone.errors.RateLimitError`.
 
 
 ## Create a namespace
@@ -144,6 +164,17 @@ ns = index.create_namespace(
 )
 print(ns.name, ns.record_count)
 ```
+
+Every field listed in `schema["fields"]` must set `filterable: True`; `filterable: False`
+is not supported. To leave a field unindexed, omit it from `fields` entirely.
+
+### Name rules
+
+Namespace names must be ASCII, must not contain the NUL character, and must be 1-512
+characters long. `__default__` is reserved — it names the namespace requests address when
+they omit a namespace, so it always exists and `create_namespace` rejects it. Names that
+break these rules raise {exc}`~pinecone.errors.ValidationError` before any request is
+sent, so the offending value is reported back to you rather than to the server.
 
 
 ## See also

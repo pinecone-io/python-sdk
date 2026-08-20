@@ -83,10 +83,23 @@ class TestCreateNamespace:
         with pytest.raises(ValidationError, match="non-empty string"):
             idx.create_namespace(name="")
 
-    def test_create_namespace_whitespace_name(self) -> None:
+    @respx.mock
+    def test_create_namespace_whitespace_name_is_sent(self) -> None:
+        """A whitespace-only name is legal: the rule is ASCII/no-NUL/1-512, not "non-blank".
+
+        ``db_data_2026-07.oas.yaml:2039`` (``^[\\x01-\\x7F]+$``) and
+        ``pc-validation/src/data_plane/mod.rs:66-82`` both accept it, so the SDK
+        must not refuse a name the server would take.
+        """
+        route = respx.post(NS_URL).mock(
+            return_value=httpx.Response(200, json={"name": "  ", "record_count": 0}),
+        )
         idx = _make_index()
-        with pytest.raises(ValidationError, match="non-empty string"):
-            idx.create_namespace(name="  ")
+        assert idx.create_namespace(name="  ").name == "  "
+
+        import orjson
+
+        assert orjson.loads(route.calls.last.request.content)["name"] == "  "
 
     def test_create_namespace_non_string_name(self) -> None:
         idx = _make_index()
