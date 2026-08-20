@@ -125,6 +125,8 @@ class Organizations:
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *organization_id* is empty.
+            :exc:`~pinecone.errors.exceptions.FailedPreconditionError`: If the organization
+                does not meet the preconditions for deletion (412). The message names them.
             :exc:`ApiError`: If the API returns an error response (e.g. 4xx if org has projects).
 
         Examples:

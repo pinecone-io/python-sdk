@@ -13,6 +13,8 @@ PineconeError (base)
 │   ├── ConflictError           # 409
 │   ├── UnauthorizedError       # 401
 │   ├── ForbiddenError          # 403
+│   ├── PaymentRequiredError    # 402
+│   ├── FailedPreconditionError # 412
 │   ├── RateLimitError          # 429
 │   └── ServiceError            # 5xx
 ├── PineconeConnectionError     # Network-level failure (DNS, refused, transport)
@@ -32,6 +34,8 @@ from pinecone.errors import (
     ConflictError,
     UnauthorizedError,
     ForbiddenError,
+    PaymentRequiredError,
+    FailedPreconditionError,
     RateLimitError,
     ServiceError,
     PineconeConnectionError,
@@ -50,6 +54,10 @@ except UnauthorizedError:
     print("Invalid or missing API key")
 except ForbiddenError:
     print("API key lacks permission for this operation")
+except PaymentRequiredError as exc:
+    print(f"Billing blocks this operation: {exc.message}")
+except FailedPreconditionError as exc:
+    print(f"Resource is not in a state that permits this: {exc.message}")
 except RateLimitError:
     print("Rate limited; backing off before retrying")
 except ServiceError as exc:

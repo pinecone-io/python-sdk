@@ -90,6 +90,8 @@ class Projects:
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *name* is empty.
+            :exc:`~pinecone.errors.exceptions.PaymentRequiredError`: If the organization's
+                billing state does not permit creating a project (402).
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -448,6 +450,8 @@ class Projects:
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *project_id* is empty.
+            :exc:`~pinecone.errors.exceptions.FailedPreconditionError`: If the project still
+                owns resources that block deletion (412). The message names them.
             :exc:`ApiError`: If the API returns an error (project still has indexes or collections).
 
         Examples:

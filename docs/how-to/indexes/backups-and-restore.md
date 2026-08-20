@@ -224,7 +224,7 @@ Deleting a backup does not affect the source index or any indexes restored from 
 The call returns `None` — the API answers `202 Accepted` with no body.
 
 A backup with a restore job still in flight cannot be deleted; the API returns
-`412` and the SDK raises an `ApiError` naming the pending job ids. Wait for the
+`412` and the SDK raises a `FailedPreconditionError` naming the pending job ids. Wait for the
 restore to finish, then delete.
 
 

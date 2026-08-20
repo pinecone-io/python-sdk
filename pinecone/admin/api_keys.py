@@ -108,6 +108,8 @@ class ApiKeys:
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`:
                 If *project_id* or *name* is empty, or if *name* exceeds 80 characters.
+            :exc:`~pinecone.errors.exceptions.PaymentRequiredError`: If the organization's
+                billing state does not permit creating an API key (402).
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:

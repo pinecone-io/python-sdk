@@ -12,7 +12,7 @@ from pinecone.db_control.enums.clouds import AwsRegion as AwsRegion, AzureRegion
 from pinecone.db_control.models.collection_description import CollectionDescription as CollectionDescription
 from pinecone.db_data.dataclasses.search_query import SearchQuery as SearchQuery
 from pinecone.db_data.dataclasses.search_rerank import SearchRerank as SearchRerank
-from pinecone.errors.exceptions import ApiError as ApiError, ConflictError as ConflictError, ForbiddenError as ForbiddenError, ForbiddenException as ForbiddenException, IndexInitFailedError as IndexInitFailedError, ListConversionException as ListConversionException, NotFoundError as NotFoundError, NotFoundException as NotFoundException, PineconeApiAttributeError as PineconeApiAttributeError, PineconeApiException as PineconeApiException, PineconeApiKeyError as PineconeApiKeyError, PineconeApiTypeError as PineconeApiTypeError, PineconeApiValueError as PineconeApiValueError, PineconeConfigurationError as PineconeConfigurationError, PineconeConnectionError as PineconeConnectionError, PineconeError as PineconeError, PineconeException as PineconeException, PineconeProtocolError as PineconeProtocolError, PineconeTimeoutError as PineconeTimeoutError, PineconeTypeError as PineconeTypeError, PineconeValueError as PineconeValueError, RateLimitError as RateLimitError, RateLimitException as RateLimitException, ResponseParsingError as ResponseParsingError, ServiceError as ServiceError, ServiceException as ServiceException, UnauthorizedError as UnauthorizedError, UnauthorizedException as UnauthorizedException
+from pinecone.errors.exceptions import ApiError as ApiError, ConflictError as ConflictError, FailedPreconditionError as FailedPreconditionError, ForbiddenError as ForbiddenError, ForbiddenException as ForbiddenException, IndexInitFailedError as IndexInitFailedError, ListConversionException as ListConversionException, NotFoundError as NotFoundError, NotFoundException as NotFoundException, PaymentRequiredError as PaymentRequiredError, PineconeApiAttributeError as PineconeApiAttributeError, PineconeApiException as PineconeApiException, PineconeApiKeyError as PineconeApiKeyError, PineconeApiTypeError as PineconeApiTypeError, PineconeApiValueError as PineconeApiValueError, PineconeConfigurationError as PineconeConfigurationError, PineconeConnectionError as PineconeConnectionError, PineconeError as PineconeError, PineconeException as PineconeException, PineconeProtocolError as PineconeProtocolError, PineconeTimeoutError as PineconeTimeoutError, PineconeTypeError as PineconeTypeError, PineconeValueError as PineconeValueError, RateLimitError as RateLimitError, RateLimitException as RateLimitException, ResponseParsingError as ResponseParsingError, ServiceError as ServiceError, ServiceException as ServiceException, UnauthorizedError as UnauthorizedError, UnauthorizedException as UnauthorizedException
 from pinecone.grpc import GrpcIndex as GrpcIndex
 from pinecone.grpc.future import PineconeFuture as PineconeFuture
 from pinecone.index import Index as Index
@@ -127,6 +127,7 @@ __all__ = [
     "EmbedConfig",
     "EmbedModel",
     "EmbeddingsList",
+    "FailedPreconditionError",
     "FetchByMetadataResponse",
     "FetchDocumentsRequest",
     "FetchDocumentsResponse",
@@ -177,6 +178,7 @@ __all__ = [
     "OrganizationModel",
     "Page",
     "Paginator",
+    "PaymentRequiredError",
     "Pinecone",
     "PineconeApiAttributeError",
     "PineconeApiException",

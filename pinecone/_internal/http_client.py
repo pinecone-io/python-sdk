@@ -24,8 +24,10 @@ from pinecone._internal.user_agent import build_user_agent
 from pinecone.errors.exceptions import (
     ApiError,
     ConflictError,
+    FailedPreconditionError,
     ForbiddenError,
     NotFoundError,
+    PaymentRequiredError,
     PineconeConnectionError,
     PineconeTimeoutError,
     PineconeTypeError,
@@ -508,8 +510,28 @@ def _raise_for_status(response: httpx.Response) -> None:
             error_code=error_code,
             request_id=request_id,
         )
+    if status == 402:
+        raise PaymentRequiredError(
+            message=message,
+            status_code=status,
+            body=body,
+            reason=reason,
+            headers=headers,
+            error_code=error_code,
+            request_id=request_id,
+        )
     if status == 404:
         raise NotFoundError(
+            message=message,
+            status_code=status,
+            body=body,
+            reason=reason,
+            headers=headers,
+            error_code=error_code,
+            request_id=request_id,
+        )
+    if status == 412:
+        raise FailedPreconditionError(
             message=message,
             status_code=status,
             body=body,

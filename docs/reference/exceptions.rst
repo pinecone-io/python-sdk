@@ -25,6 +25,8 @@ Class Hierarchy
        ├── NotFoundError (404)
        ├── ForbiddenError (403)
        ├── UnauthorizedError (401)
+       ├── PaymentRequiredError (402)
+       ├── FailedPreconditionError (412)
        └── ServiceError (5xx)
 
 Base & Configuration Errors
@@ -81,6 +83,14 @@ API Errors
    :show-inheritance:
 
 .. autoexception:: pinecone.errors.exceptions.ForbiddenError
+   :members:
+   :show-inheritance:
+
+.. autoexception:: pinecone.errors.exceptions.PaymentRequiredError
+   :members:
+   :show-inheritance:
+
+.. autoexception:: pinecone.errors.exceptions.FailedPreconditionError
    :members:
    :show-inheritance:
 

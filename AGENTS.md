@@ -259,6 +259,8 @@ PineconeError
 │   ├── NotFoundError     # 404
 │   ├── UnauthorizedError # 401
 │   ├── ForbiddenError    # 403
+│   ├── PaymentRequiredError      # 402
+│   ├── FailedPreconditionError   # 412
 │   ├── ConflictError     # 409
 │   └── ServiceError      # 5xx
 ├── PineconeValueError    # Invalid argument (also a ValueError)
