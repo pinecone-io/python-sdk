@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     import pandas as pd  # type: ignore[import-untyped]
 
+from pinecone._internal.adapters.documents_adapter import DocumentsAdapter
 from pinecone._internal.adapters.imports_adapter import ImportsAdapter
 from pinecone._internal.adapters.vectors_adapter import VectorsAdapter, extract_response_info
 from pinecone._internal.batch import batch_execute
@@ -23,10 +24,26 @@ from pinecone._internal.data_plane_helpers import (
     _vector_to_dict,
 )
 from pinecone._internal.dataframe import _resolve_on_error, extract_records
+from pinecone._internal.documents_helpers import (
+    _build_delete_documents_body,
+    _build_fetch_documents_body,
+    _build_search_documents_body,
+    _encode_document_namespace,
+    _validate_documents,
+)
 from pinecone._internal.keyword_only import keyword_only_methods
 from pinecone._internal.validation import require_in_range, require_positive
 from pinecone._internal.vector_factory import VectorFactory
 from pinecone.errors.exceptions import PineconeValueError, ValidationError
+from pinecone.models.batch import BatchResult
+from pinecone.models.documents.document import DocumentRecord
+from pinecone.models.documents.responses import (
+    DeleteDocumentsResponse,
+    FetchDocumentsResponse,
+    SearchDocumentsResponse,
+    UpsertDocumentsResponse,
+)
+from pinecone.models.documents.score_by import DocumentScoringMethod
 from pinecone.models.imports.list import ImportList
 from pinecone.models.imports.model import ImportModel, StartImportResponse
 from pinecone.models.namespaces.models import ListNamespacesResponse, NamespaceDescription
@@ -1264,6 +1281,404 @@ class Index:
             query=query,
             timeout=timeout,
         )
+
+    def upsert_documents(
+        self,
+        *,
+        namespace: str,
+        documents: Sequence[Mapping[str, Any] | DocumentRecord],
+        timeout: float | None = None,
+    ) -> UpsertDocumentsResponse:
+        """Upsert documents into a namespace.
+
+        Each document must include an ``_id`` field (a unique, non-empty
+        ASCII string of at most 512 characters) along with fields defined in
+        the index schema or arbitrary metadata fields. If a document with the
+        same ``_id`` already exists in the namespace, it is overwritten.
+
+        The server accepts the request with ``202 Accepted`` and applies the
+        upsert asynchronously — documents may not be immediately visible to
+        :meth:`search_documents` or :meth:`fetch_documents`.
+
+        Args:
+            namespace (str): Target namespace (required, non-empty).
+            documents: The documents to upsert (1-1000 per request). Each
+                element is a dict with an ``_id`` key or a
+                :class:`~pinecone.models.documents.document.DocumentRecord`.
+                For larger lists, use :meth:`batch_upsert_documents`.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
+
+        Returns:
+            :class:`UpsertDocumentsResponse` with the count of documents
+            accepted for upsert.
+
+        Raises:
+            :exc:`PineconeValueError`: If ``namespace`` is empty, ``documents``
+                is empty or over 1000 entries, or any document has a missing,
+                empty, non-string, non-ASCII, over-512-character, or duplicate
+                ``_id`` — the message names the offending document's position.
+            :exc:`ApiError`: If the API returns an error response; the server's
+                error text is surfaced intact.
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
+
+        Examples:
+            .. code-block:: python
+
+                response = idx.upsert_documents(
+                    namespace="articles-en",
+                    documents=[
+                        {"_id": "article-101", "title": "Intro to vectors"},
+                        {"_id": "article-102", "title": "Advanced retrieval"},
+                    ],
+                )
+                print(response.upserted_count)
+
+        .. seealso::
+           - :meth:`batch_upsert_documents` — for upserting large document
+             lists in parallel batches.
+           - :meth:`upsert` — for indexes where you provide your own vectors.
+        """
+        segment = _encode_document_namespace(namespace)
+        normalized = _validate_documents(documents)
+        logger.info("Upserting %d documents into namespace %r", len(normalized), namespace)
+        response = self._http.post(
+            f"/namespaces/{segment}/documents/upsert",
+            timeout=timeout,
+            json={"documents": normalized},
+        )
+        return DocumentsAdapter.to_upsert_response(response)
+
+    def batch_upsert_documents(
+        self,
+        *,
+        namespace: str,
+        documents: Sequence[Mapping[str, Any] | DocumentRecord],
+        batch_size: int = 50,
+        max_concurrency: int = 4,
+        show_progress: bool = True,
+        timeout: float | None = None,
+    ) -> BatchResult:
+        """Upsert a large list of documents in parallel batches.
+
+        Splits *documents* into chunks of *batch_size* and submits them
+        concurrently via a thread pool. Per-batch HTTP failures are captured
+        in the returned :class:`~pinecone.models.batch.BatchResult` rather
+        than raised, so one failed batch does not abort the rest; retry only
+        the failures by passing ``result.failed_items`` back in.
+
+        Args:
+            namespace (str): Target namespace (required, non-empty).
+            documents: Documents to upsert. Each element is a dict with an
+                ``_id`` key or a :class:`~pinecone.models.documents.document.DocumentRecord`;
+                IDs must be unique across the whole list.
+            batch_size (int): Maximum documents per request (1-1000, default 50).
+            max_concurrency (int): Thread pool size for concurrent requests
+                (1-64, default 4).
+            show_progress (bool): Display a progress bar when ``tqdm`` is
+                installed. Defaults to ``True``.
+            timeout (float | None): Per-request timeout in seconds applied to
+                each batch's request — not to the whole call.
+
+        Returns:
+            :class:`~pinecone.models.batch.BatchResult` with aggregated
+            success and failure counts; per-batch errors are in
+            ``result.errors`` and the affected documents in
+            ``result.failed_items``.
+
+        Raises:
+            :exc:`PineconeValueError`: If ``namespace`` is empty, ``documents``
+                is empty or contains an invalid or duplicate ``_id``,
+                ``batch_size`` is outside [1, 1000], or ``max_concurrency`` is
+                outside [1, 64].
+
+        Examples:
+            .. code-block:: python
+
+                documents = [
+                    {"_id": f"article-{i}", "title": f"Article {i}"}
+                    for i in range(5000)
+                ]
+                result = idx.batch_upsert_documents(
+                    namespace="articles-en",
+                    documents=documents,
+                    batch_size=100,
+                    max_concurrency=8,
+                )
+                print(result.successful_item_count, result.failed_item_count)
+
+        .. seealso::
+           - :meth:`upsert_documents` — for a single-request upsert of up to
+             1000 documents.
+        """
+        require_in_range("batch_size", batch_size, 1, 1000)
+        require_in_range("max_concurrency", max_concurrency, 1, 64)
+        segment = _encode_document_namespace(namespace)
+        normalized = _validate_documents(documents, max_documents=None)
+
+        def _operation(chunk: list[dict[str, Any]]) -> UpsertDocumentsResponse:
+            response = self._http.post(
+                f"/namespaces/{segment}/documents/upsert",
+                timeout=timeout,
+                json={"documents": chunk},
+            )
+            return DocumentsAdapter.to_upsert_response(response)
+
+        return batch_execute(
+            items=normalized,
+            operation=_operation,
+            batch_size=batch_size,
+            max_concurrency=max_concurrency,
+            show_progress=show_progress,
+            desc="Upserting documents",
+            executor=self._get_batch_executor(max_concurrency),
+        )
+
+    def search_documents(
+        self,
+        *,
+        namespace: str,
+        score_by: Sequence[DocumentScoringMethod | Mapping[str, Any]],
+        top_k: int,
+        include_fields: Sequence[str] | None = None,
+        filter: Mapping[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> SearchDocumentsResponse:
+        """Search documents in a namespace using one or more scoring methods.
+
+        Returns the ``top_k`` most similar documents ranked by the given
+        scoring methods (dense vector, sparse vector, BM25 text, or Lucene
+        query string similarity).
+
+        Args:
+            namespace (str): Namespace to search (required, non-empty).
+            score_by: Scoring methods to rank documents by (1-100 clauses).
+                Items are typed variants
+                (:class:`~pinecone.models.documents.score_by.TextQuery`,
+                :class:`~pinecone.models.documents.score_by.QueryStringQuery`,
+                :class:`~pinecone.models.documents.score_by.DenseVectorQuery`,
+                :class:`~pinecone.models.documents.score_by.SparseVectorQuery`)
+                or plain dicts with a ``type`` key. ``text`` and
+                ``query_string`` clauses may be combined; a ``dense_vector``
+                or ``sparse_vector`` clause must appear alone.
+            top_k (int): Number of top-ranked documents to return (1-10000).
+            include_fields: Document fields to include in the results.
+                ``None`` (default) returns all fields; ``[]`` returns only
+                ``_id`` and score.
+            filter: Metadata filter expression restricting the documents
+                searched, or ``None``.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
+
+        Returns:
+            :class:`SearchDocumentsResponse` with ``matches`` (ordered from
+            most to least similar), ``namespace``, and ``usage``.
+
+        Raises:
+            :exc:`PineconeValueError`: If ``namespace`` is empty, ``score_by``
+                is empty, over 100 clauses, or combines a vector clause with
+                any other clause, or ``top_k`` is outside [1, 10000].
+            :exc:`ApiError`: If the API returns an error response; the server's
+                error text is surfaced intact.
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
+
+        Examples:
+            .. code-block:: python
+
+                from pinecone import TextQuery
+
+                response = idx.search_documents(
+                    namespace="articles-en",
+                    top_k=5,
+                    score_by=[TextQuery(query="machine learning", fields=["content"])],
+                    include_fields=["title", "category"],
+                    filter={"category": {"$eq": "tech"}},
+                )
+                for doc in response.matches:
+                    print(doc._id, doc._score)
+
+        .. seealso::
+           - :meth:`search` — record search for integrated-inference indexes.
+           - :meth:`query` — nearest-neighbor search over vectors you provide.
+        """
+        segment = _encode_document_namespace(namespace)
+        body = _build_search_documents_body(
+            score_by=score_by,
+            top_k=top_k,
+            include_fields=include_fields,
+            filter=filter,
+        )
+        logger.info("Searching documents in namespace %r with top_k=%d", namespace, top_k)
+        response = self._http.post(
+            f"/namespaces/{segment}/documents/search",
+            timeout=timeout,
+            json=body,
+        )
+        return DocumentsAdapter.to_search_response(response)
+
+    def fetch_documents(
+        self,
+        *,
+        namespace: str,
+        ids: Sequence[str] | None = None,
+        filter: Mapping[str, Any] | None = None,
+        include_fields: Sequence[str] | None = None,
+        pagination_token: str | None = None,
+        timeout: float | None = None,
+    ) -> FetchDocumentsResponse:
+        """Fetch documents from a namespace by ID or by metadata filter.
+
+        Exactly one of ``ids`` or ``filter`` must be provided. A filtered
+        fetch returns matching documents a page at a time — a page holds up
+        to 10000 documents and the page size is fixed — with
+        ``response.pagination`` carrying the token for the next page.
+
+        Args:
+            namespace (str): Namespace to fetch from (required, non-empty).
+            ids: Document IDs to fetch (1-1000). IDs that do not exist are
+                omitted from the result rather than raising. Mutually
+                exclusive with ``filter``.
+            filter: Non-empty metadata filter expression selecting the
+                documents to fetch. Mutually exclusive with ``ids``.
+            include_fields: Document fields to include in the response.
+                ``None`` (default) returns all fields.
+            pagination_token: Token from a previous filtered fetch response
+                to retrieve the next page. Only valid together with
+                ``filter``.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
+
+        Returns:
+            :class:`FetchDocumentsResponse` with ``documents`` (a map of
+            document ID to document), ``namespace``, ``usage``, and — for
+            filtered fetches with more results — ``pagination``.
+
+        Raises:
+            :exc:`PineconeValueError`: If ``namespace`` is empty, both or
+                neither of ``ids`` and ``filter`` are provided, ``filter`` is
+                an empty dict, ``ids`` exceeds 1000 entries, or
+                ``pagination_token`` is passed without ``filter``.
+            :exc:`ApiError`: If the API returns an error response; the server's
+                error text is surfaced intact.
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
+
+        Examples:
+            .. code-block:: python
+
+                # Fetch by IDs
+                response = idx.fetch_documents(
+                    namespace="articles-en",
+                    ids=["article-101", "article-102"],
+                )
+                for doc_id, doc in response.documents.items():
+                    print(doc_id, doc.title)
+
+                # Fetch by metadata filter, following pagination
+                response = idx.fetch_documents(
+                    namespace="articles-en",
+                    filter={"category": {"$eq": "tech"}},
+                )
+                while response.pagination is not None:
+                    response = idx.fetch_documents(
+                        namespace="articles-en",
+                        filter={"category": {"$eq": "tech"}},
+                        pagination_token=response.pagination.next,
+                    )
+        """
+        segment = _encode_document_namespace(namespace)
+        body = _build_fetch_documents_body(
+            ids=ids,
+            filter=filter,
+            include_fields=include_fields,
+            pagination_token=pagination_token,
+        )
+        logger.info("Fetching documents from namespace %r", namespace)
+        response = self._http.post(
+            f"/namespaces/{segment}/documents/fetch",
+            timeout=timeout,
+            json=body,
+        )
+        return DocumentsAdapter.to_fetch_response(response)
+
+    def delete_documents(
+        self,
+        *,
+        namespace: str,
+        ids: Sequence[str] | None = None,
+        filter: Mapping[str, Any] | None = None,
+        delete_all: bool = False,
+        timeout: float | None = None,
+    ) -> DeleteDocumentsResponse:
+        """Delete documents from a namespace by ID, filter, or delete-all flag.
+
+        Exactly one of ``ids``, ``filter``, or ``delete_all`` must be
+        provided. Deleting IDs that do not exist does not raise an error.
+
+        The server accepts the request with ``202 Accepted`` and applies the
+        delete asynchronously — for a filtered delete,
+        ``response.matched_records`` is the point-in-time count of matching
+        documents when the delete was accepted, not a guarantee of the number
+        ultimately deleted.
+
+        Args:
+            namespace (str): Namespace to delete from (required, non-empty).
+            ids: Document IDs to delete (1-1000). Mutually exclusive with
+                ``filter`` and ``delete_all``.
+            filter: Non-empty metadata filter expression selecting the
+                documents to delete. Text-match operators (``$match_phrase``,
+                ``$match_all``, ``$match_any``) are not supported here.
+                Mutually exclusive with ``ids`` and ``delete_all``.
+            delete_all (bool): If ``True``, delete all documents in the
+                namespace. Mutually exclusive with ``ids`` and ``filter``.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
+
+        Returns:
+            :class:`DeleteDocumentsResponse` — ``matched_records`` is
+            populated only for filtered deletes (``None`` for by-ID and
+            delete-all paths, and when the count could not be read in time).
+
+        Raises:
+            :exc:`PineconeValueError`: If ``namespace`` is empty, zero or more
+                than one of ``ids``/``filter``/``delete_all`` is provided,
+                ``filter`` is an empty dict, or ``ids`` exceeds 1000 entries.
+            :exc:`ApiError`: If the API returns an error response; the server's
+                error text is surfaced intact.
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
+
+        Examples:
+            .. code-block:: python
+
+                # Delete by IDs
+                idx.delete_documents(namespace="articles-en", ids=["article-101"])
+
+                # Delete by metadata filter
+                response = idx.delete_documents(
+                    namespace="articles-en",
+                    filter={"category": {"$eq": "obsolete"}},
+                )
+                print(response.matched_records)
+
+                # Delete every document in the namespace
+                idx.delete_documents(namespace="articles-old", delete_all=True)
+        """
+        segment = _encode_document_namespace(namespace)
+        body = _build_delete_documents_body(ids=ids, filter=filter, delete_all=delete_all)
+        logger.info("Deleting documents from namespace %r", namespace)
+        response = self._http.post(
+            f"/namespaces/{segment}/documents/delete",
+            timeout=timeout,
+            json=body,
+        )
+        return DocumentsAdapter.to_delete_response(response)
 
     def create_namespace(
         self,
