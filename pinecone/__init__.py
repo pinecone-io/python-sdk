@@ -78,6 +78,7 @@ if TYPE_CHECKING:
         ForbiddenError,
         ForbiddenException,
         IndexInitFailedError,
+        IndexTerminatedError,
         ListConversionException,
         NotFoundError,
         NotFoundException,
@@ -125,6 +126,7 @@ if TYPE_CHECKING:
         ServiceAccountModel,
         ServiceAccountWithSecret,
     )
+    from pinecone.models.admin.token import TokenResponse
     from pinecone.models.admin.user import UserList, UserModel
     from pinecone.models.assistant.chat import (
         ChatCompletionMessage,
@@ -400,6 +402,7 @@ __all__ = [
     "IndexSchemaField",
     "IndexStatus",
     "IndexTags",
+    "IndexTerminatedError",
     "IntegerField",
     "IntegratedSpec",
     "InviteList",
@@ -510,6 +513,7 @@ __all__ = [
     "StringField",
     "StringListField",
     "TextQuery",
+    "TokenResponse",
     "UnauthorizedError",
     "UnauthorizedException",
     "UpdateBackupScheduleRequest",
@@ -646,6 +650,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "IndexSchemaField": ("pinecone.models.indexes.schema", "IndexSchemaField"),
     "IndexStatus": ("pinecone.models.indexes.index", "IndexStatus"),
     "IndexTags": ("pinecone.models.indexes.index", "IndexTags"),
+    "IndexTerminatedError": ("pinecone.errors.exceptions", "IndexTerminatedError"),
     "IntegerField": ("pinecone.models.indexes.schema", "IntegerField"),
     "IntegratedSpec": ("pinecone.models.indexes.specs", "IntegratedSpec"),
     "InviteList": ("pinecone.models.admin.invite", "InviteList"),
@@ -774,6 +779,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "StringField": ("pinecone.models.indexes.schema", "StringField"),
     "StringListField": ("pinecone.models.indexes.schema", "StringListField"),
     "TextQuery": ("pinecone.models.documents.score_by", "TextQuery"),
+    "TokenResponse": ("pinecone.models.admin.token", "TokenResponse"),
     "UnauthorizedError": ("pinecone.errors.exceptions", "UnauthorizedError"),
     "UnauthorizedException": ("pinecone.errors.exceptions", "UnauthorizedException"),
     "UpdateBackupScheduleRequest": (

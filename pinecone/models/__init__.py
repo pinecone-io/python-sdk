@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         ServiceAccountModel,
         ServiceAccountWithSecret,
     )
+    from pinecone.models.admin.token import TokenResponse  # noqa: F401
     from pinecone.models.admin.user import UserList, UserModel  # noqa: F401
     from pinecone.models.assistant.chat import (  # noqa: F401
         ChatCitation,
@@ -269,6 +270,7 @@ _LAZY_IMPORTS: dict[str, str] = {
     "ServiceAccountList": "pinecone.models.admin.service_account",
     "ServiceAccountModel": "pinecone.models.admin.service_account",
     "ServiceAccountWithSecret": "pinecone.models.admin.service_account",
+    "TokenResponse": "pinecone.models.admin.token",
     "UserList": "pinecone.models.admin.user",
     "UserModel": "pinecone.models.admin.user",
     # Assistant — chat

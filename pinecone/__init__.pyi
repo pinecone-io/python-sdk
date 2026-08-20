@@ -12,7 +12,7 @@ from pinecone.db_control.enums.clouds import AwsRegion as AwsRegion, AzureRegion
 from pinecone.db_control.models.collection_description import CollectionDescription as CollectionDescription
 from pinecone.db_data.dataclasses.search_query import SearchQuery as SearchQuery
 from pinecone.db_data.dataclasses.search_rerank import SearchRerank as SearchRerank
-from pinecone.errors.exceptions import ApiError as ApiError, ConflictError as ConflictError, FailedPreconditionError as FailedPreconditionError, ForbiddenError as ForbiddenError, ForbiddenException as ForbiddenException, IndexInitFailedError as IndexInitFailedError, ListConversionException as ListConversionException, NotFoundError as NotFoundError, NotFoundException as NotFoundException, PaymentRequiredError as PaymentRequiredError, PineconeApiAttributeError as PineconeApiAttributeError, PineconeApiException as PineconeApiException, PineconeApiKeyError as PineconeApiKeyError, PineconeApiTypeError as PineconeApiTypeError, PineconeApiValueError as PineconeApiValueError, PineconeConfigurationError as PineconeConfigurationError, PineconeConnectionError as PineconeConnectionError, PineconeError as PineconeError, PineconeException as PineconeException, PineconeProtocolError as PineconeProtocolError, PineconeTimeoutError as PineconeTimeoutError, PineconeTypeError as PineconeTypeError, PineconeValueError as PineconeValueError, RateLimitError as RateLimitError, RateLimitException as RateLimitException, ResponseParsingError as ResponseParsingError, ServiceError as ServiceError, ServiceException as ServiceException, UnauthorizedError as UnauthorizedError, UnauthorizedException as UnauthorizedException
+from pinecone.errors.exceptions import ApiError as ApiError, ConflictError as ConflictError, FailedPreconditionError as FailedPreconditionError, ForbiddenError as ForbiddenError, ForbiddenException as ForbiddenException, IndexInitFailedError as IndexInitFailedError, IndexTerminatedError as IndexTerminatedError, ListConversionException as ListConversionException, NotFoundError as NotFoundError, NotFoundException as NotFoundException, PaymentRequiredError as PaymentRequiredError, PineconeApiAttributeError as PineconeApiAttributeError, PineconeApiException as PineconeApiException, PineconeApiKeyError as PineconeApiKeyError, PineconeApiTypeError as PineconeApiTypeError, PineconeApiValueError as PineconeApiValueError, PineconeConfigurationError as PineconeConfigurationError, PineconeConnectionError as PineconeConnectionError, PineconeError as PineconeError, PineconeException as PineconeException, PineconeProtocolError as PineconeProtocolError, PineconeTimeoutError as PineconeTimeoutError, PineconeTypeError as PineconeTypeError, PineconeValueError as PineconeValueError, RateLimitError as RateLimitError, RateLimitException as RateLimitException, ResponseParsingError as ResponseParsingError, ServiceError as ServiceError, ServiceException as ServiceException, UnauthorizedError as UnauthorizedError, UnauthorizedException as UnauthorizedException
 from pinecone.grpc import GrpcIndex as GrpcIndex
 from pinecone.grpc.future import PineconeFuture as PineconeFuture
 from pinecone.index import Index as Index
@@ -24,6 +24,7 @@ from pinecone.models.admin.pagination import PaginationResponse as PaginationRes
 from pinecone.models.admin.project import ProjectList as ProjectList, ProjectModel as ProjectModel
 from pinecone.models.admin.role_binding import PrincipalType as PrincipalType, ResourceType as ResourceType, RoleBindingInput as RoleBindingInput, RoleBindingList as RoleBindingList, RoleBindingModel as RoleBindingModel, RoleName as RoleName
 from pinecone.models.admin.service_account import ServiceAccountList as ServiceAccountList, ServiceAccountModel as ServiceAccountModel, ServiceAccountWithSecret as ServiceAccountWithSecret
+from pinecone.models.admin.token import TokenResponse as TokenResponse
 from pinecone.models.admin.user import UserList as UserList, UserModel as UserModel
 from pinecone.models.assistant.chat import ChatCompletionMessage as ChatCompletionMessage, ChatCompletionResponse as ChatCompletionResponse, ChatResponse as ChatResponse
 from pinecone.models.assistant.context import ContextResponse as ContextResponse
@@ -161,6 +162,7 @@ __all__ = [
     "IndexSchemaField",
     "IndexStatus",
     "IndexTags",
+    "IndexTerminatedError",
     "IntegerField",
     "IntegratedSpec",
     "InviteList",
@@ -271,6 +273,7 @@ __all__ = [
     "StringField",
     "StringListField",
     "TextQuery",
+    "TokenResponse",
     "UnauthorizedError",
     "UnauthorizedException",
     "UpdateBackupScheduleRequest",

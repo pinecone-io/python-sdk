@@ -20,6 +20,7 @@ Class Hierarchy
    ├── PineconeTimeoutError  (also TimeoutError)
    ├── ResponseParsingError
    ├── IndexInitFailedError
+   ├── IndexTerminatedError
    └── ApiError
        ├── ConflictError (409)
        ├── NotFoundError (404)
@@ -49,6 +50,10 @@ Base & Configuration Errors
    :show-inheritance:
 
 .. autoexception:: pinecone.errors.exceptions.IndexInitFailedError
+   :members:
+   :show-inheritance:
+
+.. autoexception:: pinecone.errors.exceptions.IndexTerminatedError
    :members:
    :show-inheritance:
 

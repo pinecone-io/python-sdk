@@ -1,9 +1,15 @@
-"""Top-level export wiring for the 2026-07 graduation (#140).
+"""Top-level export wiring for the 2026-07 graduation (#140, #317).
 
 Asserts genuine reachability — each name is imported through the public
 entry point and identity-checked against its defining module — for the
 exports deferred to the #140 choke point: the #96 admin RBAC models, the
-#101 assistant operation models, and the #106 SchemaBuilder.
+#101 assistant operation models, and the #106 SchemaBuilder, plus #192's
+``TokenResponse``, wired by #317.
+
+Reading ``_LAZY_IMPORTS`` is not enough: #96's wiring was deferred to
+#107-#110 and silently dropped, and nothing caught it until these tests
+imported the names for real. The parity tests below are deliberately
+exhaustive with no carve-outs, so the next dropped hand-off fails here.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ ADMIN_EXPORTS = {
     "ServiceAccountList": "pinecone.models.admin.service_account",
     "ServiceAccountModel": "pinecone.models.admin.service_account",
     "ServiceAccountWithSecret": "pinecone.models.admin.service_account",
+    "TokenResponse": "pinecone.models.admin.token",
     "UserList": "pinecone.models.admin.user",
     "UserModel": "pinecone.models.admin.user",
 }
@@ -65,10 +72,71 @@ def test_models_admin_export_parity() -> None:
     import pinecone.models.admin
 
     missing = [n for n in pinecone.models.admin.__all__ if n not in pinecone.models.__all__]
-    assert missing == ["TokenResponse"], (
+    assert missing == [], (
         f"pinecone.models.admin exports missing from pinecone.models: {missing}. "
-        "TokenResponse (#192) is the one known, deliberate gap; anything else is a "
-        "wiring regression."
+        "This test has no allowed-gap carve-out: wire the name up rather than "
+        "exempting it (see #317)."
+    )
+
+
+def test_models_admin_top_level_parity() -> None:
+    """Every public name in pinecone.models.admin is also reachable from pinecone."""
+    from importlib import import_module
+
+    import pinecone
+    import pinecone.models.admin
+
+    missing = [n for n in pinecone.models.admin.__all__ if n not in pinecone.__all__]
+    assert missing == [], (
+        f"pinecone.models.admin exports missing from the pinecone top level: {missing}."
+    )
+
+    for name in pinecone.models.admin.__all__:
+        module_path, source_attr = pinecone._LAZY_IMPORTS[name]
+        assert getattr(pinecone, name) is getattr(import_module(module_path), source_attr)
+
+
+# ``ValidationError`` is a deliberately un-promoted deprecated alias for
+# ``PineconeValueError``: touching it emits a DeprecationWarning, so it is
+# reachable via ``pinecone.errors`` but intentionally absent from the top
+# level. Every other name in ``pinecone.errors.__all__`` must be importable
+# from ``pinecone`` — ``IndexTerminatedError`` was not, even though public
+# ``Raises:`` docstrings tell callers to catch it (#317).
+ERRORS_TOP_LEVEL_EXEMPT = frozenset({"ValidationError"})
+
+
+def test_errors_top_level_parity() -> None:
+    """Every public name in pinecone.errors is reachable from pinecone."""
+    from importlib import import_module
+
+    import pinecone
+    import pinecone.errors
+
+    expected = [n for n in pinecone.errors.__all__ if n not in ERRORS_TOP_LEVEL_EXEMPT]
+    missing = [n for n in expected if n not in pinecone.__all__]
+    assert missing == [], (
+        f"pinecone.errors exports missing from the pinecone top level: {missing}. "
+        "Add them to _LAZY_IMPORTS and __all__ rather than widening "
+        "ERRORS_TOP_LEVEL_EXEMPT, which is only for deprecated aliases."
+    )
+
+    for name in expected:
+        module_path, source_attr = pinecone._LAZY_IMPORTS[name]
+        assert getattr(pinecone, name) is getattr(import_module(module_path), source_attr)
+
+
+def test_errors_top_level_exemptions_are_still_real() -> None:
+    """The exemption list must not outlive the names it excuses."""
+    import pinecone
+    import pinecone.errors
+
+    stale = sorted(ERRORS_TOP_LEVEL_EXEMPT - set(pinecone.errors.__all__))
+    assert stale == [], f"ERRORS_TOP_LEVEL_EXEMPT names no longer exported: {stale}"
+
+    promoted = sorted(ERRORS_TOP_LEVEL_EXEMPT & set(pinecone.__all__))
+    assert promoted == [], (
+        f"ERRORS_TOP_LEVEL_EXEMPT names now exported at top level: {promoted}. "
+        "Drop them from the exemption set."
     )
 
 
