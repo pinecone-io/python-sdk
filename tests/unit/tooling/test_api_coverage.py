@@ -259,25 +259,88 @@ def test_parse_proto_file_extracts_rpcs(tmp_path: Path) -> None:
         textwrap.dedent(
             """
             syntax = "proto3";
+            message UpsertRequest {
+              repeated Vector vectors = 1 [
+                (google.api.field_behavior) = REQUIRED
+              ];
+            }
+            message UpsertResponse {
+              uint32 upserted_count = 1;
+            }
+            message DeleteRequest {
+              repeated string ids = 1;
+            }
+            message DeleteResponse {}
             service VectorService {
               rpc Upsert(UpsertRequest) returns (UpsertResponse) {}
-              rpc Query(QueryRequest) returns (QueryResponse) {}
+              rpc Delete(DeleteRequest) returns (DeleteResponse) {}
             }
             """
         )
     )
     ops = cov.parse_proto_file(proto)
     assert ops == {
-        "db_data_grpc:Upsert": {"kind": "grpc", "service": "VectorService", "rpc": "Upsert"},
-        "db_data_grpc:Query": {"kind": "grpc", "service": "VectorService", "rpc": "Query"},
+        "db_data_grpc:Upsert": {
+            "kind": "grpc",
+            "service": "VectorService",
+            "rpc": "Upsert",
+            "request": "UpsertRequest",
+            "response": "UpsertResponse",
+            "success_body": True,
+        },
+        "db_data_grpc:Delete": {
+            "kind": "grpc",
+            "service": "VectorService",
+            "rpc": "Delete",
+            "request": "DeleteRequest",
+            "response": "DeleteResponse",
+            "success_body": False,
+        },
     }
 
 
 def test_parse_proto_file_rejects_rpc_outside_service(tmp_path: Path) -> None:
     proto = tmp_path / "db_data_2026-07.proto"
-    proto.write_text("rpc Orphan(Req) returns (Resp) {}\n")
+    proto.write_text("message Req {}\nmessage Resp {}\nrpc Orphan(Req) returns (Resp) {}\n")
     with pytest.raises(cov.SpecError, match="outside any service"):
         cov.parse_proto_file(proto)
+
+
+def test_parse_proto_file_rejects_an_undefined_response_message(tmp_path: Path) -> None:
+    proto = tmp_path / "db_data_2026-07.proto"
+    proto.write_text(
+        "message Req {}\nservice VectorService {\n  rpc Op(Req) returns (Ghost) {}\n}\n"
+    )
+    with pytest.raises(cov.SpecError, match="does not define"):
+        cov.parse_proto_file(proto)
+
+
+def test_proto_message_fields_ignores_comments_and_option_blocks() -> None:
+    text = textwrap.dedent(
+        """
+        // message NotReal { string ghost = 1; }
+        message Commented {
+          // string ghost = 1;
+        }
+        message WithOptions {
+          optional google.protobuf.Struct filter = 6 [
+            (google.api.field_behavior) = REQUIRED
+          ];
+        }
+        message OneLiner {}
+        message CompactWithField { int32 x = 1; }
+        message OpenWithField { int32 x = 1;
+          int32 y = 2;
+        }
+        """
+    )
+    assert cov._proto_message_fields(text) == {
+        "Commented": False,
+        "WithOptions": True,
+        "OneLiner": False,
+        "CompactWithField": True,
+        "OpenWithField": True,
+    }
 
 
 _BUNDLER_DOC = {
@@ -462,7 +525,10 @@ def _synthetic_specs_dir(tmp_path: Path) -> Path:
     specs.mkdir()
     (specs / "widgets_2026-07.oas.yaml").write_text(_DIVERGENT_OAS)
     (specs / "db_data_2026-07.proto").write_text(
-        'syntax = "proto3";\nservice VectorService {\n'
+        'syntax = "proto3";\n'
+        "message UpsertRequest {\n  repeated Vector vectors = 1;\n}\n"
+        "message UpsertResponse {\n  uint32 upserted_count = 1;\n}\n"
+        "service VectorService {\n"
         "  rpc Upsert(UpsertRequest) returns (UpsertResponse) {}\n}\n"
     )
     return specs
@@ -917,4 +983,4 @@ def test_gaps_mode_end_to_end() -> None:
     uncovered = (http_total - http_covered) + (grpc_total - grpc_covered)
     assert len(gaps) == uncovered
     assert set(gaps) <= set(manifest_operations())
-    assert "db_data_grpc:Upsert" in gaps
+    assert "db_data_grpc:Upsert" not in gaps

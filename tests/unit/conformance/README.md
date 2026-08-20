@@ -94,6 +94,28 @@ test ends; the `claim` fixture fails the test at teardown otherwise:
    populated field could only have come from a body the spec does not declare,
    and fails.
 
+   gRPC rpcs get the same split from the proto: the manifest records, per rpc,
+   its request/response message names and whether the response message declares
+   any field (`success_body`). An rpc answering with a fieldless message —
+   `Delete` and `DeleteNamespace` both return `DeleteResponse {}` — must use
+   `assert_no_response_body(returned)`, and every other rpc must round-trip.
+   `client_side` stays HTTP-only.
+
+## The gRPC capture harness
+
+The `db_data_grpc` claims cannot be made against a mocked channel — the rpc
+method and metadata only exist on a real one. `_grpc_harness.py` runs a genuine
+in-process `grpc.server` on a loopback ephemeral port, and
+`test_db_data_grpc_2026_07.py` points the SDK's real transport (`GrpcIndex`
+over the Rust tonic channel) at it. The server's interceptor captures the
+`:path` and invocation metadata off the wire; its servicer decodes requests
+with protoc-generated stubs regenerated each session from the vendored
+`rust/proto/db_data_2026-07.proto` — an implementation independent of the
+client's prost codec — and answers with protoc-built messages the real client
+must decode. `test_grpc_harness_guards.py` cross-checks the generated
+descriptor against the manifest's rpc entries, so the line-oriented proto
+parse in `scripts/api_coverage.py` and protoc must agree on all 12 rpcs.
+
 ## Fixture validation against the OAS response schema
 
 Round-tripping a fixture only proves the SDK is consistent with the test's own

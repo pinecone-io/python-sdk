@@ -289,7 +289,11 @@ class ClaimRecorder:
         operation's vendored response schema (or its registered divergence
         alternative), so a fixture no spec-conformant server could send
         cannot claim coverage. gRPC rpcs have no OAS schema and skip that
-        leg.
+        leg — their fixture-side guarantee comes from the conformance
+        harness, whose responses are protoc-built messages from the vendored
+        proto. An rpc whose response message declares no fields
+        (``DeleteResponse {}``) must use :meth:`assert_no_response_body`
+        instead, exactly like a bodyless HTTP operation.
 
         ``optional_absent`` names top-level optional fields to strip for the
         absent-field leg: the reduced payload must still decode, and the
@@ -302,12 +306,14 @@ class ClaimRecorder:
         """
         op_id = self._resolve(op)
         entry = self._ops[op_id]
+        if not entry["success_body"]:
+            declared = (
+                "the spec declares no success response body"
+                if entry["kind"] == "http"
+                else "the proto response message declares no fields"
+            )
+            raise ConformanceError(f"{op_id}: {declared}; use assert_no_response_body")
         if entry["kind"] == "http":
-            if not entry["success_body"]:
-                raise ConformanceError(
-                    f"{op_id}: the spec declares no success response body; "
-                    "use assert_no_response_body"
-                )
             validate_response_payload(op_id, entry, payload)
         if not (isinstance(model_cls, type) and issubclass(model_cls, msgspec.Struct)):
             raise ConformanceError(f"{op_id}: assert_roundtrip needs a msgspec.Struct type")
@@ -361,20 +367,35 @@ class ClaimRecorder:
         """The empty-body leg of the schema contract, for 202/204-style operations.
 
         Satisfies the ``roundtrip`` category only for operations the spec gives
-        no success response body. ``returned`` is the SDK call's return value and
-        must be ``None``: the alternative — round-tripping a throwaway empty
-        model — would let any operation dodge the schema category.
+        no success response body — for gRPC, rpcs whose proto response message
+        declares no fields (``DeleteResponse {}``). ``returned`` is the SDK
+        call's return value and must be ``None``: the alternative —
+        round-tripping a throwaway empty model — would let any operation dodge
+        the schema category.
 
         ``client_side`` is the escape hatch for the SDK methods that answer a
         bodyless operation with a struct they build themselves — a caller-side
         count, header-derived response metadata. It must name every field that
         comes back populated; any other populated field could only have come
-        from a body the spec does not declare, so it fails.
+        from a body the spec does not declare, so it fails. No gRPC method
+        builds such a struct, so ``client_side`` stays HTTP-only.
         """
         op_id = self._resolve(op)
         entry = self._ops[op_id]
-        if entry["kind"] != "http":
-            raise ConformanceError(f"{op_id} is a gRPC rpc; use assert_roundtrip")
+        if entry["kind"] == "grpc":
+            if entry["success_body"]:
+                raise ConformanceError(
+                    f"{op_id}: the proto response message declares fields; use assert_roundtrip"
+                )
+            if client_side:
+                raise ConformanceError(f"{op_id}: client_side is HTTP-only")
+            if returned is not None:
+                raise ConformanceError(
+                    f"{op_id}: the proto response message declares no fields, but the SDK "
+                    f"returned {returned!r} instead of None"
+                )
+            self._satisfied.add((op_id, "roundtrip"))
+            return
         if entry["success_body"]:
             raise ConformanceError(
                 f"{op_id}: the spec declares a success response body; use assert_roundtrip"

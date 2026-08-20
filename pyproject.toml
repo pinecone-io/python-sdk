@@ -164,4 +164,11 @@ dev = [
     # tests/unit/conformance/_registry.py validates response fixtures against
     # the OAS response schemas vendored into the conformance manifest (#189).
     "jsonschema>=4.21",
+    # tests/unit/conformance/_grpc_harness.py runs an in-process gRPC server so
+    # the db_data_grpc conformance claims capture the Rust tonic channel's real
+    # rpcs on the wire (#253). grpcio-tools regenerates message/service stubs
+    # from the vendored rust/proto/db_data_2026-07.proto at test time, so the
+    # server decodes with protoc-generated code, independent of prost.
+    "grpcio>=1.76",
+    "grpcio-tools>=1.76",
 ]

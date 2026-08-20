@@ -17,6 +17,12 @@ Coverage is claimed by tests in ``tests/unit/conformance/`` decorated with
 test actually passed (see tests/unit/conformance/README.md for the
 assertion contract each test must satisfy).
 
+Each proto rpc entry records its service, request and response message
+names, and — mirroring the HTTP ``success_body`` flag — whether the response
+message declares any field, so a fieldless response (``DeleteResponse {}``)
+is asserted as "the SDK returned None" rather than round-tripped through an
+invented model.
+
 The manifest also vendors, per HTTP operation with a success response body,
 the OAS response schema (refs resolved, OAS 3.0 ``nullable`` translated,
 declared objects sealed with ``additionalProperties: false``) so
@@ -83,8 +89,12 @@ OperationMap = dict[str, dict[str, Any]]
 
 HTTP_METHODS = ("get", "put", "post", "delete", "options", "head", "patch", "trace")
 _VERSION_VALUE_RE = re.compile(r"\d{4}-\d{2}")
-_RPC_RE = re.compile(r"^\s*rpc\s+(\w+)\s*\(")
+_RPC_RE = re.compile(r"^\s*rpc\s+(\w+)\s*\(\s*([\w.]+)\s*\)\s*returns\s*\(\s*([\w.]+)\s*\)")
 _SERVICE_RE = re.compile(r"^\s*service\s+(\w+)\s*\{")
+_MESSAGE_RE = re.compile(r"^\s*message\s+(\w+)\s*\{")
+_FIELD_DECL_RE = re.compile(
+    r"^\s*(?:repeated\s+|optional\s+)?(?:map\s*<[^>]+>|[\w.]+)\s+\w+\s*=\s*\d+\s*[;\[]"
+)
 
 
 class SpecError(RuntimeError):
@@ -516,10 +526,48 @@ def parse_oas_file(
     return ops, schemas
 
 
+def _proto_message_fields(text: str) -> dict[str, bool]:
+    """Map each top-level proto message name to whether it declares any field.
+
+    This is what gives gRPC rpcs the same ``success_body`` signal HTTP
+    operations get from the OAS: an rpc answering with a fieldless message
+    (``DeleteResponse {}``) has no round-trip to make, and a conformance test
+    for it must assert the SDK returned ``None`` instead of inventing a
+    throwaway model. The scanner strips ``//`` comments and tracks brace depth,
+    so option blocks and ``oneof`` groups do not confuse it.
+    """
+    messages: dict[str, bool] = {}
+    current: str | None = None
+    depth = 0
+    for raw in text.splitlines():
+        line = raw.split("//", 1)[0]
+        if current is None:
+            message_match = _MESSAGE_RE.match(line)
+            if message_match:
+                name = message_match.group(1)
+                if name in messages:
+                    raise SpecError(f"duplicate message {name!r} in proto")
+                remainder = line.split("{", 1)[1]
+                messages[name] = bool(_FIELD_DECL_RE.match(remainder))
+                current = name
+                depth = line.count("{") - line.count("}")
+                if depth <= 0:
+                    current = None
+            continue
+        if _FIELD_DECL_RE.match(line):
+            messages[current] = True
+        depth += line.count("{") - line.count("}")
+        if depth <= 0:
+            current = None
+    return messages
+
+
 def parse_proto_file(path: Path) -> OperationMap:
+    text = path.read_text()
+    message_has_fields = _proto_message_fields(text)
     service = ""
     ops: OperationMap = {}
-    for line in path.read_text().splitlines():
+    for line in text.splitlines():
         service_match = _SERVICE_RE.match(line)
         if service_match:
             service = service_match.group(1)
@@ -528,11 +576,24 @@ def parse_proto_file(path: Path) -> OperationMap:
         if rpc_match:
             if not service:
                 raise SpecError(f"{path.name}: rpc {rpc_match.group(1)} outside any service")
-            rpc = rpc_match.group(1)
+            rpc, request, response = rpc_match.groups()
             op_id = f"{GRPC_SURFACE}:{rpc}"
             if op_id in ops:
                 raise SpecError(f"{path.name}: duplicate rpc {rpc!r}")
-            ops[op_id] = {"kind": "grpc", "service": service, "rpc": rpc}
+            for message in (request, response):
+                if message not in message_has_fields:
+                    raise SpecError(
+                        f"{path.name}: rpc {rpc} references message {message!r}, "
+                        "which the proto does not define"
+                    )
+            ops[op_id] = {
+                "kind": "grpc",
+                "service": service,
+                "rpc": rpc,
+                "request": request,
+                "response": response,
+                "success_body": message_has_fields[response],
+            }
     if not ops:
         raise SpecError(f"{path.name}: no rpcs found")
     return ops
