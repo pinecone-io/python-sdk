@@ -7,14 +7,6 @@ edition = "2021"
 name = "pinecone_grpc"
 crate-type = ["cdylib", "rlib"]
 
-# Rust 1.98 clippy extended result_large_err to fire on Result<T, tonic::Status>
-# (176 bytes), which is tonic's universal signature: 12 of the 14 hits are in
-# tonic-generated code that cannot be annotated per-site. Allow crate-wide
-# rather than box Status in hand-written code while the generated code stays
-# unboxed anyway.
-[lints.clippy]
-result_large_err = "allow"
-
 [features]
 # On by default so `maturin`/`uv sync` build the extension module as before.
 # `cargo test --no-default-features` turns it off, which lets the test binary
