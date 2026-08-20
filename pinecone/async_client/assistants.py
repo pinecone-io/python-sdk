@@ -1195,15 +1195,16 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 Dicts are converted to :class:`Message` objects; role defaults
                 to ``"user"`` when not present.
             model (str): Large language model to use. Defaults to ``"gpt-4o"``.
-                Must be one of the backend's accepted values: ``"gpt-4o"``,
-                ``"gpt-4o-mini"``, ``"gpt-4.1"``, ``"gpt-4.1-mini"``,
-                ``"gpt-4.1-nano"``, ``"o3-mini"``, ``"o4-mini"``, ``"gpt-5"``,
-                ``"claude-sonnet-4"``, ``"claude-sonnet-4-5"``,
-                ``"gemini-2.5-pro"``, ``"gemini-2.5-flash"``. The aliases
-                ``"claude-3-5-sonnet"`` and ``"claude-3-7-sonnet"`` are
-                accepted but deprecated (silently remapped to
-                ``"claude-sonnet-4-5"`` by the backend). Unknown model names
-                are rejected by the backend with a 400 error.
+                The models the ``2026-07`` API documents for this endpoint are
+                ``"gpt-4o"``, ``"gpt-4.1"``, ``"gpt-5"``, ``"o4-mini"``,
+                ``"claude-sonnet-4-5"``, and ``"gemini-2.5-pro"``. The removed
+                aliases ``"claude-3-5-sonnet"`` and ``"claude-3-7-sonnet"`` are
+                still accepted but deprecated — the backend silently remaps
+                them to ``"claude-sonnet-4-5"``, so migrate to that name.
+                The value is not validated client-side: the backend is
+                authoritative and gains models between SDK releases, and it
+                rejects an unknown name with a 400 whose message lists the
+                values it accepts.
             stream (bool): If ``True``, return an :class:`AsyncChatStream`.
                 Defaults to ``False``.
             temperature (float | None): Controls randomness. Lower values produce
@@ -1367,17 +1368,20 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 Dicts are converted to :class:`Message` objects; role defaults
                 to ``"user"`` when not present.
             model (str): Large language model to use. Defaults to ``"gpt-4o"``.
-                Must be one of the backend's accepted values: ``"gpt-4o"``,
-                ``"gpt-4o-mini"``, ``"gpt-4.1"``, ``"gpt-4.1-mini"``,
-                ``"gpt-4.1-nano"``, ``"o3-mini"``, ``"o4-mini"``, ``"gpt-5"``,
-                ``"claude-sonnet-4"``, ``"claude-sonnet-4-5"``,
-                ``"gemini-2.5-pro"``, ``"gemini-2.5-flash"``. The aliases
-                ``"claude-3-5-sonnet"`` and ``"claude-3-7-sonnet"`` are
-                accepted but deprecated (silently remapped to
-                ``"claude-sonnet-4-5"`` by the backend). Unknown model names
-                are rejected by the backend with a 400 error.
-            stream (bool): If ``True``, return an async streaming iterator.
-                Defaults to ``False``.
+                The models the ``2026-07`` API documents for this endpoint are
+                ``"gpt-4o"``, ``"gpt-4.1"``, ``"o4-mini"``,
+                ``"claude-sonnet-4-5"``, and ``"gemini-2.5-pro"`` — the same
+                list :meth:`chat` accepts, minus ``"gpt-5"``, which the spec
+                documents only on the Pinecone-native chat endpoint. The
+                removed aliases ``"claude-3-5-sonnet"`` and
+                ``"claude-3-7-sonnet"`` are still accepted but deprecated — the
+                backend silently remaps them to ``"claude-sonnet-4-5"``, so
+                migrate to that name. The value is not validated client-side:
+                the backend is authoritative and gains models between SDK
+                releases, and it rejects an unknown name with a 400 whose
+                message lists the values it accepts.
+            stream (bool): If ``True``, return an
+                :class:`AsyncChatCompletionStream`. Defaults to ``False``.
             temperature (float | None): Controls randomness. Lower values produce
                 more deterministic responses. Omitted from request when ``None``.
             filter (dict[str, Any] | None): Metadata filter restricting which
@@ -1385,7 +1389,7 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
 
         Returns:
             :class:`ChatCompletionResponse` for non-streaming requests, or an
-            :class:`AsyncIterator[ChatCompletionStreamChunk]` for streaming.
+            :class:`AsyncChatCompletionStream` for streaming requests.
 
         Raises:
             :exc:`ApiError`: If the API returns an error response.

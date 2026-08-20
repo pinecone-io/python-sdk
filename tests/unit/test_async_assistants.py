@@ -3226,6 +3226,104 @@ async def test_async_control_plane_sends_2026_07_api_version(
     assert request.headers[_API_VERSION_HEADER] == "2026-07"
 
 
+_DATA_PLANE_CALLS: dict[str, Callable[[AsyncAssistants], Awaitable[Any]]] = {
+    "chat": lambda a: a.chat(assistant_name="test-assistant", messages=[{"content": "Hi"}]),
+    "chat_completions": lambda a: a.chat_completions(
+        assistant_name="test-assistant", messages=[{"content": "Hi"}]
+    ),
+    "context": lambda a: a.context(assistant_name="test-assistant", query="Hi"),
+}
+
+_STREAMING_DATA_PLANE_CALLS: dict[str, Callable[[AsyncAssistants], Awaitable[Any]]] = {
+    "chat": lambda a: a.chat(
+        assistant_name="test-assistant", messages=[{"content": "Hi"}], stream=True
+    ),
+    "chat_completions": lambda a: a.chat_completions(
+        assistant_name="test-assistant", messages=[{"content": "Hi"}], stream=True
+    ),
+}
+
+
+def _mock_chat_routes(*, sse: bool) -> None:
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response(status="Ready")),
+    )
+    chat_body = (
+        b'data: {"type": "message_end", "id": "e1", "model": "gpt-4o",'
+        b' "finish_reason": "tool_calls"}\n\ndata: [DONE]\n\n'
+    )
+    completion_body = (
+        b'data: {"id": "k1", "model": "gpt-4o", "choices": [{"index": 0,'
+        b' "delta": {}, "finish_reason": "tool_calls"}]}\n\ndata: [DONE]\n\n'
+    )
+    respx.post(f"{DATA_PLANE_URL}/chat/test-assistant").mock(
+        return_value=httpx.Response(200, content=chat_body)
+        if sse
+        else httpx.Response(
+            200,
+            json={
+                "id": "c1",
+                "model": "gpt-4o",
+                "finish_reason": "tool_calls",
+                "message": {"role": "assistant", "content": "Hi"},
+                "citations": [],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                "context_snippet_count": 3,
+            },
+        ),
+    )
+    respx.post(f"{DATA_PLANE_URL}/chat/test-assistant/chat/completions").mock(
+        return_value=httpx.Response(200, content=completion_body)
+        if sse
+        else httpx.Response(
+            200,
+            json={
+                "id": "k1",
+                "model": "gpt-4o",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "tool_calls",
+                        "message": {"role": "assistant", "content": "Hi"},
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        ),
+    )
+    respx.post(f"{DATA_PLANE_URL}/chat/test-assistant/context").mock(
+        return_value=httpx.Response(200, json=make_context_response()),
+    )
+
+
+@pytest.mark.parametrize("operation", sorted(_DATA_PLANE_CALLS))
+@respx.mock
+async def test_async_chat_surface_sends_2026_07_api_version(
+    operation: str, async_assistants: AsyncAssistants
+) -> None:
+    """chat, chat_completions and context all send X-Pinecone-Api-Version: 2026-07."""
+    _mock_chat_routes(sse=False)
+
+    await _DATA_PLANE_CALLS[operation](async_assistants)
+
+    assert respx.calls.last.request.headers[_API_VERSION_HEADER] == "2026-07"
+
+
+@pytest.mark.parametrize("operation", sorted(_STREAMING_DATA_PLANE_CALLS))
+@respx.mock
+async def test_async_streaming_chat_sends_2026_07_api_version(
+    operation: str, async_assistants: AsyncAssistants
+) -> None:
+    """The streaming variants carry the version header on the SSE request too."""
+    _mock_chat_routes(sse=True)
+
+    stream = await _STREAMING_DATA_PLANE_CALLS[operation](async_assistants)
+    chunks = [chunk async for chunk in stream]
+
+    assert len(chunks) == 1, "the [DONE] sentinel must not surface as a chunk"
+    assert respx.calls.last.request.headers[_API_VERSION_HEADER] == "2026-07"
+
+
 @respx.mock
 async def test_async_list_page_sends_limit_and_pagination_token_together(
     async_assistants: AsyncAssistants,
