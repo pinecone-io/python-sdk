@@ -444,6 +444,66 @@ Admin Models
    :members:
    :show-inheritance:
 
+.. autoclass:: pinecone.models.admin.pagination.PaginationResponse
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.user.UserModel
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.user.UserList
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.invite.InviteModel
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.invite.InviteList
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.invite.InviteStatus
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.service_account.ServiceAccountModel
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.service_account.ServiceAccountList
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.service_account.ServiceAccountWithSecret
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.role_binding.RoleBindingModel
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.role_binding.RoleBindingList
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.role_binding.RoleBindingInput
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.role_binding.RoleName
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.role_binding.PrincipalType
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.role_binding.ResourceType
+   :members:
+   :show-inheritance:
+
 Assistant Models
 ----------------
 

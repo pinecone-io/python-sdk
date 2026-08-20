@@ -1,7 +1,7 @@
 {
   "transport": "sync",
   "n_clients": 50,
-  "dispersion_width": 0.373032056260854,
-  "first_success_relative": 1.0504822279326618,
+  "dispersion_width": 0.3746195000130683,
+  "first_success_relative": 1.0503325419849716,
   "request_amplification": 3.0
 }
