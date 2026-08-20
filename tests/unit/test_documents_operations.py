@@ -1,9 +1,13 @@
-"""Behavior tests for the document operations on the sync Index (#132).
+"""Behavior tests for the document operations on the sync Index (#132, #135).
 
 Covers the wire bodies each method emits, the client-side validation
 vocabulary (mutual exclusions, ``_id`` contract, bounds), namespace
 path-segment encoding, batch aggregation semantics, optional-field-absent
 responses, and intact surfacing of server 400 text.
+
+``update_documents`` and ``list_documents`` (#135) add the per-ID vs
+by-filter selector matrix, ``_remove_fields`` semantics, and the paginator's
+page-following over the ``pagination`` envelope.
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ import respx
 from pinecone.errors.exceptions import ApiError, PineconeValueError
 from pinecone.index import Index
 from pinecone.models.batch import BatchResult
-from pinecone.models.documents.document import DocumentRecord
+from pinecone.models.documents.document import DocumentRecord, UpdateDocumentRecord
 from pinecone.models.documents.score_by import DenseVectorQuery, TextQuery
 
 INDEX_HOST = "documents-index-abc123.svc.us-east-1-aws.pinecone.io"
@@ -44,6 +48,11 @@ FETCH_OK = httpx.Response(
     },
 )
 DELETE_OK = httpx.Response(202, json={})
+UPDATE_OK = httpx.Response(202, json={})
+LIST_OK_LAST_PAGE = httpx.Response(
+    200,
+    json={"documents": [{"_id": "doc-1"}], "namespace": NS, "usage": {"read_units": 1}},
+)
 
 
 @pytest.fixture
@@ -332,6 +341,242 @@ class TestDeleteDocuments:
     def test_empty_filter_rejected(self, index: Index) -> None:
         with pytest.raises(PineconeValueError, match="non-empty object of filter predicates"):
             index.delete_documents(namespace=NS, filter={})
+
+
+class TestUpdateDocuments:
+    @respx.mock
+    def test_per_id_body_carries_patches_verbatim(self, index: Index) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/{NS}/documents/update").mock(
+            return_value=UPDATE_OK
+        )
+        patches: list[Any] = [
+            {"_id": "doc-1", "title": "New title", "year": 2027},
+            {"_id": "doc-2", "_remove_fields": ["content"]},
+        ]
+        result = index.update_documents(namespace=NS, documents=patches)
+        assert result.matched_records is None
+        assert _body(route) == {"documents": patches}
+
+    @respx.mock
+    def test_accepts_update_document_record_instances(self, index: Index) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/{NS}/documents/update").mock(
+            return_value=UPDATE_OK
+        )
+        index.update_documents(
+            namespace=NS,
+            documents=[UpdateDocumentRecord({"_id": "doc-1", "_remove_fields": ["content"]})],
+        )
+        assert _body(route) == {"documents": [{"_id": "doc-1", "_remove_fields": ["content"]}]}
+
+    @respx.mock
+    def test_by_filter_body_and_matched_records(self, index: Index) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/{NS}/documents/update").mock(
+            return_value=httpx.Response(202, json={"matched_records": 42})
+        )
+        result = index.update_documents(
+            namespace=NS,
+            filter={"category": {"$eq": "news"}},
+            set_fields={"category": "archive"},
+            remove_fields=["content"],
+        )
+        assert result.matched_records == 42
+        assert _body(route) == {
+            "filter": {"category": {"$eq": "news"}},
+            "set_fields": {"category": "archive"},
+            "remove_fields": ["content"],
+        }
+
+    @respx.mock
+    def test_namespace_path_segment_is_url_encoded(self, index: Index) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/live%20ns%2Fv1/documents/update").mock(
+            return_value=UPDATE_OK
+        )
+        index.update_documents(namespace="live ns/v1", documents=[{"_id": "doc-1", "a": 1}])
+        assert route.called
+
+    @respx.mock
+    def test_null_field_value_passes_through_to_the_server(self, index: Index) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/{NS}/documents/update").mock(
+            return_value=UPDATE_OK
+        )
+        index.update_documents(namespace=NS, documents=[{"_id": "doc-1", "title": None}])
+        assert _body(route) == {"documents": [{"_id": "doc-1", "title": None}]}
+
+    def test_empty_documents_rejected(self, index: Index) -> None:
+        with pytest.raises(PineconeValueError, match="non-empty list"):
+            index.update_documents(namespace=NS, documents=[])
+
+    def test_over_1000_documents_rejected(self, index: Index) -> None:
+        with pytest.raises(PineconeValueError, match="exceeds the maximum limit of 1000"):
+            index.update_documents(
+                namespace=NS, documents=[{"_id": f"doc-{i}"} for i in range(1001)]
+            )
+
+    def test_missing_id_names_the_position(self, index: Index) -> None:
+        with pytest.raises(PineconeValueError, match="Document at position 1: Document '_id'"):
+            index.update_documents(
+                namespace=NS, documents=[{"_id": "doc-1"}, {"title": "no id at all"}]
+            )
+
+    def test_duplicate_id_names_the_position(self, index: Index) -> None:
+        with pytest.raises(PineconeValueError, match="position 1 has duplicate '_id' 'doc-1'"):
+            index.update_documents(
+                namespace=NS, documents=[{"_id": "doc-1"}, {"_id": "doc-1", "a": 1}]
+            )
+
+    def test_non_dict_patch_rejected_naming_the_position(self, index: Index) -> None:
+        with pytest.raises(PineconeValueError, match="position 0 must be a dict"):
+            index.update_documents(namespace=NS, documents=["doc-1"])  # type: ignore[list-item]
+
+    def test_field_both_set_and_removed_rejected(self, index: Index) -> None:
+        with pytest.raises(PineconeValueError, match="both set and removed"):
+            index.update_documents(
+                namespace=NS,
+                documents=[{"_id": "doc-1", "title": "New", "_remove_fields": ["title"]}],
+            )
+
+    def test_malformed_remove_fields_rejected(self, index: Index) -> None:
+        with pytest.raises(PineconeValueError, match="'_remove_fields' must be a list"):
+            index.update_documents(
+                namespace=NS, documents=[{"_id": "d", "_remove_fields": "title"}]
+            )
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"documents": [{"_id": "a"}], "filter": {"x": {"$eq": 1}}},
+            {"documents": [{"_id": "a"}], "set_fields": {"y": 1}},
+            {"documents": [{"_id": "a"}], "remove_fields": ["y"]},
+        ],
+    )
+    def test_documents_with_by_filter_fields_rejected(
+        self, index: Index, kwargs: dict[str, Any]
+    ) -> None:
+        with pytest.raises(PineconeValueError, match="mutually exclusive"):
+            index.update_documents(namespace=NS, **kwargs)
+
+    def test_no_selector_rejected_naming_both_shapes(self, index: Index) -> None:
+        with pytest.raises(PineconeValueError, match="No 'documents' or 'filter' provided"):
+            index.update_documents(namespace=NS)
+
+    def test_patch_fields_without_filter_rejected(self, index: Index) -> None:
+        with pytest.raises(PineconeValueError, match="only valid together with 'filter'"):
+            index.update_documents(namespace=NS, set_fields={"category": "archive"})
+
+    def test_filter_without_a_patch_rejected(self, index: Index) -> None:
+        with pytest.raises(PineconeValueError, match="must change something"):
+            index.update_documents(namespace=NS, filter={"category": {"$eq": "news"}})
+
+    def test_empty_filter_rejected(self, index: Index) -> None:
+        with pytest.raises(PineconeValueError, match="non-empty object of filter predicates"):
+            index.update_documents(namespace=NS, filter={}, set_fields={"a": 1})
+
+    @pytest.mark.parametrize("namespace", ["", "   "])
+    def test_empty_namespace_rejected(self, index: Index, namespace: str) -> None:
+        with pytest.raises(PineconeValueError, match="non-empty string"):
+            index.update_documents(namespace=namespace, documents=[{"_id": "a"}])
+
+
+class TestListDocuments:
+    @respx.mock
+    def test_optional_fields_absent_stay_off_the_wire(self, index: Index) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/{NS}/documents/list").mock(
+            return_value=LIST_OK_LAST_PAGE
+        )
+        records = index.list_documents(namespace=NS).to_list()
+        assert [record.id for record in records] == ["doc-1"]
+        assert _body(route) == {}
+
+    @respx.mock
+    def test_prefix_and_limit_reach_the_body(self, index: Index) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/{NS}/documents/list").mock(
+            return_value=LIST_OK_LAST_PAGE
+        )
+        index.list_documents(namespace=NS, prefix="doc-", limit=20).to_list()
+        assert _body(route) == {"prefix": "doc-", "limit": 20}
+
+    @respx.mock
+    def test_pagination_is_followed_across_pages(self, index: Index) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/{NS}/documents/list").mock(
+            side_effect=[
+                httpx.Response(
+                    200,
+                    json={
+                        "documents": [{"_id": "doc-1"}, {"_id": "doc-2"}],
+                        "pagination": {"next": "doc-2"},
+                        "namespace": NS,
+                        "usage": {"read_units": 1},
+                    },
+                ),
+                httpx.Response(
+                    200,
+                    json={
+                        "documents": [{"_id": "doc-3"}],
+                        "namespace": NS,
+                        "usage": {"read_units": 1},
+                    },
+                ),
+            ]
+        )
+        paginator = index.list_documents(namespace=NS, prefix="doc-")
+        assert [record.id for record in paginator] == ["doc-1", "doc-2", "doc-3"]
+        assert route.call_count == 2
+        assert json.loads(route.calls[1].request.content) == {
+            "prefix": "doc-",
+            "pagination_token": "doc-2",
+        }
+        assert paginator.pagination_token is None
+
+    @respx.mock
+    def test_initial_pagination_token_resumes(self, index: Index) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/{NS}/documents/list").mock(
+            return_value=LIST_OK_LAST_PAGE
+        )
+        index.list_documents(namespace=NS, pagination_token="doc-9").to_list()
+        assert _body(route) == {"pagination_token": "doc-9"}
+
+    @respx.mock
+    def test_pages_exposes_the_pagination_token(self, index: Index) -> None:
+        respx.post(f"{BASE_URL}/namespaces/{NS}/documents/list").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "documents": [{"_id": "doc-1"}],
+                    "pagination": {"next": "doc-1"},
+                    "namespace": NS,
+                    "usage": {"read_units": 1},
+                },
+            )
+        )
+        page = next(index.list_documents(namespace=NS).pages())
+        assert page.pagination_token == "doc-1"
+        assert page.has_more is True
+
+    @respx.mock
+    def test_namespace_path_segment_is_url_encoded(self, index: Index) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/live%20ns%2Fv1/documents/list").mock(
+            return_value=LIST_OK_LAST_PAGE
+        )
+        index.list_documents(namespace="live ns/v1").to_list()
+        assert route.called
+
+    @pytest.mark.parametrize("limit", [0, -1, 101])
+    def test_limit_bounds_rejected_eagerly(self, index: Index, limit: int) -> None:
+        with pytest.raises(PineconeValueError, match="'limit' must be between 1 and 100"):
+            index.list_documents(namespace=NS, limit=limit)
+
+    def test_overlong_prefix_rejected_eagerly(self, index: Index) -> None:
+        with pytest.raises(PineconeValueError, match="maximum length of 512"):
+            index.list_documents(namespace=NS, prefix="x" * 513)
+
+    def test_non_ascii_prefix_rejected_eagerly(self, index: Index) -> None:
+        with pytest.raises(PineconeValueError, match="only ASCII characters"):
+            index.list_documents(namespace=NS, prefix="ünïcode")
+
+    @pytest.mark.parametrize("namespace", ["", "   "])
+    def test_empty_namespace_rejected_eagerly(self, index: Index, namespace: str) -> None:
+        with pytest.raises(PineconeValueError, match="non-empty string"):
+            index.list_documents(namespace=namespace)
 
 
 class TestBatchUpsertDocuments:

@@ -24,11 +24,13 @@ import respx
 
 from pinecone._internal.adapters.documents_adapter import (
     _FetchDocumentsEnvelope,
+    _ListDocumentsEnvelope,
     _SearchDocumentsEnvelope,
 )
 from pinecone.async_client.async_index import AsyncIndex
 from pinecone.models.documents.responses import (
     DeleteDocumentsResponse,
+    UpdateDocumentsResponse,
     UpsertDocumentsResponse,
 )
 from tests.unit.conformance import api_op
@@ -36,7 +38,10 @@ from tests.unit.conformance.test_db_data_documents_2026_07 import (
     BASE_URL,
     DOC_DELETE,
     DOC_FETCH,
+    DOC_LIST,
     DOC_SEARCH,
+    DOC_UPDATE,
+    DOC_UPDATE_INPUT,
     DOC_UPSERT,
     DOCUMENTS_INPUT,
     INDEX_HOST,
@@ -133,3 +138,31 @@ async def test_async_delete_documents(
         "filter": {"category": {"$eq": "news"}}
     }
     _conforms(claim, route, DeleteDocumentsResponse, DOC_DELETE, ["matched_records"])
+
+
+@api_op("db_data:updateDocuments")
+async def test_async_update_documents(
+    claim: Any, async_index: AsyncIndex, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.post(f"{BASE_URL}/namespaces/{NAMESPACE}/documents/update").mock(
+        return_value=httpx.Response(202, json=DOC_UPDATE)
+    )
+    result = await async_index.update_documents(namespace=NAMESPACE, documents=DOC_UPDATE_INPUT)
+    assert result.matched_records == 42
+    assert orjson.loads(route.calls.last.request.content) == {"documents": DOC_UPDATE_INPUT}
+    _conforms(claim, route, UpdateDocumentsResponse, DOC_UPDATE, ["matched_records"])
+
+
+@api_op("db_data:listDocuments")
+async def test_async_list_documents(
+    claim: Any, async_index: AsyncIndex, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.post(f"{BASE_URL}/namespaces/{NAMESPACE}/documents/list").mock(
+        return_value=httpx.Response(200, json=DOC_LIST)
+    )
+    paginator = async_index.list_documents(namespace=NAMESPACE, prefix="doc-", limit=20)
+    page = await anext(paginator.pages())
+    assert [record.id for record in page.items] == ["doc-1", "doc-2"]
+    assert page.pagination_token == "page-2"
+    assert orjson.loads(route.calls.last.request.content) == {"prefix": "doc-", "limit": 20}
+    _conforms(claim, route, _ListDocumentsEnvelope, DOC_LIST, ["pagination"])

@@ -28,7 +28,9 @@ from pinecone._internal.data_plane_helpers import (
 from pinecone._internal.documents_helpers import (
     _build_delete_documents_body,
     _build_fetch_documents_body,
+    _build_list_documents_body,
     _build_search_documents_body,
+    _build_update_documents_body,
     _encode_document_namespace,
     _validate_documents,
 )
@@ -56,17 +58,20 @@ from pinecone._internal.validation import (
 from pinecone._internal.vector_factory import VectorFactory
 from pinecone.errors.exceptions import PineconeValueError, ValidationError
 from pinecone.models.batch import BatchResult
-from pinecone.models.documents.document import DocumentRecord
+from pinecone.models.documents.document import DocumentRecord, UpdateDocumentRecord
 from pinecone.models.documents.responses import (
     DeleteDocumentsResponse,
     FetchDocumentsResponse,
+    ListedDocumentRecord,
     SearchDocumentsResponse,
+    UpdateDocumentsResponse,
     UpsertDocumentsResponse,
 )
 from pinecone.models.documents.score_by import DocumentScoringMethod
 from pinecone.models.imports.list import ImportList
 from pinecone.models.imports.model import ImportModel, StartImportResponse
 from pinecone.models.namespaces.models import ListNamespacesResponse, NamespaceDescription
+from pinecone.models.pagination import AsyncPaginator, Page
 from pinecone.models.response_info import ResponseInfo
 from pinecone.models.vectors.query_aggregator import QueryNamespacesResults, QueryResultsAggregator
 from pinecone.models.vectors.responses import (
@@ -1707,6 +1712,186 @@ class AsyncIndex:
             json=body,
         )
         return DocumentsAdapter.to_delete_response(response)
+
+    async def update_documents(
+        self,
+        *,
+        namespace: str,
+        documents: Sequence[Mapping[str, Any] | UpdateDocumentRecord] | None = None,
+        filter: Mapping[str, Any] | None = None,
+        set_fields: Mapping[str, Any] | None = None,
+        remove_fields: Sequence[str] | None = None,
+        timeout: float | None = None,
+    ) -> UpdateDocumentsResponse:
+        """Apply partial updates to documents in a namespace.
+
+        Documents are selected either per ID with ``documents``, or in bulk
+        with ``filter`` plus ``set_fields`` and/or ``remove_fields``. The two
+        shapes are mutually exclusive. Fields that are not mentioned are left
+        unchanged, and an update naming a document that does not exist is
+        accepted as a no-op rather than raising.
+
+        The server accepts the request with ``202 Accepted`` and applies the
+        patch asynchronously — for a filtered update,
+        ``response.matched_records`` is the point-in-time count of matching
+        documents when the update was accepted, not a guarantee of the number
+        ultimately patched.
+
+        Args:
+            namespace (str): Namespace to update in (required, non-empty).
+            documents: Per-document patches (1-1000). Each element is a dict
+                with an ``_id`` key or an
+                :class:`~pinecone.models.documents.document.UpdateDocumentRecord`.
+                Any key other than ``_id`` and ``_remove_fields`` sets a new
+                value for that field; the names in ``_remove_fields`` are
+                removed from the document. ``_id`` values must be unique
+                within the request. Mutually exclusive with ``filter``,
+                ``set_fields``, and ``remove_fields``.
+            filter: Non-empty metadata filter expression selecting the
+                documents to patch. Text-match operators (``$match_phrase``,
+                ``$match_all``, ``$match_any``) are not supported here.
+                Mutually exclusive with ``documents``.
+            set_fields: Fields to set on every document matching ``filter``,
+                and the values to set them to. Only valid with ``filter``.
+            remove_fields: Names of the fields to remove from every document
+                matching ``filter``. Only valid with ``filter``.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
+
+        Returns:
+            :class:`UpdateDocumentsResponse` — ``matched_records`` is
+            populated only for filtered updates (``None`` for per-ID updates,
+            and when the count could not be read in time).
+
+        Raises:
+            :exc:`PineconeValueError`: If ``namespace`` is empty,
+                ``documents`` is combined with any by-filter field, neither
+                ``documents`` nor ``filter`` is given, ``set_fields`` or
+                ``remove_fields`` is passed without ``filter``, ``filter`` is
+                an empty dict or carries no patch, ``documents`` is empty or
+                exceeds 1000 entries, or a patch is malformed — the message
+                names the offending position.
+            :exc:`ApiError`: If the API returns an error response; the server's
+                error text is surfaced intact. A field value of ``None`` is
+                rejected server-side — use ``_remove_fields`` (per-ID) or
+                ``remove_fields`` (by-filter) to remove a field.
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
+
+        Examples:
+            .. code-block:: python
+
+                # Patch specific documents by ID
+                await idx.update_documents(
+                    namespace="articles-en",
+                    documents=[
+                        {"_id": "article-101", "title": "Updated title"},
+                        {"_id": "article-102", "_remove_fields": ["content"]},
+                    ],
+                )
+
+                # Apply the same patch to every matching document
+                response = await idx.update_documents(
+                    namespace="articles-en",
+                    filter={"category": {"$eq": "news"}},
+                    set_fields={"category": "archive"},
+                    remove_fields=["content"],
+                )
+                print(response.matched_records)
+        """
+        segment = _encode_document_namespace(namespace)
+        body = _build_update_documents_body(
+            documents=documents,
+            filter=filter,
+            set_fields=set_fields,
+            remove_fields=remove_fields,
+        )
+        logger.info("Updating documents in namespace %r", namespace)
+        response = await self._http.post(
+            f"/namespaces/{segment}/documents/update",
+            timeout=timeout,
+            json=body,
+        )
+        return DocumentsAdapter.to_update_response(response)
+
+    def list_documents(
+        self,
+        *,
+        namespace: str,
+        prefix: str | None = None,
+        limit: int | None = None,
+        pagination_token: str | None = None,
+        timeout: float | None = None,
+    ) -> AsyncPaginator[ListedDocumentRecord]:
+        """List the documents in a namespace, following pagination lazily.
+
+        Returns an :class:`~pinecone.models.pagination.AsyncPaginator` that
+        fetches pages on demand and stops when the server returns no
+        ``pagination`` token. Documents come back in sorted order by ID,
+        carrying only their ``_id``.
+
+        Args:
+            namespace (str): Namespace to list from (required, non-empty).
+            prefix (str | None): Return only documents whose IDs begin with
+                this prefix. At most 512 characters, ASCII only
+                (``\\x01``-``\\x7F``). ``None`` lists every document.
+            limit (int | None): Maximum number of documents the server returns
+                **per page**, 1-100. Defaults to 100 server-side. This tunes
+                the page size, not the total — the paginator follows every
+                page. To stop early, break out of the ``async for`` loop.
+            pagination_token (str | None): Token from a previous list response
+                to resume from, rather than starting at the first page.
+            timeout (float | None): Per-request timeout in seconds, applied to
+                each page request. Overrides the client-level default.
+
+        Returns:
+            :class:`~pinecone.models.pagination.AsyncPaginator` over
+            :class:`ListedDocumentRecord` objects. Supports ``async for``,
+            :meth:`~pinecone.models.pagination.AsyncPaginator.to_list`, and
+            :meth:`~pinecone.models.pagination.AsyncPaginator.pages`.
+
+        Raises:
+            :exc:`PineconeValueError`: If ``namespace`` is empty, ``prefix``
+                violates the rules above, or ``limit`` falls outside 1-100.
+                Raised by this call, before the paginator is returned.
+            :exc:`ApiError`: If the API returns an error response; the server's
+                error text is surfaced intact.
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If a page request exceeds the configured timeout.
+
+        Examples:
+            .. code-block:: python
+
+                async for doc in idx.list_documents(
+                    namespace="articles-en", prefix="article-1"
+                ):
+                    print(doc.id)
+
+                # A page at a time, to see the pagination token
+                paginator = idx.list_documents(namespace="articles-en", limit=20)
+                async for page in paginator.pages():
+                    print(len(page.items), page.pagination_token)
+        """
+        segment = _encode_document_namespace(namespace)
+        base = _build_list_documents_body(prefix=prefix, limit=limit, pagination_token=None)
+
+        async def fetch_page(token: str | None) -> Page[ListedDocumentRecord]:
+            body = dict(base)
+            if token is not None:
+                body["pagination_token"] = token
+            logger.info("Listing documents in namespace %r", namespace)
+            response = await self._http.post(
+                f"/namespaces/{segment}/documents/list",
+                timeout=timeout,
+                json=body,
+            )
+            result = DocumentsAdapter.to_list_response(response)
+            next_token = result.pagination.next if result.pagination is not None else None
+            return Page(items=result.documents, pagination_token=next_token)
+
+        return AsyncPaginator(fetch_page=fetch_page, initial_token=pagination_token)
 
     async def create_namespace(
         self,

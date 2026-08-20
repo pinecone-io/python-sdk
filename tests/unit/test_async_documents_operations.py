@@ -24,7 +24,7 @@ import respx
 from pinecone.async_client.async_index import AsyncIndex
 from pinecone.errors.exceptions import ApiError, PineconeValueError
 from pinecone.models.batch import BatchResult
-from pinecone.models.documents.document import DocumentRecord
+from pinecone.models.documents.document import DocumentRecord, UpdateDocumentRecord
 from pinecone.models.documents.score_by import DenseVectorQuery, TextQuery
 
 INDEX_HOST = "documents-index-abc123.svc.us-east-1-aws.pinecone.io"
@@ -49,6 +49,11 @@ FETCH_OK = httpx.Response(
     },
 )
 DELETE_OK = httpx.Response(202, json={})
+UPDATE_OK = httpx.Response(202, json={})
+LIST_OK_LAST_PAGE = httpx.Response(
+    200,
+    json={"documents": [{"_id": "doc-1"}], "namespace": NS, "usage": {"read_units": 1}},
+)
 
 
 @pytest.fixture
@@ -339,6 +344,210 @@ class TestDeleteDocuments:
     async def test_empty_filter_rejected(self, index: AsyncIndex) -> None:
         with pytest.raises(PineconeValueError, match="non-empty object of filter predicates"):
             await index.delete_documents(namespace=NS, filter={})
+
+
+class TestUpdateDocuments:
+    @respx.mock
+    async def test_per_id_body_carries_patches_verbatim(self, index: AsyncIndex) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/{NS}/documents/update").mock(
+            return_value=UPDATE_OK
+        )
+        patches: list[Any] = [
+            {"_id": "doc-1", "title": "New title", "year": 2027},
+            {"_id": "doc-2", "_remove_fields": ["content"]},
+        ]
+        result = await index.update_documents(namespace=NS, documents=patches)
+        assert result.matched_records is None
+        assert _body(route) == {"documents": patches}
+
+    @respx.mock
+    async def test_accepts_update_document_record_instances(self, index: AsyncIndex) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/{NS}/documents/update").mock(
+            return_value=UPDATE_OK
+        )
+        await index.update_documents(
+            namespace=NS,
+            documents=[UpdateDocumentRecord({"_id": "doc-1", "_remove_fields": ["content"]})],
+        )
+        assert _body(route) == {"documents": [{"_id": "doc-1", "_remove_fields": ["content"]}]}
+
+    @respx.mock
+    async def test_by_filter_body_and_matched_records(self, index: AsyncIndex) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/{NS}/documents/update").mock(
+            return_value=httpx.Response(202, json={"matched_records": 42})
+        )
+        result = await index.update_documents(
+            namespace=NS,
+            filter={"category": {"$eq": "news"}},
+            set_fields={"category": "archive"},
+            remove_fields=["content"],
+        )
+        assert result.matched_records == 42
+        assert _body(route) == {
+            "filter": {"category": {"$eq": "news"}},
+            "set_fields": {"category": "archive"},
+            "remove_fields": ["content"],
+        }
+
+    @respx.mock
+    async def test_namespace_path_segment_is_url_encoded(self, index: AsyncIndex) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/live%20ns%2Fv1/documents/update").mock(
+            return_value=UPDATE_OK
+        )
+        await index.update_documents(namespace="live ns/v1", documents=[{"_id": "doc-1", "a": 1}])
+        assert route.called
+
+    @respx.mock
+    async def test_null_field_value_passes_through_to_the_server(self, index: AsyncIndex) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/{NS}/documents/update").mock(
+            return_value=UPDATE_OK
+        )
+        await index.update_documents(namespace=NS, documents=[{"_id": "doc-1", "title": None}])
+        assert _body(route) == {"documents": [{"_id": "doc-1", "title": None}]}
+
+    async def test_empty_documents_rejected(self, index: AsyncIndex) -> None:
+        with pytest.raises(PineconeValueError, match="non-empty list"):
+            await index.update_documents(namespace=NS, documents=[])
+
+    async def test_missing_id_names_the_position(self, index: AsyncIndex) -> None:
+        with pytest.raises(PineconeValueError, match="Document at position 1: Document '_id'"):
+            await index.update_documents(
+                namespace=NS, documents=[{"_id": "doc-1"}, {"title": "no id at all"}]
+            )
+
+    async def test_duplicate_id_names_the_position(self, index: AsyncIndex) -> None:
+        with pytest.raises(PineconeValueError, match="position 1 has duplicate '_id' 'doc-1'"):
+            await index.update_documents(
+                namespace=NS, documents=[{"_id": "doc-1"}, {"_id": "doc-1", "a": 1}]
+            )
+
+    async def test_field_both_set_and_removed_rejected(self, index: AsyncIndex) -> None:
+        with pytest.raises(PineconeValueError, match="both set and removed"):
+            await index.update_documents(
+                namespace=NS,
+                documents=[{"_id": "doc-1", "title": "New", "_remove_fields": ["title"]}],
+            )
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"documents": [{"_id": "a"}], "filter": {"x": {"$eq": 1}}},
+            {"documents": [{"_id": "a"}], "set_fields": {"y": 1}},
+            {"documents": [{"_id": "a"}], "remove_fields": ["y"]},
+        ],
+    )
+    async def test_documents_with_by_filter_fields_rejected(
+        self, index: AsyncIndex, kwargs: dict[str, Any]
+    ) -> None:
+        with pytest.raises(PineconeValueError, match="mutually exclusive"):
+            await index.update_documents(namespace=NS, **kwargs)
+
+    async def test_no_selector_rejected_naming_both_shapes(self, index: AsyncIndex) -> None:
+        with pytest.raises(PineconeValueError, match="No 'documents' or 'filter' provided"):
+            await index.update_documents(namespace=NS)
+
+    async def test_patch_fields_without_filter_rejected(self, index: AsyncIndex) -> None:
+        with pytest.raises(PineconeValueError, match="only valid together with 'filter'"):
+            await index.update_documents(namespace=NS, set_fields={"category": "archive"})
+
+    async def test_filter_without_a_patch_rejected(self, index: AsyncIndex) -> None:
+        with pytest.raises(PineconeValueError, match="must change something"):
+            await index.update_documents(namespace=NS, filter={"category": {"$eq": "news"}})
+
+
+class TestListDocuments:
+    @respx.mock
+    async def test_optional_fields_absent_stay_off_the_wire(self, index: AsyncIndex) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/{NS}/documents/list").mock(
+            return_value=LIST_OK_LAST_PAGE
+        )
+        records = await index.list_documents(namespace=NS).to_list()
+        assert [record.id for record in records] == ["doc-1"]
+        assert _body(route) == {}
+
+    @respx.mock
+    async def test_prefix_and_limit_reach_the_body(self, index: AsyncIndex) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/{NS}/documents/list").mock(
+            return_value=LIST_OK_LAST_PAGE
+        )
+        await index.list_documents(namespace=NS, prefix="doc-", limit=20).to_list()
+        assert _body(route) == {"prefix": "doc-", "limit": 20}
+
+    @respx.mock
+    async def test_pagination_is_followed_across_pages(self, index: AsyncIndex) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/{NS}/documents/list").mock(
+            side_effect=[
+                httpx.Response(
+                    200,
+                    json={
+                        "documents": [{"_id": "doc-1"}, {"_id": "doc-2"}],
+                        "pagination": {"next": "doc-2"},
+                        "namespace": NS,
+                        "usage": {"read_units": 1},
+                    },
+                ),
+                httpx.Response(
+                    200,
+                    json={
+                        "documents": [{"_id": "doc-3"}],
+                        "namespace": NS,
+                        "usage": {"read_units": 1},
+                    },
+                ),
+            ]
+        )
+        paginator = index.list_documents(namespace=NS, prefix="doc-")
+        assert [record.id async for record in paginator] == ["doc-1", "doc-2", "doc-3"]
+        assert route.call_count == 2
+        assert json.loads(route.calls[1].request.content) == {
+            "prefix": "doc-",
+            "pagination_token": "doc-2",
+        }
+        assert paginator.pagination_token is None
+
+    @respx.mock
+    async def test_initial_pagination_token_resumes(self, index: AsyncIndex) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/{NS}/documents/list").mock(
+            return_value=LIST_OK_LAST_PAGE
+        )
+        await index.list_documents(namespace=NS, pagination_token="doc-9").to_list()
+        assert _body(route) == {"pagination_token": "doc-9"}
+
+    @respx.mock
+    async def test_no_request_issued_until_the_paginator_is_iterated(
+        self, index: AsyncIndex
+    ) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/{NS}/documents/list").mock(
+            return_value=LIST_OK_LAST_PAGE
+        )
+        paginator = index.list_documents(namespace=NS)
+        assert not route.called
+        await paginator.to_list()
+        assert route.call_count == 1
+
+    @respx.mock
+    async def test_namespace_path_segment_is_url_encoded(self, index: AsyncIndex) -> None:
+        route = respx.post(f"{BASE_URL}/namespaces/live%20ns%2Fv1/documents/list").mock(
+            return_value=LIST_OK_LAST_PAGE
+        )
+        await index.list_documents(namespace="live ns/v1").to_list()
+        assert route.called
+
+    @pytest.mark.parametrize("limit", [0, -1, 101])
+    async def test_limit_bounds_rejected_eagerly(self, index: AsyncIndex, limit: int) -> None:
+        with pytest.raises(PineconeValueError, match="'limit' must be between 1 and 100"):
+            index.list_documents(namespace=NS, limit=limit)
+
+    async def test_overlong_prefix_rejected_eagerly(self, index: AsyncIndex) -> None:
+        with pytest.raises(PineconeValueError, match="maximum length of 512"):
+            index.list_documents(namespace=NS, prefix="x" * 513)
+
+    @pytest.mark.parametrize("namespace", ["", "   "])
+    async def test_empty_namespace_rejected_eagerly(
+        self, index: AsyncIndex, namespace: str
+    ) -> None:
+        with pytest.raises(PineconeValueError, match="non-empty string"):
+            index.list_documents(namespace=namespace)
 
 
 class TestBatchUpsertDocuments:

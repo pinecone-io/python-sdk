@@ -1,16 +1,17 @@
-"""2026-07 conformance for the documents operations graduated onto Index (#132).
+"""2026-07 conformance for the documents operations graduated onto Index (#132, #135).
 
-Claims the four document operations the sync ``Index`` implements —
+Claims the six document operations the sync ``Index`` implements —
 ``upsertDocuments``, ``searchDocuments``, ``fetchDocuments``,
-``deleteDocuments``. The async twin (#134) adds its own claims for the same
-operations, and ``updateDocuments``/``listDocuments`` belong to #135.
+``deleteDocuments`` (#132) and ``updateDocuments``, ``listDocuments`` (#135).
+The async twin adds its own claims for the same operations.
 
 Fixtures mirror the response examples and required-field sets of
 ``db_data_2026-07.oas.yaml`` (UpsertDocumentsResponse:2918,
 SearchDocumentsResponse:3089, FetchDocumentsResponse:3182,
-DeleteDocumentsResponse:3234). The search and fetch envelopes are open-schema
-on the wire, so the round-trip runs through the internal msgspec envelopes the
-SDK itself decodes with, the same way ``_ImportListEnvelope`` is claimed for
+DeleteDocumentsResponse:3234, UpdateDocumentsResponse, ListDocumentsResponse).
+The search, fetch, and list envelopes are open-schema or renamed-field on the
+wire, so the round-trip runs through the internal msgspec envelopes the SDK
+itself decodes with, the same way ``_ImportListEnvelope`` is claimed for
 ``listBulkImports``.
 """
 
@@ -25,11 +26,13 @@ import respx
 
 from pinecone._internal.adapters.documents_adapter import (
     _FetchDocumentsEnvelope,
+    _ListDocumentsEnvelope,
     _SearchDocumentsEnvelope,
 )
 from pinecone.index import Index
 from pinecone.models.documents.responses import (
     DeleteDocumentsResponse,
+    UpdateDocumentsResponse,
     UpsertDocumentsResponse,
 )
 from tests.unit.conformance import api_op
@@ -76,6 +79,17 @@ DOC_FETCH: dict[str, Any] = {
     "usage": {"read_units": 5},
 }
 DOC_DELETE: dict[str, Any] = {"matched_records": 42}
+DOC_UPDATE: dict[str, Any] = {"matched_records": 42}
+DOC_UPDATE_INPUT: list[dict[str, Any]] = [
+    {"_id": "doc-1", "title": "Updated title"},
+    {"_id": "doc-2", "_remove_fields": ["content"]},
+]
+DOC_LIST: dict[str, Any] = {
+    "documents": [{"_id": "doc-1"}, {"_id": "doc-2"}],
+    "pagination": {"next": "page-2"},
+    "namespace": NAMESPACE,
+    "usage": {"read_units": 1},
+}
 
 
 @pytest.fixture
@@ -143,3 +157,24 @@ def test_delete_documents(claim: Any, index: Index, respx_mock: respx.MockRouter
     result = index.delete_documents(namespace=NAMESPACE, filter={"category": {"$eq": "news"}})
     assert result.matched_records == 42
     _conforms(claim, route, DeleteDocumentsResponse, DOC_DELETE, ["matched_records"])
+
+
+@api_op("db_data:updateDocuments")
+def test_update_documents(claim: Any, index: Index, respx_mock: respx.MockRouter) -> None:
+    route = respx_mock.post(f"{BASE_URL}/namespaces/{NAMESPACE}/documents/update").mock(
+        return_value=httpx.Response(202, json=DOC_UPDATE)
+    )
+    result = index.update_documents(namespace=NAMESPACE, documents=DOC_UPDATE_INPUT)
+    assert result.matched_records == 42
+    _conforms(claim, route, UpdateDocumentsResponse, DOC_UPDATE, ["matched_records"])
+
+
+@api_op("db_data:listDocuments")
+def test_list_documents(claim: Any, index: Index, respx_mock: respx.MockRouter) -> None:
+    route = respx_mock.post(f"{BASE_URL}/namespaces/{NAMESPACE}/documents/list").mock(
+        return_value=httpx.Response(200, json=DOC_LIST)
+    )
+    page = next(index.list_documents(namespace=NAMESPACE, prefix="doc-", limit=20).pages())
+    assert [record.id for record in page.items] == ["doc-1", "doc-2"]
+    assert page.pagination_token == "page-2"
+    _conforms(claim, route, _ListDocumentsEnvelope, DOC_LIST, ["pagination"])

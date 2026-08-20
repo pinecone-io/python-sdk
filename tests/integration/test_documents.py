@@ -165,6 +165,61 @@ def test_delete_documents_by_ids_filter_and_all(index: Index, namespace: str) ->
     index.delete_documents(namespace=namespace, delete_all=True)
 
 
+def test_update_documents_per_id_and_by_filter(index: Index, namespace: str) -> None:
+    index.upsert_documents(namespace=namespace, documents=DOCS)
+    _wait_for_ids(index, namespace, {"doc-1", "doc-2", "doc-3"})
+
+    per_id = index.update_documents(
+        namespace=namespace,
+        documents=[
+            {"_id": "doc-1", "category": "tech-updated"},
+            {"_id": "doc-2", "_remove_fields": ["category"]},
+            {"_id": "definitely-missing", "category": "no-op"},
+        ],
+    )
+    assert per_id.matched_records is None
+
+    deadline = time.time() + 60
+    while True:
+        patched = index.fetch_documents(namespace=namespace, ids=["doc-1", "doc-2"])
+        settled = patched.documents["doc-1"].get("category") == "tech-updated" and (
+            patched.documents["doc-2"].get("category") is None
+        )
+        if settled or time.time() > deadline:
+            break
+        time.sleep(1)
+    assert patched.documents["doc-1"].get("category") == "tech-updated"
+    assert patched.documents["doc-2"].get("category") is None
+
+    by_filter = index.update_documents(
+        namespace=namespace,
+        filter={"category": {"$eq": "history"}},
+        set_fields={"category": "archive"},
+    )
+    assert by_filter.matched_records == 1
+
+
+def test_list_documents_pages_and_prefix(index: Index, namespace: str) -> None:
+    docs = [{"_id": f"list-{i:03d}", "content": f"document {i}"} for i in range(25)]
+    index.upsert_documents(namespace=namespace, documents=docs)
+    _wait_for_ids(index, namespace, {"list-000", "list-012", "list-024"})
+
+    listed = index.list_documents(namespace=namespace, prefix="list-").to_list()
+    assert [record.id for record in listed] == sorted(doc["_id"] for doc in docs)
+
+    paginator = index.list_documents(namespace=namespace, prefix="list-", limit=10)
+    pages = list(paginator.pages())
+    assert len(pages) >= 3
+    assert len(pages[0].items) == 10
+    assert paginator.pagination_token is None
+
+    narrowed = index.list_documents(namespace=namespace, prefix="list-01").to_list()
+    assert [record.id for record in narrowed] == [f"list-01{i}" for i in range(10)]
+
+    absent = index.list_documents(namespace=namespace, prefix="no-such-prefix-").to_list()
+    assert absent == []
+
+
 def test_batch_upsert_documents(index: Index, namespace: str) -> None:
     docs = [
         {

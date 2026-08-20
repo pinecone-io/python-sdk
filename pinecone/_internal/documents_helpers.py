@@ -20,11 +20,13 @@ from urllib.parse import quote
 import msgspec
 
 from pinecone.errors.exceptions import ValidationError
-from pinecone.models.documents.document import DocumentRecord
+from pinecone.models.documents.document import DocumentRecord, UpdateDocumentRecord
 from pinecone.models.documents.requests import (
     DeleteDocumentsRequest,
     FetchDocumentsRequest,
+    ListDocumentsRequest,
     SearchDocumentsRequest,
+    UpdateDocumentsRequest,
 )
 from pinecone.models.documents.score_by import DocumentScoringMethod
 
@@ -95,6 +97,64 @@ def _validate_documents(
         else:
             raise ValidationError(
                 f"Document at position {position} must be a dict or DocumentRecord, "
+                f"got {type(doc).__name__}"
+            )
+        doc_id: str = item["_id"]
+        if doc_id in seen:
+            raise ValidationError(
+                f"Document at position {position} has duplicate '_id' {doc_id!r}; "
+                "document IDs must be unique within a request."
+            )
+        seen.add(doc_id)
+        normalized.append(item)
+    return normalized
+
+
+def _validate_update_documents(
+    documents: Sequence[Mapping[str, Any] | UpdateDocumentRecord],
+) -> list[dict[str, Any]]:
+    """Validate per-ID document patches and normalize them to wire-shape dicts.
+
+    A patch list is accepted if and only if every element is a dict or
+    :class:`UpdateDocumentRecord` whose ``_id`` satisfies the same contract
+    :func:`_validate_documents` enforces, whose ``_remove_fields`` (when
+    present) is a list of strings naming no field the same patch also sets,
+    and whose ``_id`` is unique within the list.
+
+    Duplicate ``_id`` values are rejected rather than sent: the server
+    applies the patches in a request independently, so two patches to one
+    document would resolve in an unspecified order. This mirrors the
+    duplicate rule ``upsert_documents`` already applies.
+
+    Returns:
+        The patches as plain dicts, in input order.
+
+    Raises:
+        :exc:`PineconeValueError`: If the list is empty or over 1000 entries,
+            or any patch is malformed — the message names the position of the
+            offending patch.
+    """
+    docs = list(documents)
+    if not docs:
+        raise ValidationError("documents must be a non-empty list")
+    if len(docs) > _MAX_DOCUMENTS_PER_REQUEST:
+        raise ValidationError(
+            f"Number of documents ({len(docs)}) exceeds the maximum limit of "
+            f"{_MAX_DOCUMENTS_PER_REQUEST} documents per request."
+        )
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for position, doc in enumerate(docs):
+        if isinstance(doc, UpdateDocumentRecord):
+            item = doc.to_dict()
+        elif isinstance(doc, Mapping):
+            try:
+                item = UpdateDocumentRecord(dict(doc)).to_dict()
+            except ValueError as exc:
+                raise ValidationError(f"Document at position {position}: {exc}") from exc
+        else:
+            raise ValidationError(
+                f"Document at position {position} must be a dict or UpdateDocumentRecord, "
                 f"got {type(doc).__name__}"
             )
         doc_id: str = item["_id"]
@@ -181,6 +241,65 @@ def _build_delete_documents_body(
             ids=list(ids) if ids is not None else None,
             filter=dict(filter) if filter is not None else None,
             delete_all=True if delete_all else None,
+        )
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    body: dict[str, Any] = msgspec.to_builtins(request)
+    return body
+
+
+def _build_update_documents_body(
+    *,
+    documents: Sequence[Mapping[str, Any] | UpdateDocumentRecord] | None,
+    filter: Mapping[str, Any] | None,
+    set_fields: Mapping[str, Any] | None,
+    remove_fields: Sequence[str] | None,
+) -> dict[str, Any]:
+    """Build and validate an ``update_documents`` request body.
+
+    Per-ID patches go through :func:`_validate_update_documents` first, so a
+    malformed patch is reported with its position before the envelope's
+    selector rules are applied.
+
+    Raises:
+        :exc:`PineconeValueError`: If ``documents`` is combined with any of
+            the by-filter fields, neither ``documents`` nor ``filter`` is
+            provided, ``set_fields``/``remove_fields`` are passed without
+            ``filter``, ``filter`` is empty or carries no patch, or any
+            per-ID patch is malformed.
+    """
+    normalized = _validate_update_documents(documents) if documents is not None else None
+    try:
+        request = UpdateDocumentsRequest(
+            documents=list(normalized) if normalized is not None else None,
+            filter=dict(filter) if filter is not None else None,
+            set_fields=dict(set_fields) if set_fields is not None else None,
+            remove_fields=list(remove_fields) if remove_fields is not None else None,
+        )
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    body: dict[str, Any] = msgspec.to_builtins(request)
+    return body
+
+
+def _build_list_documents_body(
+    *,
+    prefix: str | None,
+    limit: int | None,
+    pagination_token: str | None,
+) -> dict[str, Any]:
+    """Build and validate a ``list_documents`` request body.
+
+    Raises:
+        :exc:`PineconeValueError`: If ``prefix`` is over 512 characters or
+            contains a character outside ``\\x01``-``\\x7F``, or ``limit``
+            falls outside 1-100.
+    """
+    try:
+        request = ListDocumentsRequest(
+            prefix=prefix,
+            limit=limit,
+            pagination_token=pagination_token,
         )
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc

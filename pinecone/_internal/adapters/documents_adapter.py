@@ -1,11 +1,13 @@
 """Adapters decoding document-operation responses (2026-07 API).
 
-The search and fetch envelopes are decoded through internal ``msgspec``
-Structs mirroring the 2026-07 wire schemas, then rewrapped in the public
-open-schema response classes so unknown document fields survive verbatim.
-Fields the spec marks required are required here too: a response missing
-one raises :class:`ResponseParsingError` instead of being silently patched
-over with an empty default.
+The search, fetch, and list envelopes are decoded through internal
+``msgspec`` Structs mirroring the 2026-07 wire schemas, then rewrapped in
+the public response classes — for search and fetch so unknown document
+fields survive verbatim through the open-schema wrappers, and for list so
+the envelope's required-field set is enforced independently of the public
+class's defaults. Fields the spec marks required are required here too: a
+response missing one raises :class:`ResponseParsingError` instead of being
+silently patched over with an empty default.
 """
 
 from __future__ import annotations
@@ -21,9 +23,13 @@ from pinecone.models.documents.document import Document
 from pinecone.models.documents.responses import (
     DeleteDocumentsResponse,
     DocumentFetchUsage,
+    DocumentListUsage,
     DocumentSearchUsage,
     FetchDocumentsResponse,
+    ListDocumentsResponse,
+    ListedDocumentRecord,
     SearchDocumentsResponse,
+    UpdateDocumentsResponse,
     UpsertDocumentsResponse,
 )
 from pinecone.models.vectors.responses import Pagination
@@ -44,6 +50,13 @@ class _FetchDocumentsEnvelope(Struct, kw_only=True):
     pagination: Pagination | None = None
 
 
+class _ListDocumentsEnvelope(Struct, kw_only=True):
+    documents: list[ListedDocumentRecord]
+    namespace: str
+    usage: DocumentListUsage
+    pagination: Pagination | None = None
+
+
 class DocumentsAdapter:
     """Adapter for document operation responses."""
 
@@ -58,6 +71,23 @@ class DocumentsAdapter:
         result = decode_response(response.content, DeleteDocumentsResponse)
         result.response_info = extract_response_info(response)
         return result
+
+    @staticmethod
+    def to_update_response(response: httpx.Response) -> UpdateDocumentsResponse:
+        result = decode_response(response.content, UpdateDocumentsResponse)
+        result.response_info = extract_response_info(response)
+        return result
+
+    @staticmethod
+    def to_list_response(response: httpx.Response) -> ListDocumentsResponse:
+        envelope = decode_response(response.content, _ListDocumentsEnvelope)
+        return ListDocumentsResponse(
+            documents=envelope.documents,
+            namespace=envelope.namespace,
+            usage=envelope.usage,
+            pagination=envelope.pagination,
+            response_info=extract_response_info(response),
+        )
 
     @staticmethod
     def to_search_response(response: httpx.Response) -> SearchDocumentsResponse:

@@ -1,6 +1,6 @@
-"""Property-based tests for document-operation validation (#132).
+"""Property-based tests for document-operation validation (#132, #135).
 
-Two properties are pinned here:
+Four properties are pinned here:
 
 * ``_validate_documents`` accepts a document list iff every element carries a
   unique, non-empty, ASCII-only (``\\x01``-``\\x7F``) string ``_id`` of at most
@@ -11,6 +11,12 @@ Two properties are pinned here:
   :3116 — exactly one of ids|filter, pagination_token filter-only;
   DeleteDocumentsRequest:3203 — exactly one of ids|filter|delete_all), and an
   accepted shape serializes exactly the provided selectors.
+* ``_remove_fields`` stays a control key in every accepted per-ID update
+  payload: it serializes as a list of field names, no name it holds also
+  carries a value on the wire, and the list itself is never a field's value.
+* ``_build_list_documents_body`` accepts an argument shape iff ``prefix`` is at
+  most 512 ASCII (``\\x01``-``\\x7F``) characters and ``limit`` falls in
+  [1, 100] (``ListDocumentsRequest``), and serializes exactly what was given.
 """
 
 from __future__ import annotations
@@ -24,6 +30,8 @@ from hypothesis import strategies as st
 from pinecone._internal.documents_helpers import (
     _build_delete_documents_body,
     _build_fetch_documents_body,
+    _build_list_documents_body,
+    _build_update_documents_body,
     _validate_documents,
 )
 from pinecone.errors.exceptions import PineconeValueError
@@ -155,3 +163,110 @@ def test_delete_shape_accept_reject_matches_spec(shape: dict[str, Any]) -> None:
     else:
         with pytest.raises(PineconeValueError):
             _build_delete_documents_body(**shape)
+
+
+# ---------------------------------------------------------------------------
+# Property 3: _remove_fields is a control key, never a document field value
+# ---------------------------------------------------------------------------
+
+_FIELD_NAMES = ["title", "content", "category", "_remove_fields", "year"]
+_field_name = st.sampled_from(_FIELD_NAMES)
+_field_value = st.one_of(
+    st.text(max_size=6),
+    st.integers(),
+    st.booleans(),
+    st.lists(st.text(max_size=4), max_size=3),
+)
+
+_patch = st.builds(
+    lambda set_fields, remove, drop_id: {
+        **({} if drop_id else {"_id": "doc-1"}),
+        **set_fields,
+        **({} if remove is None else {"_remove_fields": remove}),
+    },
+    set_fields=st.dictionaries(_field_name, _field_value, max_size=3),
+    remove=st.one_of(
+        st.none(),
+        st.lists(_field_name, max_size=3),
+        st.just("title"),
+        st.just([1, 2]),
+    ),
+    drop_id=st.booleans(),
+)
+
+
+def _patch_is_valid(patch: dict[str, Any]) -> bool:
+    if not _id_is_valid(patch.get("_id")):
+        return False
+    remove = patch.get("_remove_fields")
+    if remove is None:
+        return True
+    if not isinstance(remove, list) or not all(isinstance(name, str) for name in remove):
+        return False
+    set_names = {key for key in patch if key not in ("_id", "_remove_fields")}
+    return not (set(remove) & set_names)
+
+
+@given(patch=_patch)
+def test_remove_fields_never_serializes_as_a_document_field_value(patch: dict[str, Any]) -> None:
+    if not _patch_is_valid(patch):
+        with pytest.raises(PineconeValueError):
+            _build_update_documents_body(
+                documents=[patch], filter=None, set_fields=None, remove_fields=None
+            )
+        return
+
+    body = _build_update_documents_body(
+        documents=[patch], filter=None, set_fields=None, remove_fields=None
+    )
+    (serialized,) = body["documents"]
+    removed = serialized.get("_remove_fields")
+    set_names = {key for key in serialized if key not in ("_id", "_remove_fields")}
+
+    if removed is None:
+        assert "_remove_fields" not in serialized
+    else:
+        assert isinstance(removed, list)
+        assert all(isinstance(name, str) for name in removed)
+        assert not (set(removed) & set_names), (
+            "a removed field name must not also carry a value on the wire"
+        )
+    for name in set_names:
+        assert serialized[name] is not removed, (
+            "the _remove_fields list must never be a field's value"
+        )
+    assert serialized == patch
+
+
+# ---------------------------------------------------------------------------
+# Property 4: list body accept-iff prefix/limit satisfy the documented bounds
+# ---------------------------------------------------------------------------
+
+_list_shape = st.fixed_dictionaries(
+    {
+        "prefix": st.one_of(
+            st.none(),
+            st.text(alphabet=st.characters(min_codepoint=0x01, max_codepoint=0x7F), max_size=4),
+            st.just("x" * 513),
+            st.just("ünïcode"),
+        ),
+        "limit": st.one_of(st.none(), st.integers(min_value=-5, max_value=105)),
+        "pagination_token": st.one_of(st.none(), st.just("tok-1")),
+    }
+)
+
+
+@given(shape=_list_shape)
+def test_list_shape_accept_reject_matches_spec(shape: dict[str, Any]) -> None:
+    prefix = shape["prefix"]
+    limit = shape["limit"]
+    prefix_ok = prefix is None or (
+        len(prefix) <= 512 and all("\x01" <= ch <= "\x7f" for ch in prefix)
+    )
+    limit_ok = limit is None or 1 <= limit <= 100
+    if prefix_ok and limit_ok:
+        body = _build_list_documents_body(**shape)
+        assert body == {k: v for k, v in shape.items() if v is not None}
+    else:
+        with pytest.raises(PineconeValueError):
+            _build_list_documents_body(**shape)
