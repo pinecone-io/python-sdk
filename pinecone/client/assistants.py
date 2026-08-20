@@ -1544,10 +1544,12 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         Raises:
             :exc:`ApiError`: If the server returns an HTTP error.
         """
+        from pinecone._internal.http_client import _encode_json
+
         with http.stream(
             "POST",
             url,
-            content=orjson.dumps(body),
+            content=_encode_json(body),
             headers={"Content-Type": "application/json"},
         ) as response:
             for line in response.iter_lines():
@@ -1589,10 +1591,12 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         Raises:
             :exc:`ApiError`: If the server returns an HTTP error.
         """
+        from pinecone._internal.http_client import _encode_json
+
         with http.stream(
             "POST",
             url,
-            content=orjson.dumps(body),
+            content=_encode_json(body),
             headers={"Content-Type": "application/json"},
         ) as response:
             for line in response.iter_lines():

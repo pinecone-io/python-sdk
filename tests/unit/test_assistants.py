@@ -27,6 +27,7 @@ from pinecone.errors.exceptions import (
     PineconeConnectionError,
     PineconeError,
     PineconeTimeoutError,
+    PineconeTypeError,
     PineconeValueError,
 )
 from pinecone.models.assistant.file_model import AssistantFileModel
@@ -2746,6 +2747,58 @@ def test_chat_streaming_request_body(assistants: Assistants) -> None:
     assert request_body["stream"] is True
     assert "include_highlights" in request_body
     assert request_body["include_highlights"] is False
+
+
+# ---------------------------------------------------------------------------
+# streaming bodies — unencodable values (issue #196)
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+def test_chat_streaming_unencodable_filter_raises_typed_error(assistants: Assistants) -> None:
+    """A streaming body is encoded at the call site rather than by the HTTP
+    client, so it needs its own route to the typed error."""
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    chat_route = respx.post(f"{DATA_PLANE_URL}/chat/test-assistant").mock(
+        return_value=httpx.Response(200, content=b""),
+    )
+
+    stream = assistants.chat(
+        assistant_name="test-assistant",
+        messages=[{"content": "Hello"}],
+        stream=True,
+        filter={"views": {"$gt": 2**64}},
+    )
+    with pytest.raises(PineconeTypeError) as excinfo:
+        list(stream)  # type: ignore[call-overload]
+    assert excinfo.value.path == "filter.views.$gt"
+    assert isinstance(excinfo.value, TypeError)
+    assert not chat_route.called
+
+
+@respx.mock
+def test_chat_completions_streaming_unencodable_filter_raises_typed_error(
+    assistants: Assistants,
+) -> None:
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    completions_route = respx.post(f"{DATA_PLANE_URL}/chat/test-assistant/chat/completions").mock(
+        return_value=httpx.Response(200, content=b"")
+    )
+
+    stream = assistants.chat_completions(
+        assistant_name="test-assistant",
+        messages=[{"content": "Hello"}],
+        stream=True,
+        filter={"views": {"$gt": 2**64}},
+    )
+    with pytest.raises(PineconeTypeError) as excinfo:
+        list(stream)  # type: ignore[call-overload]
+    assert excinfo.value.path == "filter.views.$gt"
+    assert not completions_route.called
 
 
 # ---------------------------------------------------------------------------

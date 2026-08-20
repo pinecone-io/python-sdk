@@ -10,7 +10,7 @@ import random
 import socket
 import sys
 import time
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator, Generator, Mapping, Sequence
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -101,7 +101,7 @@ def _describe_int(value: int) -> str:
     return text
 
 
-def _locate_unencodable(body: Any) -> tuple[str, str] | None:
+def _locate_unencodable(body: Any, path_prefix: str = "") -> tuple[str, str] | None:
     """Find the value in *body* that orjson refused, as ``(path, reason)``.
 
     Depth-first in document order, so the reported path is the first offender a
@@ -111,10 +111,14 @@ def _locate_unencodable(body: Any) -> tuple[str, str] | None:
     cause cannot be pinned to a single value (nesting depth, or an orjson
     rejection this walk does not model).
 
+    *path_prefix* locates *body* within the request the caller made, for
+    encoders that serialize one piece at a time: an NDJSON line is its own
+    ``orjson.dumps`` call, but only ``records[2].x`` is actionable.
+
     Only ever called after ``orjson.dumps`` has already failed, so its cost
     stays off the success path entirely.
     """
-    stack: list[tuple[Any, str, int]] = [(body, "", 0)]
+    stack: list[tuple[Any, str, int]] = [(body, path_prefix, 0)]
     while stack:
         value, path, depth = stack.pop()
         if depth > _ENCODE_WALK_MAX_DEPTH:
@@ -157,7 +161,7 @@ def _locate_unencodable(body: Any) -> tuple[str, str] | None:
     return None
 
 
-def _encode_error(body: Any, exc: TypeError) -> PineconeTypeError:
+def _encode_error(body: Any, exc: TypeError, path_prefix: str = "") -> PineconeTypeError:
     """Build the Pinecone-typed replacement for an orjson encode ``TypeError``.
 
     ``PineconeTypeError`` subclasses both ``PineconeError`` and the built-in
@@ -165,14 +169,14 @@ def _encode_error(body: Any, exc: TypeError) -> PineconeTypeError:
     the bare ``TypeError`` still catch it, and ``except PineconeError`` now
     works too.
     """
-    located = _locate_unencodable(body)
+    located = _locate_unencodable(body, path_prefix)
     if located is None:
-        return PineconeTypeError(f"Request body cannot be JSON-encoded: {exc}")
+        return PineconeTypeError(f"Request body cannot be JSON-encoded: {exc}", path_prefix or None)
     path, reason = located
     return PineconeTypeError(f"Request body cannot be JSON-encoded: {reason} ({exc})", path)
 
 
-def _encode_json(body: Any) -> bytes:
+def _encode_json(body: Any, path_prefix: str = "") -> bytes:
     """Serialize *body* to JSON bytes using orjson (2-3x faster than stdlib json).
 
     orjson reports an unencodable body as a bare ``TypeError`` that names
@@ -184,7 +188,19 @@ def _encode_json(body: Any) -> bytes:
     try:
         return orjson.dumps(body)
     except TypeError as exc:
-        raise _encode_error(body, exc) from exc
+        raise _encode_error(body, exc, path_prefix) from exc
+
+
+def _encode_ndjson(records: Sequence[Mapping[str, Any]]) -> bytes:
+    """Serialize *records* as an NDJSON request body, one JSON object per line.
+
+    Each record is its own encode call, so a rejected value is reported against
+    the index the caller passed it at — ``records[2].metadata.n`` rather than an
+    offset into a concatenated blob (issue #196).
+    """
+    return b"".join(
+        _encode_json(record, f"records[{index}]") + b"\n" for index, record in enumerate(records)
+    )
 
 
 def _prepare_json_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:

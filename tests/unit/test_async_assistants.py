@@ -26,6 +26,7 @@ from pinecone.errors.exceptions import (
     PineconeConnectionError,
     PineconeError,
     PineconeTimeoutError,
+    PineconeTypeError,
     PineconeValueError,
 )
 from pinecone.models.assistant.file_model import AssistantFileModel
@@ -2747,6 +2748,61 @@ async def test_async_chat_streaming_request_body(async_assistants: AsyncAssistan
     assert request_body["stream"] is True
     assert "include_highlights" in request_body
     assert request_body["include_highlights"] is False
+
+
+# ---------------------------------------------------------------------------
+# streaming bodies — unencodable values (issue #196)
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_async_chat_streaming_unencodable_filter_raises_typed_error(
+    async_assistants: AsyncAssistants,
+) -> None:
+    """The async streaming body reports the same path as the sync one."""
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    chat_route = respx.post(f"{DATA_PLANE_URL}/chat/test-assistant").mock(
+        return_value=httpx.Response(200, content=b""),
+    )
+
+    async_iter = await async_assistants.chat(
+        assistant_name="test-assistant",
+        messages=[{"content": "Hello"}],
+        stream=True,
+        filter={"views": {"$gt": 2**64}},
+    )
+    with pytest.raises(PineconeTypeError) as excinfo:
+        async for _ in async_iter:  # type: ignore[union-attr]
+            pass
+    assert excinfo.value.path == "filter.views.$gt"
+    assert isinstance(excinfo.value, TypeError)
+    assert not chat_route.called
+
+
+@respx.mock
+async def test_async_chat_completions_streaming_unencodable_filter_raises_typed_error(
+    async_assistants: AsyncAssistants,
+) -> None:
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    completions_route = respx.post(f"{DATA_PLANE_URL}/chat/test-assistant/chat/completions").mock(
+        return_value=httpx.Response(200, content=b"")
+    )
+
+    async_iter = await async_assistants.chat_completions(
+        assistant_name="test-assistant",
+        messages=[{"content": "Hello"}],
+        stream=True,
+        filter={"views": {"$gt": 2**64}},
+    )
+    with pytest.raises(PineconeTypeError) as excinfo:
+        async for _ in async_iter:  # type: ignore[union-attr]
+            pass
+    assert excinfo.value.path == "filter.views.$gt"
+    assert not completions_route.called
 
 
 # ---------------------------------------------------------------------------

@@ -1322,10 +1322,12 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
         Raises:
             :exc:`ApiError`: If the server returns an HTTP error.
         """
+        from pinecone._internal.http_client import _encode_json
+
         async with data_http.stream(
             "POST",
             url,
-            content=orjson.dumps(body),
+            content=_encode_json(body),
             headers={"Content-Type": "application/json"},
         ) as response:
             async for line in response.aiter_lines():
@@ -1476,10 +1478,12 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
         Raises:
             :exc:`ApiError`: If the server returns an HTTP error.
         """
+        from pinecone._internal.http_client import _encode_json
+
         async with data_http.stream(
             "POST",
             url,
-            content=orjson.dumps(body),
+            content=_encode_json(body),
             headers={"Content-Type": "application/json"},
         ) as response:
             async for line in response.aiter_lines():

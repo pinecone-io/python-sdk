@@ -588,7 +588,7 @@ class Index:
             if "_id" not in record and "id" not in record:
                 raise ValidationError(f"Record at index {i} must contain an '_id' or 'id' field")
 
-        import orjson
+        from pinecone._internal.http_client import _encode_ndjson
 
         normalized: list[dict[str, Any]] = []
         for i, record in enumerate(records):
@@ -603,14 +603,13 @@ class Index:
                 raise ValidationError(f"Record at index {i}: '_id' must be a string, got {got!r}")
             normalized.append(r)
 
-        ndjson_lines = [orjson.dumps(r).decode("utf-8") for r in normalized]
-        ndjson_body = "\n".join(ndjson_lines) + "\n"
+        ndjson_body = _encode_ndjson(normalized)
 
         logger.info("Upserting %d records into namespace %r (NDJSON)", len(records), namespace)
         response = self._http.post(
             f"/records/namespaces/{quote(namespace, safe='')}/upsert",
             timeout=timeout,
-            content=ndjson_body.encode("utf-8"),
+            content=ndjson_body,
             headers={"Content-Type": "application/x-ndjson"},
         )
         result = UpsertRecordsResponse(record_count=len(records))
