@@ -6,6 +6,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from functools import cached_property
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from pinecone._internal.adapters.inference_adapter import (
     InferenceAdapter,
@@ -365,15 +366,23 @@ class AsyncInference:
     ) -> ModelInfo:
         """Get detailed information about a specific model.
 
+        Pass the canonical model name. The lookup is an exact match against the
+        model's canonical name and does not resolve aliases, so an alias such as
+        ``nvidia/llama-text-embed-v2`` raises :exc:`NotFoundError` even though
+        ``embed`` accepts it. The name is percent-encoded into the path, so an
+        alias containing ``/`` reaches this route and 404s rather than 405s.
+
         Args:
-            model (str): The model identifier to look up.
+            model (str): The model identifier to look up. Use the canonical
+                model name, not an alias.
 
         Returns:
             A :class:`ModelInfo` with full model details.
 
         Raises:
             :exc:`PineconeValueError`: If *model* is empty.
-            :exc:`NotFoundError`: If the model does not exist.
+            :exc:`NotFoundError`: If the model does not exist, or if *model* is
+                an alias rather than a canonical model name.
             :exc:`ApiError`: If the API returns another error response.
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
@@ -397,7 +406,7 @@ class AsyncInference:
         effective: str = model or model_name or ""
         require_non_empty("model", effective)
         logger.info("Describing model %r", effective)
-        response = await self._http.get(f"/models/{effective}")
+        response = await self._http.get(f"/models/{quote(effective, safe='')}")
         result = self._adapter.to_model_info(response.content)
         logger.debug("Described model %r", effective)
         return result
