@@ -234,7 +234,7 @@ async def test_async_list_files_page_accepts_legacy_limit(
     mock_data_response = MagicMock()
     mock_data_response.content = b"{}"
     mock_data_http.get.return_value = mock_data_response
-    mock_async_assistants._list_files_http = AsyncMock(return_value=mock_data_http)  # type: ignore[method-assign]
+    mock_async_assistants._data_plane_http = AsyncMock(return_value=mock_data_http)  # type: ignore[method-assign]
     mock_async_assistants._adapter.to_file_list.return_value = ListFilesResponse(  # type: ignore[attr-defined]
         files=[]
     )

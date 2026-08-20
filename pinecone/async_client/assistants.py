@@ -32,9 +32,14 @@ from pinecone.models.assistant.chat import ChatCompletionResponse, ChatResponse
 from pinecone.models.assistant.context import ContextResponse
 from pinecone.models.assistant.evaluation import AlignmentResult
 from pinecone.models.assistant.file_model import AssistantFileModel
-from pinecone.models.assistant.list import ListAssistantsResponse, ListFilesResponse
+from pinecone.models.assistant.list import (
+    ListAssistantsResponse,
+    ListFilesResponse,
+    ListOperationsResponse,
+)
 from pinecone.models.assistant.message import Message
 from pinecone.models.assistant.model import AssistantModel
+from pinecone.models.assistant.operation import OperationModel
 from pinecone.models.assistant.options import ContextOptions
 from pinecone.models.assistant.streaming import (
     AsyncChatCompletionStream,
@@ -54,6 +59,36 @@ _VALID_REGIONS = ("us", "eu")
 _CREATE_POLL_INTERVAL_SECONDS = 0.5
 _DELETE_POLL_INTERVAL_SECONDS = 5
 _UPLOAD_POLL_INTERVAL_SECONDS = 5
+
+# Checked client-side because the backend answers an unparseable filter with a
+# 400 that does not enumerate what it would have accepted.
+_VALID_OPERATION_TYPES = ("upload_file", "upsert_file", "update_file_metadata", "delete_file")
+_VALID_OPERATION_STATUSES = ("Processing", "Completed", "Failed")
+
+
+def _operation_target(file_id: str | None) -> str:
+    return f"file {file_id!r}" if file_id is not None else "the file"
+
+
+def _validate_choice(name: str, value: str, valid: tuple[str, ...]) -> str:
+    if value not in valid:
+        raise PineconeValueError(f"{name} must be one of {valid!r}, got {value!r}")
+    return value
+
+
+def _operation_failure_message(action: str, file_id: str | None, operation: OperationModel) -> str:
+    """The failure text a caller sees when a file operation reports ``"Failed"``.
+
+    The server's ``error_message`` is quoted verbatim: it is the only part that
+    says *why* ("Uploaded file can only currently be either a pdf or txt file"),
+    and paraphrasing it is the difference between a caller fixing the input and
+    a caller guessing.
+    """
+    detail = operation.error or "the server reported no error message"
+    return (
+        f"{action} of {_operation_target(file_id)} failed "
+        f"(operation_id={operation.operation_id!r}): {detail}"
+    )
 
 
 class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
@@ -698,7 +733,7 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
 
         import json as _json
 
-        list_http = await self._list_files_http(assistant_name)
+        list_http = await self._data_plane_http(assistant_name)
         params: dict[str, str | int] = {}
         if page_size is not None:
             params["limit"] = page_size
@@ -765,109 +800,44 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
 
         return AsyncPaginator(fetch_page=fetch_page, initial_token=pagination_token, limit=limit)
 
-    async def _poll_file_until_processed(
-        self,
-        data_http: AsyncHTTPClient,
-        assistant_name: str,
-        file_id: str,
-        timeout: float | None,
-    ) -> AssistantFileModel:
-        """Poll ``GET /files/{assistant_name}/{file_id}`` until processing completes."""
-        start = time.monotonic()
-        while True:
-            response = await data_http.get(f"/files/{assistant_name}/{file_id}")
-            file_model = self._adapter.to_file(response.content)
-
-            if file_model.status != "Processing":
-                if file_model.status == "ProcessingFailed":
-                    raise PineconeError(
-                        f"File processing failed for '{file_id}'. Call describe_operation() "
-                        "for the failure reason."
-                    )
-                return file_model
-
-            if timeout is not None:
-                elapsed = time.monotonic() - start
-                if elapsed >= timeout:
-                    raise PineconeTimeoutError(
-                        f"File processing timed out after {timeout}s (operation_id={file_id})"
-                    )
-            await asyncio.sleep(_UPLOAD_POLL_INTERVAL_SECONDS)
-
-    async def _list_files_http(self, assistant_name: str) -> AsyncHTTPClient:
-        """Return an uncached AsyncHTTPClient for the assistant's data-plane host."""
-        from pinecone._internal.config import PineconeConfig as _PineconeConfig
-        from pinecone._internal.http_client import AsyncHTTPClient as _AsyncHTTPClient
-
-        assistant = await self.describe(name=assistant_name)
-        if not assistant.host:
-            raise PineconeValueError(f"Assistant '{assistant_name}' has no data-plane host")
-        data_config = _PineconeConfig(
-            api_key=self._config.api_key,
-            host=f"{assistant.host.rstrip('/')}/assistant",
-            timeout=self._config.timeout,
-            additional_headers=self._config.additional_headers,
-            source_tag=self._config.source_tag or "",
-            proxy_url=self._config.proxy_url or "",
-            proxy_headers=self._config.proxy_headers,
-            ssl_ca_certs=self._config.ssl_ca_certs,
-            ssl_verify=self._config.ssl_verify,
-            connection_pool_maxsize=self._config.connection_pool_maxsize,
-            retry_config=self._config.retry_config,
-        )
-        return _AsyncHTTPClient(data_config, ASSISTANT_API_VERSION)
-
-    async def _upsert_http(self, assistant_name: str) -> AsyncHTTPClient:
-        """Return an AsyncHTTPClient for the assistant's data-plane host for upserts."""
-        from pinecone._internal.config import PineconeConfig as _PineconeConfig
-        from pinecone._internal.http_client import AsyncHTTPClient as _AsyncHTTPClient
-
-        assistant = await self.describe(name=assistant_name)
-        if not assistant.host:
-            raise PineconeValueError(f"Assistant '{assistant_name}' has no data-plane host")
-        data_config = _PineconeConfig(
-            api_key=self._config.api_key,
-            host=f"{assistant.host.rstrip('/')}/assistant",
-            timeout=self._config.timeout,
-            additional_headers=self._config.additional_headers,
-            source_tag=self._config.source_tag or "",
-            proxy_url=self._config.proxy_url or "",
-            proxy_headers=self._config.proxy_headers,
-            ssl_ca_certs=self._config.ssl_ca_certs,
-            ssl_verify=self._config.ssl_verify,
-            connection_pool_maxsize=self._config.connection_pool_maxsize,
-            retry_config=self._config.retry_config,
-        )
-        return _AsyncHTTPClient(data_config, ASSISTANT_API_VERSION)
-
     async def _poll_operation_until_done(
         self,
-        upsert_http: AsyncHTTPClient,
         assistant_name: str,
         operation_id: str,
         timeout: float | None,
-    ) -> None:
-        """Poll ``GET /operations/{assistant_name}/{operation_id}`` until done."""
+        *,
+        action: str,
+        file_id: str | None = None,
+        poll_interval: float = _UPLOAD_POLL_INTERVAL_SECONDS,
+    ) -> OperationModel:
+        """Poll :meth:`describe_operation` until the operation is done.
+
+        Returns the terminal :class:`OperationModel`. Raises
+        :exc:`PineconeError` when the operation reports ``"Failed"``, quoting
+        the server's ``error_message`` verbatim, and
+        :exc:`PineconeTimeoutError` when *timeout* elapses first.
+        """
         start = time.monotonic()
         while True:
-            response = await upsert_http.get(f"/operations/{assistant_name}/{operation_id}")
-            op_model = self._adapter.to_operation(response.content)
+            operation = await self.describe_operation(
+                assistant_name=assistant_name, operation_id=operation_id
+            )
 
-            if op_model.status != "Processing":
-                if op_model.status == "Failed":
-                    error_msg = op_model.error or "Unknown operation error"
-                    raise PineconeError(
-                        f"Upsert operation failed for operation '{operation_id}': {error_msg}"
-                    )
-                return
+            if operation.status != "Processing":
+                if operation.status == "Failed":
+                    raise PineconeError(_operation_failure_message(action, file_id, operation))
+                return operation
 
             if timeout is not None:
                 elapsed = time.monotonic() - start
                 if elapsed >= timeout:
                     raise PineconeTimeoutError(
-                        f"Upsert operation timed out after {timeout}s (operation_id={operation_id})"
+                        f"{action} of {_operation_target(file_id)} did not finish within "
+                        f"{timeout}s (operation_id={operation_id!r}, "
+                        f"percent_complete={operation.percent_complete}). The operation is "
+                        "still running server-side; call describe_operation() to follow it."
                     )
-            await asyncio.sleep(_UPLOAD_POLL_INTERVAL_SECONDS)
+            await asyncio.sleep(poll_interval)
 
     async def upload_file(
         self,
@@ -886,6 +856,12 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
         Uploads a file from a local path or an in-memory byte stream, then
         polls until server-side processing completes.
 
+        On ``2026-07`` both the upload (``POST /files/{name}``) and the
+        upsert (``PUT /files/{name}/{file_id}``) answer ``202`` with an
+        operation envelope rather than the file. The handshake — read the
+        operation, resolve the file id, poll the operation, then describe the
+        file — happens inside this method, so the return type is unchanged.
+
         Args:
             assistant_name: Name of the target assistant.
             file_path: Path to a local file to upload. Mutually exclusive
@@ -894,10 +870,15 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 with *file_path*. Use *file_name* to set the filename.
             file_name: Filename to associate with *file_stream*. Ignored
                 when *file_path* is provided.
-            metadata: Optional metadata dictionary. Sent as a JSON string.
+            metadata: Optional metadata dictionary, at most 16KB once
+                JSON-encoded. Sent as a ``metadata`` multipart form field —
+                on ``2026-07`` the metadata query parameter is rejected.
             multimodal: Whether to enable multimodal processing for PDFs.
-            file_id: Optional caller-specified file identifier for upsert
-                behavior.
+                Sent as a ``multimodal`` query parameter.
+            file_id: Optional caller-specified file identifier. When given,
+                the file is upserted with ``PUT /files/{name}/{file_id}``,
+                replacing any existing file with that identifier. Must be
+                1-128 characters of ``[A-Za-z0-9_-]``.
             timeout: Seconds to wait for processing to complete. ``None``
                 (default) polls indefinitely. Use ``-1`` to return
                 immediately after upload with one describe call. Raises
@@ -914,7 +895,8 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 exist.
             :exc:`PineconeTimeoutError`: If processing does not complete
                 before *timeout*.
-            :exc:`PineconeError`: If server-side processing fails.
+            :exc:`PineconeError`: If server-side processing fails, or if the
+                accepted upload does not identify the file it created.
 
         Examples:
 
@@ -954,62 +936,57 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
 
         data_http = await self._data_plane_http(assistant_name)
 
-        params: dict[str, str] = {}
+        form: dict[str, Any] = {"file": (upload_name, handle)}
         if metadata is not None:
-            params["metadata"] = _json.dumps(metadata)
+            form["metadata"] = (None, _json.dumps(metadata))
+        params: dict[str, str] = {}
         if multimodal is not None:
             params["multimodal"] = str(multimodal).lower()
 
         if file_id is not None:
-            # Use the 2026-04 upsert endpoint: PUT /files/{assistant_name}/{file_id}
-            upsert_http = await self._upsert_http(assistant_name)
+            action = "Upsert"
             logger.info(
                 "Upserting file %r (id=%s) to assistant %r",
                 upload_name,
                 file_id,
                 assistant_name,
             )
-            # v202604 rejects metadata as a query param; send it as a multipart field instead.
-            upsert_files: dict[str, Any] = {"file": (upload_name, handle)}
-            if metadata is not None:
-                upsert_files["metadata"] = (None, _json.dumps(metadata))
-            upsert_query: dict[str, str] = {}
-            if multimodal is not None:
-                upsert_query["multimodal"] = str(multimodal).lower()
-            upsert_response = await upsert_http.put(
-                f"/files/{assistant_name}/{file_id}",
-                files=upsert_files,
-                params=upsert_query,
+            response = await data_http.put(
+                f"/files/{assistant_name}/{file_id}", files=form, params=params
             )
-            op_model = self._adapter.to_operation(upsert_response.content)
-            operation_id = op_model.operation_id
-            if timeout == -1:
-                return await self.describe_file(assistant_name=assistant_name, file_id=file_id)
-            await self._poll_operation_until_done(
-                upsert_http, assistant_name, operation_id, timeout
-            )
-            return await self.describe_file(assistant_name=assistant_name, file_id=file_id)
+        else:
+            action = "Upload"
+            logger.info("Uploading file %r to assistant %r", upload_name, assistant_name)
+            response = await data_http.post(f"/files/{assistant_name}", files=form, params=params)
+        operation = self._adapter.to_operation(response.content)
 
-        logger.info("Uploading file %r to assistant %r", upload_name, assistant_name)
-        response = await data_http.post(
-            f"/files/{assistant_name}",
-            files={"file": (upload_name, handle)},
-            params=params,
-        )
-        file_model = self._adapter.to_file(response.content)
+        uploaded_id = file_id if file_id is not None else operation.file_id
+        if uploaded_id is None:
+            raise PineconeError(
+                f"{action} of {upload_name!r} was accepted (operation_id="
+                f"{operation.operation_id!r}) but the response did not name the file it "
+                "created, so there is nothing to describe. Call describe_operation() with "
+                "that operation id to find the file."
+            )
         logger.debug(
-            "Uploaded file %r (id=%s, status=%s)",
+            "%s of %r accepted (file_id=%s, operation_id=%s)",
+            action,
             upload_name,
-            file_model.id,
-            file_model.status,
+            uploaded_id,
+            operation.operation_id,
         )
 
         if timeout == -1:
-            return await self.describe_file(assistant_name=assistant_name, file_id=file_model.id)
+            return await self.describe_file(assistant_name=assistant_name, file_id=uploaded_id)
 
-        return await self._poll_file_until_processed(
-            data_http, assistant_name, file_model.id, timeout
+        await self._poll_operation_until_done(
+            assistant_name,
+            operation.operation_id,
+            timeout,
+            action=action,
+            file_id=uploaded_id,
         )
+        return await self.describe_file(assistant_name=assistant_name, file_id=uploaded_id)
 
     async def delete_file(
         self,
@@ -1020,26 +997,31 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
     ) -> None:
         """Delete a file from a Pinecone assistant.
 
-        Sends a DELETE request, then polls every 5 seconds until the file is
-        confirmed gone (404 from describe_file). Other errors during polling
-        propagate immediately.
+        On ``2026-07`` deletion is genuinely asynchronous. The API answers
+        either ``202`` with an operation envelope — deletion is pending, and
+        this method polls that operation every 5 seconds until it finishes —
+        or ``204`` with no body, which the backend uses for a file it could
+        remove at once (one that previously failed processing, or was already
+        being deleted). Both are success; only the ``202`` case polls.
 
         Args:
-            assistant_name (str): Name of the assistant that owns the file.
-            file_id (str): Unique identifier of the file to delete.
-            timeout (float | None): Seconds to wait for the file to be deleted.
-                Use ``None`` (default) to poll indefinitely. Use ``-1`` to return
-                immediately without polling. Use a positive value to poll with
-                a deadline. Raises :exc:`PineconeTimeoutError` if the file
-                is not gone before the deadline.
+            assistant_name: Name of the assistant that owns the file.
+            file_id: Unique identifier of the file to delete.
+            timeout: Seconds to wait for the deletion to finish. Use ``None``
+                (default) to poll indefinitely. Use ``-1`` to return as soon
+                as the request is accepted — the file may still exist when
+                this returns. Use a positive value to poll with a deadline.
+                Raises :exc:`PineconeTimeoutError` if the deletion is not
+                done before the deadline.
+
+        Returns:
+            ``None``
 
         Raises:
-            :exc:`PineconeError`: If server-side file deletion fails.
-            :exc:`PineconeTimeoutError`: If the file still exists after
-                *timeout* seconds.
+            :exc:`PineconeError`: If the deletion operation reports failure.
+            :exc:`PineconeTimeoutError`: If the deletion has not finished
+                after *timeout* seconds.
             :exc:`ApiError`: If the API returns an error response.
-
-        :rtype: None
 
         Examples:
 
@@ -1052,30 +1034,216 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
         """
         data_http = await self._data_plane_http(assistant_name)
         logger.info("Deleting file %r from assistant %r", file_id, assistant_name)
-        await data_http.delete(f"/files/{assistant_name}/{file_id}")
-        logger.debug("Deleted file %r from assistant %r", file_id, assistant_name)
+        response = await data_http.delete(f"/files/{assistant_name}/{file_id}")
+
+        if response.status_code == 204 or not response.content:
+            logger.debug("File %r was deleted immediately (no operation)", file_id)
+            return
+
+        operation = self._adapter.to_operation(response.content)
+        logger.debug(
+            "Deletion of file %r accepted (operation_id=%s)", file_id, operation.operation_id
+        )
 
         if timeout == -1:
             return
 
-        start = time.monotonic()
-        while True:
-            try:
-                file_model = await self.describe_file(
-                    assistant_name=assistant_name, file_id=file_id
+        await self._poll_operation_until_done(
+            assistant_name,
+            operation.operation_id,
+            timeout,
+            action="Deletion",
+            file_id=file_id,
+            poll_interval=_DELETE_POLL_INTERVAL_SECONDS,
+        )
+
+    async def describe_operation(
+        self,
+        *,
+        assistant_name: str,
+        operation_id: str,
+    ) -> OperationModel:
+        """Get the current status of a long-running assistant operation.
+
+        The file write endpoints — :meth:`upload_file` and :meth:`delete_file` —
+        answer ``202`` with an operation id and finish server-side. Those
+        methods poll for you, so reach for this one when you asked them *not*
+        to: ``timeout=-1`` returns as soon as the request is accepted, and this
+        is how you follow what it started. It is also how you find the file a
+        fire-and-forget upload created, via :attr:`OperationModel.file_id`.
+
+        Args:
+            assistant_name: Name of the assistant that owns the operation.
+            operation_id: Identifier of the operation to describe, as returned
+                in the ``operation_id`` of a 202 envelope or by
+                :meth:`list_operations`.
+
+        Returns:
+            :class:`OperationModel` with ``status``, ``operation_type``,
+            ``file_id``, ``percent_complete``, ``created_at``,
+            ``completed_on``, ``ingestion_units`` and ``error``. ``status`` is
+            ``"Processing"``, ``"Completed"`` or ``"Failed"``; ``error``
+            carries the reason only for ``"Failed"``.
+
+        Raises:
+            :exc:`NotFoundError`: If the assistant or the operation does not
+                exist. Both successful and failed operations are retained for
+                30 days after they finish, and are 404 afterwards.
+            :exc:`ApiError`: If the API returns an error response.
+
+        Examples:
+
+            .. code-block:: python
+
+                operation = await pc.assistants.describe_operation(
+                    assistant_name="my-assistant",
+                    operation_id="op-1234-abcd-5678",
                 )
-            except NotFoundError:
-                return
-            if file_model.status not in ("Deleting", None):
-                raise PineconeError(
-                    f"File deletion failed for '{file_id}': the file is in state "
-                    f"{file_model.status!r}. Call describe_operation() for the failure reason."
+                print(operation.status, operation.percent_complete)
+        """
+        data_http = await self._data_plane_http(assistant_name)
+        logger.info("Describing operation %r in assistant %r", operation_id, assistant_name)
+        response = await data_http.get(f"/operations/{assistant_name}/{operation_id}")
+        return self._adapter.to_operation(response.content)
+
+    def list_operations(
+        self,
+        *,
+        assistant_name: str,
+        operation_type: str | None = None,
+        status: str | None = None,
+        limit: int | None = None,
+        pagination_token: str | None = None,
+    ) -> AsyncPaginator[OperationModel]:
+        """List an assistant's operations with lazy async pagination.
+
+        Covers operations that are still in progress as well as ones that
+        finished — both successes and failures are retained for 30 days after
+        completion.
+
+        Args:
+            assistant_name: Name of the assistant whose operations to list.
+            operation_type: Restrict the listing to one kind of operation. One
+                of ``"upload_file"``, ``"upsert_file"``,
+                ``"update_file_metadata"`` or ``"delete_file"``.
+            status: Restrict the listing to one status. One of
+                ``"Processing"``, ``"Completed"`` or ``"Failed"``
+                (case-sensitive).
+            limit: Maximum number of operations to yield across all pages.
+                ``None`` (default) yields all of them.
+            pagination_token: Token to resume pagination from a previous call.
+
+        Returns:
+            :class:`AsyncPaginator` over :class:`OperationModel` objects.
+            Supports ``async for`` loops, ``.to_list()``, ``.pages()``, and
+            ``limit``.
+
+        Raises:
+            :exc:`PineconeValueError`: If *operation_type* or *status* is not
+                one of the values above.
+            :exc:`NotFoundError`: If the assistant does not exist.
+            :exc:`ApiError`: If the API returns an error response.
+
+        Examples:
+
+            .. code-block:: python
+
+                async for op in pc.assistants.list_operations(assistant_name="my-assistant"):
+                    print(op.operation_id, op.status, op.percent_complete)
+
+                pending = await pc.assistants.list_operations(
+                    assistant_name="my-assistant",
+                    operation_type="upload_file",
+                    status="Processing",
+                ).to_list()
+        """
+        logger.info("Listing operations for assistant %r", assistant_name)
+
+        async def fetch_page(token: str | None) -> Page[OperationModel]:
+            result = await self.list_operations_page(
+                assistant_name=assistant_name,
+                operation_type=operation_type,
+                status=status,
+                pagination_token=token,
+            )
+            return Page(items=result.operations, pagination_token=result.next)
+
+        return AsyncPaginator(fetch_page=fetch_page, initial_token=pagination_token, limit=limit)
+
+    async def list_operations_page(
+        self,
+        *,
+        assistant_name: str,
+        operation_type: str | None = None,
+        status: str | None = None,
+        page_size: int | None = None,
+        pagination_token: str | None = None,
+    ) -> ListOperationsResponse:
+        """List one page of an assistant's operations with explicit pagination control.
+
+        Only the parameters that are explicitly provided are sent in the
+        request. Omitted parameters are not included as query params.
+
+        Args:
+            assistant_name: Name of the assistant whose operations to list.
+            operation_type: Restrict the listing to one kind of operation. One
+                of ``"upload_file"``, ``"upsert_file"``,
+                ``"update_file_metadata"`` or ``"delete_file"``.
+            status: Restrict the listing to one status. One of
+                ``"Processing"``, ``"Completed"`` or ``"Failed"``
+                (case-sensitive).
+            page_size: Maximum number of operations in this page, sent as the
+                ``limit`` query parameter. The API accepts 1-100 and defaults
+                to 50; a larger value is rejected with a 400.
+            pagination_token: Token from a previous response to fetch the next
+                page.
+
+        Returns:
+            :class:`ListOperationsResponse` with an ``operations`` list and an
+            optional ``next`` continuation token.
+
+        Raises:
+            :exc:`PineconeValueError`: If *operation_type* or *status* is not
+                one of the values above.
+            :exc:`NotFoundError`: If the assistant does not exist.
+            :exc:`ApiError`: If the API returns an error response.
+
+        Examples:
+
+            .. code-block:: python
+
+                page = await pc.assistants.list_operations_page(
+                    assistant_name="my-assistant",
+                    status="Failed",
+                    page_size=10,
                 )
-            if timeout is not None:
-                elapsed = time.monotonic() - start
-                if elapsed >= timeout:
-                    raise PineconeTimeoutError(f"File '{file_id}' still exists after {timeout}s")
-            await asyncio.sleep(_DELETE_POLL_INTERVAL_SECONDS)
+                for op in page.operations:
+                    print(op.operation_id, op.error)
+                token = page.next
+        """
+        params: dict[str, str | int] = {}
+        if operation_type is not None:
+            params["operation_type"] = _validate_choice(
+                "operation_type", operation_type, _VALID_OPERATION_TYPES
+            )
+        if status is not None:
+            params["status"] = _validate_choice("status", status, _VALID_OPERATION_STATUSES)
+        if page_size is not None:
+            params["limit"] = page_size
+        if pagination_token is not None:
+            params["pagination_token"] = pagination_token
+
+        data_http = await self._data_plane_http(assistant_name)
+        logger.info("Listing operations page for assistant %r", assistant_name)
+        response = await data_http.get(f"/operations/{assistant_name}", params=params)
+        result = self._adapter.to_operation_list(response.content)
+        logger.debug(
+            "Listed %d operations for assistant %r (has_next=%s)",
+            len(result.operations),
+            assistant_name,
+            result.next is not None,
+        )
+        return result
 
     async def context(
         self,

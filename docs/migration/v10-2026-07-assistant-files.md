@@ -6,6 +6,10 @@ their signatures and their return types — the SDK performs the new handshake
 internally — but the wire contract, the failure messages, and what `delete_file`
 guarantees when it returns all changed.
 
+Everything below applies to `AsyncPinecone().assistants` identically: the same
+requests, the same statuses, the same polling cadence and the same error text,
+differing only in `await`.
+
 ## `upload_file` still returns an `AssistantFileModel`
 
 `POST /files/{assistant_name}` and `PUT /files/{assistant_name}/{file_id}` now

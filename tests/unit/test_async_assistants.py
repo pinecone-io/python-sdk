@@ -14,7 +14,7 @@ import pytest
 import respx
 
 from pinecone._internal.config import PineconeConfig
-from pinecone._internal.constants import ASSISTANT_EVALUATION_BASE_URL
+from pinecone._internal.constants import ASSISTANT_API_VERSION, ASSISTANT_EVALUATION_BASE_URL
 from pinecone.async_client.assistants import (
     _CREATE_POLL_INTERVAL_SECONDS,
     _DELETE_POLL_INTERVAL_SECONDS,
@@ -30,7 +30,11 @@ from pinecone.errors.exceptions import (
     PineconeValueError,
 )
 from pinecone.models.assistant.file_model import AssistantFileModel
-from pinecone.models.assistant.list import ListAssistantsResponse, ListFilesResponse
+from pinecone.models.assistant.list import (
+    ListAssistantsResponse,
+    ListFilesResponse,
+    ListOperationsResponse,
+)
 from pinecone.models.assistant.model import AssistantModel
 from pinecone.models.pagination import AsyncPaginator, Page
 from tests.factories import (
@@ -38,6 +42,8 @@ from tests.factories import (
     make_assistant_file_response,
     make_assistant_response,
     make_context_response,
+    make_file_operation_response,
+    make_operation_list_response,
     make_operation_response,
 )
 
@@ -1802,18 +1808,31 @@ async def test_async_upload_file_path_not_found(async_assistants: AsyncAssistant
 async def test_async_upload_file_from_stream(
     mock_sleep: object, async_assistants: AsyncAssistants
 ) -> None:
-    """upload_file with file_stream uploads and polls until Available."""
+    """upload_file resolves the file id from the 202 operation and polls it."""
     respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
         return_value=httpx.Response(200, json=make_assistant_response()),
     )
     upload_route = respx.post(f"{DATA_PLANE_URL}/files/test-assistant").mock(
-        return_value=httpx.Response(200, json=make_assistant_file_response(status="Processing")),
+        return_value=httpx.Response(202, json=make_file_operation_response()),
     )
-    poll_route = respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
+    poll_route = respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
         side_effect=[
-            httpx.Response(200, json=make_assistant_file_response(status="Processing")),
-            httpx.Response(200, json=make_assistant_file_response(status="Available")),
+            httpx.Response(
+                200, json=make_file_operation_response(status="Processing", percent_complete=40)
+            ),
+            httpx.Response(
+                200,
+                json=make_file_operation_response(
+                    status="Completed",
+                    percent_complete=100,
+                    completed_on="2026-07-01T12:00:30Z",
+                    ingestion_units=3.5,
+                ),
+            ),
         ]
+    )
+    describe_route = respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
+        return_value=httpx.Response(200, json=make_assistant_file_response(status="Available")),
     )
 
     stream = io.BytesIO(b"test file content")
@@ -1828,6 +1847,7 @@ async def test_async_upload_file_from_stream(
     assert result.id == "file-abc123"
     assert upload_route.call_count == 1
     assert poll_route.call_count == 2
+    assert describe_route.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1845,7 +1865,10 @@ async def test_async_upload_file_multimodal_true(
         return_value=httpx.Response(200, json=make_assistant_response()),
     )
     upload_route = respx.post(f"{DATA_PLANE_URL}/files/test-assistant").mock(
-        return_value=httpx.Response(200, json=make_assistant_file_response(status="Processing")),
+        return_value=httpx.Response(202, json=make_file_operation_response()),
+    )
+    respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
+        return_value=httpx.Response(200, json=make_file_operation_response(status="Completed")),
     )
     respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
         return_value=httpx.Response(200, json=make_assistant_file_response(status="Available")),
@@ -1872,7 +1895,10 @@ async def test_async_upload_file_multimodal_false(
         return_value=httpx.Response(200, json=make_assistant_response()),
     )
     upload_route = respx.post(f"{DATA_PLANE_URL}/files/test-assistant").mock(
-        return_value=httpx.Response(200, json=make_assistant_file_response(status="Processing")),
+        return_value=httpx.Response(202, json=make_file_operation_response()),
+    )
+    respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
+        return_value=httpx.Response(200, json=make_file_operation_response(status="Completed")),
     )
     respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
         return_value=httpx.Response(200, json=make_assistant_file_response(status="Available")),
@@ -1899,20 +1925,22 @@ async def test_async_upload_file_multimodal_false(
 async def test_async_upload_file_with_metadata_and_file_id(
     mock_sleep: object, async_assistants: AsyncAssistants
 ) -> None:
-    """upload_file(file_id=...) uses PUT on the 2026-04 upsert endpoint and polls the operation."""
-    # _upsert_http calls describe() to get the data-plane host
+    """upload_file(file_id=...) upserts with PUT and polls the operation.
+
+    The 202 and poll bodies here are the *minimal* ``2026-04`` operation shape,
+    so this doubles as the backward-compatibility case: a server that omits
+    ``operation_type``/``file_id`` and reports the older ``"Succeeded"``
+    terminal status must still be understood.
+    """
     respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
         return_value=httpx.Response(200, json=make_assistant_response()),
     )
-    # Upsert: PUT /files/{assistant_name}/{file_id} (2026-04 API)
     upsert_route = respx.put(f"{DATA_PLANE_URL}/files/test-assistant/custom-file-id").mock(
         return_value=httpx.Response(202, json=make_operation_response(status="Succeeded")),
     )
-    # Poll: GET /operations/{assistant_name}/{operation_id}
     respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
         return_value=httpx.Response(200, json=make_operation_response(status="Succeeded")),
     )
-    # describe_file after upsert
     respx.get(f"{DATA_PLANE_URL}/files/test-assistant/custom-file-id").mock(
         return_value=httpx.Response(
             200, json=make_assistant_file_response(id="custom-file-id", status="Available")
@@ -1958,14 +1986,17 @@ async def test_async_upload_file_polls_with_correct_interval(
         return_value=httpx.Response(200, json=make_assistant_response()),
     )
     respx.post(f"{DATA_PLANE_URL}/files/test-assistant").mock(
-        return_value=httpx.Response(200, json=make_assistant_file_response(status="Processing")),
+        return_value=httpx.Response(202, json=make_file_operation_response()),
+    )
+    respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
+        side_effect=[
+            httpx.Response(200, json=make_file_operation_response(status="Processing")),
+            httpx.Response(200, json=make_file_operation_response(status="Processing")),
+            httpx.Response(200, json=make_file_operation_response(status="Completed")),
+        ]
     )
     respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
-        side_effect=[
-            httpx.Response(200, json=make_assistant_file_response(status="Processing")),
-            httpx.Response(200, json=make_assistant_file_response(status="Processing")),
-            httpx.Response(200, json=make_assistant_file_response(status="Available")),
-        ]
+        return_value=httpx.Response(200, json=make_assistant_file_response(status="Available")),
     )
 
     stream = io.BytesIO(b"data")
@@ -1990,30 +2021,66 @@ async def test_async_upload_file_polls_with_correct_interval(
 async def test_async_upload_file_processing_failed(
     mock_sleep: object, async_assistants: AsyncAssistants
 ) -> None:
-    """If processing fails, raises PineconeError pointing at the operations API.
+    """A failed upload operation raises with the server's error_message verbatim.
 
-    ``2026-07`` dropped ``AssistantFileModel.error_message``, so the failure
-    reason is no longer on the file payload to quote.
+    ``2026-07`` dropped ``AssistantFileModel.error_message``; the failure
+    reason now comes from the operation record, so the message an agent reads
+    must name the file, the operation, and what the server actually said.
     """
     respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
         return_value=httpx.Response(200, json=make_assistant_response()),
     )
     respx.post(f"{DATA_PLANE_URL}/files/test-assistant").mock(
-        return_value=httpx.Response(200, json=make_assistant_file_response(status="Processing")),
+        return_value=httpx.Response(202, json=make_file_operation_response()),
     )
-    respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
+    respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
         return_value=httpx.Response(
             200,
-            json=make_assistant_file_response(status="ProcessingFailed"),
+            json=make_file_operation_response(
+                status="Failed",
+                completed_on="2026-07-01T12:00:05Z",
+                error_message="Uploaded file can only currently be either a pdf or txt file",
+            ),
         ),
     )
 
     stream = io.BytesIO(b"data")
-    with pytest.raises(PineconeError, match="describe_operation"):
+    with pytest.raises(PineconeError) as exc_info:
         await async_assistants.upload_file(
             assistant_name="test-assistant",
             file_stream=stream,
         )
+
+    message = str(exc_info.value)
+    assert "Uploaded file can only currently be either a pdf or txt file" in message
+    assert "op-abc123" in message
+    assert "file-abc123" in message
+
+
+@respx.mock
+@patch("pinecone.async_client.assistants.asyncio.sleep")
+async def test_async_upload_file_202_without_a_file_id_says_so(
+    mock_sleep: object, async_assistants: AsyncAssistants
+) -> None:
+    """An accepted upload that names no file leaves nothing to describe."""
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    respx.post(f"{DATA_PLANE_URL}/files/test-assistant").mock(
+        return_value=httpx.Response(202, json=make_operation_response()),
+    )
+
+    with pytest.raises(PineconeError) as exc_info:
+        await async_assistants.upload_file(
+            assistant_name="test-assistant",
+            file_stream=io.BytesIO(b"data"),
+            file_name="report.pdf",
+        )
+
+    message = str(exc_info.value)
+    assert "did not name the file it created" in message
+    assert "describe_operation()" in message
+    assert "'report.pdf'" in message
 
 
 # ---------------------------------------------------------------------------
@@ -2069,10 +2136,12 @@ async def test_async_upload_file_timeout_raises(
         return_value=httpx.Response(200, json=make_assistant_response()),
     )
     respx.post(f"{DATA_PLANE_URL}/files/test-assistant").mock(
-        return_value=httpx.Response(200, json=make_assistant_file_response(status="Processing")),
+        return_value=httpx.Response(202, json=make_file_operation_response()),
     )
-    respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
-        return_value=httpx.Response(200, json=make_assistant_file_response(status="Processing")),
+    respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
+        return_value=httpx.Response(
+            200, json=make_file_operation_response(status="Processing", percent_complete=42)
+        ),
     )
 
     stream = io.BytesIO(b"data")
@@ -2083,7 +2152,9 @@ async def test_async_upload_file_timeout_raises(
             timeout=10,
         )
 
-    assert "operation_id" in str(exc_info.value)
+    message = str(exc_info.value)
+    assert "operation_id='op-abc123'" in message
+    assert "percent_complete=42" in message
 
 
 @respx.mock
@@ -2093,7 +2164,10 @@ async def test_async_upload_timeout_negative_one(async_assistants: AsyncAssistan
         return_value=httpx.Response(200, json=make_assistant_response()),
     )
     upload_route = respx.post(f"{DATA_PLANE_URL}/files/test-assistant").mock(
-        return_value=httpx.Response(200, json=make_assistant_file_response(status="Processing")),
+        return_value=httpx.Response(202, json=make_file_operation_response()),
+    )
+    operation_route = respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
+        return_value=httpx.Response(200, json=make_file_operation_response()),
     )
     describe_route = respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
         return_value=httpx.Response(200, json=make_assistant_file_response(status="Processing")),
@@ -2108,8 +2182,61 @@ async def test_async_upload_timeout_negative_one(async_assistants: AsyncAssistan
 
     assert upload_route.call_count == 1
     assert describe_route.call_count == 1
+    assert operation_route.call_count == 0
     assert isinstance(result, AssistantFileModel)
     assert result.status == "Processing"
+
+
+# ---------------------------------------------------------------------------
+# upload_file() — data-plane client caching
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+@patch("pinecone.async_client.assistants.asyncio.sleep")
+async def test_async_upload_file_caches_data_plane_client(
+    mock_sleep: object, async_assistants: AsyncAssistants
+) -> None:
+    """Second upload to the same assistant reuses the cached data-plane client."""
+    describe_route = respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    respx.post(f"{DATA_PLANE_URL}/files/test-assistant").mock(
+        return_value=httpx.Response(202, json=make_file_operation_response()),
+    )
+    respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
+        return_value=httpx.Response(200, json=make_file_operation_response(status="Completed")),
+    )
+    respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
+        return_value=httpx.Response(200, json=make_assistant_file_response(status="Available")),
+    )
+
+    await async_assistants.upload_file(
+        assistant_name="test-assistant", file_stream=io.BytesIO(b"data1")
+    )
+    await async_assistants.upload_file(
+        assistant_name="test-assistant", file_stream=io.BytesIO(b"data2")
+    )
+
+    assert describe_route.call_count == 1
+
+
+@respx.mock
+async def test_async_list_files_page_reuses_the_cached_data_plane_client(
+    async_assistants: AsyncAssistants,
+) -> None:
+    """Three list pages cost one control-plane host lookup between them."""
+    describe_route = respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    respx.get(f"{DATA_PLANE_URL}/files/test-assistant").mock(
+        return_value=httpx.Response(200, json={"files": []}),
+    )
+
+    for _ in range(3):
+        await async_assistants.list_files_page(assistant_name="test-assistant")
+
+    assert describe_route.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -2119,18 +2246,18 @@ async def test_async_upload_timeout_negative_one(async_assistants: AsyncAssistan
 
 @respx.mock
 @patch("pinecone.async_client.assistants.asyncio.sleep")
-async def test_async_delete_file_success(
+async def test_async_delete_file_204_returns_without_polling(
     mock_sleep: object, async_assistants: AsyncAssistants
 ) -> None:
-    """delete_file() sends DELETE then polls until 404 confirms deletion."""
+    """A 204 means the file was already gone: nothing to poll, no error."""
     respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
         return_value=httpx.Response(200, json=make_assistant_response()),
     )
     delete_route = respx.delete(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
-        return_value=httpx.Response(200)
+        return_value=httpx.Response(204)
     )
-    respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
-        return_value=httpx.Response(404, json={"error": "Not found"}),
+    operation_route = respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
+        return_value=httpx.Response(200, json=make_file_operation_response())
     )
 
     result = await async_assistants.delete_file(
@@ -2139,25 +2266,35 @@ async def test_async_delete_file_success(
 
     assert result is None
     assert delete_route.call_count == 1
+    assert operation_route.call_count == 0
+    assert mock_sleep.call_count == 0  # type: ignore[union-attr]
 
 
 @respx.mock
 @patch("pinecone.async_client.assistants.asyncio.sleep")
-async def test_async_delete_file_polls_until_gone(
+async def test_async_delete_file_202_polls_the_operation(
     mock_sleep: object, async_assistants: AsyncAssistants
 ) -> None:
-    """delete_file() polls describe_file every 5s; returns when 404 received."""
+    """A 202 means deletion is pending: poll the returned operation every 5s."""
     respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
         return_value=httpx.Response(200, json=make_assistant_response()),
     )
-    respx.delete(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
-        return_value=httpx.Response(200)
+    delete_route = respx.delete(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
+        return_value=httpx.Response(
+            202,
+            json=make_file_operation_response(operation_type="delete_file"),
+            headers={"Location": "/assistant/operations/test-assistant/op-abc123"},
+        )
     )
-    poll_route = respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
+    poll_route = respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
         side_effect=[
-            httpx.Response(200, json=make_assistant_file_response(status="Deleting")),
-            httpx.Response(200, json=make_assistant_file_response(status="Deleting")),
-            httpx.Response(404, json={"error": "Not found"}),
+            httpx.Response(200, json=make_file_operation_response(operation_type="delete_file")),
+            httpx.Response(
+                200,
+                json=make_file_operation_response(
+                    operation_type="delete_file", status="Completed", percent_complete=100
+                ),
+            ),
         ]
     )
 
@@ -2166,7 +2303,8 @@ async def test_async_delete_file_polls_until_gone(
     )
 
     assert result is None
-    assert poll_route.call_count == 3
+    assert delete_route.call_count == 1
+    assert poll_route.call_count == 2
 
     from unittest.mock import call
 
@@ -2178,12 +2316,17 @@ async def test_async_delete_file_polls_until_gone(
 async def test_async_delete_file_timeout_minus_one_skips_polling(
     async_assistants: AsyncAssistants,
 ) -> None:
-    """delete_file(timeout=-1) returns immediately without polling."""
+    """delete_file(timeout=-1) returns as soon as the 202 is accepted."""
     respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
         return_value=httpx.Response(200, json=make_assistant_response()),
     )
     delete_route = respx.delete(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
-        return_value=httpx.Response(200)
+        return_value=httpx.Response(
+            202, json=make_file_operation_response(operation_type="delete_file")
+        )
+    )
+    operation_route = respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
+        return_value=httpx.Response(200, json=make_file_operation_response())
     )
 
     result = await async_assistants.delete_file(
@@ -2192,6 +2335,7 @@ async def test_async_delete_file_timeout_minus_one_skips_polling(
 
     assert result is None
     assert delete_route.call_count == 1
+    assert operation_route.call_count == 0
 
 
 @respx.mock
@@ -2200,23 +2344,29 @@ async def test_async_delete_file_timeout_minus_one_skips_polling(
 async def test_async_delete_file_timeout_raises(
     mock_sleep: object, mock_monotonic: object, async_assistants: AsyncAssistants
 ) -> None:
-    """Exceeding timeout raises PineconeTimeoutError."""
+    """Exceeding timeout raises PineconeTimeoutError naming the operation."""
     mock_monotonic.side_effect = [0.0, 11.0]  # type: ignore[union-attr]
 
     respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
         return_value=httpx.Response(200, json=make_assistant_response()),
     )
     respx.delete(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
-        return_value=httpx.Response(200)
+        return_value=httpx.Response(
+            202, json=make_file_operation_response(operation_type="delete_file")
+        )
     )
-    respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
-        return_value=httpx.Response(200, json=make_assistant_file_response(status="Deleting")),
+    respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
+        return_value=httpx.Response(
+            200, json=make_file_operation_response(operation_type="delete_file")
+        ),
     )
 
-    with pytest.raises(PineconeTimeoutError, match="still exists after 10"):
+    with pytest.raises(PineconeTimeoutError, match="did not finish within 10") as exc_info:
         await async_assistants.delete_file(
             assistant_name="test-assistant", file_id="file-abc123", timeout=10
         )
+
+    assert "operation_id='op-abc123'" in str(exc_info.value)
 
 
 @respx.mock
@@ -2224,22 +2374,272 @@ async def test_async_delete_file_timeout_raises(
 async def test_async_delete_file_server_error_raises(
     mock_sleep: object, async_assistants: AsyncAssistants
 ) -> None:
-    """delete_file() raises PineconeError if server-side deletion fails."""
+    """A failed deletion operation surfaces the server's error_message verbatim."""
     respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
         return_value=httpx.Response(200, json=make_assistant_response()),
     )
     respx.delete(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
-        return_value=httpx.Response(200)
+        return_value=httpx.Response(
+            202, json=make_file_operation_response(operation_type="delete_file")
+        )
     )
-    respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
+    respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
         return_value=httpx.Response(
             200,
-            json=make_assistant_file_response(status="ProcessingFailed"),
+            json=make_file_operation_response(
+                operation_type="delete_file",
+                status="Failed",
+                error_message="File is referenced by an in-flight ingestion",
+            ),
         ),
     )
 
-    with pytest.raises(PineconeError, match="'ProcessingFailed'"):
+    with pytest.raises(
+        PineconeError, match="File is referenced by an in-flight ingestion"
+    ) as exc_info:
         await async_assistants.delete_file(assistant_name="test-assistant", file_id="file-abc123")
+
+    assert "Deletion of file 'file-abc123' failed" in str(exc_info.value)
+
+
+@respx.mock
+async def test_async_describe_operation_targets_the_data_plane(
+    async_assistants: AsyncAssistants,
+) -> None:
+    """The operations endpoints live on the assistant's host, not the control plane."""
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    route = respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
+        return_value=httpx.Response(200, json=make_file_operation_response()),
+    )
+
+    result = await async_assistants.describe_operation(
+        assistant_name="test-assistant", operation_id="op-abc123"
+    )
+
+    assert result.operation_id == "op-abc123"
+    assert result.operation_type == "upload_file"
+    assert result.file_id == "file-abc123"
+    request = route.calls.last.request
+    assert request.method == "GET"
+    assert str(request.url) == f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123"
+    assert request.headers["x-pinecone-api-version"] == ASSISTANT_API_VERSION
+
+
+@respx.mock
+async def test_async_describe_operation_reuses_the_cached_data_plane_client(
+    async_assistants: AsyncAssistants,
+) -> None:
+    """Repeated describes cost one control-plane host lookup, not one each."""
+    describe_assistant = respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
+        return_value=httpx.Response(200, json=make_file_operation_response()),
+    )
+
+    for _ in range(3):
+        await async_assistants.describe_operation(
+            assistant_name="test-assistant", operation_id="op-abc123"
+        )
+
+    assert describe_assistant.call_count == 1
+
+
+@respx.mock
+@patch("pinecone.async_client.assistants.asyncio.sleep")
+async def test_async_polling_loop_goes_through_describe_operation(
+    mock_sleep: object, async_assistants: AsyncAssistants
+) -> None:
+    """The upload poll is the public method, so patching it is observable."""
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    respx.post(f"{DATA_PLANE_URL}/files/test-assistant").mock(
+        return_value=httpx.Response(202, json=make_file_operation_response()),
+    )
+    respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
+        return_value=httpx.Response(200, json=make_assistant_file_response()),
+    )
+
+    with patch.object(
+        AsyncAssistants,
+        "describe_operation",
+        wraps=async_assistants.describe_operation,
+    ) as spy:
+        respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
+            side_effect=[
+                httpx.Response(200, json=make_file_operation_response(status="Processing")),
+                httpx.Response(200, json=make_file_operation_response(status="Completed")),
+            ],
+        )
+        await async_assistants.upload_file(
+            assistant_name="test-assistant", file_stream=io.BytesIO(b"data")
+        )
+
+    assert spy.call_count == 2
+    for call_obj in spy.call_args_list:
+        assert call_obj.kwargs == {
+            "assistant_name": "test-assistant",
+            "operation_id": "op-abc123",
+        }
+
+
+@respx.mock
+async def test_async_describe_operation_surfaces_a_server_error(
+    async_assistants: AsyncAssistants,
+) -> None:
+    """A 500 from the operations endpoint is not swallowed into a fake status."""
+    from pinecone.errors.exceptions import ApiError
+
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
+        return_value=httpx.Response(
+            500,
+            json={"status": 500, "error": {"code": "UNKNOWN", "message": "Internal server error"}},
+        ),
+    )
+
+    with pytest.raises(ApiError) as exc_info:
+        await async_assistants.describe_operation(
+            assistant_name="test-assistant", operation_id="op-abc123"
+        )
+
+    assert exc_info.value.status_code == 500
+
+
+@respx.mock
+async def test_async_list_operations_page_returns_the_model_and_the_token(
+    async_assistants: AsyncAssistants,
+) -> None:
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    route = respx.get(f"{DATA_PLANE_URL}/operations/test-assistant").mock(
+        return_value=httpx.Response(
+            200,
+            json=make_operation_list_response(
+                [make_file_operation_response(), make_file_operation_response(id="op-def456")],
+                next_token="tok-2",
+            ),
+        ),
+    )
+
+    page = await async_assistants.list_operations_page(assistant_name="test-assistant")
+
+    assert isinstance(page, ListOperationsResponse)
+    assert [op.operation_id for op in page.operations] == ["op-abc123", "op-def456"]
+    assert page.next == "tok-2"
+    request = route.calls.last.request
+    assert request.headers["x-pinecone-api-version"] == ASSISTANT_API_VERSION
+
+
+@respx.mock
+async def test_async_list_operations_page_omits_unset_parameters(
+    async_assistants: AsyncAssistants,
+) -> None:
+    """Only what the caller asked for goes on the wire."""
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    route = respx.get(f"{DATA_PLANE_URL}/operations/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_operation_list_response()),
+    )
+
+    await async_assistants.list_operations_page(assistant_name="test-assistant", status="Completed")
+
+    params = route.calls.last.request.url.params
+    assert dict(params) == {"status": "Completed"}
+
+
+@respx.mock
+async def test_async_list_operations_returns_a_paginator_with_pages(
+    async_assistants: AsyncAssistants,
+) -> None:
+    """``pages()`` exposes the raw pages, matching ``list_files``."""
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    respx.get(f"{DATA_PLANE_URL}/operations/test-assistant").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json=make_operation_list_response(
+                    [make_file_operation_response()], next_token="tok-2"
+                ),
+            ),
+            httpx.Response(
+                200, json=make_operation_list_response([make_file_operation_response(id="op-def")])
+            ),
+        ],
+    )
+
+    paginator = async_assistants.list_operations(assistant_name="test-assistant")
+    assert isinstance(paginator, AsyncPaginator)
+
+    pages = [page async for page in paginator.pages()]
+    assert [p.pagination_token for p in pages] == ["tok-2", None]
+    assert [op.operation_id for page in pages for op in page.items] == ["op-abc123", "op-def"]
+
+
+@respx.mock
+async def test_async_list_operations_page_surfaces_the_backend_limit_ceiling(
+    async_assistants: AsyncAssistants,
+) -> None:
+    """page_size is not validated client-side; the backend's 400 says the ceiling."""
+    from pinecone.errors.exceptions import ApiError
+
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    route = respx.get(f"{DATA_PLANE_URL}/operations/test-assistant").mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "status": 400,
+                "error": {"code": "INVALID_ARGUMENT", "message": "Limit cannot exceed 100"},
+            },
+        ),
+    )
+
+    with pytest.raises(ApiError) as exc_info:
+        await async_assistants.list_operations_page(assistant_name="test-assistant", page_size=101)
+
+    assert exc_info.value.message == "Limit cannot exceed 100"
+    assert route.calls.last.request.url.params["limit"] == "101"
+
+
+@pytest.mark.parametrize("bad", ["upload", "UploadFile", "", "upload_file "])
+async def test_async_list_operations_rejects_an_unknown_operation_type(
+    async_assistants: AsyncAssistants, bad: str
+) -> None:
+    with pytest.raises(PineconeValueError) as exc_info:
+        await async_assistants.list_operations_page(
+            assistant_name="test-assistant", operation_type=bad
+        )
+
+    message = str(exc_info.value)
+    assert message.startswith("operation_type must be one of (")
+    for valid in ("upload_file", "upsert_file", "update_file_metadata", "delete_file"):
+        assert repr(valid) in message
+    assert repr(bad) in message
+
+
+@pytest.mark.parametrize("bad", ["completed", "Succeeded", "PartiallyFailed", ""])
+async def test_async_list_operations_rejects_an_unknown_status(
+    async_assistants: AsyncAssistants, bad: str
+) -> None:
+    with pytest.raises(PineconeValueError) as exc_info:
+        await async_assistants.list_operations_page(assistant_name="test-assistant", status=bad)
+
+    message = str(exc_info.value)
+    assert message.startswith("status must be one of (")
+    for valid in ("Processing", "Completed", "Failed"):
+        assert repr(valid) in message
+    assert repr(bad) in message
 
 
 # ---------------------------------------------------------------------------
@@ -3401,3 +3801,75 @@ async def test_async_list_page_sends_limit_and_pagination_token_together(
     request = route.calls.last.request
     assert dict(request.url.params) == {"limit": "20", "pagination_token": "tok-page2"}
     assert request.headers[_API_VERSION_HEADER] == "2026-07"
+
+
+_FILE_SURFACE_CALLS: dict[str, Callable[[AsyncAssistants], Awaitable[Any]]] = {
+    "delete_file": lambda a: a.delete_file(
+        assistant_name="test-assistant", file_id="file-abc123", timeout=-1
+    ),
+    "describe_file": lambda a: a.describe_file(
+        assistant_name="test-assistant", file_id="file-abc123"
+    ),
+    "describe_operation": lambda a: a.describe_operation(
+        assistant_name="test-assistant", operation_id="op-abc123"
+    ),
+    "list_files": lambda a: a.list_files(assistant_name="test-assistant").to_list(),
+    "list_operations": lambda a: a.list_operations(assistant_name="test-assistant").to_list(),
+    "upload_file": lambda a: a.upload_file(
+        assistant_name="test-assistant", file_stream=io.BytesIO(b"data"), timeout=-1
+    ),
+    "upsert_file": lambda a: a.upload_file(
+        assistant_name="test-assistant",
+        file_stream=io.BytesIO(b"data"),
+        file_id="custom-file-id",
+        timeout=-1,
+    ),
+}
+
+
+def _mock_file_surface_routes() -> None:
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response(status="Ready")),
+    )
+    respx.post(f"{DATA_PLANE_URL}/files/test-assistant").mock(
+        return_value=httpx.Response(202, json=make_file_operation_response()),
+    )
+    respx.put(f"{DATA_PLANE_URL}/files/test-assistant/custom-file-id").mock(
+        return_value=httpx.Response(
+            202, json=make_file_operation_response(operation_type="upsert_file")
+        ),
+    )
+    respx.delete(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
+        return_value=httpx.Response(
+            202, json=make_file_operation_response(operation_type="delete_file")
+        ),
+    )
+    respx.get(f"{DATA_PLANE_URL}/files/test-assistant").mock(
+        return_value=httpx.Response(200, json={"files": [make_assistant_file_response()]}),
+    )
+    respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
+        return_value=httpx.Response(200, json=make_assistant_file_response()),
+    )
+    respx.get(f"{DATA_PLANE_URL}/files/test-assistant/custom-file-id").mock(
+        return_value=httpx.Response(200, json=make_assistant_file_response(id="custom-file-id")),
+    )
+    respx.get(f"{DATA_PLANE_URL}/operations/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_operation_list_response()),
+    )
+    respx.get(f"{DATA_PLANE_URL}/operations/test-assistant/op-abc123").mock(
+        return_value=httpx.Response(200, json=make_file_operation_response(status="Completed")),
+    )
+
+
+@pytest.mark.parametrize("operation", sorted(_FILE_SURFACE_CALLS))
+@respx.mock
+async def test_async_file_surface_sends_2026_07_api_version(
+    operation: str, async_assistants: AsyncAssistants
+) -> None:
+    """Upload, upsert, delete, describe, list and both operations reads carry 2026-07."""
+    _mock_file_surface_routes()
+
+    await _FILE_SURFACE_CALLS[operation](async_assistants)
+
+    for call_obj in respx.calls:
+        assert call_obj.request.headers[_API_VERSION_HEADER] == "2026-07"
