@@ -121,6 +121,25 @@ and additionally accepts `include_deleted`. `pc.backups.*` is unchanged apart
 from the new `include_deleted` keyword, and remains the only surface for the
 project-wide listing and for `delete`.
 
+### Asyncio lane
+
+`AsyncPinecone.backups` mirrors `pc.backups` one-for-one: same method names,
+same keyword-only arguments, same validation messages, and the same request on
+the wire — only `await` differs.
+
+```python
+async with AsyncPinecone(api_key="...") as pc:
+    orphaned = await pc.backups.list(
+        index_name="product-search", include_deleted=True
+    )
+```
+
+One gap remains in this release candidate: `await pc.create_index_from_backup(...)`
+does not yet accept `read_capacity`, and the legacy `await pc.list_backups(...)`
+shim does not yet forward `include_deleted`. Both are additive and land with the
+async index control-plane work; use `await pc.backups.list(...)` for the latter,
+and a follow-up `configure` for the former, until then.
+
 ## Behavior notes
 
 - `status` is documented as `Initializing`, `Ready`, or `Failed`. The

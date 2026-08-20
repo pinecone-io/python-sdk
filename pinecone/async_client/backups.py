@@ -6,6 +6,10 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from pinecone._internal.adapters.backups_adapter import BackupsAdapter
+from pinecone._internal.backups_helpers import (
+    backup_list_params,
+    require_index_scope_for_include_deleted,
+)
 from pinecone._internal.validation import require_non_empty
 from pinecone.models.backups.list import BackupList
 from pinecone.models.backups.model import BackupModel
@@ -105,23 +109,52 @@ class AsyncBackups:
         index_name: str | None = None,
         limit: int | None = None,
         pagination_token: str | None = None,
+        include_deleted: bool | None = None,
     ) -> BackupList:
         """List backups.
 
-        When *index_name* is provided, lists backups for that index only.
-        Otherwise lists all backups in the project.
+        When *index_name* is provided, lists backups for that index only
+        (``list_index_backups``). Otherwise lists every backup in the project
+        (``list_project_backups``).
+
+        .. versionchanged:: 10.0
+           Added *include_deleted*. Backups now carry
+           :attr:`~pinecone.models.backups.model.BackupModel.source_index_deleted_at`
+           instead of ``dimension``/``metric`` — see
+           ``docs/migration/v10-2026-07-backup-models.md``.
+
+        .. important::
+           A 404 from the index-scoped listing does not necessarily mean
+           "no such index ever existed". With *include_deleted* omitted or
+           ``False``, *index_name* must resolve to an **active** index: if
+           every index that used the name has been deleted, the API answers
+           404 rather than an empty list. Retrying with
+           ``include_deleted=True`` returns those backups; a 404 there means
+           the name was never used in this project.
 
         Args:
-            index_name (str | None): Index name to filter by, or ``None`` for all.
-            limit (int | None): Maximum number of results per page. When ``None``,
-                the backend applies its own default (100).
+            index_name (str | None): Index name to scope the listing to, or
+                ``None`` for every backup in the project.
+            limit (int | None): Maximum number of results per page, 1-100.
+                When ``None``, the parameter is omitted and the server
+                applies its own default.
             pagination_token (str | None): Token for cursor-based pagination.
+            include_deleted (bool | None): When ``True``, include backups of
+                every index that has ever used *index_name*, deleted ones
+                included. When ``None`` (the default) the parameter is
+                omitted entirely and the server's default (``false``)
+                applies. Only valid together with *index_name*.
 
         Returns:
             A :class:`BackupList` supporting iteration, len(), and index access.
+            ``BackupList.pagination`` is ``None`` on the final page.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeValueError`: If *include_deleted* is given without
+                *index_name*.
+            :exc:`NotFoundError`: If *index_name* does not resolve — see the
+                404 semantics above.
+            :exc:`ApiError`: If the API returns another error response.
 
         Examples:
 
@@ -141,12 +174,23 @@ class AsyncBackups:
                         index_name="product-search",
                     ):
                         print(backup.name)
+
+            .. code-block:: python
+
+                # Recover backups of an index that has since been deleted
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    orphaned = await pc.backups.list(
+                        index_name="product-search",
+                        include_deleted=True,
+                    )
+                    print([b.backup_id for b in orphaned if b.source_index_deleted_at])
         """
-        params: dict[str, Any] = {}
-        if limit is not None:
-            params["limit"] = limit
-        if pagination_token is not None:
-            params["paginationToken"] = pagination_token
+        require_index_scope_for_include_deleted(index_name, include_deleted)
+        params: dict[str, Any] = backup_list_params(
+            limit=limit,
+            pagination_token=pagination_token,
+            include_deleted=include_deleted,
+        )
 
         if index_name is not None:
             path = f"/indexes/{index_name}/backups"
