@@ -123,7 +123,7 @@ def fts_index_state(
     Used by PVT-037 sync and async tests via client.preview.index(host=host)
     and async_client.preview.index(host=host).
     """
-    from pinecone.preview import PreviewSchemaBuilder
+    from pinecone.preview import SchemaBuilder
     from pinecone.preview.models import PreviewIndexModel, PreviewTextQuery
     from tests.integration.conftest import poll_until
 
@@ -143,7 +143,7 @@ def fts_index_state(
         },
     }
     schema = (
-        PreviewSchemaBuilder()
+        SchemaBuilder()
         .add_string_field("text", full_text_search={})
         .add_float_field("year", filterable=True)
         .build()

@@ -318,13 +318,13 @@ async def test_async_create_accepts_unknown_field_type(indexes: AsyncPreviewInde
     """create() does not raise ValidationError for unknown field types (escape hatch)."""
     import orjson
 
-    from pinecone.preview.schema_builder import PreviewSchemaBuilder
+    from pinecone.schema_builder import SchemaBuilder
 
     route = respx.post(f"{BASE_URL}/indexes").mock(
         return_value=httpx.Response(201, json=_INDEX_RESPONSE)
     )
 
-    schema = PreviewSchemaBuilder().add_custom_field("x", {"type": "new_type"}).build()
+    schema = SchemaBuilder().add_custom_field("x", {"type": "new_type"}).build()
     result = await indexes.create(schema=schema, name="i")
 
     assert isinstance(result, PreviewIndexModel)

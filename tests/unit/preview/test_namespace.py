@@ -9,11 +9,11 @@ from unittest.mock import MagicMock
 import httpx
 import respx
 
-import pinecone.preview.schema_builder
+import pinecone.schema_builder
 from pinecone import Pinecone
 from pinecone._internal.config import PineconeConfig
 from pinecone._internal.http_client import AsyncHTTPClient, HTTPClient
-from pinecone.preview import AsyncPreview, Preview, PreviewSchemaBuilder
+from pinecone.preview import AsyncPreview, Preview, SchemaBuilder
 from pinecone.preview._internal.constants import INDEXES_API_VERSION
 from pinecone.preview.indexes import PreviewIndexes
 from pinecone.preview.models.indexes import PreviewIndexModel
@@ -74,7 +74,7 @@ def test_preview_and_async_preview_are_distinct_types() -> None:
 
 
 def test_schema_builder_reexported_from_preview_module() -> None:
-    assert PreviewSchemaBuilder is pinecone.preview.schema_builder.PreviewSchemaBuilder
+    assert SchemaBuilder is pinecone.schema_builder.SchemaBuilder
 
 
 def test_preview_indexes_property_returns_preview_indexes_instance() -> None:

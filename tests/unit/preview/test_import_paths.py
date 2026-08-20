@@ -20,11 +20,11 @@ def test_preview_root_exports_namespace_classes() -> None:
 
 
 def test_preview_root_exports_schema_builder() -> None:
-    import pinecone.preview.schema_builder as _sb
+    import pinecone.schema_builder as _sb
     from pinecone.preview import SchemaBuilder
 
     assert inspect.isclass(SchemaBuilder)
-    assert SchemaBuilder is _sb.PreviewSchemaBuilder
+    assert SchemaBuilder is _sb.SchemaBuilder
 
 
 def test_preview_root_all_lists_schema_builder() -> None:

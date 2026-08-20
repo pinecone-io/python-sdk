@@ -295,7 +295,7 @@ class PreviewIntegerField(Struct, tag="float", tag_field="type", kw_only=True):
     Numeric fields store double-precision floating-point values and can be
     used for range filtering (e.g. ``year >= 2020``).  There is no separate
     integer type in the API — integers are stored and filtered as floats.
-    Created via :meth:`~pinecone.preview.PreviewSchemaBuilder.add_float_field`.
+    Created via :meth:`~pinecone.schema_builder.SchemaBuilder.add_float_field`.
 
     Attributes:
         description: Optional human-readable description of the field.

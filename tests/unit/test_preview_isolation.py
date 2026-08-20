@@ -95,16 +95,15 @@ def test_no_stable_code_imports_preview_at_module_level() -> None:
 def test_preview_init_exports_only_namespace_classes() -> None:
     """pinecone.preview.__all__ must only contain approved symbols.
 
-    Approved: Preview, AsyncPreview (namespace classes), and SchemaBuilder /
-    PreviewSchemaBuilder which are intentional entry-point exports per
-    spec/preview.md §12 (callers do ``from pinecone.preview import SchemaBuilder``).
+    Approved: Preview, AsyncPreview (namespace classes), and SchemaBuilder,
+    an intentional entry-point export per spec/preview.md §12 (callers do
+    ``from pinecone.preview import SchemaBuilder``; the name aliases the
+    graduated ``pinecone.schema_builder.SchemaBuilder``).
     """
     from pinecone import preview
 
     if hasattr(preview, "__all__"):
-        # SchemaBuilder and PreviewSchemaBuilder are approved entry-point aliases;
-        # see spec/preview.md §12.
-        allowed = {"Preview", "AsyncPreview", "PreviewSchemaBuilder", "SchemaBuilder"}
+        allowed = {"Preview", "AsyncPreview", "SchemaBuilder"}
         extra = set(preview.__all__) - allowed
         assert extra == set(), (
             f"Unexpected exports in pinecone.preview.__all__: {extra}. "

@@ -142,7 +142,7 @@ async def test_async_search_include_fields_variants(
     require_preview: None,
 ) -> None:
     """Async parity: verify include_fields request construction; None causes 422 (IPV-0001)."""
-    from pinecone.preview import PreviewSchemaBuilder
+    from pinecone.preview import SchemaBuilder as PreviewSchemaBuilder
     from pinecone.preview.models import PreviewDenseVectorQuery, PreviewIndexModel
 
     schema = (
@@ -1505,7 +1505,7 @@ async def test_async_describe_returns_typed_schema_fields(
     Verifies §3 PreviewSchema: fields dict values are decoded as PreviewDenseVectorField,
     PreviewStringField, PreviewIntegerField by msgspec's tagged-union dispatch.
     """
-    from pinecone.preview import PreviewSchemaBuilder
+    from pinecone.preview import SchemaBuilder as PreviewSchemaBuilder
     from pinecone.preview.models import (
         PreviewDenseVectorField,
         PreviewIndexModel,

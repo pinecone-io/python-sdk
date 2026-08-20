@@ -18,7 +18,7 @@ from __future__ import annotations
 import pytest
 
 from pinecone import Pinecone
-from pinecone.preview import PreviewSchemaBuilder
+from pinecone.preview import SchemaBuilder as PreviewSchemaBuilder
 from pinecone.preview.models import (
     PreviewDenseVectorQuery,
     PreviewDocument,

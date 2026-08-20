@@ -1,12 +1,17 @@
-"""Unit tests for PreviewSchemaBuilder."""
+"""Unit tests for SchemaBuilder (2026-07 create-schema rules).
+
+Migrated from tests/unit/preview/test_schema_builder.py when the builder
+graduated out of the preview package (#106).
+"""
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
 
-from pinecone.preview import PreviewSchemaBuilder as SchemaBuilder
+from pinecone.schema_builder import SchemaBuilder
 
 # ---------------------------------------------------------------------------
 # add_dense_vector_field
@@ -41,6 +46,40 @@ def test_dense_vector_field_additional_options() -> None:
 def test_dense_vector_field_no_description_omitted() -> None:
     schema = SchemaBuilder().add_dense_vector_field("vec", dimension=64, metric="cosine").build()
     assert "description" not in schema["fields"]["vec"]
+
+
+# ---------------------------------------------------------------------------
+# add_dense_vector_field: dimension range 1..20000 (2026-07)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("dimension", [1, 2, 19999, 20000])
+def test_dense_vector_dimension_bounds_accepted(dimension: int) -> None:
+    schema = (
+        SchemaBuilder().add_dense_vector_field("vec", dimension=dimension, metric="cosine").build()
+    )
+    assert schema["fields"]["vec"]["dimension"] == dimension
+
+
+@pytest.mark.parametrize("dimension", [0, -1, 20001, 1_000_000])
+def test_dense_vector_dimension_out_of_range_rejected(dimension: int) -> None:
+    from pinecone.errors.exceptions import PineconeValueError
+
+    with pytest.raises(PineconeValueError) as excinfo:
+        SchemaBuilder().add_dense_vector_field("vec", dimension=dimension, metric="cosine")
+    message = str(excinfo.value)
+    assert "'vec'" in message
+    assert "between 1 and 20000 inclusive" in message
+    assert str(dimension) in message
+
+
+def test_dense_vector_dimension_rejection_leaves_builder_unchanged() -> None:
+    from pinecone.errors.exceptions import PineconeValueError
+
+    builder = SchemaBuilder()
+    with pytest.raises(PineconeValueError):
+        builder.add_dense_vector_field("vec", dimension=0, metric="cosine")
+    assert builder.build() == {"fields": {}}
 
 
 # ---------------------------------------------------------------------------
@@ -181,8 +220,11 @@ def test_string_field_unknown_language_passes_through_dict() -> None:
 def test_string_field_stop_words_without_stemming_raises() -> None:
     from pinecone.errors.exceptions import PineconeValueError
 
-    with pytest.raises(PineconeValueError, match="stop_words requires stemming to be enabled"):
+    with pytest.raises(PineconeValueError) as excinfo:
         SchemaBuilder().add_string_field("t", language="en", stop_words=True)
+    message = str(excinfo.value)
+    assert "'t'" in message
+    assert "stop_words requires stemming to be enabled" in message
 
 
 def test_string_field_stop_words_with_stemming_passes() -> None:
@@ -203,7 +245,7 @@ def test_string_field_stop_words_via_dict_validates() -> None:
 
 
 def test_string_field_does_not_validate_language_stop_words_compat() -> None:
-    # Arabic does not support stop words, but rule 3 is server-side only.
+    # Arabic does not support stop words, but that rule is server-side only.
     schema = (
         SchemaBuilder().add_string_field("t", language="ar", stemming=True, stop_words=True).build()
     )
@@ -252,6 +294,55 @@ def test_string_field_full_text_and_filterable_together() -> None:
     field = schema["fields"]["title"]
     assert field["full_text_search"] == {"language": "en"}
     assert field["filterable"] is True
+
+
+# ---------------------------------------------------------------------------
+# add_string_field: ngram rules (2026-07)
+# ---------------------------------------------------------------------------
+
+
+def test_string_field_ngram_passes_through() -> None:
+    cfg = {"ngram": {"min_gram": 2, "max_gram": 3, "prefix_only": True}}
+    schema = SchemaBuilder().add_string_field("t", full_text_search=cfg).build()
+    fts = schema["fields"]["t"]["full_text_search"]
+    assert fts["ngram"] == {"min_gram": 2, "max_gram": 3, "prefix_only": True}
+
+
+def test_string_field_ngram_with_explicit_false_stemming_passes() -> None:
+    cfg = {"ngram": {"min_gram": 2, "max_gram": 3}, "stemming": False, "stop_words": False}
+    schema = SchemaBuilder().add_string_field("t", full_text_search=cfg).build()
+    assert schema["fields"]["t"]["full_text_search"] == cfg
+
+
+@pytest.mark.parametrize("conflicting", [{"stemming": True}, {"stop_words": True}])
+def test_string_field_ngram_with_stemming_or_stop_words_raises(
+    conflicting: dict[str, Any],
+) -> None:
+    from pinecone.errors.exceptions import PineconeValueError
+
+    cfg = {"ngram": {"min_gram": 2, "max_gram": 3}, **conflicting}
+    with pytest.raises(PineconeValueError) as excinfo:
+        SchemaBuilder().add_string_field("t", full_text_search=cfg)
+    message = str(excinfo.value)
+    assert "'t'" in message
+    assert "ngram cannot be combined with stemming or stop_words" in message
+
+
+def test_string_field_ngram_conflict_detected_across_dict_and_kwargs() -> None:
+    from pinecone.errors.exceptions import PineconeValueError
+
+    with pytest.raises(PineconeValueError, match="ngram cannot be combined"):
+        SchemaBuilder().add_string_field(
+            "t", full_text_search={"ngram": {"min_gram": 2, "max_gram": 3}}, stemming=True
+        )
+
+
+def test_string_field_ngram_check_precedes_stop_words_check() -> None:
+    from pinecone.errors.exceptions import PineconeValueError
+
+    cfg = {"ngram": {"min_gram": 2, "max_gram": 3}, "stop_words": True}
+    with pytest.raises(PineconeValueError, match="ngram cannot be combined"):
+        SchemaBuilder().add_string_field("t", full_text_search=cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +479,42 @@ def test_build_empty_schema_returns_empty_fields() -> None:
 
 
 # ---------------------------------------------------------------------------
+# JSON round-trip serialization
+# ---------------------------------------------------------------------------
+
+
+def test_build_output_json_round_trips_with_optional_fields_absent() -> None:
+    schema = (
+        SchemaBuilder()
+        .add_dense_vector_field("vec", dimension=8, metric="cosine")
+        .add_sparse_vector_field("sparse")
+        .add_string_field("title", full_text_search=True)
+        .build()
+    )
+    assert json.loads(json.dumps(schema)) == schema
+    for field in schema["fields"].values():
+        assert "description" not in field
+        assert "filterable" not in field
+
+
+def test_build_output_json_round_trips_with_all_options_set() -> None:
+    schema = (
+        SchemaBuilder()
+        .add_dense_vector_field("vec", dimension=1536, metric="dotproduct", description="emb")
+        .add_string_field(
+            "body",
+            language="en",
+            stemming=True,
+            stop_words=True,
+            filterable=True,
+            description="text",
+        )
+        .build()
+    )
+    assert json.loads(json.dumps(schema)) == schema
+
+
+# ---------------------------------------------------------------------------
 # add_string_list_field
 # ---------------------------------------------------------------------------
 
@@ -470,14 +597,14 @@ def test_field_name_empty_raises() -> None:
 def test_field_name_starts_with_dollar_raises() -> None:
     from pinecone.errors.exceptions import PineconeValueError
 
-    with pytest.raises(PineconeValueError, match=r"\$.*_"):
+    with pytest.raises(PineconeValueError, match=r"'\$illegal'"):
         SchemaBuilder().add_string_field("$illegal")
 
 
 def test_field_name_starts_with_underscore_raises() -> None:
     from pinecone.errors.exceptions import PineconeValueError
 
-    with pytest.raises(PineconeValueError, match=r"\$.*_"):
+    with pytest.raises(PineconeValueError, match="'_illegal'"):
         SchemaBuilder().add_string_field("_illegal")
 
 
@@ -485,13 +612,29 @@ def test_field_name_over_64_bytes_raises() -> None:
     from pinecone.errors.exceptions import PineconeValueError
 
     long_name = "a" * 65
-    with pytest.raises(PineconeValueError, match="too long"):
+    with pytest.raises(PineconeValueError, match="too long") as excinfo:
         SchemaBuilder().add_string_field(long_name)
+    assert long_name in str(excinfo.value)
 
 
 def test_field_name_64_bytes_ok() -> None:
     schema = SchemaBuilder().add_string_field("a" * 64).build()
     assert "a" * 64 in schema["fields"]
+
+
+def test_field_name_with_surrogate_raises_pinecone_error() -> None:
+    from pinecone.errors.exceptions import PineconeValueError
+
+    with pytest.raises(PineconeValueError, match="valid Unicode"):
+        SchemaBuilder().add_string_field("bad\ud800name")
+
+
+def test_description_with_surrogate_raises_pinecone_error() -> None:
+    from pinecone.errors.exceptions import PineconeValueError
+
+    with pytest.raises(PineconeValueError, match="valid Unicode") as excinfo:
+        SchemaBuilder().add_string_field("title", description="bad\ud800desc")
+    assert "'title'" in str(excinfo.value)
 
 
 def test_field_name_multibyte_counts_bytes_not_chars() -> None:
@@ -502,11 +645,12 @@ def test_field_name_multibyte_counts_bytes_not_chars() -> None:
         SchemaBuilder().add_string_field(multibyte_name)
 
 
-def test_description_over_256_bytes_raises() -> None:
+def test_description_over_256_bytes_raises_and_names_field() -> None:
     from pinecone.errors.exceptions import PineconeValueError
 
-    with pytest.raises(PineconeValueError, match="too long"):
+    with pytest.raises(PineconeValueError, match="too long") as excinfo:
         SchemaBuilder().add_string_field("title", description="x" * 257)
+    assert "'title'" in str(excinfo.value)
 
 
 def test_description_256_bytes_ok() -> None:
@@ -537,11 +681,19 @@ def test_validation_applies_to_every_add_method() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Re-export from pinecone.preview
+# Graduation: import paths and naming
 # ---------------------------------------------------------------------------
 
 
-def test_schema_builder_importable_from_preview() -> None:
-    from pinecone.preview import PreviewSchemaBuilder
+def test_schema_builder_still_importable_from_preview_namespace() -> None:
+    from pinecone.preview import SchemaBuilder as PreviewAlias
 
-    assert PreviewSchemaBuilder is SchemaBuilder
+    assert PreviewAlias is SchemaBuilder
+
+
+def test_preview_schema_builder_name_is_gone() -> None:
+    import pinecone.preview
+    import pinecone.schema_builder
+
+    assert not hasattr(pinecone.schema_builder, "PreviewSchemaBuilder")
+    assert not hasattr(pinecone.preview, "PreviewSchemaBuilder")

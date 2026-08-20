@@ -9,9 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from pinecone.errors.exceptions import PineconeValueError
-from pinecone.preview.schema_builder import PreviewSchemaBuilder as PreviewSchemaBuilder
-
-SchemaBuilder = PreviewSchemaBuilder  # spec/preview.md §12 — entry-point alias
+from pinecone.schema_builder import SchemaBuilder as SchemaBuilder
 
 if TYPE_CHECKING:
     from pinecone._internal.config import PineconeConfig
@@ -21,7 +19,7 @@ if TYPE_CHECKING:
     from pinecone.preview.index import PreviewIndex
     from pinecone.preview.indexes import PreviewIndexes
 
-__all__ = ["AsyncPreview", "Preview", "PreviewSchemaBuilder", "SchemaBuilder"]
+__all__ = ["AsyncPreview", "Preview", "SchemaBuilder"]
 
 
 class Preview:

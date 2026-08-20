@@ -19,7 +19,7 @@ import pytest
 
 from pinecone import Pinecone
 from pinecone.errors import ForbiddenError, NotFoundError, PineconeValueError
-from pinecone.preview import PreviewSchemaBuilder
+from pinecone.preview import SchemaBuilder as PreviewSchemaBuilder
 from pinecone.preview.models import PreviewIndexModel, PreviewManagedDeployment
 from tests.integration.conftest import poll_until
 
