@@ -49,9 +49,12 @@ class RestoreJobs:
         limit: int | None = None,
         pagination_token: str | None = None,
     ) -> RestoreJobList:
-        """List all restore jobs in the project.
+        """List one page of the project's restore jobs.
 
-        Supports cursor-based pagination.
+        Supports cursor-based pagination. This returns a **single page** and
+        does not auto-fetch: :class:`RestoreJobList` carries a ``pagination``
+        token but never follows it, so iterating the return value sees at most
+        one page. Drive the token yourself to walk the rest — see *Examples*.
 
         Args:
             limit (int | None): Maximum number of results per page. When ``None``,
@@ -64,19 +67,59 @@ class RestoreJobs:
 
         Returns:
             A :class:`RestoreJobList` supporting iteration, len(), and index access.
+            Its ``pagination`` attribute is ``None`` on the final page.
 
         Raises:
             :exc:`ApiError`: If the API returns an error response.
 
-        Examples:
-            >>> from pinecone import Pinecone
-            >>> pc = Pinecone(api_key="your-api-key")
-            >>> for job in pc.restore_jobs.list():  # doctest: +SKIP
-            ...     print(job.restore_job_id, job.status)
+        .. warning::
+            **Against today's backend this listing can silently drop restore
+            jobs, stop paginating early, and repeat rows across pages.** The
+            server pages over raw import operations, filters them down to
+            restore jobs, and then computes the next-page token from the
+            *post-filter* count. A page of 100 raw operations that happens to
+            contain 3 restore jobs therefore looks like a short final page:
+            pagination ends there, and every restore job behind it is never
+            returned. When pagination does continue, the server's offset
+            advances by the filtered count rather than the raw count, so a
+            later page can re-return jobs you have already seen. Separately, a
+            restore job whose target index has been deleted is dropped from the
+            listing entirely, which shortens the page and can itself trigger
+            the early stop.
 
-            >>> jobs = pc.restore_jobs.list(limit=5)  # doctest: +SKIP
-            >>> len(jobs)  # doctest: +SKIP
-            5
+            What that means for you: treat the result as a best-effort sample
+            rather than an exhaustive inventory, never conclude a restore job
+            does not exist from its absence here, and de-duplicate by
+            ``restore_job_id`` while walking pages. The SDK offers no
+            workaround on purpose — the token stream itself ends early, so no
+            client-side code can recover pages the server never points at.
+            Tracked upstream in `pinecone-io/python-sdk-internal#250
+            <https://github.com/pinecone-io/python-sdk-internal/issues/250>`_.
+
+        Examples:
+            Walk every page the server will hand out:
+
+            .. code-block:: python
+
+                from pinecone import Pinecone
+
+                pc = Pinecone(api_key="your-api-key")
+
+                page = pc.restore_jobs.list(limit=100)
+                jobs = list(page)
+                while page.pagination and page.pagination.next:
+                    page = pc.restore_jobs.list(pagination_token=page.pagination.next)
+                    jobs.extend(page)
+
+                for job in jobs:
+                    print(job.restore_job_id, job.status, job.percent_complete)
+
+            When one page is all you want:
+
+            .. code-block:: python
+
+                page = pc.restore_jobs.list(limit=5)
+                print(len(page))
         """
         params: dict[str, Any] = restore_job_list_params(
             limit=limit, pagination_token=pagination_token
@@ -98,16 +141,40 @@ class RestoreJobs:
             A :class:`RestoreJobModel` with full restore job details.
 
         Raises:
-            :exc:`ValidationError`: If *job_id* is empty.
-            :exc:`NotFoundError`: If the restore job does not exist.
+            :exc:`PineconeValueError`: If *job_id* is empty.
+            :exc:`NotFoundError`: If the API answers ``404`` — which is **not**
+                the same as "the restore job does not exist"; see the warning
+                below.
             :exc:`ApiError`: If the API returns another error response.
 
+        .. warning::
+            **A ``404`` from this endpoint cannot be trusted to mean "no such
+            restore job".** Against today's backend every failure to read the
+            restore-job store — a store outage included — is flattened into a
+            ``404``, so :exc:`NotFoundError` here means "could not produce this
+            job", not "this job does not exist". Any retry policy or control
+            flow keyed on a ``404`` from ``describe`` is therefore unsafe:
+            giving up, deleting local state, or reporting the job as gone can
+            each be the wrong call on what was really a transient store
+            failure. Treat it as possibly transient unless you have
+            independent evidence the id is bad.
+
+            The same flattening means a restore job whose target index has been
+            deleted also answers ``404``, carrying a message about index
+            metadata rather than "Restore job not found" — so do not match on
+            the message text either. Such a job is dropped from :meth:`list`
+            entirely rather than reported. Tracked upstream in
+            `pinecone-io/python-sdk-internal#250
+            <https://github.com/pinecone-io/python-sdk-internal/issues/250>`_.
+
         Examples:
-            >>> from pinecone import Pinecone
-            >>> pc = Pinecone(api_key="your-api-key")
-            >>> job = pc.restore_jobs.describe(job_id="rj-restore-20240115")
-            >>> job.status
-            'Completed'
+            .. code-block:: python
+
+                from pinecone import Pinecone
+
+                pc = Pinecone(api_key="your-api-key")
+                job = pc.restore_jobs.describe(job_id="rj-restore-20240115")
+                print(job.status)
         """
         require_non_empty("job_id", job_id)
         logger.info("Describing restore job %r", job_id)

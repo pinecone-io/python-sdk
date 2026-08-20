@@ -39,33 +39,39 @@ backup = pc.indexes.create_backup("product-search", name="pre-reindex-snapshot")
 
 ## List backups
 
-List all backups in the project:
+`pc.backups.list` returns a {class}`~pinecone.models.backups.list.BackupList` —
+**one page**, not every backup in the project. It carries a `pagination` token but
+does not follow it, so iterating the returned object directly sees at most one
+page. To list all backups, drive the token:
 
 ```python
-for backup in pc.backups.list():
+page = pc.backups.list(limit=100)
+backups = list(page)
+while page.pagination and page.pagination.next:
+    page = pc.backups.list(pagination_token=page.pagination.next)
+    backups.extend(page)
+
+for backup in backups:
     print(backup.backup_id, backup.name, backup.status)
 ```
 
-Filter by index:
+`pagination` is `None` on the final page. `limit` ranges from 1 to 100 and is
+**ignored when `pagination_token` is given** — the token already carries the page
+size it was minted with, so passing a different one alongside it would skip or
+repeat rows.
+
+Filtering by index is the same single-page contract, so the same loop applies:
 
 ```python
-for backup in pc.backups.list(index_name="product-search"):
+page = pc.backups.list(index_name="product-search", limit=100)
+for backup in page:
     print(backup.backup_id, backup.created_at)
 ```
 
-`list` returns a {class}`~pinecone.models.backups.list.BackupList` with cursor-based
-pagination. Pass `limit` to control page size and `pagination_token` to advance pages:
-
-```python
-page = pc.backups.list(limit=5)
-if page.pagination and page.pagination.next:
-    next_page = pc.backups.list(limit=5, pagination_token=page.pagination.next)
-```
-
-`pagination` is `None` on the final page.
-
 `pc.indexes.list_backups` is the index-scoped equivalent, returning a
-{class}`~pinecone.models.pagination.Paginator` that walks the pages for you:
+{class}`~pinecone.models.pagination.Paginator` that walks the pages for you.
+Prefer it whenever you want every backup for one index and would rather not
+drive tokens by hand:
 
 ```python
 for backup in pc.indexes.list_backups("product-search"):
@@ -84,12 +90,17 @@ Pass `include_deleted=True` to widen the listing to every index that has ever
 used the name:
 
 ```python
-orphaned = pc.backups.list(index_name="product-search", include_deleted=True)
+page = pc.backups.list(
+    index_name="product-search", include_deleted=True, limit=100
+)
 
-for backup in orphaned:
+for backup in page:
     if backup.source_index_deleted_at:
         print(backup.backup_id, "orphaned at", backup.source_index_deleted_at)
 ```
+
+This is one page like every other `pc.backups.list` call — use the token loop
+above if the index has more backups than a page holds.
 
 So a 404 from `pc.backups.list(index_name=...)` is not proof the name was never
 used — retry with `include_deleted=True` before concluding that. A 404 *with*
@@ -192,11 +203,46 @@ here.
 
 ## Monitor restore jobs
 
-Each call to `create_index_from_backup` starts a restore job. List all restore jobs:
+Each call to `create_index_from_backup` starts a restore job.
+
+`pc.restore_jobs.list` returns a
+{class}`~pinecone.models.backups.list.RestoreJobList` holding **one page**. Like
+`pc.backups.list`, it carries a `pagination` token without following it, so
+`for job in pc.restore_jobs.list():` sees at most one page of jobs. Drive the
+token to walk the rest:
 
 ```python
-for job in pc.restore_jobs.list():
+page = pc.restore_jobs.list(limit=100)
+jobs = list(page)
+while page.pagination and page.pagination.next:
+    page = pc.restore_jobs.list(pagination_token=page.pagination.next)
+    jobs.extend(page)
+
+for job in jobs:
     print(job.restore_job_id, job.status, job.percent_complete)
+```
+
+`pagination` is `None` on the final page, and `limit` is ignored when
+`pagination_token` is given.
+
+```{warning}
+Against today's backend **this listing can silently drop restore jobs, stop
+paginating early, and repeat rows across pages.** The server pages over raw
+import operations, filters them down to restore jobs, and then computes the
+next-page token from the *post-filter* count — so a page of 100 raw operations
+that happens to contain 3 restore jobs looks like a short final page, pagination
+ends there, and every restore job behind it is never returned. When pagination
+does continue, the server's offset advances by the filtered count rather than
+the raw count, so a later page can re-return jobs you have already seen. A
+restore job whose target index has been deleted is dropped from the listing
+entirely, which shortens the page and can itself trigger the early stop.
+
+Treat the result as a best-effort sample rather than an exhaustive inventory,
+never conclude a restore job does not exist from its absence here, and
+de-duplicate by `restore_job_id` while walking pages. The SDK offers no
+workaround on purpose: the token stream itself ends early, so no client-side
+code can recover pages the server never points at. Tracked upstream in
+[#250](https://github.com/pinecone-io/python-sdk-internal/issues/250).
 ```
 
 Describe a specific job:
@@ -212,6 +258,23 @@ print(job.completed_at)
 ```
 
 `describe` returns a {class}`~pinecone.models.backups.model.RestoreJobModel`.
+
+```{warning}
+**A 404 from `describe` cannot be trusted to mean "no such restore job".**
+Against today's backend every failure to read the restore-job store — a store
+outage included — is flattened into a 404, so the `NotFoundError` you catch here
+means "could not produce this job", not "this job does not exist". Any retry
+policy or control flow keyed on a 404 from `describe` is therefore unsafe:
+giving up, deleting local state, or reporting the job as gone can each be the
+wrong call on what was really a transient store failure. Treat it as possibly
+transient unless you have independent evidence the id is bad.
+
+The same flattening means a restore job whose target index has been deleted also
+answers 404, carrying a message about index metadata rather than "Restore job
+not found" — so do not match on the message text either. Such a job is dropped
+from `list` entirely rather than reported. Tracked upstream in
+[#250](https://github.com/pinecone-io/python-sdk-internal/issues/250).
+```
 
 
 ## Delete a backup
