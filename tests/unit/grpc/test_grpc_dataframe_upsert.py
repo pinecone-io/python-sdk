@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import builtins
 import inspect
-import os
 import threading
 from concurrent.futures import Future
 from types import ModuleType
@@ -12,8 +11,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from pinecone._internal.constants import DEFAULT_MAX_CONCURRENCY
 from pinecone.errors.exceptions import PineconeValueError
-from pinecone.grpc import GrpcIndex, _default_max_concurrency
+from pinecone.grpc import GrpcIndex
 from pinecone.models.batch import BatchResult
 from pinecone.models.vectors.responses import UpsertResponse
 
@@ -350,11 +350,10 @@ def _one_batch_result(item_count: int) -> BatchResult:
 class TestGrpcDataframeConcurrency:
     """Submission is bounded, and the bound is a parameter."""
 
-    def test_default_max_concurrency_matches_the_old_unbounded_pool(self) -> None:
-        """min(32, cpu+4) is what a default ThreadPoolExecutor already gave."""
-        expected = min(32, (os.cpu_count() or 1) + 4)
-
-        assert _default_max_concurrency() == expected
+    def test_default_max_concurrency_is_flat_and_machine_independent(self) -> None:
+        """#74: a machine-dependent default was not defensible for a
+        network-bound operation; 8 is flat everywhere."""
+        assert DEFAULT_MAX_CONCURRENCY == 8
 
     def test_default_is_forwarded_to_the_batch_executor(
         self, grpc_index: GrpcIndex, mock_channel: MagicMock
@@ -367,7 +366,7 @@ class TestGrpcDataframeConcurrency:
             spy.return_value = _one_batch_result(2)
             grpc_index.upsert_from_dataframe(df, batch_size=1, show_progress=False)
 
-        assert spy.call_args[1]["max_concurrency"] == _default_max_concurrency()
+        assert spy.call_args[1]["max_concurrency"] == DEFAULT_MAX_CONCURRENCY
 
     def test_explicit_max_concurrency_is_forwarded(
         self, grpc_index: GrpcIndex, mock_channel: MagicMock

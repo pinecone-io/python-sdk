@@ -183,7 +183,7 @@ class TestUpsertMaxConcurrency:
     """max_concurrency parameter validation and forwarding."""
 
     @respx.mock
-    def test_upsert_max_concurrency_default_is_4(self) -> None:
+    def test_upsert_max_concurrency_default_is_8(self) -> None:
         respx.post(UPSERT_URL).mock(
             side_effect=lambda req: httpx.Response(
                 200,
@@ -195,7 +195,7 @@ class TestUpsertMaxConcurrency:
         idx = _make_index()
         with patch("pinecone.index.bulk_execute_sync", wraps=bulk_execute_sync) as spy:
             idx.upsert(vectors=_make_vectors(10), batch_size=5, show_progress=False)
-        assert spy.call_args.kwargs["max_concurrency"] == 4
+        assert spy.call_args.kwargs["max_concurrency"] == 8
 
     @respx.mock
     def test_upsert_max_concurrency_explicit(self) -> None:

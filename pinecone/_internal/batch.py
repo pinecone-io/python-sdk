@@ -14,6 +14,7 @@ from concurrent.futures import TimeoutError as _FuturesTimeoutError
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
+from pinecone._internal.constants import DEFAULT_MAX_CONCURRENCY
 from pinecone.models.batch import BatchError, BatchResult
 from pinecone.models.response_info import BatchResponseInfo
 
@@ -190,7 +191,7 @@ def batch_execute(
     items: list[dict[str, Any]],
     operation: Callable[[list[dict[str, Any]]], Any],
     batch_size: int,
-    max_concurrency: int = 4,
+    max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
     show_progress: bool = True,
     desc: str = "Batches",
     executor: ThreadPoolExecutor | None = None,
@@ -210,7 +211,7 @@ def batch_execute(
         operation (Callable): Callable that accepts a batch (sublist).
         batch_size (int): Maximum items per batch (must be >= 1).
         max_concurrency (int): Thread pool size for concurrent requests
-            (1-64, default 4).
+            (1-64, default 8).
         show_progress (bool): Display a tqdm progress bar when installed.
         desc (str): Label shown on the progress bar.
         executor (ThreadPoolExecutor | None): Optional caller-owned executor
@@ -380,7 +381,7 @@ async def async_batch_execute(
     items: list[dict[str, Any]],
     operation: Callable[[list[dict[str, Any]]], Awaitable[Any]],
     batch_size: int,
-    max_concurrency: int = 4,
+    max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
     show_progress: bool = True,
     desc: str = "Batches",
     limiter_registry: _AdaptiveLimiterRegistry | None = None,
@@ -398,7 +399,7 @@ async def async_batch_execute(
         operation (Callable): Async callable that accepts a batch (sublist).
         batch_size (int): Maximum items per batch (must be >= 1).
         max_concurrency (int): Maximum concurrent batch requests
-            (1-64, default 4).
+            (1-64, default 8).
         show_progress (bool): Display a tqdm progress bar when installed.
         desc (str): Label shown on the progress bar.
         limiter_registry (_AdaptiveLimiterRegistry | None): Optional registry

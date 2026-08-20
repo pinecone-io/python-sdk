@@ -17,7 +17,7 @@ from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
 from pinecone._internal.batching import validate_batch_size
 from pinecone._internal.bulk import bulk_execute_async
 from pinecone._internal.config import PineconeConfig
-from pinecone._internal.constants import DATA_PLANE_API_VERSION
+from pinecone._internal.constants import DATA_PLANE_API_VERSION, DEFAULT_MAX_CONCURRENCY
 from pinecone._internal.data_plane_helpers import (
     _build_search_records_body,
     _limiter_host_key,
@@ -246,7 +246,7 @@ class AsyncIndex:
         namespace: str = "",
         batch_size: int | None = None,
         show_progress: bool = True,
-        max_concurrency: int = 4,
+        max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
         timeout: float | None = None,
         total_timeout: float | None = None,
     ) -> UpsertResponse:
@@ -271,7 +271,7 @@ class AsyncIndex:
                 ``batch_size`` is ``None`` or ``tqdm`` is not installed.
                 Defaults to ``True``.
             max_concurrency (int): Asyncio concurrency limit for concurrent batch
-                requests (range 1–64, default 4). Only used when ``batch_size``
+                requests (range 1–64, default 8). Only used when ``batch_size``
                 is set.
             timeout (float | None): Per-request timeout in seconds. Overrides
                 the client-level default for this call only.
@@ -321,7 +321,7 @@ class AsyncIndex:
 
         .. note::
            When ``batch_size`` is set, batches are submitted **concurrently**, bounded
-           by ``max_concurrency`` (default 4, range 1–64) and by the host's adaptive
+           by ``max_concurrency`` (default 8, range 1–64) and by the host's adaptive
            concurrency limit, whichever is lower. ``total_timeout`` bounds the whole
            batched operation: on expiry no further batches are submitted, in-flight
            batches are awaited, and unsent batches are reported in ``failed_items``.

@@ -8,6 +8,7 @@ import msgspec
 
 from pinecone._internal.adapters.vectors_adapter import extract_response_info
 from pinecone._internal.bulk import bulk_execute_sync
+from pinecone._internal.constants import DEFAULT_MAX_CONCURRENCY
 from pinecone._internal.validation import require_in_range, require_non_empty, require_positive
 from pinecone.errors.exceptions import PineconeValueError
 from pinecone.models.batch import (
@@ -215,7 +216,7 @@ class PreviewDocuments:
             documents: Documents to upsert. Each must contain a non-empty,
                 unique ``_id`` string field.
             batch_size: Maximum documents per request (positive integer, default 50).
-            max_concurrency: Thread pool size for concurrent requests (1–64, default 4).
+            max_concurrency: Thread pool size for concurrent requests (1–64, default 8).
             show_progress: Display a tqdm progress bar when installed.
 
         Returns:
@@ -260,7 +261,11 @@ class PreviewDocuments:
         effective_max_concurrency = (
             max_concurrency
             if max_concurrency is not None
-            else (deprecated_max_workers if deprecated_max_workers is not None else 4)
+            else (
+                deprecated_max_workers
+                if deprecated_max_workers is not None
+                else DEFAULT_MAX_CONCURRENCY
+            )
         )
 
         require_non_empty("namespace", namespace)

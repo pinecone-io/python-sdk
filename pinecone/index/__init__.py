@@ -16,7 +16,7 @@ from pinecone._internal.adapters.vectors_adapter import VectorsAdapter, extract_
 from pinecone._internal.batching import validate_batch_size
 from pinecone._internal.bulk import bulk_execute_sync
 from pinecone._internal.config import PineconeConfig
-from pinecone._internal.constants import DATA_PLANE_API_VERSION
+from pinecone._internal.constants import DATA_PLANE_API_VERSION, DEFAULT_MAX_CONCURRENCY
 from pinecone._internal.data_plane_helpers import (
     _build_search_records_body,
     _validate_host,
@@ -171,7 +171,7 @@ class Index:
         namespace: str = "",
         batch_size: int | None = None,
         show_progress: bool = True,
-        max_concurrency: int = 4,
+        max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
         timeout: float | None = None,
         total_timeout: float | None = None,
     ) -> UpsertResponse:
@@ -196,7 +196,7 @@ class Index:
                 ``batch_size`` is ``None`` or ``tqdm`` is not installed.
                 Defaults to ``True``.
             max_concurrency (int): Thread pool size for concurrent batch requests
-                (range 1–64, default 4). Only used when ``batch_size`` is set.
+                (range 1–64, default 8). Only used when ``batch_size`` is set.
             timeout (float | None): Per-request timeout in seconds. Overrides
                 the client-level default for this call only.
             total_timeout (float | None): Deadline in seconds for the whole
@@ -227,7 +227,7 @@ class Index:
 
         Notes:
             When ``batch_size`` is set, batches are submitted **in parallel** via a
-            ``ThreadPoolExecutor`` of ``max_concurrency`` workers (default 4, range
+            ``ThreadPoolExecutor`` of ``max_concurrency`` workers (default 8, range
             1–64). Per-batch HTTP retries are handled by the client's configured
             ``RetryConfig`` — connection errors, client-side timeouts, and the
             configured ``retryable_status_codes``. Unlike the gRPC transport, a timeout

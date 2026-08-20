@@ -37,6 +37,7 @@ from pinecone._internal.bulk.classify import is_retryable
 from pinecone._internal.bulk.core import AcquireOutcome
 from pinecone._internal.bulk.engine import _stalled_error
 from pinecone._internal.bulk.registry import GateRegistry, get_registry
+from pinecone._internal.constants import DEFAULT_MAX_CONCURRENCY
 from pinecone.models.batch import BatchError, BatchResult
 
 if TYPE_CHECKING:
@@ -50,7 +51,7 @@ async def bulk_execute_async(
     items: list[dict[str, Any]],
     operation: Callable[[list[dict[str, Any]]], Awaitable[Any]],
     batch_size: int,
-    max_concurrency: int = 4,
+    max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
     show_progress: bool = True,
     desc: str = "Batches",
     host: str,

@@ -19,7 +19,7 @@ from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
 from pinecone._internal.batching import validate_batch_size
 from pinecone._internal.bulk import bulk_execute_sync
 from pinecone._internal.config import PineconeConfig, RetryConfig
-from pinecone._internal.constants import DATA_PLANE_API_VERSION
+from pinecone._internal.constants import DATA_PLANE_API_VERSION, DEFAULT_MAX_CONCURRENCY
 from pinecone._internal.data_plane_helpers import _build_search_records_body, _validate_host
 from pinecone._internal.dataframe import _resolve_on_error, extract_records
 from pinecone._internal.keyword_only import keyword_only_methods
@@ -246,15 +246,6 @@ def _as_sentence(text: str) -> str:
     return f"{stripped}."
 
 
-def _default_max_concurrency() -> int:
-    """What an unbounded submission into a default ThreadPoolExecutor already gave.
-
-    Bounding submission without keeping this number would be a throughput
-    regression rather than a fix, so it is the default and callers override it.
-    """
-    return min(32, (os.cpu_count() or 1) + 4)
-
-
 @keyword_only_methods
 class GrpcIndex:
     """Synchronous gRPC data plane client targeting a specific Pinecone index.
@@ -431,7 +422,7 @@ class GrpcIndex:
         ],
         namespace: str = "",
         batch_size: int | None = None,
-        max_concurrency: int = 4,
+        max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
         show_progress: bool = True,
         timeout: float | None = None,
     ) -> UpsertResponse:
@@ -473,7 +464,7 @@ class GrpcIndex:
 
         Notes:
             When ``batch_size`` is set, batches are submitted **in parallel** via a
-            ``ThreadPoolExecutor`` of ``max_concurrency`` workers (default 4, range
+            ``ThreadPoolExecutor`` of ``max_concurrency`` workers (default 8, range
             1–64). Per-batch retries are handled by the gRPC channel's own retry
             policy. **Partial failures do not raise** — the returned
             :class:`UpsertResponse` carries ``upserted_count``,
@@ -1192,10 +1183,11 @@ class GrpcIndex:
                 progress bar. The bar advances as batches *complete*. If ``tqdm``
                 is not installed, silently falls back to no progress bar.
             max_concurrency: Number of batches in flight at once, range
-                ``[1, 64]``. ``None`` (default) uses ``min(32, cpu_count + 4)``,
-                which is what an unbounded submission into a default
-                ``ThreadPoolExecutor`` already gave — pass a value to make
-                throughput reproducible across hosts.
+                ``[1, 64]``. ``None`` (default) uses ``8`` — flat and identical
+                across every transport and machine, so throughput is
+                reproducible across hosts. The host's adaptive limit still
+                applies underneath; raise this only when the backend has
+                headroom for a larger committed retry burst.
             on_error: What to do when some batches fail. ``"collect"`` returns an
                 :class:`UpsertResponse` carrying ``failed_item_count``, ``errors``
                 and ``failed_items``, so the caller can retry only what failed —
@@ -1330,7 +1322,7 @@ class GrpcIndex:
 
         resolved_on_error = _resolve_on_error(on_error)
         resolved_concurrency = (
-            _default_max_concurrency() if max_concurrency is None else max_concurrency
+            DEFAULT_MAX_CONCURRENCY if max_concurrency is None else max_concurrency
         )
         require_in_range("max_concurrency", resolved_concurrency, 1, 64)
 

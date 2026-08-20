@@ -32,6 +32,7 @@ from pinecone._internal.batch import (
 from pinecone._internal.bulk.classify import DISPOSITION_ABANDONED, is_retryable
 from pinecone._internal.bulk.core import AcquireOutcome
 from pinecone._internal.bulk.registry import GateRegistry, get_registry
+from pinecone._internal.constants import DEFAULT_MAX_CONCURRENCY
 from pinecone.models.batch import BatchError, BatchResult
 
 if TYPE_CHECKING:
@@ -62,7 +63,7 @@ def bulk_execute_sync(
     items: list[dict[str, Any]],
     operation: Callable[[list[dict[str, Any]]], Any],
     batch_size: int,
-    max_concurrency: int = 4,
+    max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
     show_progress: bool = True,
     desc: str = "Batches",
     host: str,

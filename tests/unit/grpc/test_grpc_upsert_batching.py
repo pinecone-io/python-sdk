@@ -88,15 +88,15 @@ class TestGrpcUpsertBatching:
         with pytest.raises(PineconeValueError):
             grpc_index.upsert(vectors=vectors, batch_size=2, max_concurrency=-1)
 
-    def test_upsert_max_concurrency_default_is_4(
+    def test_upsert_max_concurrency_default_is_8(
         self, grpc_index: GrpcIndex, mock_channel: MagicMock
     ) -> None:
-        """Default max_concurrency of 4 reaches the bulk engine."""
+        """Default max_concurrency of 8 reaches the bulk engine."""
         mock_channel.upsert.return_value = {"upserted_count": 5}
         vectors = _make_vectors(10)
         with patch("pinecone.grpc.bulk_execute_sync", wraps=bulk_execute_sync) as mock_engine:
             grpc_index.upsert(vectors=vectors, batch_size=5, show_progress=False)
-            assert mock_engine.call_args.kwargs["max_concurrency"] == 4
+            assert mock_engine.call_args.kwargs["max_concurrency"] == 8
 
     def test_upsert_max_concurrency_explicit(
         self, grpc_index: GrpcIndex, mock_channel: MagicMock
