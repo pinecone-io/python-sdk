@@ -20,6 +20,12 @@ from tests.unit._internal._storm_parity_scenarios import (
     sync_parity_metrics,
 )
 
+# The module-scoped `metrics` fixture sleeps for real (see `_no_retry_sleep`),
+# measured at 4.27s, and lands in the setup phase of whichever test runs first.
+# Under the global `timeout = 5` that is a coin flip, not a guard. Module-level
+# so test ordering cannot decide who pays it.
+pytestmark = pytest.mark.timeout(30)
+
 
 # Override the unit-test conftest's autouse sleep-suppressor. Storm scenarios
 # need real sleeps so retries actually advance the clock past the throttle

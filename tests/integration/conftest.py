@@ -59,9 +59,29 @@ from pinecone import AsyncPinecone, Pinecone
 
 _HERE = Path(__file__).resolve().parent
 
+_DEFAULT_TIMEOUT_SECONDS = 120
+
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "integration: marks tests as real-API integration tests")
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Replace the global 5s timeout with a live-backend-sized one here (#306).
+
+    ``timeout = 5`` is sized for unit tests, which mock every sleep away; a
+    real round trip cannot honour it. Tests carrying their own marker are
+    skipped, so the explicit values in this tree keep winning either way.
+
+    Path-filtered because pytest hands a conftest hook the entire session's
+    item list, not only the items collected beneath that conftest — an
+    unfiltered loop would hand ``tests/unit`` the integration default too.
+    """
+    for item in items:
+        if _HERE not in item.path.parents:
+            continue
+        if item.get_closest_marker("timeout") is None:
+            item.add_marker(pytest.mark.timeout(_DEFAULT_TIMEOUT_SECONDS))
 
 
 def _main_worktree_root() -> Path | None:

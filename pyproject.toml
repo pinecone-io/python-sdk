@@ -132,6 +132,12 @@ required-imports = ["from __future__ import annotations"]
 [tool.pytest.ini_options]
 anyio_mode = "auto"
 timeout = 5
+# --strict-config turns an unrecognized ini key into a startup error and
+# --strict-markers does the same for an unregistered marker. Both were silent
+# warnings until #306, which is how `timeout = 5` and 89 `pytest.mark.timeout`
+# markers sat inert for four months after pytest-timeout went missing from the
+# dev dependency group.
+addopts = ["--strict-config", "--strict-markers"]
 markers = [
     "smoke: end-to-end smoke tests that hit a real Pinecone backend (see tests/smoke/README.md)",
     "integration: real-API integration tests against a live Pinecone backend",
@@ -150,6 +156,11 @@ dev = [
     "pytest>=9.0.3",
     "pytest-anyio>=0.0.0",
     "pytest-asyncio>=0.23",
+    # Backs `timeout = 5` in [tool.pytest.ini_options] and the 89
+    # `pytest.mark.timeout` markers in tests/integration/. It was only ever
+    # added to [project.optional-dependencies].dev, which `uv sync --group dev`
+    # does not install, so none of them did anything (#306).
+    "pytest-timeout>=2.3",
     "python-dotenv>=1.2.2",
     "pytest-benchmark>=5.0.0",
     "pytest-xdist>=3.6",

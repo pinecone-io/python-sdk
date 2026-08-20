@@ -137,6 +137,7 @@ def _cases(draw):
 class TestUpsertFromDataframePartitionProperties:
     """Batching covers every row exactly once, with payloads intact."""
 
+    @pytest.mark.timeout(60)
     @settings(max_examples=200, deadline=None)
     @given(
         n_rows=st.integers(min_value=0, max_value=3000),
