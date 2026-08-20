@@ -425,6 +425,7 @@ class GrpcIndex:
         max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
         show_progress: bool = True,
         timeout: float | None = None,
+        total_timeout: float | None = None,
     ) -> UpsertResponse:
         """Upsert a batch of vectors into a namespace.
 
@@ -443,13 +444,19 @@ class GrpcIndex:
                 ``ThreadPoolExecutor``. ``None`` (default) sends all vectors in
                 a single channel call. Must be a positive integer when set.
             max_concurrency (int): Number of parallel threads used when
-                ``batch_size`` is set. Default ``4``, range ``[1, 64]``. Ignored
+                ``batch_size`` is set. Default ``8``, range ``[1, 64]``. Ignored
                 when ``batch_size`` is ``None``.
             show_progress (bool): If ``True`` and ``tqdm`` is installed, display a
                 progress bar while submitting batches. Ignored when ``batch_size``
                 is ``None``. Defaults to ``True``.
             timeout (float | None): Per-call timeout in seconds. Applied per batch
                 when batching. None uses the client-level default.
+            total_timeout (float | None): Deadline in seconds for the whole
+                batched operation (only meaningful with ``batch_size``). On
+                expiry no further batches are submitted; batches already in
+                flight are awaited and never cancelled; unsent batches are
+                reported in ``failed_items``. ``None`` (default) means no
+                deadline.
 
         Returns:
             :class:`UpsertResponse` with the count of vectors upserted.
@@ -517,6 +524,7 @@ class GrpcIndex:
             show_progress=show_progress,
             desc="Upserting",
             host=self._limiter_host,
+            total_timeout=total_timeout,
         )
 
         return UpsertResponse(

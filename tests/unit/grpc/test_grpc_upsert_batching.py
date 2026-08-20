@@ -252,3 +252,48 @@ class TestGrpcUpsertBatching:
         for result in results:
             assert result.upserted_count == 40  # type: ignore[attr-defined]
             assert not result.errors  # type: ignore[attr-defined]
+
+
+class TestGrpcUpsertTotalTimeout:
+    """total_timeout on GrpcIndex.upsert (#142) — parity with REST/async."""
+
+    def test_total_timeout_defaults_to_none(self) -> None:
+        import inspect
+
+        sig = inspect.signature(GrpcIndex.upsert)
+        assert sig.parameters["total_timeout"].default is None
+
+    def test_total_timeout_is_forwarded_to_the_engine(
+        self, grpc_index: GrpcIndex, mock_channel: MagicMock
+    ) -> None:
+        mock_channel.upsert.return_value = {"upserted_count": 5}
+        vectors = _make_vectors(10)
+        with patch("pinecone.grpc.bulk_execute_sync", wraps=bulk_execute_sync) as mock_engine:
+            grpc_index.upsert(
+                vectors=vectors, batch_size=5, show_progress=False, total_timeout=90.0
+            )
+            assert mock_engine.call_args.kwargs["total_timeout"] == 90.0
+
+    def test_expired_total_timeout_abandons_unsent_batches(
+        self, grpc_index: GrpcIndex, mock_channel: MagicMock
+    ) -> None:
+        import time
+
+        def slow_upsert(*args: object, **kwargs: object) -> dict[str, int]:
+            time.sleep(0.05)
+            return {"upserted_count": 2}
+
+        mock_channel.upsert.side_effect = slow_upsert
+        vectors = _make_vectors(40)
+
+        response = grpc_index.upsert(
+            vectors=vectors,
+            batch_size=2,
+            max_concurrency=1,
+            show_progress=False,
+            total_timeout=0.08,
+        )
+
+        assert response.failed_item_count > 0
+        assert response.upserted_count < 40
+        assert response.errors
