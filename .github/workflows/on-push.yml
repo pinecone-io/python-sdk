@@ -196,3 +196,39 @@ jobs:
       # tests had never run in CI.
       - name: cargo test
         run: cargo test --no-default-features
+
+  # ---------------------------------------------------------------------------
+  # Sphinx docs build (warnings are errors)
+  #
+  # Same warnings-as-errors invocation as the doc-build job in
+  # release-readiness.yml, so a PR that breaks the docs build fails here rather
+  # than surfacing days later in the Monday cron.
+  # ---------------------------------------------------------------------------
+  docs:
+    name: Sphinx docs build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      # No protoc / Rust toolchain / project build: docs/conf.py mocks
+      # pinecone._grpc and pandas via autodoc_mock_imports, so autodoc never
+      # loads the compiled extension. --no-install-project still installs the
+      # project's runtime deps, which conf.py needs to import pinecone from the
+      # source tree (it puts the repo root on sys.path).
+      - name: Install docs deps (no project build)
+        run: uv sync --extra docs --no-install-project --no-default-groups
+
+      # SPHINXBUILD override drops the Makefile's inner `uv run --extra docs`,
+      # which would re-sync and build the Rust extension. The resulting
+      # sphinx-build command line is identical to release-readiness's.
+      - name: Build HTML docs
+        run: make -C docs html SPHINXOPTS="-W" SPHINXBUILD="uv run --no-sync sphinx-build"

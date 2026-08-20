@@ -40,7 +40,7 @@ response = index.start_import(
 )
 ```
 
-You can also use the {class}`~pinecone.models.ImportErrorMode` enum:
+You can also use the {class}`~pinecone.models.imports.error_mode.ImportErrorMode` enum:
 
 ```python
 from pinecone.models.imports.error_mode import ImportErrorMode
