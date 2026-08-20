@@ -64,6 +64,15 @@ AsyncBackups
    :show-inheritance:
 
 
+AsyncBackupSchedules
+--------------------
+
+.. autoclass:: pinecone.async_client.backup_schedules.AsyncBackupSchedules
+   :members:
+   :undoc-members: False
+   :show-inheritance:
+
+
 AsyncRestoreJobs
 ----------------
 

@@ -1,10 +1,12 @@
 """2026-07 conformance for the six db_control backup-schedule operations.
 
 These claims were deliberately deferred by #115 (PR #255) until #112 flipped
-``CONTROL_PLANE_API_VERSION`` to ``2026-07``. They are claimed through the
-sync :class:`Pinecone` only: no async backup-schedules namespace exists yet
-(#116 owns it), and that ticket can add the async twins the way #114/#133
-did for backups and indexes.
+``CONTROL_PLANE_API_VERSION`` to ``2026-07``. Each operation is now claimed
+twice — once through the sync :class:`Pinecone`, once through
+:class:`AsyncPinecone` — because the version header and the request shape are
+built per transport, so one lane passing says nothing about the other. #116
+added the async half once its namespace existed, following #114/#133 for
+backups and indexes.
 
 ``list_backup_schedule_history`` gets a **spec-shaped fixture, not a #224
 divergence entry** — the per-op decision #115 deferred to #112, decided the
@@ -20,7 +22,7 @@ open tracking the backend gap.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 import httpx
@@ -33,6 +35,7 @@ from pinecone._internal.adapters.backup_schedules_adapter import (
     _BackupScheduleListEnvelope,
 )
 from pinecone._internal.constants import DEFAULT_BASE_URL
+from pinecone.async_client.pinecone import AsyncPinecone
 from pinecone.models.backups.schedules import BackupScheduleModel
 from tests.unit.conformance import api_op
 
@@ -81,6 +84,13 @@ def pc() -> Iterator[Pinecone]:
     client.close()
 
 
+@pytest.fixture
+async def async_pc() -> AsyncIterator[AsyncPinecone]:
+    client = AsyncPinecone(api_key="conformance-key")
+    yield client
+    await client.close()
+
+
 def _conforms(
     claim: Any,
     route: respx.Route,
@@ -106,6 +116,20 @@ def test_create_backup_schedule(claim: Any, pc: Pinecone, respx_mock: respx.Mock
     _conforms(claim, route, BackupScheduleModel, SCHEDULE, SCHEDULE_OPTIONALS)
 
 
+@api_op("db_control:create_backup_schedule")
+async def test_async_create_backup_schedule(
+    claim: Any, async_pc: AsyncPinecone, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.post(f"{BASE_URL}/indexes/{INDEX_NAME}/backup-schedules").mock(
+        return_value=httpx.Response(201, json=SCHEDULE)
+    )
+    result = await async_pc.backup_schedules.create(
+        index_name=INDEX_NAME, name="nightly", frequency="daily", retention_days=30
+    )
+    assert result.schedule_id == SCHEDULE_ID
+    _conforms(claim, route, BackupScheduleModel, SCHEDULE, SCHEDULE_OPTIONALS)
+
+
 @api_op("db_control:describe_backup_schedule")
 def test_describe_backup_schedule(claim: Any, pc: Pinecone, respx_mock: respx.MockRouter) -> None:
     route = respx_mock.get(f"{BASE_URL}/backup-schedules/{SCHEDULE_ID}").mock(
@@ -115,12 +139,36 @@ def test_describe_backup_schedule(claim: Any, pc: Pinecone, respx_mock: respx.Mo
     _conforms(claim, route, BackupScheduleModel, SCHEDULE, SCHEDULE_OPTIONALS)
 
 
+@api_op("db_control:describe_backup_schedule")
+async def test_async_describe_backup_schedule(
+    claim: Any, async_pc: AsyncPinecone, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.get(f"{BASE_URL}/backup-schedules/{SCHEDULE_ID}").mock(
+        return_value=httpx.Response(200, json=SCHEDULE)
+    )
+    result = await async_pc.backup_schedules.describe(schedule_id=SCHEDULE_ID)
+    assert result.schedule_id == SCHEDULE_ID
+    _conforms(claim, route, BackupScheduleModel, SCHEDULE, SCHEDULE_OPTIONALS)
+
+
 @api_op("db_control:update_backup_schedule")
 def test_update_backup_schedule(claim: Any, pc: Pinecone, respx_mock: respx.MockRouter) -> None:
     route = respx_mock.patch(f"{BASE_URL}/backup-schedules/{SCHEDULE_ID}").mock(
         return_value=httpx.Response(200, json=SCHEDULE)
     )
     result = pc.backup_schedules.update(schedule_id=SCHEDULE_ID, retention_days=30)
+    assert result.schedule_id == SCHEDULE_ID
+    _conforms(claim, route, BackupScheduleModel, SCHEDULE, SCHEDULE_OPTIONALS)
+
+
+@api_op("db_control:update_backup_schedule")
+async def test_async_update_backup_schedule(
+    claim: Any, async_pc: AsyncPinecone, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.patch(f"{BASE_URL}/backup-schedules/{SCHEDULE_ID}").mock(
+        return_value=httpx.Response(200, json=SCHEDULE)
+    )
+    result = await async_pc.backup_schedules.update(schedule_id=SCHEDULE_ID, retention_days=30)
     assert result.schedule_id == SCHEDULE_ID
     _conforms(claim, route, BackupScheduleModel, SCHEDULE, SCHEDULE_OPTIONALS)
 
@@ -137,12 +185,38 @@ def test_delete_backup_schedule(claim: Any, pc: Pinecone, respx_mock: respx.Mock
     claim.assert_no_response_body(returned)
 
 
+@api_op("db_control:delete_backup_schedule")
+async def test_async_delete_backup_schedule(
+    claim: Any, async_pc: AsyncPinecone, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.delete(f"{BASE_URL}/backup-schedules/{SCHEDULE_ID}").mock(
+        return_value=httpx.Response(204)
+    )
+    returned = await async_pc.backup_schedules.delete(schedule_id=SCHEDULE_ID)
+    request = route.calls.last.request
+    claim.assert_request(request)
+    claim.assert_api_version(request)
+    claim.assert_no_response_body(returned)
+
+
 @api_op("db_control:list_backup_schedules")
 def test_list_backup_schedules(claim: Any, pc: Pinecone, respx_mock: respx.MockRouter) -> None:
     route = respx_mock.get(f"{BASE_URL}/indexes/{INDEX_NAME}/backup-schedules").mock(
         return_value=httpx.Response(200, json=SCHEDULE_LIST)
     )
     assert pc.backup_schedules.list(index_name=INDEX_NAME)[0].schedule_id == SCHEDULE_ID
+    _conforms(claim, route, _BackupScheduleListEnvelope, SCHEDULE_LIST, ["pagination"])
+
+
+@api_op("db_control:list_backup_schedules")
+async def test_async_list_backup_schedules(
+    claim: Any, async_pc: AsyncPinecone, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.get(f"{BASE_URL}/indexes/{INDEX_NAME}/backup-schedules").mock(
+        return_value=httpx.Response(200, json=SCHEDULE_LIST)
+    )
+    result = await async_pc.backup_schedules.list(index_name=INDEX_NAME)
+    assert result[0].schedule_id == SCHEDULE_ID
     _conforms(claim, route, _BackupScheduleListEnvelope, SCHEDULE_LIST, ["pagination"])
 
 
@@ -154,5 +228,17 @@ def test_list_backup_schedule_history(
         return_value=httpx.Response(200, json=HISTORY_LIST)
     )
     result = pc.backup_schedules.history(schedule_id=SCHEDULE_ID)
+    assert result[0].backup_id == "bkp-conformance-123"
+    _conforms(claim, route, _BackupScheduleHistoryEnvelope, HISTORY_LIST, ["pagination"])
+
+
+@api_op("db_control:list_backup_schedule_history")
+async def test_async_list_backup_schedule_history(
+    claim: Any, async_pc: AsyncPinecone, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.get(f"{BASE_URL}/backup-schedules/{SCHEDULE_ID}/history").mock(
+        return_value=httpx.Response(200, json=HISTORY_LIST)
+    )
+    result = await async_pc.backup_schedules.history(schedule_id=SCHEDULE_ID)
     assert result[0].backup_id == "bkp-conformance-123"
     _conforms(claim, route, _BackupScheduleHistoryEnvelope, HISTORY_LIST, ["pagination"])

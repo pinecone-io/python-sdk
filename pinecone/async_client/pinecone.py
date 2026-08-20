@@ -17,6 +17,7 @@ from pinecone.errors.exceptions import ValidationError
 if TYPE_CHECKING:
     from pinecone.async_client.assistants import AsyncAssistants
     from pinecone.async_client.async_index import AsyncIndex
+    from pinecone.async_client.backup_schedules import AsyncBackupSchedules
     from pinecone.async_client.backups import AsyncBackups
     from pinecone.async_client.collections import AsyncCollections
     from pinecone.async_client.indexes import AsyncIndexes
@@ -157,6 +158,7 @@ class AsyncPinecone:
         self._collections: AsyncCollections | None = None
         self._assistants: AsyncAssistants | None = None
         self._backups: AsyncBackups | None = None
+        self._backup_schedules: AsyncBackupSchedules | None = None
         self._restore_jobs: AsyncRestoreJobs | None = None
         self._inference: AsyncInference | None = None
         self._preview: AsyncPreview | None = None
@@ -273,6 +275,30 @@ class AsyncPinecone:
 
             self._backups = _AsyncBackups(http=self._http)
         return self._backups
+
+    @property
+    def backup_schedules(self) -> AsyncBackupSchedules:
+        """Access the AsyncBackupSchedules namespace for automatic, recurring backups.
+
+        Lazily imported and instantiated on first access.
+
+        Returns:
+            :class:`AsyncBackupSchedules` namespace instance.
+
+        Examples:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    schedules = await pc.backup_schedules.list(index_name="my-index")
+        """
+        if self._backup_schedules is None:
+            from pinecone.async_client.backup_schedules import (
+                AsyncBackupSchedules as _AsyncBackupSchedules,
+            )
+
+            self._backup_schedules = _AsyncBackupSchedules(http=self._http)
+        return self._backup_schedules
 
     @property
     def restore_jobs(self) -> AsyncRestoreJobs:
