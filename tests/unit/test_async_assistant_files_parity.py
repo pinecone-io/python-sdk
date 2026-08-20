@@ -383,16 +383,40 @@ async def test_polling_reads_the_operation_at_the_same_cadence(
 
     operations.mock(side_effect=list(responses))
     with patch("pinecone.client.assistants.time.sleep") as sync_sleep:
-        sync_assistants.upload_file(assistant_name=ASSISTANT_NAME, file_stream=io.BytesIO(b"data"))
+        sync_assistants.upload_file(
+            assistant_name=ASSISTANT_NAME, file_stream=io.BytesIO(b"data"), file_name="report.pdf"
+        )
 
     operations.mock(side_effect=list(responses))
     with patch("pinecone.async_client.assistants.asyncio.sleep") as async_sleep:
         await async_assistants.upload_file(
-            assistant_name=ASSISTANT_NAME, file_stream=io.BytesIO(b"data")
+            assistant_name=ASSISTANT_NAME, file_stream=io.BytesIO(b"data"), file_name="report.pdf"
         )
 
     assert async_sleep.call_args_list == sync_sleep.call_args_list
     assert [call.args for call in async_sleep.call_args_list] == [(5,)]
+
+
+@pytest.mark.parametrize("bad_name", [None, "report", "report.", ""])
+async def test_stream_without_a_typeable_file_name_fails_identically(
+    bad_name: str | None,
+    sync_assistants: Assistants,
+    async_assistants: AsyncAssistants,
+) -> None:
+    """The client-side filename check must fail identically before any request."""
+    kwargs: dict[str, Any] = {"assistant_name": ASSISTANT_NAME}
+    if bad_name is not None:
+        kwargs["file_name"] = bad_name
+
+    sync_result = _raised(
+        lambda: sync_assistants.upload_file(file_stream=io.BytesIO(b"data"), **kwargs)
+    )
+    async_result = await _raised_async(
+        lambda: async_assistants.upload_file(file_stream=io.BytesIO(b"data"), **kwargs)
+    )
+
+    assert async_result == sync_result
+    assert async_result[0] is PineconeValueError
 
 
 @pytest.mark.parametrize("bad", BAD_FILTERS)

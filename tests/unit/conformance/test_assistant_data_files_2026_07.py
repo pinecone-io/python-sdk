@@ -339,6 +339,7 @@ def test_metadata_is_never_sent_as_a_query_parameter(
     assistants.upload_file(
         assistant_name=ASSISTANT_NAME,
         file_stream=io.BytesIO(b"data"),
+        file_name="report.pdf",
         metadata={"created_by": "Jane Doe"},
         timeout=-1,
     )
@@ -362,7 +363,10 @@ def test_metadata_query_param_rejection_reaches_the_caller_verbatim(
 
     with pytest.raises(ApiError) as excinfo:
         assistants.upload_file(
-            assistant_name=ASSISTANT_NAME, file_stream=io.BytesIO(b"data"), timeout=-1
+            assistant_name=ASSISTANT_NAME,
+            file_stream=io.BytesIO(b"data"),
+            file_name="report.pdf",
+            timeout=-1,
         )
 
     assert excinfo.value.message == METADATA_QUERY_PARAM_ERROR
@@ -452,6 +456,7 @@ def test_a_16kb_metadata_document_still_travels_in_the_multipart_body(
     assistants.upload_file(
         assistant_name=ASSISTANT_NAME,
         file_stream=io.BytesIO(b"data"),
+        file_name="report.pdf",
         metadata=metadata,
         timeout=-1,
     )
@@ -509,6 +514,7 @@ def test_metadata_round_trips_through_the_multipart_field(metadata: dict[str, An
             client.upload_file(
                 assistant_name=ASSISTANT_NAME,
                 file_stream=io.BytesIO(b"data"),
+                file_name="report.pdf",
                 metadata=metadata,
                 timeout=-1,
             )
@@ -533,7 +539,10 @@ def test_no_metadata_means_no_metadata_part(
     mock_upload_completion(respx_mock)
 
     assistants.upload_file(
-        assistant_name=ASSISTANT_NAME, file_stream=io.BytesIO(b"data"), timeout=-1
+        assistant_name=ASSISTANT_NAME,
+        file_stream=io.BytesIO(b"data"),
+        file_name="report.pdf",
+        timeout=-1,
     )
 
     request = route.calls.last.request
@@ -560,7 +569,9 @@ def test_upload_polls_the_operation_not_the_file(
     )
 
     with patch("pinecone.client.assistants.time.sleep"):
-        assistants.upload_file(assistant_name=ASSISTANT_NAME, file_stream=io.BytesIO(b"data"))
+        assistants.upload_file(
+            assistant_name=ASSISTANT_NAME, file_stream=io.BytesIO(b"data"), file_name="report.pdf"
+        )
 
     assert operations.call_count == 3
     assert describe.call_count == 1

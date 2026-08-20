@@ -265,6 +265,7 @@ async def test_async_metadata_is_never_sent_as_a_query_parameter(
     await async_assistants.upload_file(
         assistant_name=ASSISTANT_NAME,
         file_stream=io.BytesIO(b"data"),
+        file_name="report.pdf",
         metadata={"created_by": "Jane Doe"},
         timeout=-1,
     )
@@ -288,7 +289,10 @@ async def test_async_metadata_query_param_rejection_reaches_the_caller_verbatim(
 
     with pytest.raises(ApiError) as excinfo:
         await async_assistants.upload_file(
-            assistant_name=ASSISTANT_NAME, file_stream=io.BytesIO(b"data"), timeout=-1
+            assistant_name=ASSISTANT_NAME,
+            file_stream=io.BytesIO(b"data"),
+            file_name="report.pdf",
+            timeout=-1,
         )
 
     assert excinfo.value.message == METADATA_QUERY_PARAM_ERROR
@@ -370,7 +374,10 @@ async def test_async_no_metadata_means_no_metadata_part(
     mock_upload_completion(respx_mock)
 
     await async_assistants.upload_file(
-        assistant_name=ASSISTANT_NAME, file_stream=io.BytesIO(b"data"), timeout=-1
+        assistant_name=ASSISTANT_NAME,
+        file_stream=io.BytesIO(b"data"),
+        file_name="report.pdf",
+        timeout=-1,
     )
 
     request = route.calls.last.request
@@ -398,7 +405,7 @@ async def test_async_upload_polls_the_operation_not_the_file(
 
     with patch("pinecone.async_client.assistants.asyncio.sleep"):
         await async_assistants.upload_file(
-            assistant_name=ASSISTANT_NAME, file_stream=io.BytesIO(b"data")
+            assistant_name=ASSISTANT_NAME, file_stream=io.BytesIO(b"data"), file_name="report.pdf"
         )
 
     assert operations.call_count == 3

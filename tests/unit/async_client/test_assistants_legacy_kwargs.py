@@ -112,7 +112,7 @@ async def test_async_update_with_name_still_works(
     mock_async_assistants: AsyncAssistants,
 ) -> None:
     """The canonical name= parameter continues to work as before."""
-    result = await mock_async_assistants.update(name="my-assistant")
+    result = await mock_async_assistants.update(name="my-assistant", instructions="be precise")
     assert result.name == "legacy-name"  # canned response from fixture
 
 

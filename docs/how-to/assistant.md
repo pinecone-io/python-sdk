@@ -55,6 +55,22 @@ print(file.name)   # "data.pdf"
 print(file.status) # "Processing" → "Available"
 ```
 
+To upload bytes you already hold, pass `file_stream` — plus a `file_name` that
+carries the extension. The server types an uploaded file by its extension alone
+(`.txt`, `.pdf`, `.json`, `.md`, `.docx`) and never inspects the bytes, so a
+stream without a usable filename raises
+{exc}`~pinecone.errors.exceptions.PineconeValueError` before anything is sent:
+
+```python
+import io
+
+file = pc.assistants.upload_file(
+    assistant_name="my-assistant",
+    file_stream=io.BytesIO(pdf_bytes),
+    file_name="data.pdf",
+)
+```
+
 ## Track long-running operations
 
 File writes are asynchronous server-side. `upload_file` and `delete_file` poll for
@@ -155,3 +171,9 @@ pc.assistants.delete(name="my-assistant")
 ```
 
 Raises {exc}`~pinecone.errors.exceptions.NotFoundError` if the assistant does not exist.
+
+`delete` polls until the assistant is gone, indefinitely by default. A delete that
+fails server-side is not retried, so if the assistant reports a terminal failure
+status while being deleted, polling stops with
+{exc}`~pinecone.errors.exceptions.PineconeError` instead of waiting forever. Pass
+`timeout=-1` to return as soon as the request is accepted.

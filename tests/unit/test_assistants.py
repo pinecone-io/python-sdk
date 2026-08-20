@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
+import tempfile
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -1033,6 +1035,31 @@ def test_update_assistant_not_found(assistants: Assistants) -> None:
         assistants.update(name="nonexistent", instructions="test")
 
 
+@respx.mock
+def test_update_assistant_with_no_fields_is_refused(assistants: Assistants) -> None:
+    """An empty patch is a guaranteed 400, so update() refuses to send one."""
+    route = respx.patch(f"{BASE_URL}/assistant/assistants/my-assistant")
+
+    with pytest.raises(PineconeValueError, match="at least one of 'instructions' or 'metadata'"):
+        assistants.update(name="my-assistant")
+
+    assert route.call_count == 0
+
+
+@respx.mock
+def test_update_assistant_empty_metadata_clears_rather_than_omits(
+    assistants: Assistants,
+) -> None:
+    """metadata={} is a real update — the guard must not mistake it for absence."""
+    route = respx.patch(f"{BASE_URL}/assistant/assistants/my-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response(name="my-assistant")),
+    )
+
+    assistants.update(name="my-assistant", metadata={})
+
+    assert json.loads(route.calls.last.request.content) == {"metadata": {}}
+
+
 # ---------------------------------------------------------------------------
 # list_page() — omission
 # ---------------------------------------------------------------------------
@@ -1193,6 +1220,70 @@ def test_delete_assistant_not_found(assistants: Assistants) -> None:
         assistants.delete(name="nonexistent")
 
 
+@pytest.mark.parametrize("status", ["Failed", "InitializationFailed"])
+@respx.mock
+@patch("pinecone.client.assistants.time.sleep")
+def test_delete_assistant_terminal_failure_stops_polling(
+    mock_sleep: object, status: str, assistants: Assistants
+) -> None:
+    """A delete that fails server-side is never retried, so waiting for a 404 hangs."""
+    respx.delete(f"{BASE_URL}/assistant/assistants/my-assistant").mock(
+        return_value=httpx.Response(204),
+    )
+    describe_route = respx.get(f"{BASE_URL}/assistant/assistants/my-assistant").mock(
+        return_value=httpx.Response(
+            200, json=make_assistant_response(name="my-assistant", status=status)
+        ),
+    )
+
+    with pytest.raises(PineconeError, match=f"terminal state '{status}'") as excinfo:
+        assistants.delete(name="my-assistant")
+
+    assert "my-assistant" in str(excinfo.value)
+    assert describe_route.call_count == 1
+
+
+@respx.mock
+@patch("pinecone.client.assistants.time.sleep")
+def test_delete_assistant_treats_terminated_as_gone(
+    mock_sleep: object, assistants: Assistants
+) -> None:
+    """'Terminated' is the delete having finished, so stop waiting for the 404."""
+    respx.delete(f"{BASE_URL}/assistant/assistants/my-assistant").mock(
+        return_value=httpx.Response(204),
+    )
+    describe_route = respx.get(f"{BASE_URL}/assistant/assistants/my-assistant").mock(
+        return_value=httpx.Response(
+            200, json=make_assistant_response(name="my-assistant", status="Terminated")
+        ),
+    )
+
+    assert assistants.delete(name="my-assistant") is None
+    assert describe_route.call_count == 1
+
+
+@respx.mock
+@patch("pinecone.client.assistants.time.sleep")
+def test_delete_assistant_keeps_polling_through_terminating(
+    mock_sleep: object, assistants: Assistants
+) -> None:
+    """'Terminating' is a delete in flight — the guard must not trip on it."""
+    respx.delete(f"{BASE_URL}/assistant/assistants/my-assistant").mock(
+        return_value=httpx.Response(204),
+    )
+    describe_route = respx.get(f"{BASE_URL}/assistant/assistants/my-assistant").mock(
+        side_effect=[
+            httpx.Response(
+                200, json=make_assistant_response(name="my-assistant", status="Terminating")
+            ),
+            httpx.Response(404, json={"error": "Not found"}),
+        ],
+    )
+
+    assert assistants.delete(name="my-assistant") is None
+    assert describe_route.call_count == 2
+
+
 @respx.mock
 @patch("pinecone.client.assistants.time.sleep")
 def test_delete_assistant_propagates_non_404_errors_during_poll(
@@ -1308,6 +1399,93 @@ def test_upload_file_both_path_and_stream(assistants: Assistants) -> None:
             file_path="/some/path.pdf",
             file_stream=io.BytesIO(b"data"),
         )
+
+
+# ---------------------------------------------------------------------------
+# upload_file() — a stream needs a filename the server can type
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+def test_upload_file_stream_without_file_name_is_refused(assistants: Assistants) -> None:
+    """A stream with no file_name never reaches the wire: it is a guaranteed 400."""
+    route = respx.post(f"{DATA_PLANE_URL}/files/test-assistant")
+
+    with pytest.raises(PineconeValueError, match="needs a file_name with an extension"):
+        assistants.upload_file(
+            assistant_name="test-assistant",
+            file_stream=io.BytesIO(b"data"),
+        )
+
+    assert route.call_count == 0
+
+
+@pytest.mark.parametrize("bad_name", ["report", "report.", "", "archive/report"])
+@respx.mock
+def test_upload_file_stream_file_name_without_extension_is_refused(
+    bad_name: str, assistants: Assistants
+) -> None:
+    """The error names the extensions the server accepts, so a caller can fix it."""
+    with pytest.raises(PineconeValueError) as excinfo:
+        assistants.upload_file(
+            assistant_name="test-assistant",
+            file_stream=io.BytesIO(b"data"),
+            file_name=bad_name,
+        )
+
+    message = str(excinfo.value)
+    for extension in (".txt", ".pdf", ".json", ".md", ".docx"):
+        assert extension in message
+
+
+@respx.mock
+@patch("pinecone.client.assistants.time.sleep")
+def test_upload_file_stream_file_name_is_the_multipart_filename(
+    mock_sleep: object, assistants: Assistants
+) -> None:
+    """The accepted file_name — not a placeholder — is what the server sees."""
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    upload_route = respx.post(f"{DATA_PLANE_URL}/files/test-assistant").mock(
+        return_value=httpx.Response(202, json=make_file_operation_response()),
+    )
+    respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
+        return_value=httpx.Response(200, json=make_assistant_file_response()),
+    )
+
+    assistants.upload_file(
+        assistant_name="test-assistant",
+        file_stream=io.BytesIO(b"data"),
+        file_name="quarterly.docx",
+        timeout=-1,
+    )
+
+    assert b'filename="quarterly.docx"' in upload_route.calls.last.request.content
+    assert b'filename="upload"' not in upload_route.calls.last.request.content
+
+
+@respx.mock
+@patch("pinecone.client.assistants.time.sleep")
+def test_upload_file_path_needs_no_file_name(mock_sleep: object, assistants: Assistants) -> None:
+    """file_path carries its own extension, so the guard leaves it alone."""
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    upload_route = respx.post(f"{DATA_PLANE_URL}/files/test-assistant").mock(
+        return_value=httpx.Response(202, json=make_file_operation_response()),
+    )
+    respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
+        return_value=httpx.Response(200, json=make_assistant_file_response()),
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".txt") as handle:
+        handle.write(b"report body")
+        handle.flush()
+        assistants.upload_file(assistant_name="test-assistant", file_path=handle.name, timeout=-1)
+        expected = f'filename="{os.path.basename(handle.name)}"'.encode()
+
+    assert expected in upload_route.calls.last.request.content
 
 
 # ---------------------------------------------------------------------------
@@ -1461,6 +1639,7 @@ def test_upload_file_with_metadata_and_file_id(mock_sleep: object, assistants: A
     result = assistants.upload_file(
         assistant_name="test-assistant",
         file_stream=stream,
+        file_name="report.pdf",
         metadata={"genre": "comedy"},
         file_id="custom-file-id",
     )
@@ -1513,6 +1692,7 @@ def test_upload_file_polls_with_correct_interval(
     assistants.upload_file(
         assistant_name="test-assistant",
         file_stream=stream,
+        file_name="report.pdf",
     )
 
     from unittest.mock import call
@@ -1557,6 +1737,7 @@ def test_upload_file_processing_failed(mock_sleep: object, assistants: Assistant
         assistants.upload_file(
             assistant_name="test-assistant",
             file_stream=stream,
+            file_name="report.pdf",
         )
 
     message = str(exc_info.value)
@@ -1594,6 +1775,7 @@ def test_upload_file_upsert_error_message(mock_sleep: object, assistants: Assist
         assistants.upload_file(
             assistant_name="test-assistant",
             file_stream=stream,
+            file_name="report.pdf",
             file_id="custom-file-id",
         )
 
@@ -1629,6 +1811,7 @@ def test_upload_file_timeout_raises(
         assistants.upload_file(
             assistant_name="test-assistant",
             file_stream=stream,
+            file_name="report.pdf",
             timeout=10,
         )
 
@@ -1657,6 +1840,7 @@ def test_upload_timeout_negative_one(assistants: Assistants) -> None:
     result = assistants.upload_file(
         assistant_name="test-assistant",
         file_stream=stream,
+        file_name="report.pdf",
         timeout=-1,
     )
 
@@ -1691,11 +1875,15 @@ def test_upload_file_caches_data_plane_client(mock_sleep: object, assistants: As
 
     # First upload — triggers describe
     stream1 = io.BytesIO(b"data1")
-    assistants.upload_file(assistant_name="test-assistant", file_stream=stream1)
+    assistants.upload_file(
+        assistant_name="test-assistant", file_stream=stream1, file_name="report.pdf"
+    )
 
     # Second upload — should reuse cached client
     stream2 = io.BytesIO(b"data2")
-    assistants.upload_file(assistant_name="test-assistant", file_stream=stream2)
+    assistants.upload_file(
+        assistant_name="test-assistant", file_stream=stream2, file_name="report.pdf"
+    )
 
     # Describe should only be called once (for the first upload)
     assert describe_route.call_count == 1
@@ -3955,7 +4143,9 @@ def test_the_polling_loop_goes_through_describe_operation(
                 httpx.Response(200, json=make_file_operation_response(status="Completed")),
             ],
         )
-        assistants.upload_file(assistant_name="test-assistant", file_stream=io.BytesIO(b"data"))
+        assistants.upload_file(
+            assistant_name="test-assistant", file_stream=io.BytesIO(b"data"), file_name="report.pdf"
+        )
 
     assert spy.call_count == 2
     for call in spy.call_args_list:

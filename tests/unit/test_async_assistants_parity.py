@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import inspect
 from typing import Any
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -22,7 +23,8 @@ import respx
 from pinecone._internal.config import PineconeConfig
 from pinecone.async_client.assistants import AsyncAssistants
 from pinecone.client.assistants import Assistants
-from pinecone.errors.exceptions import NotFoundError, PineconeValueError
+from pinecone.errors.exceptions import NotFoundError, PineconeError, PineconeValueError
+from tests.factories import make_assistant_response
 
 BASE_URL = "https://api.test.pinecone.io"
 
@@ -107,6 +109,49 @@ async def test_missing_name_error_parity(
         getattr(sync_assistants, method_name)()
     with pytest.raises(PineconeValueError) as async_exc:
         await getattr(async_assistants, method_name)()
+
+    assert type(sync_exc.value) is type(async_exc.value)
+    assert str(sync_exc.value) == str(async_exc.value)
+
+
+async def test_empty_update_error_parity(
+    sync_assistants: Assistants, async_assistants: AsyncAssistants
+) -> None:
+    """update() with neither field refuses on both transports with one message."""
+    with pytest.raises(PineconeValueError) as sync_exc:
+        sync_assistants.update(name="test-assistant")
+    with pytest.raises(PineconeValueError) as async_exc:
+        await async_assistants.update(name="test-assistant")
+
+    assert type(sync_exc.value) is type(async_exc.value)
+    assert str(sync_exc.value) == str(async_exc.value)
+
+
+@pytest.mark.parametrize("status", ["Failed", "InitializationFailed"])
+@respx.mock
+async def test_delete_terminal_state_error_parity(
+    status: str, sync_assistants: Assistants, async_assistants: AsyncAssistants
+) -> None:
+    """A delete parked in a terminal failure state reports identically on both."""
+    respx.delete(f"{BASE_URL}/assistant/assistants/stuck-assistant").mock(
+        return_value=httpx.Response(204),
+    )
+    respx.get(f"{BASE_URL}/assistant/assistants/stuck-assistant").mock(
+        return_value=httpx.Response(
+            200, json=make_assistant_response(name="stuck-assistant", status=status)
+        ),
+    )
+
+    with (
+        patch("pinecone.client.assistants.time.sleep"),
+        pytest.raises(PineconeError) as sync_exc,
+    ):
+        sync_assistants.delete(name="stuck-assistant")
+    with (
+        patch("pinecone.async_client.assistants.asyncio.sleep"),
+        pytest.raises(PineconeError) as async_exc,
+    ):
+        await async_assistants.delete(name="stuck-assistant")
 
     assert type(sync_exc.value) is type(async_exc.value)
     assert str(sync_exc.value) == str(async_exc.value)

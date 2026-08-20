@@ -62,9 +62,33 @@ _UPLOAD_POLL_INTERVAL_SECONDS = 5
 _VALID_OPERATION_TYPES = ("upload_file", "upsert_file", "update_file_metadata", "delete_file")
 _VALID_OPERATION_STATUSES = ("Processing", "Completed", "Failed")
 
+# Statuses that mean delete() will never see the 404 it polls for: the
+# server-side reconciler only rescues Create operations, so an assistant that
+# fails while being deleted stays put and an untimed poll spins forever.
+# "Terminating" is deliberately absent — that one is a delete in flight.
+_DELETE_TERMINAL_STATUSES = ("Failed", "InitializationFailed")
+
 
 def _operation_target(file_id: str | None) -> str:
     return f"file {file_id!r}" if file_id is not None else "the file"
+
+
+def _stream_upload_name(file_name: str | None) -> str:
+    """The multipart filename to send for a ``file_stream`` upload.
+
+    The server types an uploaded file by its filename extension alone — it
+    never sniffs the bytes — so a stream sent without a usable filename is a
+    guaranteed 400. Refusing here saves the round trip and names the fix.
+    """
+    if file_name is None or not os.path.splitext(file_name)[1].lstrip("."):
+        raise PineconeValueError(
+            "upload_file(file_stream=...) needs a file_name with an extension: the "
+            "server types an uploaded file by its extension alone, so a stream with "
+            "no filename is rejected whatever the bytes are. Pass "
+            "file_name='report.pdf' (supported extensions: .txt, .pdf, .json, .md, "
+            ".docx)."
+        )
+    return file_name
 
 
 def _validate_choice(name: str, value: str, valid: tuple[str, ...]) -> str:
@@ -277,9 +301,13 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             file_path: Path to a local file to upload. Mutually exclusive
                 with *file_stream*.
             file_stream: An open byte stream to upload. Mutually exclusive
-                with *file_path*. Use *file_name* to set the filename.
-            file_name: Filename to associate with *file_stream*. Ignored
-                when *file_path* is provided.
+                with *file_path*. Requires *file_name*.
+            file_name: Filename to associate with *file_stream*. Required
+                when *file_stream* is used and must carry a file extension
+                (``.txt``, ``.pdf``, ``.json``, ``.md``, ``.docx``): the
+                server types an uploaded file by its extension alone and
+                never inspects the bytes. Ignored when *file_path* is
+                provided, since the basename supplies the extension.
             metadata: Optional metadata dictionary, at most 16KB once
                 JSON-encoded. Sent as a ``metadata`` multipart form field —
                 on ``2026-07`` the metadata query parameter is rejected.
@@ -301,8 +329,9 @@ class Assistants(AssistantsLegacyNamespaceMixin):
 
         Raises:
             :exc:`PineconeValueError`: If both or neither of *file_path*
-                and *file_stream* are provided, or if *file_path* does not
-                exist.
+                and *file_stream* are provided, if *file_path* does not
+                exist, or if *file_stream* is used without a *file_name*
+                carrying a file extension.
             :exc:`PineconeTimeoutError`: If processing does not complete
                 before *timeout*.
             :exc:`PineconeError`: If server-side processing fails, or if the
@@ -315,6 +344,12 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             ... )
             >>> file.status  # doctest: +SKIP
             'Available'
+
+            >>> file = pc.assistants.upload_file(  # doctest: +SKIP
+            ...     assistant_name="research-assistant",
+            ...     file_stream=io.BytesIO(pdf_bytes),
+            ...     file_name="report.pdf",
+            ... )
         """
         import json as _json
 
@@ -332,7 +367,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             if file_stream is None:
                 raise PineconeValueError("Exactly one of file_path or file_stream must be provided")
             handle = file_stream
-            upload_name = file_name or "upload"
+            upload_name = _stream_upload_name(file_name)
 
         try:
             data_http = self._data_plane_http(assistant_name)
@@ -1073,19 +1108,28 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         """Update an existing Pinecone assistant.
 
         Updates the specified assistant's instructions and/or metadata.
-        Metadata is fully replaced (not merged) when provided.
+        Metadata is fully replaced (not merged) when provided. At least one
+        of *instructions* and *metadata* must be given.
+
+        ``None`` means "leave this field alone" — it is omitted from the
+        patch body rather than sent as an explicit null, and the server has
+        no way to clear a field from a null. To clear, send the empty value:
+        ``instructions=""`` or ``metadata={}``.
 
         Args:
             name (str): The name of the assistant to update.
             instructions (str | None): New instructions for the assistant.
                 Pass an empty string to clear existing instructions.
             metadata (dict[str, Any] | None): New metadata dictionary. Fully
-                replaces any existing metadata rather than merging.
+                replaces any existing metadata rather than merging. Pass an
+                empty dict to clear existing metadata.
 
         Returns:
             :class:`AssistantModel` describing the updated assistant.
 
         Raises:
+            :exc:`PineconeValueError`: If neither *instructions* nor
+                *metadata* is provided.
             :exc:`ApiError`: If the API returns an error response (e.g. 404
                 when the assistant does not exist).
 
@@ -1122,6 +1166,13 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             raise PineconeValueError(
                 "update() missing required argument: 'name' (or legacy alias 'assistant_name')."
             )
+        if instructions is None and metadata is None:
+            raise PineconeValueError(
+                "update() needs at least one of 'instructions' or 'metadata'. With both "
+                "omitted the patch body is empty and the server answers 400 'No updates "
+                "provided'. To clear a field, send its empty value: instructions='' or "
+                "metadata={}."
+            )
 
         body: dict[str, Any] = {}
         if instructions is not None:
@@ -1145,8 +1196,15 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         """Delete a Pinecone assistant by name.
 
         Sends a DELETE request, then polls every 5 seconds until the
-        assistant is confirmed gone (404 from describe). Other errors
-        during polling propagate immediately.
+        assistant is confirmed gone (404 from describe, or a reported status
+        of ``"Terminated"``). Other errors during polling propagate
+        immediately.
+
+        A delete that fails server-side is not retried by the reconciler,
+        which only rescues create operations. If the assistant reports a
+        terminal failure status while being deleted, polling stops with
+        :exc:`PineconeError` rather than waiting for a 404 that will never
+        come — which, with ``timeout=None``, would never return.
 
         Args:
             name (str): The name of the assistant to delete.
@@ -1161,6 +1219,9 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             None
 
         Raises:
+            :exc:`PineconeError`: If the assistant enters a terminal failure
+                state (``"Failed"``, ``"InitializationFailed"``) while being
+                deleted.
             :exc:`PineconeTimeoutError`: If the assistant still exists after
                 *timeout* seconds.
             :exc:`ApiError`: If the API returns an error response.
@@ -1206,9 +1267,18 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         start = time.monotonic()
         while True:
             try:
-                self.describe(name=name)
+                model = self.describe(name=name)
             except NotFoundError:
                 return
+            if model.status == "Terminated":
+                logger.debug("Assistant %r reported 'Terminated'; deletion is complete", name)
+                return
+            if model.status in _DELETE_TERMINAL_STATUSES:
+                raise PineconeError(
+                    f"Assistant '{name}' entered terminal state '{model.status}' while being "
+                    f"deleted, so it will never disappear on its own. Check status with "
+                    f"pc.assistants.describe(name='{name}') and retry the delete."
+                )
             if timeout is not None:
                 elapsed = time.monotonic() - start
                 if elapsed >= timeout:

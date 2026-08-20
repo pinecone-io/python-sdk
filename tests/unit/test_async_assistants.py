@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
+import tempfile
 from collections.abc import Awaitable, Callable
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -961,6 +963,33 @@ async def test_update_assistant_not_found(async_assistants: AsyncAssistants) -> 
         await async_assistants.update(name="nonexistent", instructions="test")
 
 
+@respx.mock
+async def test_async_update_assistant_with_no_fields_is_refused(
+    async_assistants: AsyncAssistants,
+) -> None:
+    """An empty patch is a guaranteed 400, so update() refuses to send one."""
+    route = respx.patch(f"{BASE_URL}/assistant/assistants/my-assistant")
+
+    with pytest.raises(PineconeValueError, match="at least one of 'instructions' or 'metadata'"):
+        await async_assistants.update(name="my-assistant")
+
+    assert route.call_count == 0
+
+
+@respx.mock
+async def test_async_update_assistant_empty_metadata_clears_rather_than_omits(
+    async_assistants: AsyncAssistants,
+) -> None:
+    """metadata={} is a real update — the guard must not mistake it for absence."""
+    route = respx.patch(f"{BASE_URL}/assistant/assistants/my-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response(name="my-assistant")),
+    )
+
+    await async_assistants.update(name="my-assistant", metadata={})
+
+    assert json.loads(route.calls.last.request.content) == {"metadata": {}}
+
+
 # ---------------------------------------------------------------------------
 # delete() — polls until gone
 # ---------------------------------------------------------------------------
@@ -1798,6 +1827,94 @@ async def test_async_upload_file_path_not_found(async_assistants: AsyncAssistant
         )
 
 
+@respx.mock
+async def test_async_upload_file_stream_without_file_name_is_refused(
+    async_assistants: AsyncAssistants,
+) -> None:
+    """A stream with no file_name never reaches the wire: it is a guaranteed 400."""
+    route = respx.post(f"{DATA_PLANE_URL}/files/test-assistant")
+
+    with pytest.raises(PineconeValueError, match="needs a file_name with an extension"):
+        await async_assistants.upload_file(
+            assistant_name="test-assistant",
+            file_stream=io.BytesIO(b"data"),
+        )
+
+    assert route.call_count == 0
+
+
+@pytest.mark.parametrize("bad_name", ["report", "report.", "", "archive/report"])
+@respx.mock
+async def test_async_upload_file_stream_file_name_without_extension_is_refused(
+    bad_name: str, async_assistants: AsyncAssistants
+) -> None:
+    """The error names the extensions the server accepts, so a caller can fix it."""
+    with pytest.raises(PineconeValueError) as excinfo:
+        await async_assistants.upload_file(
+            assistant_name="test-assistant",
+            file_stream=io.BytesIO(b"data"),
+            file_name=bad_name,
+        )
+
+    message = str(excinfo.value)
+    for extension in (".txt", ".pdf", ".json", ".md", ".docx"):
+        assert extension in message
+
+
+@respx.mock
+@patch("pinecone.async_client.assistants.asyncio.sleep")
+async def test_async_upload_file_stream_file_name_is_the_multipart_filename(
+    mock_sleep: object, async_assistants: AsyncAssistants
+) -> None:
+    """The accepted file_name — not a placeholder — is what the server sees."""
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    upload_route = respx.post(f"{DATA_PLANE_URL}/files/test-assistant").mock(
+        return_value=httpx.Response(202, json=make_file_operation_response()),
+    )
+    respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
+        return_value=httpx.Response(200, json=make_assistant_file_response()),
+    )
+
+    await async_assistants.upload_file(
+        assistant_name="test-assistant",
+        file_stream=io.BytesIO(b"data"),
+        file_name="quarterly.docx",
+        timeout=-1,
+    )
+
+    assert b'filename="quarterly.docx"' in upload_route.calls.last.request.content
+    assert b'filename="upload"' not in upload_route.calls.last.request.content
+
+
+@respx.mock
+@patch("pinecone.async_client.assistants.asyncio.sleep")
+async def test_async_upload_file_path_needs_no_file_name(
+    mock_sleep: object, async_assistants: AsyncAssistants
+) -> None:
+    """file_path carries its own extension, so the guard leaves it alone."""
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+    upload_route = respx.post(f"{DATA_PLANE_URL}/files/test-assistant").mock(
+        return_value=httpx.Response(202, json=make_file_operation_response()),
+    )
+    respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
+        return_value=httpx.Response(200, json=make_assistant_file_response()),
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".txt") as handle:
+        handle.write(b"report body")
+        handle.flush()
+        await async_assistants.upload_file(
+            assistant_name="test-assistant", file_path=handle.name, timeout=-1
+        )
+        expected = f'filename="{os.path.basename(handle.name)}"'.encode()
+
+    assert expected in upload_route.calls.last.request.content
+
+
 # ---------------------------------------------------------------------------
 # upload_file() — success from stream
 # ---------------------------------------------------------------------------
@@ -1878,6 +1995,7 @@ async def test_async_upload_file_multimodal_true(
     await async_assistants.upload_file(
         assistant_name="test-assistant",
         file_stream=stream,
+        file_name="report.pdf",
         multimodal=True,
     )
 
@@ -1908,6 +2026,7 @@ async def test_async_upload_file_multimodal_false(
     await async_assistants.upload_file(
         assistant_name="test-assistant",
         file_stream=stream,
+        file_name="report.pdf",
         multimodal=False,
     )
 
@@ -1951,6 +2070,7 @@ async def test_async_upload_file_with_metadata_and_file_id(
     result = await async_assistants.upload_file(
         assistant_name="test-assistant",
         file_stream=stream,
+        file_name="report.pdf",
         metadata={"genre": "comedy"},
         file_id="custom-file-id",
     )
@@ -2003,6 +2123,7 @@ async def test_async_upload_file_polls_with_correct_interval(
     await async_assistants.upload_file(
         assistant_name="test-assistant",
         file_stream=stream,
+        file_name="report.pdf",
     )
 
     from unittest.mock import call
@@ -2049,6 +2170,7 @@ async def test_async_upload_file_processing_failed(
         await async_assistants.upload_file(
             assistant_name="test-assistant",
             file_stream=stream,
+            file_name="report.pdf",
         )
 
     message = str(exc_info.value)
@@ -2114,6 +2236,7 @@ async def test_async_upload_file_upsert_error_message(
         await async_assistants.upload_file(
             assistant_name="test-assistant",
             file_stream=stream,
+            file_name="report.pdf",
             file_id="custom-file-id",
         )
 
@@ -2149,6 +2272,7 @@ async def test_async_upload_file_timeout_raises(
         await async_assistants.upload_file(
             assistant_name="test-assistant",
             file_stream=stream,
+            file_name="report.pdf",
             timeout=10,
         )
 
@@ -2177,6 +2301,7 @@ async def test_async_upload_timeout_negative_one(async_assistants: AsyncAssistan
     result = await async_assistants.upload_file(
         assistant_name="test-assistant",
         file_stream=stream,
+        file_name="report.pdf",
         timeout=-1,
     )
 
@@ -2212,10 +2337,10 @@ async def test_async_upload_file_caches_data_plane_client(
     )
 
     await async_assistants.upload_file(
-        assistant_name="test-assistant", file_stream=io.BytesIO(b"data1")
+        assistant_name="test-assistant", file_stream=io.BytesIO(b"data1"), file_name="report.pdf"
     )
     await async_assistants.upload_file(
-        assistant_name="test-assistant", file_stream=io.BytesIO(b"data2")
+        assistant_name="test-assistant", file_stream=io.BytesIO(b"data2"), file_name="report.pdf"
     )
 
     assert describe_route.call_count == 1
@@ -2475,7 +2600,7 @@ async def test_async_polling_loop_goes_through_describe_operation(
             ],
         )
         await async_assistants.upload_file(
-            assistant_name="test-assistant", file_stream=io.BytesIO(b"data")
+            assistant_name="test-assistant", file_stream=io.BytesIO(b"data"), file_name="report.pdf"
         )
 
     assert spy.call_count == 2
@@ -3420,6 +3545,70 @@ async def test_async_delete_assistant_polls_indefinitely_when_no_timeout(
     assert result is None
 
 
+@pytest.mark.parametrize("status", ["Failed", "InitializationFailed"])
+@respx.mock
+@patch("pinecone.async_client.assistants.asyncio.sleep")
+async def test_async_delete_assistant_terminal_failure_stops_polling(
+    mock_sleep: object, status: str, async_assistants: AsyncAssistants
+) -> None:
+    """A delete that fails server-side is never retried, so waiting for a 404 hangs."""
+    respx.delete(f"{BASE_URL}/assistant/assistants/my-assistant").mock(
+        return_value=httpx.Response(204),
+    )
+    describe_route = respx.get(f"{BASE_URL}/assistant/assistants/my-assistant").mock(
+        return_value=httpx.Response(
+            200, json=make_assistant_response(name="my-assistant", status=status)
+        ),
+    )
+
+    with pytest.raises(PineconeError, match=f"terminal state '{status}'") as excinfo:
+        await async_assistants.delete(name="my-assistant")
+
+    assert "my-assistant" in str(excinfo.value)
+    assert describe_route.call_count == 1
+
+
+@respx.mock
+@patch("pinecone.async_client.assistants.asyncio.sleep")
+async def test_async_delete_assistant_treats_terminated_as_gone(
+    mock_sleep: object, async_assistants: AsyncAssistants
+) -> None:
+    """'Terminated' is the delete having finished, so stop waiting for the 404."""
+    respx.delete(f"{BASE_URL}/assistant/assistants/my-assistant").mock(
+        return_value=httpx.Response(204),
+    )
+    describe_route = respx.get(f"{BASE_URL}/assistant/assistants/my-assistant").mock(
+        return_value=httpx.Response(
+            200, json=make_assistant_response(name="my-assistant", status="Terminated")
+        ),
+    )
+
+    assert await async_assistants.delete(name="my-assistant") is None
+    assert describe_route.call_count == 1
+
+
+@respx.mock
+@patch("pinecone.async_client.assistants.asyncio.sleep")
+async def test_async_delete_assistant_keeps_polling_through_terminating(
+    mock_sleep: object, async_assistants: AsyncAssistants
+) -> None:
+    """'Terminating' is a delete in flight — the guard must not trip on it."""
+    respx.delete(f"{BASE_URL}/assistant/assistants/my-assistant").mock(
+        return_value=httpx.Response(204),
+    )
+    describe_route = respx.get(f"{BASE_URL}/assistant/assistants/my-assistant").mock(
+        side_effect=[
+            httpx.Response(
+                200, json=make_assistant_response(name="my-assistant", status="Terminating")
+            ),
+            httpx.Response(404, json={"error": "Not found"}),
+        ],
+    )
+
+    assert await async_assistants.delete(name="my-assistant") is None
+    assert describe_route.call_count == 2
+
+
 @respx.mock
 @patch("pinecone.async_client.assistants.asyncio.sleep")
 async def test_async_delete_assistant_propagates_non_404_errors_during_poll(
@@ -3816,11 +4005,15 @@ _FILE_SURFACE_CALLS: dict[str, Callable[[AsyncAssistants], Awaitable[Any]]] = {
     "list_files": lambda a: a.list_files(assistant_name="test-assistant").to_list(),
     "list_operations": lambda a: a.list_operations(assistant_name="test-assistant").to_list(),
     "upload_file": lambda a: a.upload_file(
-        assistant_name="test-assistant", file_stream=io.BytesIO(b"data"), timeout=-1
+        assistant_name="test-assistant",
+        file_stream=io.BytesIO(b"data"),
+        file_name="report.pdf",
+        timeout=-1,
     ),
     "upsert_file": lambda a: a.upload_file(
         assistant_name="test-assistant",
         file_stream=io.BytesIO(b"data"),
+        file_name="report.pdf",
         file_id="custom-file-id",
         timeout=-1,
     ),
