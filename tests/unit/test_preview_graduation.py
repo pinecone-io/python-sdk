@@ -10,10 +10,18 @@ Replaces ``tests/unit/preview/test_import_paths.py`` and
 carries the close-propagation coverage that lived in
 ``tests/unit/preview/test_close.py`` and ``test_preview_documents_close.py``
 forward onto the graduated surfaces.
+
+The absence guards below deliberately do NOT use
+``pytest.raises(ModuleNotFoundError)``; see
+``assert_module_is_really_gone`` for why an empty leftover directory would
+otherwise defeat them (#326).
 """
 
 from __future__ import annotations
 
+import importlib
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -27,6 +35,9 @@ BASE_URL = "https://api.test.pinecone.io"
 INDEX_HOST = "graduated-idx-abc123.svc.pinecone.io"
 INDEX_URL = f"https://{INDEX_HOST}"
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PACKAGE_ROOT = REPO_ROOT / "pinecone"
+
 FETCH_DOCUMENTS_RESPONSE = {
     "documents": {"doc-1": {"_id": "doc-1", "title": "Rome"}},
     "namespace": "articles-en",
@@ -34,20 +45,112 @@ FETCH_DOCUMENTS_RESPONSE = {
 }
 
 
-class TestPreviewNamespaceIsGone:
-    def test_import_pinecone_preview_raises_module_not_found(self) -> None:
-        with pytest.raises(ModuleNotFoundError):
-            import pinecone.preview  # noqa: F401
+def _stale_empty_dir_message(dotted_name: str, directories: list[str]) -> str:
+    listing = "\n".join(f"    rm -rf {d}" for d in directories) or "    (none reported)"
+    return (
+        f"`import {dotted_name}` SUCCEEDED, but as an implicit namespace package "
+        f"(PEP 420) rather than as a real module.\n"
+        f"\n"
+        f"THE 2026-07 BRANCH IS FINE. YOUR WORKING TREE HAS A STALE EMPTY "
+        f"DIRECTORY. Remove it and re-run:\n"
+        f"\n"
+        f"{listing}\n"
+        f"\n"
+        f"or, to sweep every stale empty directory at once:\n"
+        f"\n"
+        f"    find {PACKAGE_ROOT} -type d -empty -delete\n"
+        f"\n"
+        f"Why: #140 (PR #316) deleted every file in pinecone/preview/. Git removes "
+        f"tracked files but LEAVES THE DIRECTORY behind, and `git status` never "
+        f"reports an empty directory -- so a tree rebased across #316 keeps a "
+        f"phantom pinecone/preview/ that Python imports as a namespace package with "
+        f"__file__ = None. CI checks out fresh, so CI never sees this. That is why "
+        f"the failure looks like the preview graduation is broken when the only "
+        f"problem is a leftover directory on your disk."
+    )
 
-    def test_import_preview_submodules_raise_module_not_found(self) -> None:
-        with pytest.raises(ModuleNotFoundError):
-            from pinecone.preview.indexes import PreviewIndexes  # noqa: F401
-        with pytest.raises(ModuleNotFoundError):
-            from pinecone.preview.models import PreviewIndexModel  # noqa: F401
-        with pytest.raises(ModuleNotFoundError):
-            from pinecone.preview._internal.constants import (  # noqa: F401
-                INDEXES_API_VERSION,
+
+def assert_module_is_really_gone(dotted_name: str) -> None:
+    """Assert ``dotted_name`` is absent, and not merely file-less.
+
+    ``pytest.raises(ModuleNotFoundError)`` is NOT sufficient here, and this is
+    the whole point of #326. When a package's files are deleted but its
+    directory survives, Python's PEP 420 finder resolves the leftover empty
+    directory as an *implicit namespace package*: the import succeeds, the
+    module object has ``__file__ is None`` and ``__spec__.origin is None``, and
+    ``__path__`` is a ``_NamespacePath`` listing the offending directories.
+
+    So we assert on ``__spec__.origin`` rather than on the exception: a real
+    module always has an origin (the path of its ``.py``/``__init__.py``), and
+    a namespace package never does. That distinction is what tells a genuinely
+    retired package apart from a phantom one -- and it lets the failure name
+    the exact directory the developer has to delete.
+    """
+    try:
+        module = importlib.import_module(dotted_name)
+    except ModuleNotFoundError:
+        return
+
+    sys.modules.pop(dotted_name, None)
+
+    spec = module.__spec__
+    origin = spec.origin if spec is not None else None
+    if origin is None and getattr(module, "__file__", None) is None:
+        pytest.fail(_stale_empty_dir_message(dotted_name, [str(p) for p in module.__path__]))
+
+    pytest.fail(
+        f"`import {dotted_name}` SUCCEEDED and resolved to a real module at "
+        f"{origin!r}. The preview namespace was retired by #140 (PR #316) and "
+        f"must not exist. Do not re-add it -- see "
+        f"docs/migration/v10-2026-07-preview-graduation.md."
+    )
+
+
+class TestPreviewNamespaceIsGone:
+    def test_import_pinecone_preview_is_really_gone(self) -> None:
+        assert_module_is_really_gone("pinecone.preview")
+
+    @pytest.mark.parametrize(
+        "dotted_name",
+        [
+            "pinecone.preview.indexes",
+            "pinecone.preview.models",
+            "pinecone.preview._internal",
+            "pinecone.preview._internal.constants",
+            "pinecone.preview._internal.adapters",
+        ],
+    )
+    def test_preview_submodules_are_really_gone(self, dotted_name: str) -> None:
+        assert_module_is_really_gone(dotted_name)
+
+    def test_no_stale_empty_directories_under_pinecone(self) -> None:
+        """Catch the #326 hazard for *any* future package deletion, not just preview.
+
+        Cheap generalization of the guard above: every empty directory under
+        ``pinecone/`` is an importable namespace package waiting to confuse
+        someone, and git will never mention it.
+        """
+
+        def holds_no_source(directory: Path) -> bool:
+            return not any(
+                entry.is_file() and "__pycache__" not in entry.parts
+                for entry in directory.rglob("*")
             )
+
+        candidates = sorted(
+            path
+            for path in PACKAGE_ROOT.rglob("*")
+            if path.is_dir()
+            and path.name != "__pycache__"
+            and not any(part.startswith(".") for part in path.relative_to(REPO_ROOT).parts)
+            and holds_no_source(path)
+        )
+        topmost = [
+            str(path)
+            for path in candidates
+            if not any(other in path.parents for other in candidates)
+        ]
+        assert topmost == [], _stale_empty_dir_message("<a stale package>", topmost)
 
     def test_sync_client_has_no_preview_attribute(self) -> None:
         pc = Pinecone(api_key="test-key-1234")
