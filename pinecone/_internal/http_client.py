@@ -9,7 +9,9 @@ import os
 import random
 import socket
 import sys
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import AsyncGenerator, Generator
 from typing import Any
 from urllib.parse import urlsplit
@@ -186,6 +188,104 @@ def _notify_throttle(
         logger.debug("on_throttle callback raised, ignoring: %s", exc)
 
 
+_BUDGET_MAX_TOKENS = 100.0
+_BUDGET_TOKEN_RATIO = 0.1
+_MAX_BUDGETS = 1024
+
+
+class _RetryBudget:
+    """gRFC A6 retry throttling: a per-host token bucket bounding the retry
+    multiplier during partial outages (issue #76, the REST half of #55).
+
+    Every retryable failure spends 1.0 token; every 2xx earns back 0.1;
+    retries are suppressed while the bucket is at or below half. Steady-state
+    retry overhead is thus capped near 10% of successful traffic, and retries
+    self-disable during a total outage instead of doubling load at the worst
+    moment. First attempts never consult the budget — only retries are gated.
+    Composes with the adaptive gate rather than duplicating it: the gate
+    bounds concurrency, the budget bounds attempts per request.
+    """
+
+    __slots__ = ("_lock", "_max_tokens", "_tokens")
+
+    def __init__(self, max_tokens: float = _BUDGET_MAX_TOKENS) -> None:
+        self._lock = threading.Lock()
+        self._max_tokens = max_tokens
+        self._tokens = max_tokens
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._tokens = min(self._max_tokens, self._tokens + _BUDGET_TOKEN_RATIO)
+
+    def record_failure(self) -> None:
+        with self._lock:
+            self._tokens = max(0.0, self._tokens - 1.0)
+
+    def allows_retry(self) -> bool:
+        with self._lock:
+            return self._tokens > self._max_tokens / 2.0
+
+    def tokens(self) -> float:
+        with self._lock:
+            return self._tokens
+
+
+class _BudgetRegistry:
+    """Process-global for the same reason the gate registry is: budget state
+    is a statement about a backend host, not about a client object — two
+    clients in one process hammering one host must share one ledger.
+
+    Keys are normalized by the gate registry's ``host_key`` (one
+    normalization function in the SDK — the #60 lesson). Eviction at the cap
+    is plain LRU: unlike gates, budgets hold no in-flight counts, and a
+    re-created budget starts full, which errs toward allowing retries for a
+    host we have not seen among the last 1024.
+    """
+
+    __slots__ = ("_budgets", "_lock", "_max_tokens")
+
+    def __init__(self, max_tokens: float = _BUDGET_MAX_TOKENS) -> None:
+        self._lock = threading.Lock()
+        self._max_tokens = max_tokens
+        self._budgets: OrderedDict[str, _RetryBudget] = OrderedDict()
+
+    def get(self, host: str) -> _RetryBudget:
+        from pinecone._internal.bulk.registry import host_key
+
+        key = host_key(host or "")
+        with self._lock:
+            budget = self._budgets.get(key)
+            if budget is None:
+                budget = _RetryBudget(self._max_tokens)
+                if len(self._budgets) >= _MAX_BUDGETS:
+                    self._budgets.popitem(last=False)
+                self._budgets[key] = budget
+            else:
+                self._budgets.move_to_end(key)
+            return budget
+
+    def _reset(self) -> None:
+        with self._lock:
+            self._budgets.clear()
+
+    def _reset_unlocked(self) -> None:
+        """Fork-child reset: inherited lock state is undefined, so rebuild
+        without trying to take it (mirrors the gate registry)."""
+        self._lock = threading.Lock()
+        self._budgets = OrderedDict()
+
+
+_budget_registry = _BudgetRegistry()
+
+
+def get_budget_registry() -> _BudgetRegistry:
+    return _budget_registry
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_budget_registry._reset_unlocked)
+
+
 class _RetryTransport(httpx.BaseTransport):
     """Sync transport wrapper that retries on transient server errors."""
 
@@ -194,11 +294,14 @@ class _RetryTransport(httpx.BaseTransport):
         *,
         transport: httpx.HTTPTransport,
         retry_config: RetryConfig | None = None,
+        budget_registry: _BudgetRegistry | None = None,
     ) -> None:
         self._transport = transport
         self._config = retry_config or RetryConfig()
+        self._budgets = budget_registry if budget_registry is not None else _budget_registry
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
+        budget = self._budgets.get(request.url.host)
         last_exc: httpx.TransportError | None = None
         prev_delay: float | None = None
         for attempt in range(self._config.max_retries + 1):
@@ -206,7 +309,8 @@ class _RetryTransport(httpx.BaseTransport):
                 response = self._transport.handle_request(request)
             except httpx.TransportError as exc:
                 last_exc = exc
-                if attempt < self._config.max_retries:
+                budget.record_failure()
+                if attempt < self._config.max_retries and budget.allows_retry():
                     logger.debug(
                         "Connection error on attempt %d/%d, retrying: %s",
                         attempt + 1,
@@ -216,12 +320,16 @@ class _RetryTransport(httpx.BaseTransport):
                     delay = _compute_backoff(self._config, attempt, prev_delay)
                     prev_delay = delay
                     _retry_sleep(delay)
-                continue
+                    continue
+                break
             last_exc = None
             if response.status_code not in self._config.retryable_status_codes:
+                if response.is_success:
+                    budget.record_success()
                 return response
+            budget.record_failure()
             _notify_throttle(self._config, request, response)
-            if attempt < self._config.max_retries:
+            if attempt < self._config.max_retries and budget.allows_retry():
                 response.close()
                 delay = _compute_retry_after_delay(self._config, response, attempt, prev_delay)
                 prev_delay = delay
@@ -254,11 +362,14 @@ class _AsyncRetryTransport(httpx.AsyncBaseTransport):
         *,
         transport: httpx.AsyncHTTPTransport,
         retry_config: RetryConfig | None = None,
+        budget_registry: _BudgetRegistry | None = None,
     ) -> None:
         self._transport = transport
         self._config = retry_config or RetryConfig()
+        self._budgets = budget_registry if budget_registry is not None else _budget_registry
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        budget = self._budgets.get(request.url.host)
         last_exc: httpx.TransportError | None = None
         prev_delay: float | None = None
         for attempt in range(self._config.max_retries + 1):
@@ -266,7 +377,8 @@ class _AsyncRetryTransport(httpx.AsyncBaseTransport):
                 response = await self._transport.handle_async_request(request)
             except httpx.TransportError as exc:
                 last_exc = exc
-                if attempt < self._config.max_retries:
+                budget.record_failure()
+                if attempt < self._config.max_retries and budget.allows_retry():
                     logger.debug(
                         "Connection error on attempt %d/%d, retrying: %s",
                         attempt + 1,
@@ -276,12 +388,16 @@ class _AsyncRetryTransport(httpx.AsyncBaseTransport):
                     delay = _compute_backoff(self._config, attempt, prev_delay)
                     prev_delay = delay
                     await _async_retry_sleep(delay)
-                continue
+                    continue
+                break
             last_exc = None
             if response.status_code not in self._config.retryable_status_codes:
+                if response.is_success:
+                    budget.record_success()
                 return response
+            budget.record_failure()
             _notify_throttle(self._config, request, response)
-            if attempt < self._config.max_retries:
+            if attempt < self._config.max_retries and budget.allows_retry():
                 await response.aclose()
                 delay = _compute_retry_after_delay(self._config, response, attempt, prev_delay)
                 prev_delay = delay

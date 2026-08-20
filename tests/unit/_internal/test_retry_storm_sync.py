@@ -2,6 +2,10 @@
 
 Verifies that N concurrent sync clients receiving identical Retry-After: 0.5 headers
 disperse in time rather than re-colliding, and that request amplification stays bounded.
+
+These tests pin the jitter/dispersal math under a full-outage window — precisely the
+scenario where the gRFC A6 retry budget correctly suppresses retries — so transports
+here get an effectively unlimited budget. test_retry_budget.py pins suppression itself.
 """
 
 from __future__ import annotations
@@ -13,7 +17,7 @@ import httpx
 import pytest
 
 from pinecone._internal.config import RetryConfig
-from pinecone._internal.http_client import _RetryTransport
+from pinecone._internal.http_client import _BudgetRegistry, _RetryTransport
 from tests.unit._internal._storm_fixture import (
     StormConfig,
     StormScenario,
@@ -39,7 +43,11 @@ def _make_transport(
     max_wait: float = 2.0,
 ) -> _RetryTransport:
     cfg = RetryConfig(max_retries=max_retries, backoff_factor=backoff_factor, max_wait=max_wait)
-    return _RetryTransport(transport=scenario.sync_transport, retry_config=cfg)  # type: ignore[arg-type]
+    return _RetryTransport(
+        transport=scenario.sync_transport,  # type: ignore[arg-type]
+        retry_config=cfg,
+        budget_registry=_BudgetRegistry(max_tokens=1e9),
+    )
 
 
 def test_thundering_herd_disperses_with_retry_after_smear() -> None:

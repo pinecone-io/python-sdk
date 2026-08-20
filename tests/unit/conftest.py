@@ -10,6 +10,7 @@ scoped to tests/unit/.
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from typing import Any
 
 import pytest
@@ -36,3 +37,15 @@ def _no_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
         "pinecone._internal.http_client._async_retry_sleep",
         _noop_async,
     )
+
+
+@pytest.fixture(autouse=True)
+def _fresh_retry_budgets() -> Generator[None, None, None]:
+    """The retry-budget registry is process-global; without a reset, a
+    failure-heavy test drains the shared bucket and silently disables
+    retries in whatever test runs next (the gate-registry lesson, again)."""
+    from pinecone._internal.http_client import get_budget_registry
+
+    get_budget_registry()._reset()
+    yield
+    get_budget_registry()._reset()
