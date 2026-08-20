@@ -51,7 +51,7 @@ def test_config_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_api_version_constants() -> None:
-    assert CONTROL_PLANE_API_VERSION == "2025-10"
+    assert CONTROL_PLANE_API_VERSION == "2026-07"
     assert DATA_PLANE_API_VERSION == "2026-07"
     assert INFERENCE_API_VERSION == "2026-07"
     assert ADMIN_API_VERSION == "2026-07"

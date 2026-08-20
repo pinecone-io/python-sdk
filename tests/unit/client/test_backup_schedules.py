@@ -1,10 +1,11 @@
 """Unit tests for ``pc.backup_schedules`` — the six 2026-07 schedule endpoints.
 
-No ``@api_op`` conformance claims are added here, following the #131/#113
-precedent: ``claim.assert_api_version`` requires ``2026-07`` on the wire while
-``CONTROL_PLANE_API_VERSION`` is still ``2025-10`` until #112, so a db_control
-claim would be a red test the coverage gate refuses to count. The three claim
-categories are covered without the hardcoded version instead —
+No ``@api_op`` conformance claims live here, following the #131/#113
+precedent: while ``CONTROL_PLANE_API_VERSION`` was still ``2025-10`` a
+db_control claim would have been a red test the coverage gate refuses to
+count, so the claims were deferred to #112 (which flipped the constant) and
+now live in ``tests/unit/conformance/test_db_control_backup_schedules_2026_07.py``.
+The three claim categories are also covered here without the hardcoded version —
 :class:`TestMethodAndPath`, :class:`TestApiVersionHeaderComesFromTheSdk`, and
 :class:`TestSpecShapedDecode`.
 

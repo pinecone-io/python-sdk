@@ -3,6 +3,17 @@
 The index response models now follow the Pinecone `2026-07` API shapes.
 This is a breaking change to `IndexModel` and its exports.
 
+## Control plane now negotiates 2026-07
+
+Every control-plane request (indexes, collections, backups, backup
+schedules, restore jobs) now sends `X-Pinecone-Api-Version: 2026-07` — both
+`Pinecone` and `AsyncPinecone` read the same constant. This is the atomic
+switch that makes all of the `2026-07` request and response shapes in this
+document live on the wire at once; there is no per-endpoint version pinning.
+One behavioral consequence: `include_deleted=True` on index-scoped backup
+listings is honored by `2026-07` servers, whereas the `2025-10` handler
+silently ignored the parameter.
+
 ## What changed
 
 `IndexModel` no longer has `.dimension`, `.metric`, `.vector_type`, `.spec`,
