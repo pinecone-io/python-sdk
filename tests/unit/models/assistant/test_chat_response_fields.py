@@ -199,12 +199,17 @@ class TestStreamMessageStartSnippetCount:
         assert chunk.context_snippet_count == 0
 
     def test_unknown_wire_keys_still_ignored(self) -> None:
-        """A 2026-07 server also sends content_filter_results here, which #103 does not model."""
+        """content_filter_results is modelled as of #222; genuinely unknown keys stay ignored."""
         chunk = _decode_chunk(
-            _message_start_payload(context_snippet_count=1, content_filter_results=_OPENAI_FILTER)
+            _message_start_payload(
+                context_snippet_count=1,
+                content_filter_results=_OPENAI_FILTER,
+                some_future_key={"nested": True},
+            )
         )
         assert isinstance(chunk, StreamMessageStart)
         assert chunk.context_snippet_count == 1
+        assert chunk.content_filter_results == _OPENAI_FILTER
 
     def test_to_dict_round_trip_with_snippet_count(self) -> None:
         chunk = _decode_chunk(_message_start_payload(context_snippet_count=5))
