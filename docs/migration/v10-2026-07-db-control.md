@@ -10,8 +10,9 @@ Response-model changes are not repeated here — see
 [BackupModel and backup endpoints](v10-2026-07-backup-models.md), and
 [preview namespace removed](v10-2026-07-preview-graduation.md). Backup and
 backup-schedule release notes (plan gating, the single-enabled-schedule
-conflict, the re-enable side effect) are tracked in
-[#339](https://github.com/pinecone-io/python-sdk-internal/issues/339).
+conflict, the re-enable side effect, `include_deleted` 404 semantics, and
+restoring onto dedicated read nodes) are in
+[BackupModel and backup endpoints](v10-2026-07-backup-models.md).
 
 Every 2026-07 block below is executed against a stubbed control plane in
 `tests/unit/test_docs_migration_db_control_137.py`, which asserts the method,
