@@ -34,13 +34,24 @@ from pinecone._internal.documents_helpers import (
 )
 from pinecone._internal.keyword_only import keyword_only_methods
 from pinecone._internal.validation import (
+    DELETE_EMPTY_FILTER_MESSAGE,
+    FETCH_BY_METADATA_EMPTY_FILTER_MESSAGE,
+    UPDATE_EMPTY_FILTER_MESSAGE,
     require_creatable_namespace_name,
+    require_delete_selectors,
     require_in_range,
-    require_positive,
+    require_non_empty_filter,
+    require_query_selectors,
+    require_update_selectors,
+    require_valid_fetch_by_metadata_limit,
+    require_valid_id_prefix,
+    require_valid_list_limit,
     require_valid_namespace_limit,
     require_valid_namespace_name,
     require_valid_namespace_prefix,
     require_valid_namespace_schema,
+    require_valid_vector_id,
+    require_valid_vector_ids,
 )
 from pinecone._internal.vector_factory import VectorFactory
 from pinecone.errors.exceptions import PineconeValueError, ValidationError
@@ -644,8 +655,10 @@ class Index:
             :class:`QueryResponse` with matches, namespace, and usage info.
 
         Raises:
-            :exc:`PineconeValueError`: If top_k < 1, both vector and id are provided,
-                or none of vector, id, or sparse_vector are provided.
+            :exc:`PineconeValueError`: If top_k < 1, if ``id`` is combined with
+                either ``vector`` or ``sparse_vector``, if none of ``vector``,
+                ``id``, or ``sparse_vector`` is provided, or if ``id`` is not a
+                legal vector ID.
             :exc:`ApiError`: If the API returns an error response (e.g. authentication
                 failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
@@ -666,13 +679,9 @@ class Index:
         if top_k < 1:
             raise ValidationError(f"top_k must be a positive integer, got {top_k}")
 
-        has_vector = vector is not None
-        has_id = id is not None
-        has_sparse = sparse_vector is not None
-        if has_vector and has_id:
-            raise ValidationError("Exactly one of vector or id must be provided, not both")
-        if not has_vector and not has_id and not has_sparse:
-            raise ValidationError("At least one of vector, id, or sparse_vector must be provided")
+        require_query_selectors(vector=vector, id=id, sparse_vector=sparse_vector)
+        if id is not None:
+            require_valid_vector_id("id", id)
 
         body: dict[str, Any] = {
             "topK": top_k,
@@ -831,7 +840,8 @@ class Index:
         """Fetch vectors by their IDs from a namespace.
 
         Args:
-            ids (list[str]): List of vector IDs to fetch (must be non-empty).
+            ids (list[str]): List of vector IDs to fetch. Must be non-empty, and
+                every ID must be 1-512 ASCII characters without a NUL.
             namespace (str): Namespace to fetch from. Defaults to the default namespace.
 
         Returns:
@@ -840,7 +850,8 @@ class Index:
             than raising an error.
 
         Raises:
-            :exc:`PineconeValueError`: If ids is empty.
+            :exc:`PineconeValueError`: If ids is empty or contains an ID that is
+                not 1-512 ASCII characters without a NUL.
             :exc:`ApiError`: If the API returns an error response (e.g. authentication
                 failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
@@ -855,8 +866,7 @@ class Index:
                 for vid, vec in response.vectors.items():
                     print(vid, vec.values)
         """
-        if not ids:
-            raise ValidationError("ids must be a non-empty list")
+        require_valid_vector_ids("ids", ids)
 
         params: dict[str, Any] = {"ids": ids}
         if namespace:
@@ -885,10 +895,10 @@ class Index:
         when no limit is specified.
 
         Args:
-            filter: Metadata filter expression (required).
+            filter: Metadata filter expression (required, at least one condition).
             namespace: Namespace to fetch from. Defaults to the default
                 namespace.
-            limit: Maximum number of vectors to return per page. When
+            limit: Maximum number of vectors to return per page, 1-10000. When
                 ``None``, the server default (100) is used.
             pagination_token: Token from a previous response to fetch the
                 next page. When ``None``, fetches the first page.
@@ -898,6 +908,8 @@ class Index:
             and pagination token for the next page (if any).
 
         Raises:
+            :exc:`PineconeValueError`: If ``filter`` is empty or ``limit`` falls
+                outside 1-10000.
             :exc:`ApiError`: If the API returns an error response (e.g. authentication
                 failure or server error).
 
@@ -923,7 +935,10 @@ class Index:
                     token = response.pagination.next if response.pagination else None
         """
         if limit is not None:
-            require_positive("limit", limit)
+            require_valid_fetch_by_metadata_limit("limit", limit)
+        require_non_empty_filter(
+            "filter", filter, server_message=FETCH_BY_METADATA_EMPTY_FILTER_MESSAGE
+        )
         body: dict[str, Any] = {"filter": filter}
         if namespace:
             body["namespace"] = namespace
@@ -952,17 +967,25 @@ class Index:
         Exactly one of ``ids``, ``delete_all``, or ``filter`` must be specified.
         Deleting IDs that do not exist does not raise an error.
 
+        ``ids`` alongside ``filter`` is rejected even though 2026-07's ``anyOf``
+        admits it: the server stops looking at ``ids`` once a filter is present,
+        so the request would delete everything the filter matches rather than the
+        intersection. Query with the filter first, then delete the returned ids.
+
         Args:
-            ids (list[str] | None): List of vector IDs to delete.
+            ids (list[str] | None): List of vector IDs to delete. Every ID must be
+                1-512 ASCII characters without a NUL.
             delete_all (bool): If True, delete all vectors in the namespace.
-            filter (dict[str, Any] | None): Metadata filter expression selecting vectors to delete.
+            filter (dict[str, Any] | None): Metadata filter expression selecting vectors
+                to delete. Must carry at least one condition.
             namespace (str): Namespace to delete from. Defaults to the default namespace.
 
         Returns:
             None — a successful delete returns no payload.
 
         Raises:
-            :exc:`PineconeValueError`: If zero or more than one deletion mode is specified.
+            :exc:`PineconeValueError`: If zero or more than one deletion mode is
+                specified, if ``filter`` is empty, or if an ID is not legal.
             :exc:`ApiError`: If the API returns an error response (e.g. authentication
                 failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
@@ -981,13 +1004,11 @@ class Index:
                 # Delete by metadata filter
                 idx.delete(filter={"category": {"$eq": "obsolete"}})
         """
-        mode_count = sum([ids is not None, delete_all, filter is not None])
-        if mode_count == 0:
-            raise ValidationError("Must specify one of ids, delete_all, or filter")
-        if mode_count > 1:
-            raise ValidationError(
-                "Cannot combine ids, delete_all, and filter — specify exactly one"
-            )
+        require_delete_selectors(ids=ids, delete_all=delete_all, filter=filter)
+        if ids is not None:
+            require_valid_vector_ids("ids", ids)
+        if filter is not None:
+            require_non_empty_filter("filter", filter, server_message=DELETE_EMPTY_FILTER_MESSAGE)
 
         body: dict[str, Any] = {"namespace": namespace}
         if ids is not None:
@@ -1017,16 +1038,20 @@ class Index:
         Updates a single vector's dense values, sparse values, or metadata by
         identifier, or bulk-updates metadata on all vectors matching a filter.
 
-        Exactly one of ``id`` or ``filter`` must be specified.
+        Exactly one of ``id`` or ``filter`` must be specified. A by-filter update
+        is metadata-only — it spans every record the filter matches, so it cannot
+        carry ``values`` or ``sparse_values``, which belong to one record.
 
         Args:
-            id (str | None): ID of the vector to update.
-            values (list[float] | None): New dense vector values.
+            id (str | None): ID of the vector to update. Must be 1-512 ASCII
+                characters without a NUL.
+            values (list[float] | None): New dense vector values. Only with ``id``.
             sparse_values (SparseValues | dict[str, Any] | None): New sparse vector with ``indices``
-                and ``values`` keys.
+                and ``values`` keys. Only with ``id``.
             set_metadata (dict[str, Any] | None): Metadata fields to set or overwrite.
             namespace (str): Namespace to target. Defaults to the default namespace.
-            filter (dict[str, Any] | None): Metadata filter expression selecting vectors to update.
+            filter (dict[str, Any] | None): Metadata filter expression selecting vectors
+                to update. Must carry at least one condition.
             dry_run (bool): If True, return the count of records that would be
                 affected without applying changes. Only applies to filter-based
                 updates.
@@ -1035,7 +1060,9 @@ class Index:
             :class:`UpdateResponse` with matched_records count (when available).
 
         Raises:
-            :exc:`PineconeValueError`: If both or neither of id and filter are provided.
+            :exc:`PineconeValueError`: If both or neither of ``id`` and ``filter``
+                are provided, if ``filter`` is combined with ``values`` or
+                ``sparse_values``, or if ``filter`` is empty.
             :exc:`ApiError`: If the API returns an error response (e.g. authentication
                 failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
@@ -1056,12 +1083,11 @@ class Index:
                     set_metadata={"year": 2020},
                 )
         """
-        has_id = id is not None
-        has_filter = filter is not None
-        if has_id and has_filter:
-            raise ValidationError("Exactly one of id or filter must be provided, not both")
-        if not has_id and not has_filter:
-            raise ValidationError("Exactly one of id or filter must be provided, got neither")
+        require_update_selectors(id=id, filter=filter, values=values, sparse_values=sparse_values)
+        if id is not None:
+            require_valid_vector_id("id", id)
+        if filter is not None:
+            require_non_empty_filter("filter", filter, server_message=UPDATE_EMPTY_FILTER_MESSAGE)
 
         body: dict[str, Any] = {"namespace": namespace}
         if id is not None:
@@ -1103,6 +1129,9 @@ class Index:
         Args:
             filter (dict[str, Any] | None): Metadata filter expression. When
                 provided, only vectors matching the filter are counted.
+                Serverless and Starter indexes reject a non-empty filter here;
+                whether they do is a property of the index, not of the call, so
+                the SDK forwards the filter and surfaces the server's 4xx.
 
         Returns:
             :class:`DescribeIndexStatsResponse` with namespace summaries, dimension,
@@ -1961,8 +1990,9 @@ class Index:
         """Fetch a single page of vector IDs from a namespace.
 
         Args:
-            prefix (str | None): Return only IDs starting with this prefix.
-            limit (int | None): Maximum number of IDs to return in this page.
+            prefix (str | None): Return only IDs starting with this prefix. At most
+                512 ASCII characters without a NUL; the empty prefix matches everything.
+            limit (int | None): Maximum number of IDs to return in this page, 1-100.
             pagination_token (str | None): Token from a previous response to fetch the next page.
             namespace (str): Namespace to list from. Defaults to the default namespace.
 
@@ -1970,7 +2000,8 @@ class Index:
             :class:`ListResponse` with vector IDs, pagination info, namespace, and usage.
 
         Raises:
-            :exc:`PineconeValueError`: If inputs are invalid.
+            :exc:`PineconeValueError`: If ``prefix`` is not legal or ``limit``
+                falls outside 1-100.
             :exc:`ApiError`: If the API returns an error response (e.g. authentication
                 failure or server error).
 
@@ -1982,6 +2013,11 @@ class Index:
                 for item in response.vectors:
                     print(item.id)
         """
+        if prefix is not None:
+            require_valid_id_prefix("prefix", prefix)
+        if limit is not None:
+            require_valid_list_limit("limit", limit)
+
         params: dict[str, Any] = {"namespace": namespace}
         if prefix is not None:
             params["prefix"] = prefix
@@ -2010,8 +2046,9 @@ class Index:
         follows pagination tokens until all pages have been retrieved.
 
         Args:
-            prefix (str | None): Return only IDs starting with this prefix.
-            limit (int | None): Maximum number of IDs to return per page.
+            prefix (str | None): Return only IDs starting with this prefix. At most
+                512 ASCII characters without a NUL; the empty prefix matches everything.
+            limit (int | None): Maximum number of IDs to return per page, 1-100.
             namespace (str): Namespace to list from. Defaults to the default namespace.
 
         Yields:
