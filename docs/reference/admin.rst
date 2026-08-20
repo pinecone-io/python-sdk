@@ -1,8 +1,8 @@
 Admin
 =====
 
-The ``Admin`` client manages organizations, projects, API keys, users, invites, and service
-accounts.  It uses OAuth2
+The ``Admin`` client manages organizations, projects, API keys, users, invites, service
+accounts, and role bindings.  It uses OAuth2
 client credentials (service account) rather than an API key, and is the right tool
 for control-plane operations such as creating projects and rotating keys.
 
@@ -66,6 +66,20 @@ The OAuth principals the ``Admin`` client itself authenticates as.  ``create`` a
 exactly once — capture it or rotate again.
 
 .. autoclass:: pinecone.admin.service_accounts.ServiceAccounts
+   :members:
+   :undoc-members: False
+   :show-inheritance:
+
+
+Role Bindings
+-------------
+
+The whole of Pinecone's authorization model: one ``role`` granted to one principal — user,
+service account, API key, or pending invite — at one scope, either the organization or a single
+project.  Nothing else confers permissions, and bindings are immutable, so a role change is a
+``create`` followed by a ``delete``.
+
+.. autoclass:: pinecone.admin.role_bindings.RoleBindings
    :members:
    :undoc-members: False
    :show-inheritance:

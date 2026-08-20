@@ -9,6 +9,7 @@ from pinecone.models.admin.api_key import APIKeyList, APIKeyModel, APIKeyWithSec
 from pinecone.models.admin.invite import InviteList, InviteModel
 from pinecone.models.admin.organization import OrganizationList, OrganizationModel
 from pinecone.models.admin.project import ProjectList, ProjectModel
+from pinecone.models.admin.role_binding import RoleBindingList, RoleBindingModel
 from pinecone.models.admin.service_account import (
     ServiceAccountList,
     ServiceAccountModel,
@@ -274,3 +275,40 @@ class AdminAdapter:
             :exc:`ResponseParsingError`: If ``data`` cannot be decoded.
         """
         return decode_response(data, ServiceAccountList)
+
+    @staticmethod
+    def to_role_binding(data: bytes) -> RoleBindingModel:
+        """Decode raw JSON bytes into a :class:`RoleBindingModel`.
+
+        Args:
+            data (bytes): Raw JSON response bytes from the Admin API.
+
+        Returns:
+            :class:`RoleBindingModel`: Decoded role binding.
+
+        Raises:
+            :exc:`ResponseParsingError`: If ``data`` cannot be decoded into
+                :class:`RoleBindingModel`.
+        """
+        return decode_response(data, RoleBindingModel)
+
+    @staticmethod
+    def to_role_binding_list(data: bytes) -> RoleBindingList:
+        """Decode raw JSON bytes from a list-role-bindings response.
+
+        Like ``UserList``, ``InviteList``, and ``ServiceAccountList``,
+        ``RoleBindingList`` is itself the wire schema — it carries the
+        ``pagination`` cursor envelope alongside ``data`` — so no internal
+        envelope struct is needed.
+
+        Args:
+            data (bytes): Raw JSON response bytes from the Admin API.
+
+        Returns:
+            :class:`RoleBindingList`: Decoded page of role bindings plus the
+                next-page cursor.
+
+        Raises:
+            :exc:`ResponseParsingError`: If ``data`` cannot be decoded.
+        """
+        return decode_response(data, RoleBindingList)

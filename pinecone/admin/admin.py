@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from pinecone.admin.invites import Invites
     from pinecone.admin.organizations import Organizations
     from pinecone.admin.projects import Projects
+    from pinecone.admin.role_bindings import RoleBindings
     from pinecone.admin.service_accounts import ServiceAccounts
     from pinecone.admin.users import Users
 
@@ -180,6 +181,7 @@ class Admin:
         self._users: Users | None = None
         self._invites: Invites | None = None
         self._service_accounts: ServiceAccounts | None = None
+        self._role_bindings: RoleBindings | None = None
 
     def _fetch_token(
         self,
@@ -413,11 +415,36 @@ class Admin:
             self._service_accounts = _ServiceAccounts(http=self._http)
         return self._service_accounts
 
+    @property
+    def role_bindings(self) -> RoleBindings:
+        """Access the RoleBindings namespace for role-binding operations.
+
+        Role bindings are the only thing that confers permissions in Pinecone, so
+        this is where any principal's access — user, service account, API key, or
+        pending invite — is read and changed. Lazily imported and instantiated on
+        first access.
+
+        Returns:
+            :class:`RoleBindings` namespace instance.
+
+        Examples:
+
+            >>> from pinecone import Admin
+            >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
+            >>> for binding in admin.role_bindings.list():
+            ...     print(binding.principal_id, binding.role, binding.resource_id)
+        """
+        if self._role_bindings is None:
+            from pinecone.admin.role_bindings import RoleBindings as _RoleBindings
+
+            self._role_bindings = _RoleBindings(http=self._http)
+        return self._role_bindings
+
     def __repr__(self) -> str:
         return (
             "Admin(organizations=<Organizations>, projects=<Projects>, "
             "api_keys=<ApiKeys>, users=<Users>, invites=<Invites>, "
-            "service_accounts=<ServiceAccounts>)"
+            "service_accounts=<ServiceAccounts>, role_bindings=<RoleBindings>)"
         )
 
     def close(self) -> None:
