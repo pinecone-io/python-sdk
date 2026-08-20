@@ -44,6 +44,7 @@ Pinecone Python SDK
    :caption: Vectors
 
    how-to/vectors/upsert-and-query
+   how-to/vectors/upsert-from-dataframe
    how-to/vectors/bulk-import
    how-to/vectors/namespaces
 

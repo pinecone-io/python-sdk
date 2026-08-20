@@ -5,7 +5,8 @@ of data — `upsert(vectors=..., batch_size=...)` with a million vectors, or
 `upsert_from_dataframe()` with a large DataFrame — and what the knobs really
 control. For benchmark numbers and transport comparisons, see
 [Performance](performance.md); for per-request retry configuration, see
-[Retries](retries.md).
+[Retries](retries.md); for DataFrame-specific recipes, see
+[Reliable Large Ingests with upsert_from_dataframe](../how-to/vectors/upsert-from-dataframe.md).
 
 Everything here applies identically to the REST sync client, the asyncio
 client, and the gRPC client. Bulk behavior is one shared engine underneath
