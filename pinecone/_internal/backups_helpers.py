@@ -21,6 +21,15 @@ INCLUDE_DELETED_IS_INDEX_SCOPED = (
     "(GET /backups) already returns backups whose source index was deleted."
 )
 
+LIMIT_AND_PAGINATION_ARE_EXCLUSIVE = (
+    "A pagination token already carries the page size it was minted with. "
+    "The control-plane token is a base64 {limit, offset} pair, and a limit "
+    "sent alongside it overrides the token's limit while keeping its offset "
+    "-- so the next page starts where the old page size said it would and "
+    "runs for the new length, skipping or repeating rows. The SDK therefore "
+    "omits limit whenever a token is present."
+)
+
 SCHEDULED_BACKUPS_PLAN_HINT = (
     "Scheduled backups are a plan entitlement, and it is checked before the "
     "index or schedule is looked up — so this is about the project's plan, "
@@ -39,12 +48,18 @@ def backup_list_params(
 
     Each parameter is omitted when ``None`` so the server applies its own
     default rather than the SDK's idea of it.
+
+    ``limit`` is additionally omitted whenever *pagination_token* is set --
+    see :data:`LIMIT_AND_PAGINATION_ARE_EXCLUSIVE` for why sending both
+    corrupts the page boundary. ``include_deleted`` is *not* dropped: it is a
+    filter rather than a window, the token does not encode it, and every page
+    of one listing has to be asked the same question.
     """
     params: dict[str, str | int] = {}
-    if limit is not None:
-        params["limit"] = limit
     if pagination_token is not None:
         params["paginationToken"] = pagination_token
+    elif limit is not None:
+        params["limit"] = limit
     if include_deleted is not None:
         params["include_deleted"] = "true" if include_deleted else "false"
     return params
@@ -71,6 +86,19 @@ def backup_schedule_list_params(
     Both schedule listings declare exactly ``limit`` and ``paginationToken``
     and no ``include_deleted``, so this narrows :func:`backup_list_params`
     rather than restating it.
+    """
+    return backup_list_params(limit=limit, pagination_token=pagination_token)
+
+
+def restore_job_list_params(
+    *, limit: int | None = None, pagination_token: str | None = None
+) -> dict[str, str | int]:
+    """Build the query params for a list-restore-jobs request.
+
+    ``GET /restore-jobs`` declares the same ``limit``/``paginationToken`` pair
+    as the schedule listings and is served by the same offset-token
+    machinery, so it delegates rather than hand-rolling the dict -- which is
+    how it inherits :data:`LIMIT_AND_PAGINATION_ARE_EXCLUSIVE`.
     """
     return backup_list_params(limit=limit, pagination_token=pagination_token)
 

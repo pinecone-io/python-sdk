@@ -750,8 +750,13 @@ class Indexes:
         Args:
             index_name: Name of the index whose backups to list.
             limit: Maximum number of backups to yield across all pages. Must
-                be a positive integer. ``None`` yields all backups.
+                be a positive integer. ``None`` yields all backups. It also
+                sets the requested page size, but only on a request that
+                carries no pagination token: every later page is sized by the
+                token, which already encodes it.
             pagination_token: Token to resume pagination from a previous call.
+                *limit* still caps the total yield, but it is not sent
+                alongside a token — see above.
             include_deleted: When ``True``, include backups of every index
                 that has ever used *index_name*, deleted ones included; those
                 backups carry a non-``None``

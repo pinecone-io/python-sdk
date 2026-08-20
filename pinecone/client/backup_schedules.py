@@ -203,7 +203,11 @@ class BackupSchedules:
             index_name (str): Name of the index whose schedules to list.
             limit (int | None): Maximum results per page. When ``None``, the
                 parameter is omitted and the server applies its own default.
+                **Ignored when *pagination_token* is given**: the token
+                already carries the page size it was minted with, and sending
+                a different one alongside it would skip or repeat rows.
             pagination_token (str | None): Token for cursor-based pagination.
+                Takes precedence over *limit* — see above.
 
         Returns:
             A :class:`~pinecone.models.backups.list.BackupScheduleList`
@@ -256,9 +260,13 @@ class BackupSchedules:
         Args:
             index_name (str): Name of the index whose schedules to iterate.
             limit (int | None): Maximum number of schedules to yield across
-                all pages. Must be positive. ``None`` yields all of them.
+                all pages. Must be positive. ``None`` yields all of them. It
+                also sets the requested page size, but only on a request that
+                carries no pagination token: every later page is sized by the
+                token, which already encodes it.
             pagination_token (str | None): Token to resume from a previous
-                call.
+                call. *limit* still caps the total yield, but it is not sent
+                alongside a token — see above.
 
         Returns:
             A :class:`~pinecone.models.pagination.Paginator` over
@@ -517,7 +525,11 @@ class BackupSchedules:
                 to list.
             limit (int | None): Maximum results per page. When ``None``, the
                 parameter is omitted and the server applies its own default.
+                **Ignored when *pagination_token* is given**: the token
+                already carries the page size it was minted with, and sending
+                a different one alongside it would skip or repeat rows.
             pagination_token (str | None): Token for cursor-based pagination.
+                Takes precedence over *limit* — see above.
 
         Returns:
             A :class:`~pinecone.models.backups.list.BackupScheduleHistoryList`
@@ -572,9 +584,13 @@ class BackupSchedules:
             schedule_id (str): The identifier of the schedule whose history
                 to iterate.
             limit (int | None): Maximum number of rows to yield across all
-                pages. Must be positive. ``None`` yields all of them.
+                pages. Must be positive. ``None`` yields all of them. It also
+                sets the requested page size, but only on a request that
+                carries no pagination token: every later page is sized by the
+                token, which already encodes it.
             pagination_token (str | None): Token to resume from a previous
-                call.
+                call. *limit* still caps the total yield, but it is not sent
+                alongside a token — see above.
 
         Returns:
             A :class:`~pinecone.models.pagination.Paginator` over

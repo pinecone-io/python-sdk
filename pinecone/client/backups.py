@@ -127,8 +127,12 @@ class Backups:
                 ``None`` for every backup in the project.
             limit (int | None): Maximum number of results per page, 1-100.
                 When ``None``, the parameter is omitted and the server
-                applies its own default.
+                applies its own default. **Ignored when
+                *pagination_token* is given**: the token already carries the
+                page size it was minted with, and sending a different one
+                alongside it would skip or repeat rows.
             pagination_token (str | None): Token for cursor-based pagination.
+                Takes precedence over *limit* — see above.
             include_deleted (bool | None): When ``True``, include backups of
                 every index that has ever used *index_name*, deleted ones
                 included. When ``None`` (the default) the parameter is

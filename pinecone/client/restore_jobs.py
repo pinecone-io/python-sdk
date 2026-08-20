@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from pinecone._internal.adapters.restore_jobs_adapter import RestoreJobsAdapter
+from pinecone._internal.backups_helpers import restore_job_list_params
 from pinecone._internal.validation import require_non_empty
 from pinecone.models.backups.list import RestoreJobList
 from pinecone.models.backups.model import RestoreJobModel
@@ -54,8 +55,12 @@ class RestoreJobs:
 
         Args:
             limit (int | None): Maximum number of results per page. When ``None``,
-                the backend applies its own default (100).
+                the backend applies its own default (100). **Ignored when
+                *pagination_token* is given**: the token already carries the
+                page size it was minted with, and sending a different one
+                alongside it would skip or repeat rows.
             pagination_token (str | None): Token for cursor-based pagination.
+                Takes precedence over *limit* — see above.
 
         Returns:
             A :class:`RestoreJobList` supporting iteration, len(), and index access.
@@ -73,11 +78,9 @@ class RestoreJobs:
             >>> len(jobs)  # doctest: +SKIP
             5
         """
-        params: dict[str, Any] = {}
-        if limit is not None:
-            params["limit"] = limit
-        if pagination_token is not None:
-            params["paginationToken"] = pagination_token
+        params: dict[str, Any] = restore_job_list_params(
+            limit=limit, pagination_token=pagination_token
+        )
 
         logger.info("Listing restore jobs")
         response = self._http.get("/restore-jobs", params=params)

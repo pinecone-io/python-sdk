@@ -159,10 +159,9 @@ async def test_async_list_backups_pagination_params(async_backups: AsyncBackups)
     assert isinstance(result, BackupList)
     assert len(result) == 1
 
-    # Verify query params
     request = route.calls[0].request
-    assert request.url.params["limit"] == "5"
     assert request.url.params["paginationToken"] == "token-xyz"
+    assert "limit" not in request.url.params
 
 
 # ---------------------------------------------------------------------------

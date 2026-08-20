@@ -604,7 +604,9 @@ class TestQueryParams:
         assert route.calls.last.request.url.params == httpx.QueryParams()
 
     @respx.mock
-    def test_list_sends_limit_and_camel_cased_token(self, schedules: BackupSchedules) -> None:
+    def test_list_sends_camel_cased_token_and_drops_the_limit(
+        self, schedules: BackupSchedules
+    ) -> None:
         route = respx.get(f"{BASE_URL}/indexes/my-index/backup-schedules").mock(
             return_value=httpx.Response(200, json={"data": []})
         )
@@ -612,11 +614,23 @@ class TestQueryParams:
         schedules.list(index_name="my-index", limit=5, pagination_token="tok-1")
 
         params = route.calls.last.request.url.params
-        assert params["limit"] == "5"
         assert params["paginationToken"] == "tok-1"
+        assert "limit" not in params
 
     @respx.mock
-    def test_history_sends_limit_and_camel_cased_token(self, schedules: BackupSchedules) -> None:
+    def test_list_sends_the_limit_when_there_is_no_token(self, schedules: BackupSchedules) -> None:
+        route = respx.get(f"{BASE_URL}/indexes/my-index/backup-schedules").mock(
+            return_value=httpx.Response(200, json={"data": []})
+        )
+
+        schedules.list(index_name="my-index", limit=5)
+
+        assert route.calls.last.request.url.params["limit"] == "5"
+
+    @respx.mock
+    def test_history_sends_camel_cased_token_and_drops_the_limit(
+        self, schedules: BackupSchedules
+    ) -> None:
         route = respx.get(f"{BASE_URL}/backup-schedules/{SCHEDULE_ID}/history").mock(
             return_value=httpx.Response(200, json={"data": []})
         )
@@ -624,8 +638,20 @@ class TestQueryParams:
         schedules.history(schedule_id=SCHEDULE_ID, limit=3, pagination_token="tok-2")
 
         params = route.calls.last.request.url.params
-        assert params["limit"] == "3"
         assert params["paginationToken"] == "tok-2"
+        assert "limit" not in params
+
+    @respx.mock
+    def test_history_sends_the_limit_when_there_is_no_token(
+        self, schedules: BackupSchedules
+    ) -> None:
+        route = respx.get(f"{BASE_URL}/backup-schedules/{SCHEDULE_ID}/history").mock(
+            return_value=httpx.Response(200, json={"data": []})
+        )
+
+        schedules.history(schedule_id=SCHEDULE_ID, limit=3)
+
+        assert route.calls.last.request.url.params["limit"] == "3"
 
     @respx.mock
     def test_list_carries_the_pagination_envelope(self, schedules: BackupSchedules) -> None:

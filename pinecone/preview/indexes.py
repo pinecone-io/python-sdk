@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import msgspec
 
+from pinecone._internal.backups_helpers import backup_list_params
 from pinecone._internal.constants import DEFAULT_BASE_URL
 from pinecone._internal.validation import require_non_empty, require_positive
 from pinecone.errors.exceptions import NotFoundError, PineconeTimeoutError, PineconeValueError
@@ -634,9 +635,13 @@ class PreviewIndexes:
         Args:
             index_name: Name of the index whose backups to list.
             limit: Maximum number of backups to yield across all pages. Must be
-                a positive integer. ``None`` yields all backups.
+                a positive integer. ``None`` yields all backups. It also sets
+                the requested page size, but only on a request that carries no
+                pagination token: every later page is sized by the token,
+                which already encodes it.
             pagination_token: Token to resume pagination from a previous call.
-                ``None`` starts from the beginning.
+                ``None`` starts from the beginning. *limit* still caps the
+                total yield, but it is not sent alongside a token — see above.
 
         Returns:
             :class:`~pinecone.models.pagination.Paginator` over
@@ -667,11 +672,7 @@ class PreviewIndexes:
             require_positive("limit", limit)
 
         def fetch_page(token: str | None) -> Page[BackupModel]:
-            params: dict[str, str | int] = {}
-            if token:
-                params["paginationToken"] = token
-            if limit is not None:
-                params["limit"] = limit
+            params = backup_list_params(limit=limit, pagination_token=token or None)
             response = self._http.get(f"/indexes/{index_name}/backups", params=params)
             items, next_token = PreviewListBackupsAdapter.from_response(response.content)
             return Page(items=items, pagination_token=next_token)
