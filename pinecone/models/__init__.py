@@ -72,6 +72,38 @@ if TYPE_CHECKING:
     from pinecone.models.batch import BatchError, BatchResult  # noqa: F401
     from pinecone.models.collections.list import CollectionList  # noqa: F401
     from pinecone.models.collections.model import CollectionModel  # noqa: F401
+    from pinecone.models.documents.document import (  # noqa: F401
+        Document,
+        DocumentRecord,
+        UpdateDocumentRecord,
+    )
+    from pinecone.models.documents.requests import (  # noqa: F401
+        DeleteDocumentsRequest,
+        FetchDocumentsRequest,
+        ListDocumentsRequest,
+        SearchDocumentsRequest,
+        UpdateDocumentsRequest,
+        UpsertDocumentsRequest,
+    )
+    from pinecone.models.documents.responses import (  # noqa: F401
+        DeleteDocumentsResponse,
+        DocumentFetchUsage,
+        DocumentListUsage,
+        DocumentSearchUsage,
+        FetchDocumentsResponse,
+        ListDocumentsResponse,
+        ListedDocumentRecord,
+        SearchDocumentsResponse,
+        UpdateDocumentsResponse,
+        UpsertDocumentsResponse,
+    )
+    from pinecone.models.documents.score_by import (  # noqa: F401
+        DenseVectorQuery,
+        DocumentScoringMethod,
+        QueryStringQuery,
+        SparseVectorQuery,
+        TextQuery,
+    )
     from pinecone.models.enums import (  # noqa: F401
         CloudProvider,
         DeletionProtection,
@@ -249,6 +281,31 @@ _LAZY_IMPORTS: dict[str, str] = {
     "PodType": "pinecone.models.enums",
     "RerankModel": "pinecone.models.enums",
     "VectorType": "pinecone.models.enums",
+    # Documents
+    "Document": "pinecone.models.documents.document",
+    "DocumentRecord": "pinecone.models.documents.document",
+    "UpdateDocumentRecord": "pinecone.models.documents.document",
+    "DenseVectorQuery": "pinecone.models.documents.score_by",
+    "DocumentScoringMethod": "pinecone.models.documents.score_by",
+    "QueryStringQuery": "pinecone.models.documents.score_by",
+    "SparseVectorQuery": "pinecone.models.documents.score_by",
+    "TextQuery": "pinecone.models.documents.score_by",
+    "DeleteDocumentsRequest": "pinecone.models.documents.requests",
+    "FetchDocumentsRequest": "pinecone.models.documents.requests",
+    "ListDocumentsRequest": "pinecone.models.documents.requests",
+    "SearchDocumentsRequest": "pinecone.models.documents.requests",
+    "UpdateDocumentsRequest": "pinecone.models.documents.requests",
+    "UpsertDocumentsRequest": "pinecone.models.documents.requests",
+    "DeleteDocumentsResponse": "pinecone.models.documents.responses",
+    "DocumentFetchUsage": "pinecone.models.documents.responses",
+    "DocumentListUsage": "pinecone.models.documents.responses",
+    "DocumentSearchUsage": "pinecone.models.documents.responses",
+    "FetchDocumentsResponse": "pinecone.models.documents.responses",
+    "ListDocumentsResponse": "pinecone.models.documents.responses",
+    "ListedDocumentRecord": "pinecone.models.documents.responses",
+    "SearchDocumentsResponse": "pinecone.models.documents.responses",
+    "UpdateDocumentsResponse": "pinecone.models.documents.responses",
+    "UpsertDocumentsResponse": "pinecone.models.documents.responses",
     # Imports
     "ImportList": "pinecone.models.imports.list",
     "ImportModel": "pinecone.models.imports.model",
