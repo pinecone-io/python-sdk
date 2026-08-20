@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+from collections.abc import Awaitable, Callable
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -12,6 +14,7 @@ import pytest
 import respx
 
 from pinecone._internal.config import PineconeConfig
+from pinecone._internal.constants import ASSISTANT_EVALUATION_BASE_URL
 from pinecone.async_client.assistants import (
     _CREATE_POLL_INTERVAL_SECONDS,
     _DELETE_POLL_INTERVAL_SECONDS,
@@ -57,7 +60,10 @@ async def test_create_assistant_region_validation(async_assistants: AsyncAssista
     """Invalid region raises PineconeValueError before any HTTP call."""
     with pytest.raises(PineconeValueError, match="region") as exc_info:
         await async_assistants.create(name="test-assistant", region="ap-southeast-1")
-    assert "ap-southeast-1" in str(exc_info.value)
+    message = str(exc_info.value)
+    assert "ap-southeast-1" in message
+    assert "'us'" in message
+    assert "'eu'" in message
 
 
 async def test_create_assistant_region_case_sensitive(async_assistants: AsyncAssistants) -> None:
@@ -3163,3 +3169,82 @@ async def test_async_chat_completions_streaming_skips_sse_comments(
     assert all(isinstance(c, ChatCompletionStreamChunk) for c in chunks)
     assert chunks[0].choices[0].delta.content == "Hello"
     assert chunks[1].choices[0].finish_reason == "stop"
+
+
+# ---------------------------------------------------------------------------
+# X-Pinecone-Api-Version — one ASSISTANT_API_VERSION for every assistant client
+# ---------------------------------------------------------------------------
+
+_API_VERSION_HEADER = "X-Pinecone-Api-Version"
+
+_CONTROL_PLANE_CALLS: dict[str, Callable[[AsyncAssistants], Awaitable[Any]]] = {
+    "create": lambda a: a.create(name="test-assistant", timeout=-1),
+    "delete": lambda a: a.delete(name="test-assistant", timeout=-1),
+    "describe": lambda a: a.describe(name="test-assistant"),
+    "evaluate_alignment": lambda a: a.evaluate_alignment(
+        question="What is the capital of Spain?",
+        answer="Barcelona.",
+        ground_truth_answer="Madrid.",
+    ),
+    "list_page": lambda a: a.list_page(),
+    "update": lambda a: a.update(name="test-assistant", instructions="Be brief."),
+}
+
+
+def _mock_control_plane_routes() -> None:
+    assistant = make_assistant_response(status="Ready")
+    respx.get(f"{BASE_URL}/assistant/assistants").mock(
+        return_value=httpx.Response(200, json={"assistants": [assistant]}),
+    )
+    respx.post(f"{BASE_URL}/assistant/assistants").mock(
+        return_value=httpx.Response(200, json=assistant),
+    )
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=assistant),
+    )
+    respx.patch(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=assistant),
+    )
+    respx.delete(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200),
+    )
+    respx.post(f"{ASSISTANT_EVALUATION_BASE_URL}/evaluation/metrics/alignment").mock(
+        return_value=httpx.Response(200, json=make_alignment_response()),
+    )
+
+
+@pytest.mark.parametrize("operation", sorted(_CONTROL_PLANE_CALLS))
+@respx.mock
+async def test_async_control_plane_sends_2026_07_api_version(
+    operation: str, async_assistants: AsyncAssistants
+) -> None:
+    """Every control-plane op and evaluate_alignment send X-Pinecone-Api-Version: 2026-07."""
+    _mock_control_plane_routes()
+
+    await _CONTROL_PLANE_CALLS[operation](async_assistants)
+
+    request = respx.calls.last.request
+    assert request.headers[_API_VERSION_HEADER] == "2026-07"
+
+
+@respx.mock
+async def test_async_list_page_sends_limit_and_pagination_token_together(
+    async_assistants: AsyncAssistants,
+) -> None:
+    """Paginated list still passes both limit and pagination_token on the 2026-07 client."""
+    route = respx.get(f"{BASE_URL}/assistant/assistants").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "assistants": [make_assistant_response()],
+                "pagination": {"next": "tok-page3"},
+            },
+        ),
+    )
+
+    page = await async_assistants.list_page(page_size=20, pagination_token="tok-page2")
+
+    assert page.next == "tok-page3"
+    request = route.calls.last.request
+    assert dict(request.url.params) == {"limit": "20", "pagination_token": "tok-page2"}
+    assert request.headers[_API_VERSION_HEADER] == "2026-07"
