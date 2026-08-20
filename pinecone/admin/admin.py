@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from pinecone.admin.invites import Invites
     from pinecone.admin.organizations import Organizations
     from pinecone.admin.projects import Projects
+    from pinecone.admin.service_accounts import ServiceAccounts
     from pinecone.admin.users import Users
 
 _OAUTH_URL: str = "https://login.pinecone.io/oauth/token"
@@ -178,6 +179,7 @@ class Admin:
         self._api_keys: ApiKeys | None = None
         self._users: Users | None = None
         self._invites: Invites | None = None
+        self._service_accounts: ServiceAccounts | None = None
 
     def _fetch_token(
         self,
@@ -387,10 +389,35 @@ class Admin:
             self._invites = _Invites(http=self._http)
         return self._invites
 
+    @property
+    def service_accounts(self) -> ServiceAccounts:
+        """Access the ServiceAccounts namespace for service-account operations.
+
+        These are the same credentials this client authenticates with, so
+        rotating or deleting the account behind ``client_id``/``client_secret``
+        breaks this client. Lazily imported and instantiated on first access.
+
+        Returns:
+            :class:`ServiceAccounts` namespace instance.
+
+        Examples:
+
+            >>> from pinecone import Admin
+            >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
+            >>> for account in admin.service_accounts.list():
+            ...     print(account.id, account.name)
+        """
+        if self._service_accounts is None:
+            from pinecone.admin.service_accounts import ServiceAccounts as _ServiceAccounts
+
+            self._service_accounts = _ServiceAccounts(http=self._http)
+        return self._service_accounts
+
     def __repr__(self) -> str:
         return (
             "Admin(organizations=<Organizations>, projects=<Projects>, "
-            "api_keys=<ApiKeys>, users=<Users>, invites=<Invites>)"
+            "api_keys=<ApiKeys>, users=<Users>, invites=<Invites>, "
+            "service_accounts=<ServiceAccounts>)"
         )
 
     def close(self) -> None:

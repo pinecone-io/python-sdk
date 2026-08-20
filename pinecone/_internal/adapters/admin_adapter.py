@@ -9,6 +9,11 @@ from pinecone.models.admin.api_key import APIKeyList, APIKeyModel, APIKeyWithSec
 from pinecone.models.admin.invite import InviteList, InviteModel
 from pinecone.models.admin.organization import OrganizationList, OrganizationModel
 from pinecone.models.admin.project import ProjectList, ProjectModel
+from pinecone.models.admin.service_account import (
+    ServiceAccountList,
+    ServiceAccountModel,
+    ServiceAccountWithSecret,
+)
 from pinecone.models.admin.user import UserList, UserModel
 
 
@@ -212,3 +217,60 @@ class AdminAdapter:
             :exc:`ResponseParsingError`: If ``data`` cannot be decoded.
         """
         return decode_response(data, UserList)
+
+    @staticmethod
+    def to_service_account(data: bytes) -> ServiceAccountModel:
+        """Decode raw JSON bytes into a :class:`ServiceAccountModel`.
+
+        Args:
+            data (bytes): Raw JSON response bytes from the Admin API.
+
+        Returns:
+            :class:`ServiceAccountModel`: Decoded service account, without a secret.
+
+        Raises:
+            :exc:`ResponseParsingError`: If ``data`` cannot be decoded into
+                :class:`ServiceAccountModel`.
+        """
+        return decode_response(data, ServiceAccountModel)
+
+    @staticmethod
+    def to_service_account_with_secret(data: bytes) -> ServiceAccountWithSecret:
+        """Decode raw JSON bytes into a :class:`ServiceAccountWithSecret`.
+
+        Only the create and rotate-secret responses carry a secret, so only
+        those two call this. The decoded ``client_secret`` is never logged here:
+        the model's own ``__repr__`` masks it, and this adapter adds no logging.
+
+        Args:
+            data (bytes): Raw JSON response bytes from the Admin API.
+
+        Returns:
+            :class:`ServiceAccountWithSecret`: Decoded service account including
+                the newly issued OAuth client secret.
+
+        Raises:
+            :exc:`ResponseParsingError`: If ``data`` cannot be decoded into
+                :class:`ServiceAccountWithSecret`.
+        """
+        return decode_response(data, ServiceAccountWithSecret)
+
+    @staticmethod
+    def to_service_account_list(data: bytes) -> ServiceAccountList:
+        """Decode raw JSON bytes from a list-service-accounts response.
+
+        Like ``UserList`` and ``InviteList``, ``ServiceAccountList`` is itself
+        the wire schema — it carries the ``pagination`` cursor envelope
+        alongside ``data`` — so no internal envelope struct is needed.
+
+        Args:
+            data (bytes): Raw JSON response bytes from the Admin API.
+
+        Returns:
+            :class:`ServiceAccountList`: Decoded page of service accounts plus
+                the next-page cursor.
+
+        Raises:
+            :exc:`ResponseParsingError`: If ``data`` cannot be decoded.
+        """
+        return decode_response(data, ServiceAccountList)
