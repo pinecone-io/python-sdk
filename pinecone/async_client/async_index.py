@@ -250,7 +250,7 @@ class AsyncIndex:
 
         logger.info("Upserting %d records into namespace %r (NDJSON)", len(records), namespace)
         response = await self._http.post(
-            f"/records/namespaces/{namespace}/upsert",
+            f"/records/namespaces/{quote(namespace, safe='')}/upsert",
             timeout=timeout,
             content=ndjson_body.encode("utf-8"),
             headers={"Content-Type": "application/x-ndjson"},
@@ -1096,7 +1096,7 @@ class AsyncIndex:
 
         logger.info("Searching namespace %r with top_k=%d", namespace, body["query"]["top_k"])
         response = await self._http.post(
-            f"/records/namespaces/{namespace}/search", timeout=timeout, json=body
+            f"/records/namespaces/{quote(namespace, safe='')}/search", timeout=timeout, json=body
         )
         result = self._adapter.to_search_response(response.content)
         result.response_info = extract_response_info(response)
