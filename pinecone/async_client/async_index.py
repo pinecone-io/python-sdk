@@ -14,8 +14,8 @@ if TYPE_CHECKING:
 from pinecone._internal.adapters.imports_adapter import ImportsAdapter
 from pinecone._internal.adapters.vectors_adapter import VectorsAdapter, extract_response_info
 from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
-from pinecone._internal.batch import async_batch_execute
 from pinecone._internal.batching import validate_batch_size
+from pinecone._internal.bulk import bulk_execute_async
 from pinecone._internal.config import PineconeConfig
 from pinecone._internal.constants import DATA_PLANE_API_VERSION
 from pinecone._internal.data_plane_helpers import (
@@ -248,6 +248,7 @@ class AsyncIndex:
         show_progress: bool = True,
         max_concurrency: int = 4,
         timeout: float | None = None,
+        total_timeout: float | None = None,
     ) -> UpsertResponse:
         """Upsert a batch of vectors into a namespace.
 
@@ -319,8 +320,11 @@ class AsyncIndex:
                 print(response.upserted_count)
 
         .. note::
-           When ``batch_size`` is set, batches are submitted **concurrently** via an
-           ``asyncio.Semaphore`` of ``max_concurrency`` slots (default 4, range 1–64).
+           When ``batch_size`` is set, batches are submitted **concurrently**, bounded
+           by ``max_concurrency`` (default 4, range 1–64) and by the host's adaptive
+           concurrency limit, whichever is lower. ``total_timeout`` bounds the whole
+           batched operation: on expiry no further batches are submitted, in-flight
+           batches are awaited, and unsent batches are reported in ``failed_items``.
            Per-batch HTTP retries are handled by the client's configured
            ``RetryConfig``. **Partial failures do not raise** — per-batch errors are
            captured on the returned :class:`UpsertResponse` (see
@@ -348,13 +352,15 @@ class AsyncIndex:
         async def _operation(chunk: list[dict[str, Any]]) -> UpsertResponse:
             return await self._upsert_dict_batch(items=chunk, namespace=namespace, timeout=timeout)
 
-        batch_result = await async_batch_execute(
+        batch_result = await bulk_execute_async(
             items=items,
             operation=_operation,
             batch_size=batch_size,
             max_concurrency=max_concurrency,
             show_progress=show_progress,
             desc="Upserting",
+            host=self._host,
+            total_timeout=total_timeout,
         )
 
         synth_headers: dict[str, str] = {}

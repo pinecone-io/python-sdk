@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import msgspec
 
 from pinecone._internal.adapters.vectors_adapter import extract_response_info
-from pinecone._internal.batch import async_batch_execute
+from pinecone._internal.bulk import bulk_execute_async
 from pinecone._internal.validation import require_in_range, require_non_empty, require_positive
 from pinecone.errors.exceptions import PineconeValueError
 from pinecone.models.batch import (
@@ -304,13 +304,17 @@ class AsyncPreviewDocuments:
         require_positive("batch_size", batch_size)
         require_in_range("max_concurrency", effective_max_concurrency, 1, 64)
 
-        return await async_batch_execute(
+        await self._ensure_http()
+        if self._resolved_host is None:
+            raise RuntimeError("AsyncPreviewDocuments: host not resolved after _ensure_http")
+        return await bulk_execute_async(
             items=documents,
             operation=lambda chunk: self.upsert(namespace=namespace, documents=chunk),
             batch_size=batch_size,
             max_concurrency=effective_max_concurrency,
             show_progress=show_progress,
             desc="Upserting",
+            host=self._resolved_host,
         )
 
     async def search(

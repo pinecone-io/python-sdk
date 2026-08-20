@@ -176,7 +176,7 @@ async def test_async_batch_upsert_show_progress_propagated(
 ) -> None:
     with (
         patch.object(async_docs, "upsert", new_callable=AsyncMock, return_value=_UPSERT_RESPONSE),
-        patch("pinecone._internal.batch._create_progress_bar") as mock_bar,
+        patch("pinecone._internal.bulk.async_engine._create_progress_bar") as mock_bar,
     ):
         bar = MagicMock()
         mock_bar.return_value = bar
@@ -298,7 +298,7 @@ async def test_async_batch_upsert_max_workers_alias_accepted(
     async_docs: AsyncPreviewDocuments,
 ) -> None:
     with patch(
-        "pinecone.preview.async_documents.async_batch_execute", new_callable=AsyncMock
+        "pinecone.preview.async_documents.bulk_execute_async", new_callable=AsyncMock
     ) as mock_execute:
         mock_execute.return_value = BatchResult(
             total_item_count=1,
