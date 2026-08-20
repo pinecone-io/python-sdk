@@ -1,0 +1,158 @@
+name: Version Sentinel Probe
+
+# Asks the one question conformance structurally cannot: does the deployment
+# we point at actually recognise the API version we pin? For every operation
+# in the 2026-07 specs it sends the same read twice — once at 2026-07, once at
+# a bogus 9999-99 — and FAILs any whose two responses are identical, because
+# a server that cannot tell our version from one that cannot exist is not
+# serving our version. See scripts/version_sentinel_probe.py for the full
+# rationale, including why the comparison and not the status code is the test.
+#
+# NON-GATING BY CONSTRUCTION. There is no `pull_request` trigger, so nothing
+# here can block a merge or a publish. That is deliberate: the probe needs a
+# live API key and the standing release constraint is that no CI gate may
+# depend on one. Unit tests (on-push.yml) are the gate.
+#
+# A red run is the alarm and the intended output, not a bug in the workflow.
+# While #312 (assistant control) and #319 (inference gateway) remain
+# undeployed upstream, this job fails — and there is deliberately no
+# known-failures baseline to silence it, since a baseline would rot exactly
+# like the fixtures this probe exists to supplement.
+
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Probe only operations whose key contains this substring (leave blank for all)"
+        type: string
+        default: ""
+  schedule:
+    - cron: '30 5 * * *'   # nightly 05:30 UTC
+
+concurrency:
+  group: version-sentinel-probe
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Bogus-version sentinel probe (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
+      SPECS_TOKEN: ${{ secrets.APIS_REPO_TOKEN }}
+    steps:
+      # Both inputs are human-provisioned and neither exists at repo level yet.
+      # Fail loudly rather than reporting a green run over nothing probed —
+      # that inert-success shape is #295, and it is what this whole probe is a
+      # reaction to.
+      - name: Preflight — the probe's two inputs must be present
+        run: |
+          missing=0
+          if [ -z "${PINECONE_API_KEY}" ]; then
+            echo "::error::PINECONE_API_KEY is empty. The probe cannot issue a single request without it."
+            missing=1
+          fi
+          if [ -z "${SPECS_TOKEN}" ]; then
+            echo "::error::APIS_REPO_TOKEN is empty. The probe derives its operation list from pinecone-io/apis and cannot check it out without a token."
+            missing=1
+          fi
+          if [ "$missing" -ne 0 ]; then
+            {
+              echo "### Version sentinel probe: NOT RUN"
+              echo
+              echo "This job needs two repo secrets that do not exist yet:"
+              echo
+              echo "- \`PINECONE_API_KEY\` — scoped to a test/CI Pinecone project (also tracked in #295)"
+              echo "- \`APIS_REPO_TOKEN\` — read access to \`pinecone-io/apis\` for the 2026-07 specs"
+              echo
+              echo "Failing loudly instead of reporting a green run with nothing probed."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "Both inputs present."
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      # The operation list is derived from the specs themselves rather than
+      # from the vendored conformance manifest: the manifest carries no host,
+      # no path-parameter examples, and no required-query-parameter list, all
+      # of which the probe needs to build a request that reaches the version
+      # gate instead of dying in request validation.
+      - name: Check out the 2026-07 specs
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: pinecone-io/apis
+          token: ${{ secrets.APIS_REPO_TOKEN }}
+          path: .apis
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      # Deliberately NOT `uv sync`: the probe imports only httpx and yaml, so
+      # there is no reason to make a nightly advisory job build the Rust
+      # extension and install protoc.
+      - name: Run the probe
+        id: probe
+        continue-on-error: true
+        env:
+          SPECS_DIR: ${{ github.workspace }}/.apis/_build/2026-07
+          ONLY: ${{ inputs.only }}
+        run: |
+          set -o pipefail
+          args=(--specs-dir "${SPECS_DIR}" --positive-control
+                --markdown-out probe.md --json-out probe.json)
+          if [ -n "${ONLY}" ]; then
+            args+=(--only "${ONLY}")
+          fi
+          # One run emits all three formats. Re-running per format would
+          # triple the live traffic, including the billable embed/rerank calls.
+          uv run --no-project --with httpx --with pyyaml \
+            python scripts/version_sentinel_probe.py "${args[@]}" | tee probe.txt
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit "${status}"
+
+      - name: Publish the table to the job summary
+        if: always()
+        run: |
+          if [ -s probe.md ]; then
+            cat probe.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Version sentinel probe produced no report — see the job log." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the machine-readable report
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7.0.0
+        with:
+          name: version-sentinel-probe
+          path: |
+            probe.txt
+            probe.md
+            probe.json
+
+      # The probe step is `continue-on-error` only so the summary and artifact
+      # steps always run; the result is re-raised here so a FAIL still shows as
+      # a red run. Exit 3 means the positive control did not hold, i.e. the
+      # probe itself is no longer trustworthy — a worse signal than any FAIL.
+      - name: Re-raise the probe result
+        if: always()
+        run: |
+          status="${{ steps.probe.outputs.status }}"
+          case "${status}" in
+            0) echo "::notice::Every probed operation distinguished 2026-07 from a bogus version." ;;
+            3) echo "::error::Positive control violated — the probe no longer reproduces the known #312/#319 failures, so its all-clear cannot be trusted." ;;
+            2) echo "::error::The probe could not run; see the log." ;;
+            *) echo "::error::At least one operation answered a bogus API version identically to 2026-07. See the job summary." ;;
+          esac
+          exit "${status:-1}"
