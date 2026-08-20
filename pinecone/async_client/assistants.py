@@ -780,8 +780,10 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
 
             if file_model.status != "Processing":
                 if file_model.status == "ProcessingFailed":
-                    error_msg = file_model.error_message or "Unknown processing error"
-                    raise PineconeError(f"File processing failed for '{file_id}': {error_msg}")
+                    raise PineconeError(
+                        f"File processing failed for '{file_id}'. Call describe_operation() "
+                        "for the failure reason."
+                    )
                 return file_model
 
             if timeout is not None:
@@ -1065,8 +1067,10 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             except NotFoundError:
                 return
             if file_model.status not in ("Deleting", None):
-                error_msg = file_model.error_message or "Unknown deletion error"
-                raise PineconeError(f"File deletion failed for '{file_id}': {error_msg}")
+                raise PineconeError(
+                    f"File deletion failed for '{file_id}': the file is in state "
+                    f"{file_model.status!r}. Call describe_operation() for the failure reason."
+                )
             if timeout is not None:
                 elapsed = time.monotonic() - start
                 if elapsed >= timeout:

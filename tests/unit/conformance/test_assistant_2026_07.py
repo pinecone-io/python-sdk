@@ -8,10 +8,6 @@ the backend routes 2026-07 to the same handlers as 2026-04
 pin method, path, the ``X-Pinecone-Api-Version`` header now that a single
 ``ASSISTANT_API_VERSION`` feeds every assistant client, and the response
 schemas.
-
-The ``Assistant`` payload omits ``region``: ``AssistantModel`` does not model
-it yet (that is issue #102), and a payload key with no field would fail the
-round-trip leg rather than pretend to cover it.
 """
 
 from __future__ import annotations
@@ -44,11 +40,19 @@ ASSISTANT: dict[str, Any] = {
     "instructions": "Answer questions with clear, helpful answers.",
     "metadata": {"role": "Customer Support Helper", "team": "Operations"},
     "host": "https://prod-1-data.ke.pinecone.io",
+    "region": "eu",
     "created_at": "2026-07-01T12:30:00Z",
     "updated_at": "2026-07-01T12:45:00Z",
 }
 
-ASSISTANT_OPTIONAL = ["instructions", "metadata", "host", "created_at", "updated_at"]
+ASSISTANT_OPTIONAL = [
+    "instructions",
+    "metadata",
+    "host",
+    "region",
+    "created_at",
+    "updated_at",
+]
 
 ALIGNMENT: dict[str, Any] = {
     "metrics": {"correctness": 0.5, "completeness": 1.0, "alignment": 0.667},
@@ -81,6 +85,7 @@ def test_list_assistants(claim: Any, assistants: Assistants, respx_mock: respx.M
 
     result = assistants.list_page(page_size=20, pagination_token="dXNlcl9pZD11c2VyXzE=")
     assert [a.name for a in result.assistants] == [ASSISTANT_NAME]
+    assert [a.region for a in result.assistants] == ["eu"]
     assert result.next == "dXNlcl9pZD11c2VyXzI="
 
     request = route.calls.last.request
@@ -107,6 +112,7 @@ def test_create_assistant(claim: Any, assistants: Assistants, respx_mock: respx.
         timeout=-1,
     )
     assert result.name == ASSISTANT_NAME
+    assert result.region == "eu"
 
     request = route.calls.last.request
     assert orjson.loads(request.content) == {
@@ -128,6 +134,9 @@ def test_get_assistant(claim: Any, assistants: Assistants, respx_mock: respx.Moc
 
     result = assistants.describe(name=ASSISTANT_NAME)
     assert result.status == "Ready"
+    assert result.region == "eu"
+    assert result.created_at == "2026-07-01T12:30:00Z"
+    assert result.updated_at == "2026-07-01T12:45:00Z"
 
     request = route.calls.last.request
     claim.assert_request(request)

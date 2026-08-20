@@ -55,6 +55,7 @@ async def test_async_list_assistants(
 
     result = await async_assistants.list_page(page_size=20, pagination_token="dXNlcl9pZD11c2VyXzE=")
     assert [a.name for a in result.assistants] == [ASSISTANT_NAME]
+    assert [a.region for a in result.assistants] == ["eu"]
     assert result.next == "dXNlcl9pZD11c2VyXzI="
 
     request = route.calls.last.request
@@ -83,6 +84,7 @@ async def test_async_create_assistant(
         timeout=-1,
     )
     assert result.name == ASSISTANT_NAME
+    assert result.region == "eu"
 
     request = route.calls.last.request
     assert orjson.loads(request.content) == {
@@ -106,6 +108,9 @@ async def test_async_get_assistant(
 
     result = await async_assistants.describe(name=ASSISTANT_NAME)
     assert result.status == "Ready"
+    assert result.region == "eu"
+    assert result.created_at == "2026-07-01T12:30:00Z"
+    assert result.updated_at == "2026-07-01T12:45:00Z"
 
     request = route.calls.last.request
     claim.assert_request(request)

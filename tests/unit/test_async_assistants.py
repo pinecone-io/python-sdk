@@ -1989,7 +1989,11 @@ async def test_async_upload_file_polls_with_correct_interval(
 async def test_async_upload_file_processing_failed(
     mock_sleep: object, async_assistants: AsyncAssistants
 ) -> None:
-    """If processing fails, raises PineconeError with the server's error message."""
+    """If processing fails, raises PineconeError pointing at the operations API.
+
+    ``2026-07`` dropped ``AssistantFileModel.error_message``, so the failure
+    reason is no longer on the file payload to quote.
+    """
     respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
         return_value=httpx.Response(200, json=make_assistant_response()),
     )
@@ -1999,15 +2003,12 @@ async def test_async_upload_file_processing_failed(
     respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
         return_value=httpx.Response(
             200,
-            json=make_assistant_file_response(
-                status="ProcessingFailed",
-                error_message="Unsupported file format",
-            ),
+            json=make_assistant_file_response(status="ProcessingFailed"),
         ),
     )
 
     stream = io.BytesIO(b"data")
-    with pytest.raises(PineconeError, match="Unsupported file format"):
+    with pytest.raises(PineconeError, match="describe_operation"):
         await async_assistants.upload_file(
             assistant_name="test-assistant",
             file_stream=stream,
@@ -2232,13 +2233,11 @@ async def test_async_delete_file_server_error_raises(
     respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
         return_value=httpx.Response(
             200,
-            json=make_assistant_file_response(
-                status="ProcessingFailed", error_message="Storage backend error"
-            ),
+            json=make_assistant_file_response(status="ProcessingFailed"),
         ),
     )
 
-    with pytest.raises(PineconeError, match="Storage backend error"):
+    with pytest.raises(PineconeError, match="'ProcessingFailed'"):
         await async_assistants.delete_file(assistant_name="test-assistant", file_id="file-abc123")
 
 

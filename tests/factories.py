@@ -361,6 +361,7 @@ def make_assistant_response(**overrides: Any) -> dict[str, Any]:
         "metadata": {},
         "instructions": None,
         "host": "test-assistant-abc123.svc.pinecone.io",
+        "region": "us",
     }
     base.update(overrides)
     return base
@@ -372,6 +373,9 @@ def make_assistant_file_response(**overrides: Any) -> dict[str, Any]:
     The wire key for the file hash is ``crc32c_hash`` (not ``content_hash``).
     The SDK struct maps this to the Python attribute ``content_hash`` via a
     ``rename={"content_hash": "crc32c_hash"}`` directive on ``AssistantFileModel``.
+
+    ``percent_done`` and ``error_message`` are absent: ``2026-07`` does not
+    return them (see ``docs/migration/v10-2026-07-assistant-models.md``).
     """
     base: dict[str, Any] = {
         "name": "test-file.pdf",
@@ -384,8 +388,6 @@ def make_assistant_file_response(**overrides: Any) -> dict[str, Any]:
         "multimodal": False,
         "signed_url": None,
         "crc32c_hash": None,
-        "percent_done": None,
-        "error_message": None,
     }
     base.update(overrides)
     return base

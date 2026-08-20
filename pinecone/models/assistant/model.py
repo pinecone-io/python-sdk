@@ -36,6 +36,8 @@ class AssistantModel(
             to apply to all responses, or ``None`` if not set.
         host: The host where the assistant is deployed, or ``None`` if
             not yet available.
+        region: The region the assistant is deployed in (``"us"`` or
+            ``"eu"``), or ``None`` if not returned by the API.
     """
 
     name: str
@@ -43,6 +45,7 @@ class AssistantModel(
     metadata: dict[str, Any] | None = None
     instructions: str | None = None
     host: str | None = None
+    region: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -54,6 +57,8 @@ class AssistantModel(
     @safe_display
     def __repr__(self) -> str:
         parts = [f"name={self.name!r}", f"status={self.status!r}"]
+        if self.region is not None:
+            parts.append(f"region={self.region!r}")
         if self.host is not None:
             parts.append(f"host={self.host!r}")
         if self.instructions is not None:
@@ -72,6 +77,9 @@ class AssistantModel(
             p.text(f"name={self.name!r},")
             p.breakable()
             p.text(f"status={self.status!r},")
+            if self.region is not None:
+                p.breakable()
+                p.text(f"region={self.region!r},")
             if self.host is not None:
                 p.breakable()
                 p.text(f"host={self.host!r},")
@@ -93,6 +101,8 @@ class AssistantModel(
         builder = HtmlBuilder("AssistantModel")
         builder.row("Name:", self.name)
         builder.row("Status:", self.status)
+        if self.region is not None:
+            builder.row("Region:", self.region)
         if self.host is not None:
             builder.row("Host:", self.host)
         if self.instructions is not None:

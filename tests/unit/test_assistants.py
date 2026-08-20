@@ -1504,7 +1504,11 @@ def test_upload_file_polls_with_correct_interval(
 @respx.mock
 @patch("pinecone.client.assistants.time.sleep")
 def test_upload_file_processing_failed(mock_sleep: object, assistants: Assistants) -> None:
-    """If processing fails, raises PineconeError with server's error message."""
+    """If processing fails, raises PineconeError pointing at the operations API.
+
+    ``2026-07`` dropped ``AssistantFileModel.error_message``, so the failure
+    reason is no longer on the file payload to quote.
+    """
     respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
         return_value=httpx.Response(200, json=make_assistant_response()),
     )
@@ -1514,15 +1518,12 @@ def test_upload_file_processing_failed(mock_sleep: object, assistants: Assistant
     respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
         return_value=httpx.Response(
             200,
-            json=make_assistant_file_response(
-                status="ProcessingFailed",
-                error_message="Unsupported file format",
-            ),
+            json=make_assistant_file_response(status="ProcessingFailed"),
         ),
     )
 
     stream = io.BytesIO(b"data")
-    with pytest.raises(PineconeError, match="Unsupported file format"):
+    with pytest.raises(PineconeError, match="describe_operation"):
         assistants.upload_file(
             assistant_name="test-assistant",
             file_stream=stream,
@@ -2218,13 +2219,11 @@ def test_delete_file_server_error_raises(mock_sleep: object, assistants: Assista
     respx.get(f"{DATA_PLANE_URL}/files/test-assistant/file-abc123").mock(
         return_value=httpx.Response(
             200,
-            json=make_assistant_file_response(
-                status="ProcessingFailed", error_message="Storage backend error"
-            ),
+            json=make_assistant_file_response(status="ProcessingFailed"),
         ),
     )
 
-    with pytest.raises(PineconeError, match="Storage backend error"):
+    with pytest.raises(PineconeError, match="'ProcessingFailed'"):
         assistants.delete_file(assistant_name="test-assistant", file_id="file-abc123")
 
 
@@ -3129,6 +3128,35 @@ def test_assistant_model_decodes_without_timestamps() -> None:
     assert result.status == "Ready"
     assert result.created_at is None
     assert result.updated_at is None
+    assert result.region is None
+
+
+def test_assistant_model_decodes_region_and_timestamps() -> None:
+    """A 2026-07 assistant payload round-trips region and both timestamps."""
+    payload = {
+        "name": "my-assistant",
+        "status": "Ready",
+        "instructions": "Be helpful.",
+        "metadata": {"team": "Operations"},
+        "host": "https://prod-1-data.ke.pinecone.io",
+        "region": "eu",
+        "created_at": "2026-07-01T12:30:00Z",
+        "updated_at": "2026-07-01T12:45:00Z",
+    }
+
+    result = msgspec.json.decode(json.dumps(payload).encode(), type=AssistantModel)
+
+    assert result.region == "eu"
+    assert result.created_at == "2026-07-01T12:30:00Z"
+    assert result.updated_at == "2026-07-01T12:45:00Z"
+    assert msgspec.to_builtins(result) == payload
+
+
+def test_assistant_model_region_us() -> None:
+    """The other documented region value decodes unchanged."""
+    payload = json.dumps({"name": "a", "status": "Ready", "region": "us"}).encode()
+
+    assert msgspec.json.decode(payload, type=AssistantModel).region == "us"
 
 
 # ---------------------------------------------------------------------------
@@ -3162,8 +3190,6 @@ def _make_file_model(**overrides: object) -> AssistantFileModel:
         "multimodal": False,
         "signed_url": None,
         "content_hash": None,
-        "percent_done": None,
-        "error_message": None,
     }
     data.update(overrides)
     return AssistantFileModel(**data)  # type: ignore[arg-type]
