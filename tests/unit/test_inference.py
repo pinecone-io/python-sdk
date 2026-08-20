@@ -9,8 +9,9 @@ import pytest
 import respx
 
 from pinecone._internal.config import PineconeConfig
+from pinecone._internal.constants import API_VERSION_HEADER
 from pinecone.client.inference import Inference
-from pinecone.errors.exceptions import ValidationError
+from pinecone.errors.exceptions import ApiError, ValidationError
 from pinecone.models.enums import EmbedModel, RerankModel
 from pinecone.models.inference.embed import EmbeddingsList
 from pinecone.models.inference.model_list import ModelInfoList
@@ -18,6 +19,7 @@ from pinecone.models.inference.models import ModelInfo
 from pinecone.models.inference.rerank import RerankResult
 from tests.factories import (
     make_embed_response,
+    make_error_response,
     make_model_info,
     make_model_list_response,
     make_rerank_response,
@@ -532,3 +534,61 @@ def test_inference_model_get_conflict_raises(inference: Inference) -> None:
 def test_inference_model_get_unexpected_kwarg_raises(inference: Inference) -> None:
     with pytest.raises(TypeError, match="unexpected keyword arguments"):
         inference.model.get(model_alias="foo")
+
+
+# ---------------------------------------------------------------------------
+# API version header
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+def test_all_operations_send_the_2026_07_version_header(inference: Inference) -> None:
+    embed = respx.post(f"{BASE_URL}/embed").mock(
+        return_value=httpx.Response(200, json=make_embed_response()),
+    )
+    rerank = respx.post(f"{BASE_URL}/rerank").mock(
+        return_value=httpx.Response(200, json=make_rerank_response()),
+    )
+    list_models = respx.get(f"{BASE_URL}/models").mock(
+        return_value=httpx.Response(200, json=make_model_list_response()),
+    )
+    get_model = respx.get(f"{BASE_URL}/models/multilingual-e5-large").mock(
+        return_value=httpx.Response(200, json=make_model_info()),
+    )
+
+    inference.embed("multilingual-e5-large", ["hello"])
+    inference.rerank("bge-reranker-v2-m3", "q", ["a", "b"])
+    inference.list_models()
+    inference.get_model(model="multilingual-e5-large")
+
+    for route in (embed, rerank, list_models, get_model):
+        assert route.calls.last.request.headers[API_VERSION_HEADER] == "2026-07"
+
+
+# ---------------------------------------------------------------------------
+# Error surfacing
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+def test_embed_400_surfaces_the_server_message_verbatim(inference: Inference) -> None:
+    """A parameter-constraint 400 reaches the caller with the server's wording intact.
+
+    The message is the only place the server can name which supported_parameter
+    was violated, so paraphrasing or truncating it would cost the caller the one
+    detail that makes the error actionable.
+    """
+    message = (
+        "input_type must be one of ['query', 'passage'] "
+        "(model multilingual-e5-large, parameter type one_of)"
+    )
+    respx.post(f"{BASE_URL}/embed").mock(
+        return_value=httpx.Response(400, json=make_error_response(400, message)),
+    )
+
+    with pytest.raises(ApiError) as excinfo:
+        inference.embed("multilingual-e5-large", ["hello"], parameters={"input_type": "nonsense"})
+
+    assert excinfo.value.message == message
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.error_code == "INVALID_ARGUMENT"
