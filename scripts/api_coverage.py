@@ -45,7 +45,8 @@ Usage:
    excepted by a ``DECISION:`` comment on the epoch issue
 4. rust/proto/db_data_2026-07.proto exists and rust/build.rs references it
 5. the epoch issue has zero open sub-issues
-6. every divergence exception references an open ``question`` issue
+6. every divergence exception and base-path override references an open
+   ``question`` issue
 """
 
 from __future__ import annotations
@@ -338,6 +339,11 @@ def server_base_path(doc: dict[str, Any], name: str) -> str:
     under ``/assistant``, so the path a request actually carries is this plus
     the operation's path. Recorded in the manifest so ``assert_request`` keeps
     comparing whole paths instead of suffixes.
+
+    A spec whose ``servers`` URL omits a prefix the deployed surface really
+    carries — ``assistant_data``, whose ``https://{assistant_host}`` hides the
+    ``/assistant`` mount — is corrected by an issue-referenced entry in
+    ``base_path_overrides`` (see :func:`load_base_path_overrides`), not here.
     """
     servers = doc.get("servers") or []
     bases = {
@@ -395,14 +401,60 @@ def load_divergences() -> dict[str, dict[str, Any]]:
     return {str(op_id): dict(entry) for op_id, entry in divergences.items()}
 
 
+def load_base_path_overrides() -> dict[str, dict[str, Any]]:
+    """Per-surface corrections to the base path derived from ``servers``.
+
+    Same contract as the divergence list: an override must name the surface,
+    reference a question issue by number, and give a reason, so a spec the SDK
+    deliberately contradicts on the *request* side stays as visible as one it
+    contradicts on the response side.
+    """
+    if not DIVERGENCES_PATH.exists():
+        return {}
+    with DIVERGENCES_PATH.open() as f:
+        doc = json.load(f)
+    overrides = doc.get("base_path_overrides", {})
+    if not isinstance(overrides, dict):
+        raise SpecError(f"{DIVERGENCES_PATH.name}: 'base_path_overrides' must be an object")
+    for surface, entry in overrides.items():
+        if not isinstance(entry, dict):
+            raise SpecError(f"{DIVERGENCES_PATH.name}: {surface}: entry must be an object")
+        issue = entry.get("issue")
+        if not isinstance(issue, int) or isinstance(issue, bool) or issue <= 0:
+            raise SpecError(
+                f"{DIVERGENCES_PATH.name}: {surface}: 'issue' must reference a question "
+                "issue by positive number — no silent base-path overrides"
+            )
+        if not isinstance(entry.get("reason"), str) or not entry["reason"].strip():
+            raise SpecError(f"{DIVERGENCES_PATH.name}: {surface}: a non-empty 'reason' is required")
+        base_path = entry.get("base_path")
+        if (
+            not isinstance(base_path, str)
+            or not base_path.startswith("/")
+            or base_path != base_path.rstrip("/")
+        ):
+            raise SpecError(
+                f"{DIVERGENCES_PATH.name}: {surface}: 'base_path' must be a path starting "
+                "with '/' and carrying no trailing slash"
+            )
+        unknown = set(entry) - {"issue", "reason", "base_path"}
+        if unknown:
+            raise SpecError(f"{DIVERGENCES_PATH.name}: {surface}: unknown keys {sorted(unknown)}")
+    return {str(surface): dict(entry) for surface, entry in overrides.items()}
+
+
 def parse_oas_file(
-    path: Path, divergences: dict[str, dict[str, Any]] | None = None
+    path: Path,
+    divergences: dict[str, dict[str, Any]] | None = None,
+    base_path_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[OperationMap, dict[str, Any]]:
     surface = path.name.removesuffix(f"_{API_VERSION}.oas.yaml")
     divergences = divergences or {}
     with path.open() as f:
         doc = yaml.safe_load(f)
-    base_path = server_base_path(doc, path.name)
+    spec_base_path = server_base_path(doc, path.name)
+    override = (base_path_overrides or {}).get(surface)
+    base_path = override["base_path"] if override is not None else spec_base_path
     ops: OperationMap = {}
     schemas: dict[str, Any] = {}
     for url_path, path_item in (doc.get("paths") or {}).items():
@@ -427,6 +479,12 @@ def parse_oas_file(
                 "success_body": schema is not None,
                 "response_schema": None,
             }
+            if override is not None:
+                entry["base_path_divergence"] = {
+                    "issue": override["issue"],
+                    "reason": override["reason"],
+                    "spec_base_path": spec_base_path,
+                }
             if schema is not None:
                 ref = schema.get("$ref") if isinstance(schema, dict) else None
                 if isinstance(ref, str) and list(schema) == ["$ref"]:
@@ -488,10 +546,13 @@ def derive_manifest(specs_dir: Path) -> dict[str, Any]:
     if not proto_file.exists():
         raise SpecError(f"{proto_file} not found")
     divergences = load_divergences()
+    base_path_overrides = load_base_path_overrides()
     ops: OperationMap = {}
     schemas: dict[str, Any] = {}
+    surfaces: set[str] = set()
     for oas in oas_files:
-        file_ops, file_schemas = parse_oas_file(oas, divergences)
+        surfaces.add(oas.name.removesuffix(f"_{API_VERSION}.oas.yaml"))
+        file_ops, file_schemas = parse_oas_file(oas, divergences, base_path_overrides)
         ops.update(file_ops)
         for key, bundled in file_schemas.items():
             _record_schema(schemas, key, bundled, oas.name)
@@ -501,6 +562,12 @@ def derive_manifest(specs_dir: Path) -> dict[str, Any]:
         raise SpecError(
             f"{DIVERGENCES_PATH.name} lists divergences for operations not in the specs: "
             f"{unconsumed}"
+        )
+    unknown_surfaces = sorted(set(base_path_overrides) - surfaces)
+    if unknown_surfaces:
+        raise SpecError(
+            f"{DIVERGENCES_PATH.name} lists base-path overrides for surfaces not in the specs: "
+            f"{unknown_surfaces}"
         )
     return {"api_version": API_VERSION, "operations": ops, "schemas": schemas}
 
@@ -817,6 +884,8 @@ def mode_gate(ops: OperationMap, epoch_issue: int) -> int:
     divergent = {
         op_id: entry["divergence"] for op_id, entry in ops.items() if entry.get("divergence")
     }
+    for surface, override in sorted(load_base_path_overrides().items()):
+        divergent[f"{surface}:<base_path>"] = override
     for op_id, divergence in sorted(divergent.items()):
         issue = divergence["issue"]
         try:

@@ -146,15 +146,20 @@ class FileReference(StructDictMixin, Struct, kw_only=True):
         pages: The list of page numbers relevant to the snippet, when
             the source is a paginated document (e.g. PDF). ``None`` for
             text, JSON, or Markdown sources.
+        type: The kind of document referenced — ``"text"``, ``"json"``,
+            ``"markdown"``, ``"pdf"``, or ``"doc_x"``. ``None`` only for
+            payloads that omit it, which the API itself never does.
     """
 
     file: AssistantFileModel
     pages: list[int] | None = None
+    type: str | None = None
 
     @safe_display
     def __repr__(self) -> str:
         pages_str = abbreviate_list(self.pages) if self.pages is not None else "None"
-        return f"FileReference(file={self.file.name!r}, pages={pages_str})"
+        type_part = f"type={self.type!r}, " if self.type is not None else ""
+        return f"FileReference({type_part}file={self.file.name!r}, pages={pages_str})"
 
     @safe_display
     def _repr_pretty_(self, p: Any, cycle: bool) -> None:
@@ -163,6 +168,9 @@ class FileReference(StructDictMixin, Struct, kw_only=True):
             return
         pages_str = abbreviate_list(self.pages) if self.pages is not None else "None"
         with p.group(2, "FileReference(", ")"):
+            if self.type is not None:
+                p.breakable()
+                p.text(f"type={self.type!r},")
             p.breakable()
             p.text(f"file={self.file.name!r},")
             p.breakable()
@@ -172,6 +180,7 @@ class FileReference(StructDictMixin, Struct, kw_only=True):
     def _repr_html_(self) -> str:
         pages_val = abbreviate_list(self.pages) if self.pages is not None else "—"
         builder = HtmlBuilder("FileReference")
+        builder.row("Type", self.type if self.type is not None else "—")
         builder.row("File", self.file.name)
         builder.row("Pages", pages_val)
         return builder.build()

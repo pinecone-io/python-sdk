@@ -115,6 +115,30 @@ def validate_response_payload(op_id: str, entry: Mapping[str, Any], payload: Any
         )
 
 
+def _expected_base_path(op_id: str, entry: Mapping[str, Any]) -> str:
+    """The path prefix the request must carry, honouring a registered override.
+
+    A surface whose spec ``servers`` URL omits the prefix the deployed API is
+    really mounted under carries a ``base_path_divergence``. It is held to the
+    same standard as a response-schema divergence — question issue by number
+    plus a reason — so an unattributed or tampered override fails the test
+    rather than quietly relaxing the path assertion.
+    """
+    divergence = entry.get("base_path_divergence")
+    if divergence is None:
+        return str(entry["base_path"])
+    issue = divergence.get("issue")
+    if not isinstance(issue, int) or isinstance(issue, bool) or issue <= 0:
+        raise ConformanceError(
+            f"{op_id}: base_path_divergence does not reference a question issue number; "
+            "silent base-path overrides are not allowed (see "
+            "tests/unit/conformance/divergences_2026-07.json)"
+        )
+    if not isinstance(divergence.get("reason"), str) or not divergence["reason"].strip():
+        raise ConformanceError(f"{op_id}: base_path_divergence has no reason")
+    return str(entry["base_path"])
+
+
 def api_op(op_id: str) -> Callable[[F], F]:
     """Register a conformance test as a claim for one manifest operation.
 
@@ -214,7 +238,7 @@ class ClaimRecorder:
             raise ConformanceError(f"{op_id} is a gRPC rpc; use assert_grpc_request")
         actual_method = str(request.method).upper()
         actual_path = request.url.path
-        expected_path = entry["base_path"] + entry["path"]
+        expected_path = _expected_base_path(op_id, entry) + entry["path"]
         if actual_method != entry["method"]:
             raise ConformanceError(
                 f"{op_id}: expected method {entry['method']}, request used {actual_method}"

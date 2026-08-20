@@ -212,11 +212,17 @@ class StreamMessageEnd(StructDictMixin, Struct, kw_only=True, tag="message_end",
         id: Unique identifier for this chunk.
         usage: Token usage statistics for the request.
         model: The model used to generate this response, or ``None`` if not provided.
+        finish_reason: The reason generation stopped — one of ``"stop"`` (the
+            model finished), ``"length"`` (the token limit was reached),
+            ``"content_filter"`` (content filtering rules blocked the output),
+            or ``"tool_calls"`` (a tool call was triggered). ``None`` only for
+            payloads recorded before the field was documented.
     """
 
     id: str
     usage: ChatUsage | None = None
     model: str | None = None
+    finish_reason: str | None = None
 
     @property
     def type(self) -> str:
@@ -227,7 +233,10 @@ class StreamMessageEnd(StructDictMixin, Struct, kw_only=True, tag="message_end",
     def __repr__(self) -> str:
         model_part = f", model={self.model!r}" if self.model is not None else ""
         usage_part = f", usage={self.usage!r}" if self.usage is not None else ""
-        return f"StreamMessageEnd(id={self.id!r}{usage_part}{model_part})"
+        finish_part = (
+            f", finish_reason={self.finish_reason!r}" if self.finish_reason is not None else ""
+        )
+        return f"StreamMessageEnd(id={self.id!r}{finish_part}{usage_part}{model_part})"
 
     @safe_display
     def _repr_pretty_(self, p: Any, cycle: bool) -> None:
@@ -240,6 +249,9 @@ class StreamMessageEnd(StructDictMixin, Struct, kw_only=True, tag="message_end",
             if self.model is not None:
                 p.breakable()
                 p.text(f"model={self.model!r},")
+            if self.finish_reason is not None:
+                p.breakable()
+                p.text(f"finish_reason={self.finish_reason!r},")
             if self.usage is not None:
                 p.breakable()
                 p.text(f"usage={self.usage!r},")
@@ -251,6 +263,8 @@ class StreamMessageEnd(StructDictMixin, Struct, kw_only=True, tag="message_end",
         builder.row("Id:", self.id)
         if self.model is not None:
             builder.row("Model:", self.model)
+        if self.finish_reason is not None:
+            builder.row("Finish reason:", self.finish_reason)
         if self.usage is not None:
             builder.row("Prompt tokens:", self.usage.prompt_tokens)
             builder.row("Completion tokens:", self.usage.completion_tokens)

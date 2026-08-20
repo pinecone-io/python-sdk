@@ -2751,13 +2751,13 @@ def test_chat_completions_streaming_finish_reason_rest(client: Pinecone) -> None
 # Path to test fixture files (same directory as this test file).
 _FIXTURES_DIR = os.path.dirname(os.path.realpath(__file__))
 
-# All assistant chat models supported by the API as of 2025-10.
+# The chat models assistant_data_2026-07 documents on POST /chat/{assistant_name}.
 _SUPPORTED_CHAT_MODELS = (
     "gpt-4o",
     "gpt-4.1",
+    "gpt-5",
     "o4-mini",
-    "claude-3-5-sonnet",
-    "claude-3-7-sonnet",
+    "claude-sonnet-4-5",
     "gemini-2.5-pro",
 )
 

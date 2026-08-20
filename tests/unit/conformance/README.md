@@ -56,7 +56,9 @@ test ends; the `claim` fixture fails the test at teardown otherwise:
    claims. The expected path is the manifest's `base_path` (the path component
    of the spec's `servers` URL — `/assistant` for the assistant surfaces, empty
    for the rest) followed by the operation's path, so surfaces mounted under a
-   prefix are still compared whole rather than by suffix. For gRPC rpcs use
+   prefix are still compared whole rather than by suffix. One surface's prefix
+   is not derivable from its spec and comes from a registered override instead
+   (see *Base-path overrides* below). For gRPC rpcs use
    `claim.assert_grpc_request(full_method)` with the invoked full method name
    (e.g. `/VectorService/Upsert`).
 2. **API version** — `claim.assert_api_version(request_or_headers_or_metadata)`
@@ -125,6 +127,25 @@ at generation time, at test time, and by `--gate`:
 
 Current exceptions: `assistant_control:update_assistant` (#170 — the backend
 returns the full `Assistant` shape, not `UpdateAssistantResponse`).
+
+### Base-path overrides
+
+The response-side divergence has a request-side twin. A spec's `servers` URL
+can omit a path prefix the deployed surface really carries, in which case the
+derived `base_path` would make `assert_request` reject the path the SDK
+correctly sends. `divergences_2026-07.json` therefore also carries
+`base_path_overrides`, keyed by surface, under the same no-silent-exceptions
+contract: question issue by number plus a reason. `--write-manifest` folds
+each one into every operation of that surface as a `base_path_divergence:
+{issue, reason, spec_base_path}` entry — the overridden prefix goes in
+`base_path`, and what the spec actually declares stays visible in
+`spec_base_path`. `--gate` checks the referenced issue the same way it checks
+response-schema divergences, and the registry refuses an override that has
+lost its issue number or reason.
+
+Current overrides: `assistant_data` (#173 — the spec's
+`https://{assistant_host}` server has no path, but the data plane is mounted
+under `/assistant`).
 
 Additional rules:
 

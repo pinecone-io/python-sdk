@@ -551,6 +551,79 @@ def test_load_divergences_rejects_malformed_entries(
         cov.load_divergences()
 
 
+def test_parse_oas_file_applies_a_base_path_override(tmp_path: Path) -> None:
+    oas = tmp_path / "widgets_2026-07.oas.yaml"
+    oas.write_text(
+        textwrap.dedent(
+            """
+            openapi: 3.0.3
+            servers:
+            - url: https://{widget_host}
+            paths:
+              /widgets:
+                get:
+                  operationId: list_widgets
+                  responses:
+                    '200':
+                      description: ok
+            """
+        )
+    )
+    overrides = {
+        "widgets": {"issue": 173, "reason": "mounted under /widget", "base_path": "/widget"}
+    }
+    ops, _ = cov.parse_oas_file(oas, None, overrides)
+    entry = ops["widgets:list_widgets"]
+    assert entry["base_path"] == "/widget"
+    assert entry["base_path_divergence"] == {
+        "issue": 173,
+        "reason": "mounted under /widget",
+        "spec_base_path": "",
+    }
+
+
+def test_derive_manifest_rejects_base_path_overrides_for_unknown_surfaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    divergences_path = tmp_path / "divergences_2026-07.json"
+    divergences_path.write_text(
+        json.dumps(
+            {
+                "divergences": {},
+                "base_path_overrides": {
+                    "gadgets": {"issue": 173, "reason": "stale entry", "base_path": "/gadget"}
+                },
+            }
+        )
+    )
+    monkeypatch.setattr(cov, "DIVERGENCES_PATH", divergences_path)
+    specs = _synthetic_specs_dir(tmp_path)
+    with pytest.raises(cov.SpecError, match="surfaces not in the specs"):
+        cov.derive_manifest(specs)
+
+
+@pytest.mark.parametrize(
+    ("entry", "message"),
+    [
+        ({"reason": "r", "base_path": "/widget"}, "must reference a question"),
+        ({"issue": True, "reason": "r", "base_path": "/widget"}, "must reference a question"),
+        ({"issue": 173, "reason": " ", "base_path": "/widget"}, "non-empty 'reason'"),
+        ({"issue": 173, "reason": "r"}, "must be a path"),
+        ({"issue": 173, "reason": "r", "base_path": "widget"}, "must be a path"),
+        ({"issue": 173, "reason": "r", "base_path": "/widget/"}, "must be a path"),
+        ({"issue": 173, "reason": "r", "base_path": "/widget", "extra": 1}, "unknown keys"),
+    ],
+)
+def test_load_base_path_overrides_rejects_malformed_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: dict, message: str
+) -> None:
+    divergences_path = tmp_path / "divergences_2026-07.json"
+    divergences_path.write_text(json.dumps({"base_path_overrides": {"widgets": entry}}))
+    monkeypatch.setattr(cov, "DIVERGENCES_PATH", divergences_path)
+    with pytest.raises(cov.SpecError, match=message):
+        cov.load_base_path_overrides()
+
+
 def test_vendored_manifest_denominators() -> None:
     ops = manifest_operations()
     http = [op for op, entry in ops.items() if entry["kind"] == "http"]
