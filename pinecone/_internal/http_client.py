@@ -152,12 +152,36 @@ def _compute_retry_after_delay(
     return _compute_backoff(config, attempt, prev_delay)
 
 
-def _notify_throttle(config: RetryConfig, request: httpx.Request) -> None:
+def _notify_throttle(
+    config: RetryConfig, request: httpx.Request, response: httpx.Response | None = None
+) -> None:
+    """Feed the bulk admission gate, then any user hook.
+
+    The gate feed lives here — at the one place that owns retryable-status
+    detection for every REST transport, sync and async — so no client
+    construction path can forget to wire it (the #60 lesson). A Retry-After
+    header rides along as the gate's pushback hold.
+    """
+    host = request.url.host
+    pushback: float | None = None
+    if response is not None:
+        retry_after = response.headers.get("retry-after")
+        if retry_after is not None:
+            try:
+                pushback = max(0.0, min(float(retry_after), config.max_wait))
+            except (ValueError, TypeError):
+                pushback = None
+    try:
+        from pinecone._internal.bulk import get_registry
+
+        get_registry().report_throttled(host, pushback)
+    except Exception as exc:
+        logger.debug("gate throttle report raised, ignoring: %s", exc)
     cb = config.on_throttle
     if cb is None:
         return
     try:
-        cb(request.url.host)
+        cb(host)
     except Exception as exc:
         logger.debug("on_throttle callback raised, ignoring: %s", exc)
 
@@ -196,7 +220,7 @@ class _RetryTransport(httpx.BaseTransport):
             last_exc = None
             if response.status_code not in self._config.retryable_status_codes:
                 return response
-            _notify_throttle(self._config, request)
+            _notify_throttle(self._config, request, response)
             if attempt < self._config.max_retries:
                 response.close()
                 delay = _compute_retry_after_delay(self._config, response, attempt, prev_delay)
@@ -256,7 +280,7 @@ class _AsyncRetryTransport(httpx.AsyncBaseTransport):
             last_exc = None
             if response.status_code not in self._config.retryable_status_codes:
                 return response
-            _notify_throttle(self._config, request)
+            _notify_throttle(self._config, request, response)
             if attempt < self._config.max_retries:
                 await response.aclose()
                 delay = _compute_retry_after_delay(self._config, response, attempt, prev_delay)

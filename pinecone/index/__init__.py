@@ -13,8 +13,8 @@ if TYPE_CHECKING:
 
 from pinecone._internal.adapters.imports_adapter import ImportsAdapter
 from pinecone._internal.adapters.vectors_adapter import VectorsAdapter, extract_response_info
-from pinecone._internal.batch import batch_execute
 from pinecone._internal.batching import validate_batch_size
+from pinecone._internal.bulk import bulk_execute_sync
 from pinecone._internal.config import PineconeConfig
 from pinecone._internal.constants import DATA_PLANE_API_VERSION
 from pinecone._internal.data_plane_helpers import (
@@ -141,8 +141,6 @@ class Index:
         self._http = HTTPClient(config, DATA_PLANE_API_VERSION)
         self._adapter = VectorsAdapter()
         self._imports_adapter = ImportsAdapter()
-        self._batch_executor: ThreadPoolExecutor | None = None
-        self._batch_executor_workers: int = 0
 
         from pinecone._legacy.async_req import (
             _DEFAULT_POOL_THREADS,
@@ -161,17 +159,6 @@ class Index:
         """The data plane host URL for this index."""
         return self._host
 
-    def _get_batch_executor(self, max_concurrency: int) -> ThreadPoolExecutor:
-        if self._batch_executor is None or self._batch_executor_workers != max_concurrency:
-            if self._batch_executor is not None:
-                self._batch_executor.shutdown(wait=False)
-            self._batch_executor = ThreadPoolExecutor(
-                max_concurrency,
-                thread_name_prefix="pinecone-upsert",
-            )
-            self._batch_executor_workers = max_concurrency
-        return self._batch_executor
-
     def upsert(
         self,
         *,
@@ -186,6 +173,7 @@ class Index:
         show_progress: bool = True,
         max_concurrency: int = 4,
         timeout: float | None = None,
+        total_timeout: float | None = None,
     ) -> UpsertResponse:
         """Upsert a batch of vectors into a namespace.
 
@@ -211,6 +199,12 @@ class Index:
                 (range 1–64, default 4). Only used when ``batch_size`` is set.
             timeout (float | None): Per-request timeout in seconds. Overrides
                 the client-level default for this call only.
+            total_timeout (float | None): Deadline in seconds for the whole
+                batched operation (only meaningful with ``batch_size``). On
+                expiry no further batches are submitted; batches already in
+                flight are awaited and never cancelled; unsent batches are
+                reported in ``failed_items``. ``None`` (default) means no
+                deadline.
 
         Returns:
             :class:`UpsertResponse` with the count of vectors upserted.
@@ -295,14 +289,15 @@ class Index:
         def _operation(chunk: list[dict[str, Any]]) -> UpsertResponse:
             return self._upsert_dict_batch(items=chunk, namespace=namespace, timeout=timeout)
 
-        batch_result = batch_execute(
+        batch_result = bulk_execute_sync(
             items=items,
             operation=_operation,
             batch_size=batch_size,
             max_concurrency=max_concurrency,
             show_progress=show_progress,
             desc="Upserting",
-            executor=self._get_batch_executor(max_concurrency),
+            host=self._host,
+            total_timeout=total_timeout,
         )
 
         synth_headers: dict[str, str] = {}
@@ -1822,8 +1817,6 @@ class Index:
     def close(self) -> None:
         """Close the underlying HTTP client and release resources."""
         self._http.close()
-        if self._batch_executor is not None:
-            self._batch_executor.shutdown(wait=False)
         legacy_pool = getattr(self, "_legacy_async_pool", None)
         if legacy_pool is not None:
             legacy_pool.close()

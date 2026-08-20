@@ -67,7 +67,7 @@ def test_batch_upsert_250_calls_upsert_three_times(docs: PreviewDocuments) -> No
 def test_batch_upsert_show_progress_propagated(docs: PreviewDocuments) -> None:
     with (
         patch.object(docs, "upsert", return_value=_UPSERT_RESPONSE),
-        patch("pinecone._internal.batch._create_progress_bar") as mock_bar,
+        patch("pinecone._internal.bulk.engine._create_progress_bar") as mock_bar,
     ):
         bar = MagicMock()
         mock_bar.return_value = bar
@@ -252,7 +252,7 @@ async def test_async_batch_upsert_max_concurrency_zero_raises(
 
 
 def test_batch_upsert_max_workers_alias_accepted_sync(docs: PreviewDocuments) -> None:
-    with patch("pinecone.preview.documents.batch_execute") as mock_execute:
+    with patch("pinecone.preview.documents.bulk_execute_sync") as mock_execute:
         mock_execute.return_value = BatchResult(
             total_item_count=1,
             successful_item_count=1,

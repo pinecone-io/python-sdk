@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 import msgspec
 
 from pinecone._internal.adapters.vectors_adapter import extract_response_info
-from pinecone._internal.batch import batch_execute
+from pinecone._internal.bulk import bulk_execute_sync
 from pinecone._internal.validation import require_in_range, require_non_empty, require_positive
 from pinecone.errors.exceptions import PineconeValueError
 from pinecone.models.batch import (
@@ -98,20 +97,8 @@ class PreviewDocuments:
             connection_pool_maxsize=config.connection_pool_maxsize,
             retry_config=config.retry_config,
         )
+        self._host = host
         self._http = _HTTPClient(dp_config, INDEXES_API_VERSION)
-        self._batch_executor: ThreadPoolExecutor | None = None
-        self._batch_executor_workers: int = 0
-
-    def _get_batch_executor(self, max_concurrency: int) -> ThreadPoolExecutor:
-        if self._batch_executor is None or self._batch_executor_workers != max_concurrency:
-            if self._batch_executor is not None:
-                self._batch_executor.shutdown(wait=False)
-            self._batch_executor = ThreadPoolExecutor(
-                max_concurrency,
-                thread_name_prefix="pinecone-batch-upsert",
-            )
-            self._batch_executor_workers = max_concurrency
-        return self._batch_executor
 
     def close(self) -> None:
         """Close the underlying HTTP client. Idempotent.
@@ -125,10 +112,6 @@ class PreviewDocuments:
            relying on preview features.
         """
         self._http.close()
-        if self._batch_executor is not None:
-            self._batch_executor.shutdown(wait=False)
-            self._batch_executor = None
-            self._batch_executor_workers = 0
 
     def upsert(
         self,
@@ -285,14 +268,14 @@ class PreviewDocuments:
         require_positive("batch_size", batch_size)
         require_in_range("max_concurrency", effective_max_concurrency, 1, 64)
 
-        return batch_execute(
+        return bulk_execute_sync(
             items=documents,
             operation=lambda chunk: self.upsert(namespace=namespace, documents=chunk),
             batch_size=batch_size,
             max_concurrency=effective_max_concurrency,
             show_progress=show_progress,
             desc="Upserting",
-            executor=self._get_batch_executor(effective_max_concurrency),
+            host=self._host,
         )
 
     def search(
