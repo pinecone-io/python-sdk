@@ -38,8 +38,24 @@ import respx
 
 from pinecone._internal.config import PineconeConfig
 from pinecone._internal.constants import API_VERSION_HEADER
-from pinecone.async_client.assistants import AsyncAssistants
-from pinecone.client.assistants import Assistants
+from pinecone.async_client.assistants import (
+    _STREAM_TIMEOUT_FLOOR_SECONDS as _ASYNC_STREAM_FLOOR,
+)
+from pinecone.async_client.assistants import (
+    AsyncAssistants,
+)
+from pinecone.async_client.assistants import (
+    _stream_timeout as _async_stream_timeout,
+)
+from pinecone.client.assistants import (
+    _STREAM_TIMEOUT_FLOOR_SECONDS as _SYNC_STREAM_FLOOR,
+)
+from pinecone.client.assistants import (
+    Assistants,
+)
+from pinecone.client.assistants import (
+    _stream_timeout as _sync_stream_timeout,
+)
 from pinecone.models.assistant.streaming import (
     AsyncChatCompletionStream,
     AsyncChatStream,
@@ -357,6 +373,18 @@ async def test_streaming_request_snapshot_parity(
     assert async_snapshot == sync_snapshot
     assert async_snapshot["api_version"] == "2026-07"
     assert async_snapshot["body"]["stream"] is True
+
+    sync_timeout = route.calls[0].request.extensions["timeout"]
+    async_timeout = route.calls[1].request.extensions["timeout"]
+    assert async_timeout == sync_timeout
+    assert sync_timeout["read"] == _SYNC_STREAM_FLOOR
+
+
+def test_streaming_timeout_floor_parity() -> None:
+    """The floor is declared once per transport module; the two must not drift."""
+    assert _ASYNC_STREAM_FLOOR == _SYNC_STREAM_FLOOR
+    assert _sync_stream_timeout(30.0, None) == _async_stream_timeout(30.0, None)
+    assert _sync_stream_timeout(30.0, 7.5) == _async_stream_timeout(30.0, 7.5) == 7.5
 
 
 async def test_chat_stream_yields_the_same_chunks(

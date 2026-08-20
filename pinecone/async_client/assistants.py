@@ -60,6 +60,13 @@ _CREATE_POLL_INTERVAL_SECONDS = 0.5
 _DELETE_POLL_INTERVAL_SECONDS = 5
 _UPLOAD_POLL_INTERVAL_SECONDS = 5
 
+# A read timeout on an SSE stream measures the gap between tokens, and
+# POST /chat/{name}/chat/completions sends nothing during that gap: no keepalive,
+# unlike POST /chat/{name}, which heartbeats every 15s. A model that thinks for
+# longer than PineconeConfig.timeout (30s) is therefore indistinguishable from a
+# dead connection. Both endpoints get the raised floor so they fail alike.
+_STREAM_TIMEOUT_FLOOR_SECONDS = 300.0
+
 # Checked client-side because the backend answers an unparseable filter with a
 # 400 that does not enumerate what it would have accepted.
 _VALID_OPERATION_TYPES = ("upload_file", "upsert_file", "update_file_metadata", "delete_file")
@@ -98,6 +105,19 @@ def _validate_choice(name: str, value: str, valid: tuple[str, ...]) -> str:
     if value not in valid:
         raise PineconeValueError(f"{name} must be one of {valid!r}, got {value!r}")
     return value
+
+
+def _stream_timeout(config_timeout: float, override: float | None) -> float:
+    """Resolve the HTTP timeout for a streaming chat request.
+
+    An explicit per-call *override* is used verbatim, including values below the
+    floor. Otherwise *config_timeout* is raised to
+    :data:`_STREAM_TIMEOUT_FLOOR_SECONDS` — raised only, never lowered, so a
+    client configured with a longer timeout keeps it.
+    """
+    if override is not None:
+        return override
+    return max(config_timeout, _STREAM_TIMEOUT_FLOOR_SECONDS)
 
 
 def _operation_failure_message(action: str, file_id: str | None, operation: OperationModel) -> str:
@@ -1418,6 +1438,7 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
         json_response: bool = False,
         include_highlights: bool = False,
         context_options: ContextOptions | dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> ChatResponse | AsyncChatStream:
         """Chat with an assistant and receive citations in Pinecone-native format.
 
@@ -1449,6 +1470,10 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 from referenced documents in citations.
             context_options (ContextOptions | dict[str, Any] | None): Options
                 controlling context retrieval. Omitted from request when ``None``.
+            timeout (float | None): Per-call HTTP timeout in seconds, overriding
+                the client-level default. On a streaming request the timeout is
+                a gap-between-tokens budget rather than a budget for the whole
+                answer, and the default is raised to at least 300s (see below).
 
         Returns:
             :class:`ChatResponse` for non-streaming requests, or an
@@ -1458,6 +1483,16 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :exc:`PineconeValueError`: If both ``stream=True`` and
                 ``json_response=True`` are specified.
             :exc:`ApiError`: If the API returns an error response.
+
+        Note:
+            An SSE read timeout measures the gap between tokens. This endpoint
+            heartbeats every 15s while the model thinks, so gaps stay short —
+            but ``chat_completions`` gets no such keepalive. Both raise the
+            default streaming timeout to at least 300s so a slow model does not
+            look like a dead connection; pass ``timeout`` to widen or narrow it.
+            A stream that outlives its budget raises
+            :exc:`PineconeTimeoutError` part-way through iteration, after
+            earlier chunks have already been yielded.
 
         Examples:
 
@@ -1523,10 +1558,15 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
 
         if stream:
             return AsyncChatStream(
-                self._chat_streaming(data_http=data_http, url=f"/chat/{assistant_name}", body=body)
+                self._chat_streaming(
+                    data_http=data_http,
+                    url=f"/chat/{assistant_name}",
+                    body=body,
+                    timeout=timeout,
+                )
             )
 
-        response = await data_http.post(f"/chat/{assistant_name}", json=body)
+        response = await data_http.post(f"/chat/{assistant_name}", timeout=timeout, json=body)
         return self._adapter.to_chat_response(response.content)
 
     async def _chat_streaming(
@@ -1535,6 +1575,7 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
         data_http: AsyncHTTPClient,
         url: str,
         body: dict[str, Any],
+        timeout: float | None = None,
     ) -> AsyncIterator[ChatStreamChunk]:
         """Stream Pinecone-native chat chunks via SSE.
 
@@ -1545,6 +1586,8 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             data_http: AsyncHTTPClient targeting the assistant's data-plane host.
             url: Request URL path (e.g. ``/chat/{assistant_name}``).
             body: Pre-built request body (must include ``stream=True``).
+            timeout: Per-call HTTP timeout override. When ``None`` the client
+                timeout is raised to :data:`_STREAM_TIMEOUT_FLOOR_SECONDS`.
 
         Yields:
             :class:`StreamMessageStart`, :class:`StreamContentChunk`,
@@ -1553,6 +1596,8 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
 
         Raises:
             :exc:`ApiError`: If the server returns an HTTP error.
+            :exc:`PineconeTimeoutError`: If the gap between chunks exceeds the
+                resolved timeout, possibly after some chunks have been yielded.
         """
         from pinecone._internal.http_client import _encode_json
 
@@ -1561,6 +1606,7 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             url,
             content=_encode_json(body),
             headers={"Content-Type": "application/json"},
+            timeout=_stream_timeout(self._config.timeout, timeout),
         ) as response:
             async for line in response.aiter_lines():
                 if not line:
@@ -1570,6 +1616,9 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 line = line[5:].lstrip()
                 if not line:
                     continue
+                # Unreachable against the 2026-07 backend, which ends the stream
+                # by closing it. Kept because an intermediary that terminates the
+                # SSE conventionally would otherwise reach orjson.loads and raise.
                 if line == "[DONE]":
                     break
                 chunk_data: dict[str, Any] = orjson.loads(line)
@@ -1587,6 +1636,7 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
         stream: bool = False,
         temperature: float | None = None,
         filter: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> ChatCompletionResponse | AsyncChatCompletionStream:
         """Chat with an assistant using an OpenAI-compatible interface.
 
@@ -1620,6 +1670,10 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 more deterministic responses. Omitted from request when ``None``.
             filter (dict[str, Any] | None): Metadata filter restricting which
                 documents are used as context. Omitted from request when ``None``.
+            timeout (float | None): Per-call HTTP timeout in seconds, overriding
+                the client-level default. On a streaming request the timeout is
+                a gap-between-tokens budget rather than a budget for the whole
+                answer, and the default is raised to at least 300s (see below).
 
         Returns:
             :class:`ChatCompletionResponse` for non-streaming requests, or an
@@ -1627,6 +1681,17 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
 
         Raises:
             :exc:`ApiError`: If the API returns an error response.
+
+        Note:
+            An SSE read timeout measures the gap between tokens, and this
+            endpoint sends no keepalive while the model thinks — unlike
+            :meth:`chat`, which heartbeats every 15s. A reasoning model that
+            pauses for longer than the timeout is therefore indistinguishable
+            from a dead connection, so the default streaming timeout is raised
+            to at least 300s; pass ``timeout`` to widen it for models that pause
+            for longer still. A stream that outlives its budget raises
+            :exc:`PineconeTimeoutError` part-way through iteration, after
+            earlier chunks have already been yielded.
 
         Examples:
 
@@ -1681,10 +1746,13 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                     data_http=data_http,
                     url=f"/chat/{assistant_name}/chat/completions",
                     body=body,
+                    timeout=timeout,
                 )
             )
 
-        response = await data_http.post(f"/chat/{assistant_name}/chat/completions", json=body)
+        response = await data_http.post(
+            f"/chat/{assistant_name}/chat/completions", timeout=timeout, json=body
+        )
         return self._adapter.to_chat_completion_response(response.content)
 
     async def _chat_completions_streaming(
@@ -1693,6 +1761,7 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
         data_http: AsyncHTTPClient,
         url: str,
         body: dict[str, Any],
+        timeout: float | None = None,
     ) -> AsyncIterator[ChatCompletionStreamChunk]:
         """Stream OpenAI-compatible chat completion chunks via SSE.
 
@@ -1703,12 +1772,18 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             data_http: AsyncHTTPClient targeting the assistant's data-plane host.
             url: Request URL path (e.g. ``/chat/{assistant_name}/chat/completions``).
             body: Pre-built request body (must include ``stream=True``).
+            timeout: Per-call HTTP timeout override. When ``None`` the client
+                timeout is raised to :data:`_STREAM_TIMEOUT_FLOOR_SECONDS`.
 
         Yields:
             :class:`ChatCompletionStreamChunk` for each non-empty SSE line.
+            Lines that do not fit the struct are logged and skipped rather than
+            aborting the stream, matching :meth:`_chat_streaming`.
 
         Raises:
             :exc:`ApiError`: If the server returns an HTTP error.
+            :exc:`PineconeTimeoutError`: If the gap between chunks exceeds the
+                resolved timeout, possibly after some chunks have been yielded.
         """
         from pinecone._internal.http_client import _encode_json
 
@@ -1717,6 +1792,7 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             url,
             content=_encode_json(body),
             headers={"Content-Type": "application/json"},
+            timeout=_stream_timeout(self._config.timeout, timeout),
         ) as response:
             async for line in response.aiter_lines():
                 if not line:
@@ -1726,9 +1802,16 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 line = line[5:].lstrip()
                 if not line:
                     continue
+                # Unreachable against the 2026-07 backend, which ends the stream
+                # by closing it. Kept because an intermediary that terminates the
+                # SSE conventionally would otherwise reach orjson.loads and raise.
                 if line == "[DONE]":
                     break
-                yield msgspec.convert(orjson.loads(line), ChatCompletionStreamChunk)
+                chunk_data: dict[str, Any] = orjson.loads(line)
+                try:
+                    yield msgspec.convert(chunk_data, ChatCompletionStreamChunk)
+                except msgspec.ValidationError:
+                    logger.debug("Skipping unparseable completion chunk: %s", chunk_data)
 
     async def evaluate_alignment(
         self,

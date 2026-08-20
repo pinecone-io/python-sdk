@@ -7,7 +7,7 @@ import io
 import json
 import os
 import tempfile
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -20,6 +20,7 @@ from pinecone._internal.constants import ASSISTANT_API_VERSION, ASSISTANT_EVALUA
 from pinecone.async_client.assistants import (
     _CREATE_POLL_INTERVAL_SECONDS,
     _DELETE_POLL_INTERVAL_SECONDS,
+    _STREAM_TIMEOUT_FLOOR_SECONDS,
     _UPLOAD_POLL_INTERVAL_SECONDS,
     AsyncAssistants,
 )
@@ -38,6 +39,7 @@ from pinecone.models.assistant.list import (
     ListOperationsResponse,
 )
 from pinecone.models.assistant.model import AssistantModel
+from pinecone.models.assistant.streaming import ChatCompletionStreamChunk
 from pinecone.models.pagination import AsyncPaginator, Page
 from tests.factories import (
     make_alignment_response,
@@ -3449,6 +3451,280 @@ async def test_async_chat_completions_streaming_handles_done_sentinel(
     assert len(chunks) == 1
     assert isinstance(chunks[0], ChatCompletionStreamChunk)
     assert chunks[0].choices[0].delta.role == "assistant"
+
+
+# ---------------------------------------------------------------------------
+# chat/chat_completions — streaming read timeout and chunk tolerance (#259)
+# ---------------------------------------------------------------------------
+
+
+def _read_timeout(route: respx.Route) -> float | None:
+    """The read timeout (seconds) httpx recorded on the last request for *route*.
+
+    httpx stores the resolved timeout as a connect/read/write/pool dict in
+    ``request.extensions["timeout"]``. ``read`` is the one an SSE stream lives
+    in: it is the budget for the gap between chunks, not for the whole answer.
+    """
+    extensions: dict[str, float] | None = route.calls.last.request.extensions.get("timeout")
+    if extensions is None:
+        return None
+    return extensions.get("read")
+
+
+_CHAT_SSE = b'data: {"type": "message_start", "model": "gpt-4o", "role": "assistant"}\n'
+_COMPLETIONS_SSE = (
+    b'data: {"id": "cmpl1", "choices": [{"index": 0,'
+    b' "delta": {"content": "Hi"}, "finish_reason": null}]}\n'
+)
+_CHAT_JSON = {
+    "id": "chat-abc123",
+    "model": "gpt-4o",
+    "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+    "message": {"role": "assistant", "content": "Hello!"},
+    "finish_reason": "stop",
+    "citations": [],
+}
+_COMPLETIONS_JSON = {
+    "id": "chatcmpl-abc123",
+    "model": "gpt-4o",
+    "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+    "choices": [
+        {
+            "index": 0,
+            "message": {"role": "assistant", "content": "Hello!"},
+            "finish_reason": "stop",
+        }
+    ],
+}
+
+
+def _mock_describe() -> None:
+    respx.get(f"{BASE_URL}/assistant/assistants/test-assistant").mock(
+        return_value=httpx.Response(200, json=make_assistant_response()),
+    )
+
+
+@respx.mock
+async def test_async_chat_completions_streaming_raises_the_timeout_to_the_floor(
+    async_assistants: AsyncAssistants,
+) -> None:
+    """This endpoint sends no SSE keepalive, so 30s must not be the read budget."""
+    _mock_describe()
+    route = respx.post(f"{DATA_PLANE_URL}/chat/test-assistant/chat/completions").mock(
+        return_value=httpx.Response(200, content=_COMPLETIONS_SSE),
+    )
+
+    async_iter = await async_assistants.chat_completions(
+        assistant_name="test-assistant",
+        messages=[{"content": "Hello"}],
+        stream=True,
+    )
+    [chunk async for chunk in async_iter]  # type: ignore[union-attr]
+
+    assert _read_timeout(route) == _STREAM_TIMEOUT_FLOOR_SECONDS
+    assert async_assistants._config.timeout < _STREAM_TIMEOUT_FLOOR_SECONDS
+
+
+@respx.mock
+async def test_async_chat_streaming_raises_the_timeout_to_the_floor(
+    async_assistants: AsyncAssistants,
+) -> None:
+    """The heartbeating endpoint gets the same floor, so the two fail alike."""
+    _mock_describe()
+    route = respx.post(f"{DATA_PLANE_URL}/chat/test-assistant").mock(
+        return_value=httpx.Response(200, content=_CHAT_SSE),
+    )
+
+    async_iter = await async_assistants.chat(
+        assistant_name="test-assistant",
+        messages=[{"content": "Hello"}],
+        stream=True,
+    )
+    [chunk async for chunk in async_iter]  # type: ignore[union-attr]
+
+    assert _read_timeout(route) == _STREAM_TIMEOUT_FLOOR_SECONDS
+
+
+@respx.mock
+async def test_async_chat_completions_streaming_per_call_timeout_wins_over_the_floor(
+    async_assistants: AsyncAssistants,
+) -> None:
+    """An explicit timeout is used verbatim, including values below the floor."""
+    _mock_describe()
+    route = respx.post(f"{DATA_PLANE_URL}/chat/test-assistant/chat/completions").mock(
+        return_value=httpx.Response(200, content=_COMPLETIONS_SSE),
+    )
+
+    async_iter = await async_assistants.chat_completions(
+        assistant_name="test-assistant",
+        messages=[{"content": "Hello"}],
+        stream=True,
+        timeout=45.0,
+    )
+    [chunk async for chunk in async_iter]  # type: ignore[union-attr]
+
+    assert _read_timeout(route) == 45.0
+
+
+@respx.mock
+async def test_async_chat_streaming_per_call_timeout_wins_over_the_floor(
+    async_assistants: AsyncAssistants,
+) -> None:
+    _mock_describe()
+    route = respx.post(f"{DATA_PLANE_URL}/chat/test-assistant").mock(
+        return_value=httpx.Response(200, content=_CHAT_SSE),
+    )
+
+    async_iter = await async_assistants.chat(
+        assistant_name="test-assistant",
+        messages=[{"content": "Hello"}],
+        stream=True,
+        timeout=900.0,
+    )
+    [chunk async for chunk in async_iter]  # type: ignore[union-attr]
+
+    assert _read_timeout(route) == 900.0
+
+
+@respx.mock
+async def test_async_streaming_floor_never_lowers_a_longer_client_timeout() -> None:
+    """A client already configured above the floor keeps its own timeout."""
+    configured = _STREAM_TIMEOUT_FLOOR_SECONDS * 2
+    async_assistants = AsyncAssistants(
+        config=PineconeConfig(api_key="test-key", host=BASE_URL, timeout=configured)
+    )
+    _mock_describe()
+    route = respx.post(f"{DATA_PLANE_URL}/chat/test-assistant/chat/completions").mock(
+        return_value=httpx.Response(200, content=_COMPLETIONS_SSE),
+    )
+
+    async_iter = await async_assistants.chat_completions(
+        assistant_name="test-assistant",
+        messages=[{"content": "Hello"}],
+        stream=True,
+    )
+    [chunk async for chunk in async_iter]  # type: ignore[union-attr]
+
+    assert _read_timeout(route) == configured
+
+
+@respx.mock
+async def test_async_chat_completions_non_streaming_honours_per_call_timeout(
+    async_assistants: AsyncAssistants,
+) -> None:
+    """The non-streaming lane takes the override too, with no floor applied."""
+    _mock_describe()
+    route = respx.post(f"{DATA_PLANE_URL}/chat/test-assistant/chat/completions").mock(
+        return_value=httpx.Response(200, json=_COMPLETIONS_JSON),
+    )
+
+    await async_assistants.chat_completions(
+        assistant_name="test-assistant",
+        messages=[{"content": "Hello"}],
+        timeout=12.0,
+    )
+
+    assert _read_timeout(route) == 12.0
+
+
+@respx.mock
+async def test_async_chat_non_streaming_honours_per_call_timeout(
+    async_assistants: AsyncAssistants,
+) -> None:
+    _mock_describe()
+    route = respx.post(f"{DATA_PLANE_URL}/chat/test-assistant").mock(
+        return_value=httpx.Response(200, json=_CHAT_JSON),
+    )
+
+    await async_assistants.chat(
+        assistant_name="test-assistant",
+        messages=[{"content": "Hello"}],
+        timeout=12.0,
+    )
+
+    assert _read_timeout(route) == 12.0
+
+
+@respx.mock
+async def test_async_chat_non_streaming_defaults_to_the_client_timeout(
+    async_assistants: AsyncAssistants,
+) -> None:
+    """Without streaming and without an override the client default is untouched."""
+    _mock_describe()
+    route = respx.post(f"{DATA_PLANE_URL}/chat/test-assistant").mock(
+        return_value=httpx.Response(200, json=_CHAT_JSON),
+    )
+
+    await async_assistants.chat(assistant_name="test-assistant", messages=[{"content": "Hello"}])
+
+    assert _read_timeout(route) == async_assistants._config.timeout
+
+
+@respx.mock
+async def test_async_chat_completions_streaming_skips_a_frame_that_fails_validation(
+    async_assistants: AsyncAssistants,
+) -> None:
+    """A frame that is valid JSON but not a chunk is skipped, not fatal (#259)."""
+    _mock_describe()
+    sse_body = (
+        b'data: {"id": "cmpl1", "choices": [{"index": 0,'
+        b' "delta": {"content": "Hello"}, "finish_reason": null}]}\n'
+        b'data: {"error": {"message": "upstream hiccup", "code": "internal"}}\n'
+        b'data: {"id": "cmpl2", "choices": [{"index": 0,'
+        b' "delta": {}, "finish_reason": "stop"}]}\n'
+    )
+    respx.post(f"{DATA_PLANE_URL}/chat/test-assistant/chat/completions").mock(
+        return_value=httpx.Response(200, content=sse_body),
+    )
+
+    async_iter = await async_assistants.chat_completions(
+        assistant_name="test-assistant",
+        messages=[{"content": "Hello"}],
+        stream=True,
+    )
+    chunks = [chunk async for chunk in async_iter]  # type: ignore[union-attr]
+
+    assert [c.id for c in chunks] == ["cmpl1", "cmpl2"]
+    assert all(isinstance(c, ChatCompletionStreamChunk) for c in chunks)
+
+
+class _AsyncStalledSSEStream(httpx.AsyncByteStream):
+    """One frame, then the read timeout a backend without a keepalive produces."""
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield _COMPLETIONS_SSE
+        raise httpx.ReadTimeout("no chunk arrived before the deadline")
+
+
+async def _drain_into(
+    stream: AsyncIterator[ChatCompletionStreamChunk],
+    into: list[ChatCompletionStreamChunk],
+) -> None:
+    async for chunk in stream:
+        into.append(chunk)
+
+
+@respx.mock
+async def test_async_chat_completions_streaming_timeout_surfaces_after_earlier_chunks(
+    async_assistants: AsyncAssistants,
+) -> None:
+    """A stalled stream raises PineconeTimeoutError, keeping what it already yielded."""
+    _mock_describe()
+    respx.post(f"{DATA_PLANE_URL}/chat/test-assistant/chat/completions").mock(
+        return_value=httpx.Response(200, stream=_AsyncStalledSSEStream()),
+    )
+
+    async_iter = await async_assistants.chat_completions(
+        assistant_name="test-assistant",
+        messages=[{"content": "Hello"}],
+        stream=True,
+    )
+
+    seen: list[ChatCompletionStreamChunk] = []
+    with pytest.raises(PineconeTimeoutError):
+        await _drain_into(async_iter, seen)  # type: ignore[arg-type]
+
+    assert [c.id for c in seen] == ["cmpl1"]
 
 
 # ---------------------------------------------------------------------------
