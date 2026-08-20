@@ -523,6 +523,14 @@ Assistant Models
    :members:
    :show-inheritance:
 
+.. autoclass:: pinecone.models.assistant.operation.OperationModel
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.list.ListOperationsResponse
+   :members:
+   :show-inheritance:
+
 .. autoclass:: pinecone.models.assistant.message.Message
    :members:
    :show-inheritance:

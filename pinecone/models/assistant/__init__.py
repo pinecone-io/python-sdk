@@ -32,9 +32,14 @@ from pinecone.models.assistant.evaluation import (
     EntailmentResult,
 )
 from pinecone.models.assistant.file_model import AssistantFileModel
-from pinecone.models.assistant.list import ListAssistantsResponse, ListFilesResponse
+from pinecone.models.assistant.list import (
+    ListAssistantsResponse,
+    ListFilesResponse,
+    ListOperationsResponse,
+)
 from pinecone.models.assistant.message import Message
 from pinecone.models.assistant.model import AssistantModel
+from pinecone.models.assistant.operation import OperationModel
 from pinecone.models.assistant.options import ContextOptions
 from pinecone.models.assistant.streaming import (
     AsyncChatCompletionStream,
@@ -177,11 +182,13 @@ __all__ = [
     "JsonReference",  # deprecated alias for FileReference
     "ListAssistantsResponse",
     "ListFilesResponse",
+    "ListOperationsResponse",
     "MarkdownReference",  # deprecated alias for FileReference
     "Message",
     "MessageDelta",  # deprecated alias for StreamContentDelta
     "Metrics",  # deprecated alias for AlignmentScores
     "MultimodalSnippet",
+    "OperationModel",
     "PageReference",
     "PdfReference",  # deprecated alias for FileReference
     "Reference",  # deprecated alias for ChatReference
