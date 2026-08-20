@@ -70,6 +70,18 @@ class GrpcChannelProtocol(Protocol):
         """Fetch vectors by ID."""
         ...
 
+    def fetch_by_metadata(
+        self,
+        *,
+        namespace: str | None = None,
+        filter: Mapping[str, Any] | None = None,
+        limit: int | None = None,
+        pagination_token: str | None = None,
+        timeout_s: float | None = None,
+    ) -> dict[str, Any]:
+        """Fetch vectors by metadata filter."""
+        ...
+
     def delete(
         self,
         *,

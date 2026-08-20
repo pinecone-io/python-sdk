@@ -373,8 +373,27 @@ fn prost_value_to_py(py: Python<'_>, value: &prost_types::Value) -> PyResult<Py<
     }
 }
 
+/// How Python `None` values inside dicts are converted to prost.
+///
+/// Mirrors the REST backend's `json_to_prost` (`pinecone-db`
+/// `pc-utils/src/prost_util.rs` @ f6fd0a40): the JSON path strips null-valued
+/// object entries from **write metadata** before validation ever sees them,
+/// but preserves them in **filters** so downstream validation rejects them.
+/// Building the `Struct` here without the same split made the same upsert
+/// succeed over REST and fail over gRPC (#203).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NullHandling {
+    /// Drop dict entries whose value is `None` (write metadata).
+    Strip,
+    /// Keep `None` as a `NullValue` so the server can reject it (filters).
+    Preserve,
+}
+
 /// Convert a Python object to a `prost_types::Value`.
-fn py_to_prost_value(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<prost_types::Value> {
+fn py_to_prost_value(
+    obj: &Bound<'_, pyo3::PyAny>,
+    nulls: NullHandling,
+) -> PyResult<prost_types::Value> {
     use prost_types::value::Kind;
 
     if obj.is_none() {
@@ -399,13 +418,16 @@ fn py_to_prost_value(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<prost_types::Valu
     }
     if let Ok(dict) = obj.cast::<PyDict>() {
         return Ok(prost_types::Value {
-            kind: Some(Kind::StructValue(py_dict_to_struct(dict)?)),
+            kind: Some(Kind::StructValue(py_dict_to_struct(dict, nulls)?)),
         });
     }
     if let Ok(list) = obj.cast::<pyo3::types::PyList>() {
+        // `None` inside a list is deliberately NOT stripped, matching
+        // `json_to_prost`, which only drops null-valued *object entries*; a
+        // null list element survives to be rejected by server-side validation.
         let values: Vec<prost_types::Value> = list
             .iter()
-            .map(|item| py_to_prost_value(&item))
+            .map(|item| py_to_prost_value(&item, nulls))
             .collect::<PyResult<_>>()?;
         return Ok(prost_types::Value {
             kind: Some(Kind::ListValue(prost_types::ListValue { values })),
@@ -422,11 +444,19 @@ fn py_to_prost_value(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<prost_types::Valu
 }
 
 /// Convert a Python dict to a `prost_types::Struct`.
-fn py_dict_to_struct(dict: &Bound<'_, PyDict>) -> PyResult<prost_types::Struct> {
+fn py_dict_to_struct(
+    dict: &Bound<'_, PyDict>,
+    nulls: NullHandling,
+) -> PyResult<prost_types::Struct> {
+    use prost_types::value::Kind;
     let mut fields = std::collections::BTreeMap::new();
     for (key, value) in dict.iter() {
         let key_str: String = key.extract()?;
-        fields.insert(key_str, py_to_prost_value(&value)?);
+        let converted = py_to_prost_value(&value, nulls)?;
+        if nulls == NullHandling::Strip && matches!(converted.kind, Some(Kind::NullValue(_))) {
+            continue;
+        }
+        fields.insert(key_str, converted);
     }
     Ok(prost_types::Struct { fields })
 }
@@ -712,7 +742,10 @@ impl GrpcChannel {
                 None => None,
             };
             let metadata = match v.get_item("metadata")? {
-                Some(md) => Some(py_dict_to_struct(&md.cast_into::<PyDict>()?)?),
+                Some(md) => Some(py_dict_to_struct(
+                    &md.cast_into::<PyDict>()?,
+                    NullHandling::Strip,
+                )?),
                 None => None,
             };
             proto_vectors.push(proto::Vector {
@@ -799,7 +832,9 @@ impl GrpcChannel {
         let request = proto::QueryRequest {
             namespace: namespace.unwrap_or("").to_string(),
             top_k,
-            filter: filter.map(|f| py_dict_to_struct(&f)).transpose()?,
+            filter: filter
+                .map(|f| py_dict_to_struct(&f, NullHandling::Preserve))
+                .transpose()?,
             include_values,
             include_metadata,
             queries: vec![],
@@ -936,7 +971,9 @@ impl GrpcChannel {
             ids: ids.unwrap_or_default(),
             delete_all,
             namespace: namespace.unwrap_or("").to_string(),
-            filter: filter.map(|f| py_dict_to_struct(&f)).transpose()?,
+            filter: filter
+                .map(|f| py_dict_to_struct(&f, NullHandling::Preserve))
+                .transpose()?,
         };
 
         let timeout = timeout_s
@@ -997,9 +1034,13 @@ impl GrpcChannel {
             sparse_values: sparse_values
                 .map(|sv| py_dict_to_sparse_values(&sv))
                 .transpose()?,
-            set_metadata: set_metadata.map(|md| py_dict_to_struct(&md)).transpose()?,
+            set_metadata: set_metadata
+                .map(|md| py_dict_to_struct(&md, NullHandling::Strip))
+                .transpose()?,
             namespace: namespace.unwrap_or("").to_string(),
-            filter: filter.map(|f| py_dict_to_struct(&f)).transpose()?,
+            filter: filter
+                .map(|f| py_dict_to_struct(&f, NullHandling::Preserve))
+                .transpose()?,
             dry_run,
         };
 
@@ -1129,7 +1170,9 @@ impl GrpcChannel {
         timeout_s: Option<f64>,
     ) -> PyResult<Py<PyDict>> {
         let request = proto::DescribeIndexStatsRequest {
-            filter: filter.map(|f| py_dict_to_struct(&f)).transpose()?,
+            filter: filter
+                .map(|f| py_dict_to_struct(&f, NullHandling::Preserve))
+                .transpose()?,
         };
 
         let timeout = timeout_s
@@ -1416,7 +1459,9 @@ impl GrpcChannel {
     ) -> PyResult<Py<PyDict>> {
         let request = proto::FetchByMetadataRequest {
             namespace: namespace.unwrap_or("").to_string(),
-            filter: filter.map(|f| py_dict_to_struct(&f)).transpose()?,
+            filter: filter
+                .map(|f| py_dict_to_struct(&f, NullHandling::Preserve))
+                .transpose()?,
             limit,
             pagination_token: pagination_token.map(|s| s.to_string()),
         };
@@ -1574,6 +1619,91 @@ mod tests {
                 .collect();
             keys.sort();
             assert_eq!(keys, ["name", "record_count", "size_bytes"]);
+        });
+    }
+
+    // Null-metadata convergence with the REST path (#203): write metadata
+    // strips None-valued keys exactly the way pinecone-db's json_to_prost
+    // does for JSON writes, while filters keep the NullValue so the server
+    // rejects it on both transports alike.
+
+    fn py_metadata_struct(
+        pairs: &[(&str, Option<&str>)],
+        nulls: NullHandling,
+    ) -> prost_types::Struct {
+        Python::initialize();
+        Python::attach(|py| {
+            let dict = PyDict::new(py);
+            for (key, value) in pairs {
+                match value {
+                    Some(v) => dict.set_item(key, v).unwrap(),
+                    None => dict.set_item(key, py.None()).unwrap(),
+                }
+            }
+            py_dict_to_struct(&dict, nulls).expect("conversion succeeds")
+        })
+    }
+
+    #[test]
+    fn strip_drops_none_valued_keys_from_write_metadata() {
+        let s = py_metadata_struct(
+            &[("tag", None), ("genre", Some("comedy"))],
+            NullHandling::Strip,
+        );
+        assert!(!s.fields.contains_key("tag"), "None value must be stripped");
+        assert_eq!(s.fields.len(), 1);
+        assert!(s.fields.contains_key("genre"));
+    }
+
+    #[test]
+    fn preserve_keeps_none_as_null_value_for_filters() {
+        use prost_types::value::Kind;
+        let s = py_metadata_struct(&[("tag", None)], NullHandling::Preserve);
+        assert!(
+            matches!(s.fields["tag"].kind, Some(Kind::NullValue(_))),
+            "filters must carry the null through for server-side rejection"
+        );
+    }
+
+    #[test]
+    fn strip_recurses_into_nested_dicts() {
+        use prost_types::value::Kind;
+        Python::initialize();
+        Python::attach(|py| {
+            let inner = PyDict::new(py);
+            inner.set_item("gone", py.None()).unwrap();
+            inner.set_item("kept", 1).unwrap();
+            let outer = PyDict::new(py);
+            outer.set_item("nested", inner).unwrap();
+
+            let s = py_dict_to_struct(&outer, NullHandling::Strip).unwrap();
+            let Some(Kind::StructValue(ref nested)) = s.fields["nested"].kind else {
+                panic!("nested dict should convert to a StructValue");
+            };
+            assert!(!nested.fields.contains_key("gone"));
+            assert!(nested.fields.contains_key("kept"));
+        });
+    }
+
+    #[test]
+    fn strip_preserves_none_inside_lists() {
+        use prost_types::value::Kind;
+        Python::initialize();
+        Python::attach(|py| {
+            let items: Vec<Py<PyAny>> = vec![
+                "a".into_pyobject(py).unwrap().into_any().unbind(),
+                py.None(),
+            ];
+            let list = pyo3::types::PyList::new(py, items).unwrap();
+            let dict = PyDict::new(py);
+            dict.set_item("tags", list).unwrap();
+
+            let s = py_dict_to_struct(&dict, NullHandling::Strip).unwrap();
+            let Some(Kind::ListValue(ref lv)) = s.fields["tags"].kind else {
+                panic!("list should convert to a ListValue");
+            };
+            assert_eq!(lv.values.len(), 2, "null list elements must survive");
+            assert!(matches!(lv.values[1].kind, Some(Kind::NullValue(_))));
         });
     }
 

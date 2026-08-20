@@ -10,6 +10,7 @@ import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import quote
 
 if TYPE_CHECKING:
     import pandas as pd  # type: ignore[import-untyped]
@@ -25,13 +26,24 @@ from pinecone._internal.data_plane_helpers import _build_search_records_body, _v
 from pinecone._internal.dataframe import _resolve_on_error, extract_records
 from pinecone._internal.keyword_only import keyword_only_methods
 from pinecone._internal.validation import (
+    DELETE_EMPTY_FILTER_MESSAGE,
+    FETCH_BY_METADATA_EMPTY_FILTER_MESSAGE,
+    UPDATE_EMPTY_FILTER_MESSAGE,
     require_creatable_namespace_name,
+    require_delete_selectors,
     require_in_range,
-    require_positive,
+    require_non_empty_filter,
+    require_query_selectors,
+    require_update_selectors,
+    require_valid_fetch_by_metadata_limit,
+    require_valid_id_prefix,
+    require_valid_list_limit,
     require_valid_namespace_limit,
     require_valid_namespace_name,
     require_valid_namespace_prefix,
     require_valid_namespace_schema,
+    require_valid_vector_id,
+    require_valid_vector_ids,
 )
 from pinecone._internal.vector_factory import VectorFactory, validate_vector_dict
 from pinecone.errors.exceptions import (
@@ -573,8 +585,10 @@ class GrpcIndex:
             :class:`QueryResponse` with matches, namespace, and usage info.
 
         Raises:
-            :exc:`ValidationError`: If top_k is not between 1 and 10000, both vector
-                and id are provided, or none of vector, id, or sparse_vector are provided.
+            :exc:`ValidationError`: If top_k is not between 1 and 10000, ``id``
+                is combined with ``vector`` or ``sparse_vector``, none of
+                ``vector``, ``id``, or ``sparse_vector`` is provided, or ``id``
+                is not a legal vector ID.
             :exc:`PineconeTimeoutError`: If the call exceeds *timeout* or the server
                 returns CANCELLED with a timeout cause.
 
@@ -590,14 +604,9 @@ class GrpcIndex:
                     print(match.id, match.score)
         """
         require_in_range("top_k", top_k, 1, 10_000)
-
-        has_vector = vector is not None
-        has_id = id is not None
-        has_sparse = sparse_vector is not None
-        if has_vector and has_id:
-            raise ValidationError("Exactly one of vector or id must be provided, not both")
-        if not has_vector and not has_id and not has_sparse:
-            raise ValidationError("At least one of vector, id, or sparse_vector must be provided")
+        require_query_selectors(vector=vector, id=id, sparse_vector=sparse_vector)
+        if id is not None:
+            require_valid_vector_id("id", id)
 
         # Convert SparseValues model to dict for GrpcChannel
         sv_dict: Mapping[str, Any] | None = None
@@ -763,7 +772,8 @@ class GrpcIndex:
             and usage info.
 
         Raises:
-            :exc:`ValidationError`: If ids is empty.
+            :exc:`ValidationError`: If ids is empty or any ID is not 1-512
+                ASCII characters without a NUL.
             :exc:`PineconeTimeoutError`: If the call exceeds *timeout* or the server
                 returns CANCELLED with a timeout cause.
 
@@ -775,8 +785,7 @@ class GrpcIndex:
                 for vid, vec in response.vectors.items():
                     print(vid, vec.values)
         """
-        if not ids:
-            raise ValidationError("ids must be a non-empty list")
+        require_valid_vector_ids("ids", ids)
 
         logger.info("Fetching %d vectors via gRPC", len(ids))
         result = self._channel.fetch(ids, namespace=namespace or None, timeout_s=timeout)
@@ -803,14 +812,14 @@ class GrpcIndex:
     ) -> FetchByMetadataResponse:
         """Fetch vectors matching a metadata filter expression.
 
-        Delegates to the REST endpoint because the Pinecone gRPC API does not
-        expose a fetch-by-metadata operation.
+        Issued over gRPC as the ``FetchByMetadata`` rpc, which the 2026-07
+        proto defines alongside the other vector operations.
 
         Args:
-            filter: Metadata filter expression (required).
+            filter: Metadata filter expression (required, at least one condition).
             namespace: Namespace to fetch from. Defaults to the default namespace.
-            limit: Maximum number of vectors to return per page. When ``None``,
-                the server default (100) is used.
+            limit: Maximum number of vectors to return per page, 1-10000. When
+                ``None``, the server default (100) is used.
             pagination_token: Token from a previous response to fetch the next page.
             timeout (float | None): Per-call timeout in seconds.
 
@@ -819,23 +828,42 @@ class GrpcIndex:
             and pagination token for the next page (if any).
 
         Raises:
+            :exc:`ValidationError`: If ``filter`` is empty or ``limit`` falls
+                outside 1-10000.
             :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeTimeoutError`: If the call exceeds *timeout* or the server
+                returns CANCELLED with a timeout cause.
         """
         if limit is not None:
-            require_positive("limit", limit)
-        body: dict[str, Any] = {"filter": filter}
-        if namespace:
-            body["namespace"] = namespace
-        if limit is not None:
-            body["limit"] = limit
-        if pagination_token is not None:
-            body["paginationToken"] = pagination_token
+            require_valid_fetch_by_metadata_limit("limit", limit)
+        require_non_empty_filter(
+            "filter", filter, server_message=FETCH_BY_METADATA_EMPTY_FILTER_MESSAGE
+        )
 
-        logger.info("Fetching vectors by metadata (via REST)")
-        response = self._http.post("/vectors/fetch_by_metadata", timeout=timeout, json=body)
-        result = self._adapter.to_fetch_by_metadata_response(response.content)
-        result.response_info = extract_response_info(response)
-        return result
+        logger.info("Fetching vectors by metadata via gRPC")
+        result = self._channel.fetch_by_metadata(
+            namespace=namespace or None,
+            filter=filter,
+            limit=limit,
+            pagination_token=pagination_token,
+            timeout_s=timeout,
+        )
+
+        vectors: dict[str, Vector] = {}
+        for vid, vdata in result.get("vectors", {}).items():
+            vectors[vid] = _dict_to_vector(vid, vdata)
+
+        pagination_data = result.get("pagination")
+        pagination = None
+        if pagination_data is not None:
+            pagination = Pagination(next=pagination_data.get("next"))
+
+        return FetchByMetadataResponse(
+            vectors=vectors,
+            namespace=result.get("namespace", ""),
+            usage=_dict_to_usage(result.get("usage")),
+            pagination=pagination,
+        )
 
     def delete(
         self,
@@ -861,7 +889,8 @@ class GrpcIndex:
             None
 
         Raises:
-            :exc:`ValidationError`: If zero or more than one deletion mode is specified.
+            :exc:`ValidationError`: If zero or more than one deletion mode is
+                specified, any ID is not a legal vector ID, or ``filter`` is empty.
             :exc:`PineconeTimeoutError`: If the call exceeds *timeout* or the server
                 returns CANCELLED with a timeout cause.
 
@@ -878,13 +907,11 @@ class GrpcIndex:
                 # Delete by metadata filter
                 idx.delete(filter={"category": {"$eq": "obsolete"}})
         """
-        mode_count = sum([ids is not None, delete_all, filter is not None])
-        if mode_count == 0:
-            raise ValidationError("Must specify one of ids, delete_all, or filter")
-        if mode_count > 1:
-            raise ValidationError(
-                "Cannot combine ids, delete_all, and filter — specify exactly one"
-            )
+        require_delete_selectors(ids=ids, delete_all=delete_all, filter=filter)
+        if ids is not None:
+            require_valid_vector_ids("ids", ids)
+        if filter is not None:
+            require_non_empty_filter("filter", filter, server_message=DELETE_EMPTY_FILTER_MESSAGE)
 
         logger.info("Deleting vectors via gRPC from namespace %r", namespace)
         self._channel.delete(
@@ -924,7 +951,10 @@ class GrpcIndex:
             :class:`UpdateResponse` with matched_records count (when available).
 
         Raises:
-            :exc:`ValidationError`: If both or neither of id and filter are provided.
+            :exc:`ValidationError`: If both or neither of id and filter are
+                provided, if ``filter`` is combined with ``values`` or
+                ``sparse_values``, if ``filter`` is empty, or if ``id`` is not
+                a legal vector ID.
             :exc:`PineconeTimeoutError`: If the call exceeds *timeout* or the server
                 returns CANCELLED with a timeout cause.
 
@@ -941,12 +971,11 @@ class GrpcIndex:
                     set_metadata={"year": 2020},
                 )
         """
-        has_id = id is not None
-        has_filter = filter is not None
-        if has_id and has_filter:
-            raise ValidationError("Exactly one of id or filter must be provided, not both")
-        if not has_id and not has_filter:
-            raise ValidationError("Exactly one of id or filter must be provided, got neither")
+        require_update_selectors(id=id, filter=filter, values=values, sparse_values=sparse_values)
+        if id is not None:
+            require_valid_vector_id("id", id)
+        if filter is not None:
+            require_non_empty_filter("filter", filter, server_message=UPDATE_EMPTY_FILTER_MESSAGE)
 
         # Convert SparseValues model to dict for GrpcChannel
         sv_dict: Mapping[str, Any] | None = None
@@ -989,7 +1018,7 @@ class GrpcIndex:
 
         Args:
             prefix (str | None): Return only IDs starting with this prefix.
-            limit (int | None): Maximum number of IDs to return in this page.
+            limit (int | None): Maximum number of IDs to return in this page, 1-100.
             pagination_token (str | None): Token from a previous response to fetch the next page.
             namespace (str): Namespace to list from. Defaults to the default namespace.
             timeout (float | None): Per-call timeout in seconds. None uses the client-level default.
@@ -998,6 +1027,8 @@ class GrpcIndex:
             :class:`ListResponse` with vector IDs, pagination info, namespace, and usage.
 
         Raises:
+            :exc:`ValidationError`: If ``prefix`` is not legal or ``limit``
+                falls outside 1-100.
             :exc:`PineconeTimeoutError`: If the call exceeds *timeout* or the server
                 returns CANCELLED with a timeout cause.
 
@@ -1009,6 +1040,11 @@ class GrpcIndex:
                 for item in response.vectors:
                     print(item.id)
         """
+        if prefix is not None:
+            require_valid_id_prefix("prefix", prefix)
+        if limit is not None:
+            require_valid_list_limit("limit", limit)
+
         logger.info("Listing vectors via gRPC in namespace %r", namespace)
         result = self._channel.list(
             prefix=prefix,
@@ -1643,7 +1679,7 @@ class GrpcIndex:
             "Upserting %d records into namespace %r (NDJSON via REST)", len(records), namespace
         )
         response = self._http.post(
-            f"/records/namespaces/{namespace}/upsert",
+            f"/records/namespaces/{quote(namespace, safe='')}/upsert",
             timeout=timeout,
             content=ndjson_body.encode("utf-8"),
             headers={"Content-Type": "application/x-ndjson"},
@@ -1767,7 +1803,7 @@ class GrpcIndex:
             body["query"]["top_k"],
         )
         response = self._http.post(
-            f"/records/namespaces/{namespace}/search", timeout=timeout, json=body
+            f"/records/namespaces/{quote(namespace, safe='')}/search", timeout=timeout, json=body
         )
         result = self._adapter.to_search_response(response.content)
         result.response_info = extract_response_info(response)

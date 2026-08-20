@@ -92,6 +92,14 @@ does not raise here, because doing so would break code that works today. If you
 meant to store an absent value, omit the key; if you meant to remove a stored
 field, use the update operation's field-removal spelling.
 
+This now holds on **both transports**. The gRPC transport used to encode a
+`None` metadata value as a protobuf `NullValue` and the server refused it with
+a 400 — the same upsert succeeded over REST and failed over gRPC. As of this
+release the gRPC transport strips `None`-valued metadata keys before encoding,
+exactly as the server's own JSON path does, so the two transports agree: the
+key is silently dropped. `None` inside a *filter* is still sent through on
+both transports and rejected by the server.
+
 An empty list (`[]`) and an empty string (`""`) are also accepted, matching the
 server.
 

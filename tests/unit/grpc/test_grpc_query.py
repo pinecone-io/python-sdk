@@ -148,3 +148,42 @@ def test_query_no_filter_forwards_none() -> None:
 
     call_kwargs = mock_channel.query.call_args[1]
     assert call_kwargs["filter"] is None, "filter should be None when not specified"
+
+
+def test_grpc_query_id_and_vector_rejected_with_the_rest_wording() -> None:
+    idx, mock_channel = _make_grpc_index()
+    with pytest.raises(ValidationError, match="id is mutually exclusive with vector"):
+        idx.query(top_k=1, id="vec-1", vector=[0.1, 0.2])
+    mock_channel.query.assert_not_called()
+
+
+def test_grpc_query_id_and_sparse_vector_rejected() -> None:
+    idx, mock_channel = _make_grpc_index()
+    with pytest.raises(ValidationError, match="id is mutually exclusive with sparse_vector"):
+        idx.query(top_k=1, id="vec-1", sparse_vector={"indices": [1], "values": [0.5]})
+    mock_channel.query.assert_not_called()
+
+
+def test_grpc_query_hybrid_vector_and_sparse_accepted() -> None:
+    """The two literal forms combine into a hybrid query, exactly as on REST."""
+    idx, mock_channel = _make_grpc_index()
+    mock_channel.query.return_value = {"matches": [], "namespace": ""}
+
+    idx.query(top_k=1, vector=[0.1, 0.2], sparse_vector={"indices": [1], "values": [0.5]})
+
+    mock_channel.query.assert_called_once()
+
+
+def test_grpc_query_id_charset_validated_like_rest() -> None:
+    """A query-by-id is held to the same 1-512 ASCII no-NUL rule as fetch ids."""
+    idx, mock_channel = _make_grpc_index()
+    with pytest.raises(ValidationError, match="id must contain only ASCII characters"):
+        idx.query(top_k=1, id="naïve")
+    mock_channel.query.assert_not_called()
+
+
+def test_grpc_query_overlong_id_rejected() -> None:
+    idx, mock_channel = _make_grpc_index()
+    with pytest.raises(ValidationError, match="id exceeds the maximum length of 512"):
+        idx.query(top_k=1, id="a" * 513)
+    mock_channel.query.assert_not_called()
