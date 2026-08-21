@@ -183,6 +183,8 @@ def test_build_json_serializable_and_round_trips_field_names(
         if method == "add_dense_vector_field":
             assert field["dimension"] == kwargs["dimension"]
             assert field["metric"] == kwargs["metric"]
+        if method == "add_sparse_vector_field":
+            assert set(field) <= {"type", "description"}
 
 
 @given(

@@ -79,6 +79,11 @@ _DESCRIPTION_MAX_BYTES = 256
 _DIMENSION_MIN = 1
 _DIMENSION_MAX = 20000
 
+_SPARSE_VECTOR_UNSUPPORTED_OPTIONS: dict[str, str] = {
+    "metric": "a sparse vector field has no metric — sparse scoring is not configurable",
+    "dimension": "a sparse vector field has no dimension — sparse vectors are variable-length",
+}
+
 _RESPONSE_ONLY_FIELD_TYPES: dict[str, str] = {
     "integer": (
         "'integer' appears only in describe/list responses, for indexes created "
@@ -153,6 +158,26 @@ def _validate_field_type(name: str, field: dict[str, Any]) -> None:
         f"Field '{name}' has type '{field_type}', which is response-only and is "
         f"not accepted when creating an index: {remediation}."
     )
+
+
+def _validate_sparse_vector_options(name: str, options: dict[str, Any]) -> None:
+    """Refuse the keys a sparse vector field does not have.
+
+    ``metric`` and ``dimension`` reach ``add_sparse_vector_field`` through
+    ``**additional_options``, which exists to let genuinely new API keys
+    through untouched. These two are not new: they are what 9.x's
+    ``vector_type="sparse"`` implied, a create schema has nowhere to put
+    either, and neither is echoed back by describe. Passing one through would
+    read as configuration that took effect, so it is refused here instead.
+    """
+    from pinecone.errors.exceptions import PineconeValueError
+
+    for key, reason in _SPARSE_VECTOR_UNSUPPORTED_OPTIONS.items():
+        if key in options:
+            raise PineconeValueError(
+                f"Field '{name}' cannot declare '{key}': {reason}. Remove the "
+                "argument — a sparse vector field accepts only a description."
+            )
 
 
 def _normalize_fts_language(language: str) -> str:
@@ -279,10 +304,14 @@ class SchemaBuilder:
     ) -> SchemaBuilder:
         """Add a sparse vector field for keyword-weighted or learned-sparse search.
 
-        The wire type is ``"sparse_vector"``. The metric is fixed at
-        ``"dotproduct"`` server-side and is not user-configurable. A schema
-        may contain at most one sparse vector field; the server rejects
-        schemas with more than one.
+        The wire type is ``"sparse_vector"``, and ``description`` is the only
+        other key a create schema accepts on it. A sparse vector field has no
+        ``metric`` — sparse scoring is not configurable — and no ``dimension``,
+        because sparse vectors are variable-length. Passing either raises
+        instead of putting a key on the wire that configures nothing.
+
+        A schema may contain at most one sparse vector field; the server
+        rejects schemas with more than one.
 
         Args:
             name: Field name. Replaces any existing field with the same name.
@@ -292,13 +321,25 @@ class SchemaBuilder:
 
         Returns:
             ``self`` for method chaining.
+
+        Raises:
+            PineconeValueError: If ``metric`` or ``dimension`` is passed —
+                a sparse vector field has neither.
+
+        Examples:
+            .. code-block:: python
+
+                schema = (
+                    SchemaBuilder()
+                    .add_dense_vector_field("embedding", dimension=1536, metric="dotproduct")
+                    .add_sparse_vector_field("sparse_terms")
+                    .build()
+                )
         """
         _validate_field_name(name)
         _validate_description(name, description)
-        field: dict[str, Any] = {
-            "type": "sparse_vector",
-            "metric": "dotproduct",
-        }
+        _validate_sparse_vector_options(name, additional_options)
+        field: dict[str, Any] = {"type": "sparse_vector"}
         if description is not None:
             field["description"] = description
         field.update(additional_options)

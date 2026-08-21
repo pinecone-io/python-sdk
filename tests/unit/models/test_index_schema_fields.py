@@ -35,6 +35,34 @@ def test_sparse_vector_field_defaults() -> None:
     assert field.description is None
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [b'{"type":"sparse_vector"}', b'{"type":"sparse_vector","description":"bm25"}'],
+)
+def test_sparse_vector_field_never_encodes_a_metric(raw: bytes) -> None:
+    """#350: the model must not be able to hand a ``metric`` back to a caller.
+
+    Both the description-present and description-absent payloads are checked,
+    because ``description`` is the only optional key the field has and absence
+    is the shape a create round-trip produces.
+    """
+    decoded = msgspec.json.decode(raw, type=IndexSchemaField)
+    assert isinstance(decoded, SparseVectorField)
+
+    reencoded = msgspec.json.decode(msgspec.json.encode(decoded))
+    assert set(reencoded) == {"type", "description"}
+    assert reencoded["type"] == "sparse_vector"
+
+
+def test_sparse_vector_field_tolerates_a_metric_on_the_wire() -> None:
+    """A server that starts sending one must not break an installed client."""
+    decoded = msgspec.json.decode(
+        b'{"type":"sparse_vector","metric":"dotproduct"}', type=IndexSchemaField
+    )
+    assert isinstance(decoded, SparseVectorField)
+    assert decoded.description is None
+
+
 def test_string_field_fts_and_filterable() -> None:
     field = StringField(
         full_text_search=FullTextSearchConfig(language="en"),

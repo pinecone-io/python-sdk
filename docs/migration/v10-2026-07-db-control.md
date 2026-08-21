@@ -191,9 +191,8 @@ longer buys sparse writes; declare both fields:
 
 `SchemaBuilder` spells the same thing as
 `.add_dense_vector_field("embedding", dimension=1536, metric="dotproduct")
-.add_sparse_vector_field("sparse_terms")` — but use the dict form for now:
-`add_sparse_vector_field()` emits a `metric` key the server rejects
-([#350](https://github.com/pinecone-io/python-sdk-internal/issues/350)).
+.add_sparse_vector_field("sparse_terms")`, and puts identical bytes on the
+wire.
 
 This fails *silently at create time* — the index is created and only the
 sparse upserts are refused later. Full write-up, including which error a

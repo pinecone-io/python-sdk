@@ -89,15 +89,33 @@ def test_dense_vector_dimension_rejection_leaves_builder_unchanged() -> None:
 
 def test_sparse_vector_field_defaults() -> None:
     schema = SchemaBuilder().add_sparse_vector_field("sparse").build()
-    field = schema["fields"]["sparse"]
-    assert field["type"] == "sparse_vector"
-    assert field["metric"] == "dotproduct"
-    assert "description" not in field
+    assert schema == {"fields": {"sparse": {"type": "sparse_vector"}}}
 
 
-def test_sparse_vector_field_metric_always_dotproduct() -> None:
-    schema = SchemaBuilder().add_sparse_vector_field("sparse").build()
-    assert schema["fields"]["sparse"]["metric"] == "dotproduct"
+def test_sparse_vector_field_emits_no_key_beyond_type_and_description() -> None:
+    """#350: the field carried a ``metric`` the create schema has no place for.
+
+    Asserted as an exact key set, not as ``"metric" not in field``, so any
+    other unmodelled key reintroduced here fails too.
+    """
+    bare = SchemaBuilder().add_sparse_vector_field("sparse").build()
+    described = SchemaBuilder().add_sparse_vector_field("sparse", description="BM25").build()
+
+    assert set(bare["fields"]["sparse"]) == {"type"}
+    assert set(described["fields"]["sparse"]) == {"type", "description"}
+
+
+@pytest.mark.parametrize("option", ["metric", "dimension"])
+def test_sparse_vector_field_rejects_the_keys_it_does_not_have(option: str) -> None:
+    """The 9.x spelling fails loudly rather than being dropped on the floor."""
+    from pinecone.errors.exceptions import PineconeValueError
+
+    with pytest.raises(PineconeValueError) as excinfo:
+        SchemaBuilder().add_sparse_vector_field("sparse", **{option: "dotproduct"})
+
+    message = str(excinfo.value)
+    assert f"cannot declare '{option}'" in message
+    assert "sparse" in message
 
 
 def test_sparse_vector_field_with_description() -> None:

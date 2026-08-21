@@ -311,18 +311,30 @@ schema = (
 )
 ```
 
-```{warning}
-**Use the explicit dict above until
-[#350](https://github.com/pinecone-io/python-sdk-internal/issues/350) is fixed.**
+The chain and the dict above put identical bytes on the wire, so either
+spelling is a working call.
 
-`add_sparse_vector_field()` currently emits `{"type": "sparse_vector", "metric":
-"dotproduct"}`. The `2026-07` create schema has no `metric` on a sparse field —
-`SparseVectorField` declares `type` and `description` and nothing else
-(`db_control_2026-07.oas.yaml:4674-4691`) — and the server's
-`CreateIndexSchemaFields` is `deny_unknown_fields`
-(`.../global/base/index_v2/mod.rs:378-389`), so the builder's body is rejected.
-The chain above is the right *shape* and the right thing to reach for; it is not
-yet a working call, which is why every create executed in this section uses the
-dict form. Once #350 lands, this warning goes away and the chain becomes the
-recommended spelling.
-```
+#### ⚠ `add_sparse_vector_field()` no longer emits `metric`
+
+Through 9.x the builder put `{"type": "sparse_vector", "metric": "dotproduct"}`
+on the wire. The `2026-07` create schema has no `metric` on a sparse field —
+`SparseVectorField` declares `type` and `description` and nothing else — so the
+key configured nothing and was never echoed back by describe. It is gone:
+
+    # before
+    {"type": "sparse_vector", "metric": "dotproduct"}
+    # now
+    {"type": "sparse_vector"}
+
+Two consequences for existing code:
+
+- **If you assert on `build()`'s output**, drop `metric` from the expected
+  sparse field. This is the only shape change; `add_dense_vector_field()` is
+  untouched and still emits `dimension` and `metric`.
+- **If you pass `metric=` or `dimension=` to `add_sparse_vector_field()`** —
+  the two things `vector_type="sparse"` implied in 9.x — the call now raises
+  `PineconeValueError` naming the field and the key. Both used to travel to the
+  server through the builder's forward-compatibility keywords and be discarded
+  there, which read like configuration that had taken effect. Delete the
+  argument: a sparse field's scoring is not configurable, and sparse vectors
+  are variable-length.

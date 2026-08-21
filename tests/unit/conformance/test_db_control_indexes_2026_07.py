@@ -25,6 +25,7 @@ a spec-conformant server could send, and it keeps the round-trip exact.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
@@ -37,6 +38,7 @@ from pinecone._internal.adapters.indexes_adapter import _IndexListEnvelope
 from pinecone._internal.constants import DEFAULT_BASE_URL
 from pinecone.async_client.pinecone import AsyncPinecone
 from pinecone.models.indexes.index import IndexModel
+from pinecone.schema_builder import SchemaBuilder
 from tests.unit.conformance import api_op
 
 BASE_URL = DEFAULT_BASE_URL
@@ -72,6 +74,18 @@ INDEX_FOR_MODEL: dict[str, Any] = {
 INDEX_LIST: dict[str, Any] = {"indexes": [INDEX]}
 
 INDEX_OPTIONALS = ["tags"]
+
+HYBRID_INDEX: dict[str, Any] = {
+    **INDEX,
+    "name": "conformance-hybrid-index",
+    "host": "https://conformance-hybrid-index-abc123.svc.aws-us-east-1.pinecone.io",
+    "schema": {
+        "fields": {
+            "embedding": {"type": "dense_vector", "dimension": 1024, "metric": "dotproduct"},
+            "sparse_terms": {"type": "sparse_vector", "description": None},
+        }
+    },
+}
 
 CREATE_SCHEMA: dict[str, Any] = {
     "fields": {"embedding": {"type": "dense_vector", "dimension": 1024, "metric": "cosine"}}
@@ -137,6 +151,60 @@ async def test_async_create_index(
     result = await async_pc.indexes.create(name=INDEX_NAME, schema=CREATE_SCHEMA, timeout=-1)
     assert result.name == INDEX_NAME
     _conforms(claim, route, IndexModel, INDEX, INDEX_OPTIONALS)
+
+
+def _builder_hybrid_schema() -> dict[str, Any]:
+    return (
+        SchemaBuilder()
+        .add_dense_vector_field("embedding", dimension=1024, metric="dotproduct")
+        .add_sparse_vector_field("sparse_terms")
+        .build()
+    )
+
+
+def _assert_sparse_field_on_the_wire(request: Any) -> None:
+    """The sparse field the builder put on the wire carries no key beyond ``type``.
+
+    #350 shipped a ``metric`` here. Asserted against the bytes of the request
+    rather than against ``build()``'s return value, because a dict-shape
+    assertion is exactly what failed to catch it: nothing between the builder
+    and the wire drops an unmodelled key.
+    """
+    fields = json.loads(request.content)["schema"]["fields"]
+    assert set(fields) == {"embedding", "sparse_terms"}
+    assert set(fields["sparse_terms"]) == {"type"}
+    assert fields["sparse_terms"]["type"] == "sparse_vector"
+    assert fields["embedding"]["metric"] == "dotproduct"
+
+
+@api_op("db_control:create_index")
+def test_create_index_hybrid_schema_from_builder(
+    claim: Any, pc: Pinecone, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.post(f"{BASE_URL}/indexes").mock(
+        return_value=httpx.Response(201, json=HYBRID_INDEX)
+    )
+    result = pc.indexes.create(
+        name="conformance-hybrid-index", schema=_builder_hybrid_schema(), timeout=-1
+    )
+    assert result.name == "conformance-hybrid-index"
+    _assert_sparse_field_on_the_wire(route.calls.last.request)
+    _conforms(claim, route, IndexModel, HYBRID_INDEX, INDEX_OPTIONALS)
+
+
+@api_op("db_control:create_index")
+async def test_async_create_index_hybrid_schema_from_builder(
+    claim: Any, async_pc: AsyncPinecone, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.post(f"{BASE_URL}/indexes").mock(
+        return_value=httpx.Response(201, json=HYBRID_INDEX)
+    )
+    result = await async_pc.indexes.create(
+        name="conformance-hybrid-index", schema=_builder_hybrid_schema(), timeout=-1
+    )
+    assert result.name == "conformance-hybrid-index"
+    _assert_sparse_field_on_the_wire(route.calls.last.request)
+    _conforms(claim, route, IndexModel, HYBRID_INDEX, INDEX_OPTIONALS)
 
 
 @api_op("db_control:create_index_for_model")

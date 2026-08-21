@@ -11,10 +11,9 @@ The section makes four claims this file holds to:
    one carries neither ``metric`` nor ``dimension``.
 3. The async twin is its sync neighbour word-for-word modulo ``await`` and puts
    identical bytes on the wire.
-4. The ``SchemaBuilder`` chain the section shows is *currently* broken in the
-   way its warning says — it emits a ``metric`` key the 2026-07 server rejects
-   (#350). When #350 lands, ``test_schema_builder_block_still_emits_the_350_metric_key``
-   fails, which is the signal to delete that warning from the guide.
+4. The ``SchemaBuilder`` chain the section shows declares the same pair as the
+   executed dict form and emits the same sparse field (#350). Its warning is
+   gone, so what is pinned now is the agreement between the two spellings.
 
 Plus the byte-comparison the ticket asks for: the hybrid sentence added to
 ``create()``'s docstring must be identical in the sync and async clients.
@@ -152,8 +151,8 @@ async def test_hybrid_create_declares_both_vector_fields(index: int, source: str
         f"block {index}: the section is about hybrid indexes, so the dense field "
         "must still be dotproduct"
     )
-    # pc-types/src/index_schema_def.rs:333-335 — the sparse create field carries
-    # description and nothing else, under deny_unknown_fields.
+    # pc-types/src/index_schema_def.rs:333-335 — the sparse create field holds
+    # a description and nothing else, so any other key configures nothing.
     assert set(fields[sparse[0]]) == {"type"}, (
         f"block {index}: sparse field sent {sorted(fields[sparse[0]])}; the 2026-07 "
         "create schema accepts only type and description"
@@ -185,18 +184,30 @@ def test_builder_block_declares_the_same_pair_as_the_executed_create(
 
 
 @pytest.mark.parametrize(("index", "source"), BUILDER, ids=[str(i) for i, _ in BUILDER])
-def test_schema_builder_block_still_emits_the_350_metric_key(index: int, source: str) -> None:
-    """Pins the warning next to the block. When #350 lands, delete both."""
+def test_builder_block_emits_the_same_sparse_field_as_the_executed_create(
+    index: int, source: str
+) -> None:
+    """#350: the two spellings the section offers must agree on the sparse field.
+
+    The guide now says the chain and the dict "put identical bytes on the wire",
+    so the claim is checked against the builder's own output rather than
+    trusted — that sentence is the reason the #350 warning could be deleted.
+    """
     namespace: dict[str, Any] = {"SchemaBuilder": SchemaBuilder}
     _run(source, namespace)
     sparse = next(f for f in namespace["schema"]["fields"].values() if f["type"] == "sparse_vector")
-    assert sparse.get("metric") == "dotproduct", (
-        "SchemaBuilder no longer emits the rejected metric key — #350 is fixed, so "
-        "drop the warning under the SchemaBuilder block in "
-        "docs/migration/v10-2026-07-vector-models.md and simplify the one in "
-        "docs/migration/v10-2026-07-db-control.md"
+    assert set(sparse) == {"type"}, (
+        f"block {index}: the builder chain emitted {sorted(sparse)}; the guide "
+        "promises it matches the dict form's {'type': 'sparse_vector'}"
     )
-    assert "#350" in _section(), "the guide must keep flagging #350 while it reproduces"
+
+
+def test_the_guide_no_longer_warns_callers_off_the_builder() -> None:
+    """The #350 warning and its issue link must not outlive the bug they described."""
+    section = _section()
+    assert "issues/350" not in section
+    assert "#350" not in section
+    assert "issues/350" not in DB_CONTROL.read_text()
 
 
 def _hybrid_docstring_block(create: Any) -> str:
