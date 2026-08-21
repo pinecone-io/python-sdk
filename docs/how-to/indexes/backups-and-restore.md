@@ -55,17 +55,15 @@ for backup in backups:
     print(backup.backup_id, backup.name, backup.status)
 ```
 
-`limit` ranges from 1 to 100, and the server applies its own default of 100 when
-you omit it.
+When you omit `limit`, the server applies its own default.
 
-Pagination here is **offset-based, not cursor-based**: the token is
-base64url-encoded JSON of the shape `{"limit": N, "offset": M}` — a position in
-the result set, not a stable cursor over a snapshot. Three consequences:
+Pagination here is **offset-based, not cursor-based**: the token names a
+position in the result set, not a stable cursor over a snapshot. Three
+consequences:
 
-- `limit` applies **even alongside a token**, replacing the page size the token
-  was minted with while keeping its offset. Send the same `limit` for the whole
-  walk, or only on the first call: changing it mid-walk resizes the window at a
-  fixed offset and can skip or repeat rows.
+- `limit` is **omitted whenever a token is given** — the token already
+  carries the page size it was minted with, and sending a different `limit`
+  alongside it would skip or repeat rows.
 - Backups created or deleted between requests shift every later offset, so a
   walk can miss rows and return others twice. De-duplicate by `backup_id`
   rather than trusting the sequence.
@@ -268,19 +266,15 @@ for job in jobs:
 
 Restore-job pagination is offset-based in the same way as backup pagination
 above, so the same rules apply: `pagination` is `None` on the final page,
-`limit` applies even alongside a token, and a malformed token is a `400`.
+`limit` is omitted whenever a token is given, and a malformed token is a `400`.
 
 ```{warning}
 Against today's backend **this listing can silently drop restore jobs, stop
-paginating early, and repeat rows across pages.** The server pages over raw
-import operations, filters them down to restore jobs, and then computes the
-next-page token from the *post-filter* count — so a page of 100 raw operations
-that happens to contain 3 restore jobs looks like a short final page, pagination
-ends there, and every restore job behind it is never returned. When pagination
-does continue, the server's offset advances by the filtered count rather than
-the raw count, so a later page can re-return jobs you have already seen. A
-restore job whose target index has been deleted is dropped from the listing
-entirely, which shortens the page and can itself trigger the early stop.
+paginating early, and repeat rows across pages.** The token stream can end
+while restore jobs remain, and successive pages can overlap, so pages are
+neither exhaustive nor disjoint. A restore job whose target index has been
+deleted is dropped from the listing entirely, which shortens the page and can
+itself trigger the early stop.
 
 Treat the result as a best-effort sample rather than an exhaustive inventory,
 never conclude a restore job does not exist from its absence here, and
@@ -381,25 +375,22 @@ There is **no cron support** anywhere in this API. `frequency` accepts exactly
 sending a request. The run time is chosen server-side and reported through
 `next_scheduled_run`; there is no way to pick an hour or a timezone.
 
-`retention_days` must be at least 1. Its upper bound is your project's
-`max_backup_retention_days` (365 by default), which the SDK does not know
-per-project, so a too-large value is rejected by the server with a message
-naming the real limit.
+`retention_days` must be at least 1. Its upper bound is a per-project setting
+(`max_backup_retention_days`) that the SDK does not know, so a too-large
+value is rejected by the server with a message naming the real limit.
 
 Only **one enabled schedule per index** is allowed. Creating a second one fails
 with `409` and a message telling you to disable or delete the first. Pod-based
 indexes cannot be scheduled at all and are rejected with `400`.
 
 ```{important}
-Keep the schedule `name` to **28 characters or fewer.** Each run names its
-backup `"{name}-{run timestamp}"`, and that timestamp suffix is a fixed 17
-characters (`-YYYYMMDDTHHMMSSZ`) against a 45-character resource name limit.
-Nothing validates this — the API declares no length limit on a schedule name,
-and the create-schedule path does not check the derived backup name either — so
-a longer name is accepted here and then produces backup names the backup
-endpoints themselves would have rejected. The failure surfaces later, on the
-runs, rather than on `create`. The SDK does not enforce the limit, because
-doing so would reject names the API accepts.
+**Keep the schedule name short.** Each run names its backup
+`"{name}-{run timestamp}"`, so a long schedule name pushes the derived backup
+name past the length limit backup names are held to. Nothing checks this at
+create time: the API declares no length limit on a schedule name, and the SDK
+does not invent one, because that would reject names the API accepts. An
+over-long name is therefore accepted here and fails later, on the runs, rather
+than on `create`.
 ```
 
 ### List the schedules on an index

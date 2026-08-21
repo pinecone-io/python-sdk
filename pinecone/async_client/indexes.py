@@ -338,24 +338,17 @@ class AsyncIndexes:
                 refused later. The field cannot be added by ``configure()``, so
                 an index created without one has to be recreated. See
                 ``docs/migration/v10-2026-07-vector-models.md``.
-                Two server-side limits have no client-side check: a field
-                ``description`` is capped at 256 **bytes** of UTF-8 rather than
-                256 characters, and a schema may declare at most 100
-                ``full_text_search`` fields. Because the server walks
-                ``fields`` as an unordered map and checks each field's name
-                before its description, a schema with more than one offending
-                field names an arbitrary one of them.
-                ``full_text_search.language`` accepts 18 values (``ar da de el
-                en es fi fr hu it nl no pt ro ru sv ta tr``, as the two-letter
-                code or the English name, default ``en``), but
-                ``stop_words=True`` is gated to a sealed 13-value subset that
-                excludes ``ar``, ``el``, ``ro``, ``ta`` and ``tr``. So
-                ``language="tr"`` alone is accepted, and adding
-                ``stemming=True, stop_words=True`` is a 400 that names the
-                English name rather than the code you sent
-                (``stop_words is not supported for language 'turkish'``).
-                Setting ``ngram`` neither rejects nor keeps a ``language``: the
-                value is accepted and replaced by the default ``en``. See
+                A field ``description``'s length and the number of
+                ``full_text_search`` fields a schema may declare are both
+                capped server-side with no client-side check; the server's
+                400 names which one was exceeded.
+                ``full_text_search.language`` accepts a fixed set of language
+                codes (or their English names, default ``en``), but
+                ``stop_words=True`` is not supported for every language — the
+                server's 400 names the unsupported language, by its English
+                name rather than the code you sent. Setting ``ngram`` neither
+                rejects nor keeps a ``language``: the value is accepted and
+                replaced by the default ``en``. See
                 ``docs/migration/v10-2026-07-db-control.md``.
             name: Optional name for the index. 1-45 characters matching
                 ``^[a-z0-9]([a-z0-9-]*[a-z0-9])?$``. If omitted, the server
@@ -379,16 +372,13 @@ class AsyncIndexes:
                 the server runs that same merge on create, where there is
                 nothing to delete: ``tags={"a": ""}`` creates the index with no
                 tags rather than with an empty ``a``.
-            cmek_id: Optional customer-managed encryption key ID. Incompatible
-                with pod deployments and with ``full_text_search`` fields —
-                both are a per-request 400. A second, project-level rule
-                reports 412 instead: when the project enforces CMEK
-                encryption, a pod deployment or any ``full_text_search`` field
-                is refused whether or not this argument is set. The
-                per-request check runs first, so a pod request carrying a
-                ``cmek_id`` reports the 400 and the identical request without
-                it reports the 412 — dropping ``cmek_id`` changes which rule
-                you hit, not whether you pass.
+            cmek_id: Optional customer-managed encryption key ID. Raises a 400
+                if combined with a pod deployment or a ``full_text_search``
+                field. Separately, a project that enforces CMEK encryption
+                raises 412 for a pod deployment or any ``full_text_search``
+                field regardless of whether this argument is set — so setting
+                or omitting ``cmek_id`` can change which of the two errors you
+                see without changing whether the request succeeds.
             timeout: Seconds to wait for the index to become ready. ``None``
                 (default) polls indefinitely every 5 seconds. A positive int
                 polls with a deadline. ``-1`` returns immediately without
@@ -408,9 +398,8 @@ class AsyncIndexes:
             :exc:`PineconeTimeoutError`: If the index is not ready before the deadline.
             :exc:`ApiError`: If the API returns an error response; server
                 validation messages are surfaced verbatim. Only the first
-                failure is reported, and the checks do not run in the order of
-                this signature — the ``full_text_search`` analyzer rules run
-                last of all, after the project-level 412s. See
+                failing check is reported, so a request with more than one
+                problem may take a few round trips to fully validate. See
                 ``docs/migration/v10-2026-07-db-control.md``.
 
         Examples:
@@ -490,10 +479,9 @@ class AsyncIndexes:
 
         .. note::
            The 2026-07 wire shape for this operation is the
-           ``cloud``/``region``/``embed`` form (apis@5f808858 restored it;
-           the backend accepts only this shape). The published build of the
-           2026-07 OAS is stale here — see the SPEC-vs-BACKEND question
-           linked from the migration guide.
+           ``cloud``/``region``/``embed`` form; the backend accepts only this
+           shape. See ``docs/migration/v10-2026-07-db-control.md`` for
+           background.
 
         Args:
             name: Required name for the index (1-45 characters,
@@ -636,8 +624,9 @@ class AsyncIndexes:
             tags: Tag updates, merged with existing tags on the server. Set a
                 value to ``""`` to delete that key; keys you do not mention are
                 left unchanged. The 20-tag cap is applied to the **merged**
-                total rather than to this request, so five new tags against an
-                index already carrying 18 is a 400 naming 23. When the merge
+                total rather than to this request, so adding tags to an index
+                that already carries several can be rejected even though the
+                request on its own is well within the cap. When the merge
                 leaves no tags the index stores no tag map at all rather than
                 an empty one. ``{}`` is rejected client-side.
 

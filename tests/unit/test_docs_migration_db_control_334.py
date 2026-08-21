@@ -44,12 +44,6 @@ GUIDE = Path(__file__).resolve().parents[2] / "docs/migration/v10-2026-07-db-con
 
 ANCHOR = "(create-limits)="
 
-LANGUAGES = [
-    *("ar", "da", "de", "el", "en", "es", "fi", "fr", "hu"),
-    *("it", "nl", "no", "pt", "ro", "ru", "sv", "ta", "tr"),
-]
-NO_STOP_WORDS = ["ar", "el", "ro", "ta", "tr"]
-
 
 def _section() -> str:
     text = GUIDE.read_text()
@@ -174,27 +168,30 @@ def test_the_section_keeps_the_two_cmek_status_codes_apart() -> None:
     assert "whether or not\n  the request carries a `cmek_id`" in section
 
 
-def test_the_stop_word_language_arithmetic_is_self_consistent() -> None:
-    """The docstring publishes 18 values and 5 exclusions; 18 - 5 must be 13."""
+def _flat(doc: str) -> str:
+    return re.sub(r"\s+", " ", doc)
+
+
+def test_the_language_constraint_names_the_error_not_an_enumerated_list() -> None:
+    """Style rule: name the constraint and the error, never the exhaustive value list."""
     from pinecone.client.indexes import Indexes
 
-    doc = inspect.getdoc(Indexes.create) or ""
-    match = re.search(r"``(ar da de[^`]*tr)``", doc)
-    assert match, "create() no longer lists the language values"
-    published = match.group(1).split()
-    assert published == LANGUAGES
-    assert set(NO_STOP_WORDS) < set(published)
-    assert len(published) - len(NO_STOP_WORDS) == 13
-    assert "sealed 13-value subset" in doc
+    doc = _flat(inspect.getdoc(Indexes.create) or "")
+    assert "accepts a fixed set of language codes" in doc
+    assert "not supported for every language" in doc
+    assert "ar da de" not in doc
+    assert "18 values" not in doc
+    assert "13-value subset" not in doc
 
 
-def test_the_docstring_names_the_english_language_name_in_the_message() -> None:
-    """``Language``'s strum ``Display`` picks the longest alias, so it is not the code."""
+def test_the_docstring_describes_rather_than_quotes_the_stop_words_error() -> None:
+    """A verbatim server message goes stale; describing *why* it differs does not."""
     from pinecone.client.indexes import Indexes
 
-    doc = inspect.getdoc(Indexes.create) or ""
-    assert "stop_words is not supported for language 'turkish'" in doc
-    assert "language 'tr'" not in doc
+    doc = _flat(inspect.getdoc(Indexes.create) or "")
+    assert "the server's 400 names the unsupported language" in doc
+    assert "by its English name rather than the code you sent" in doc
+    assert "stop_words is not supported for language 'turkish'" not in doc
 
 
 def _args(fn: Any) -> bytes:
@@ -242,4 +239,4 @@ def test_the_configure_docstring_says_the_tag_cap_counts_the_merge() -> None:
 
     doc = inspect.getdoc(Indexes.configure) or ""
     assert "applied to the **merged**" in doc
-    assert "a 400 naming 23" in doc
+    assert "a 400 naming 23" not in doc
