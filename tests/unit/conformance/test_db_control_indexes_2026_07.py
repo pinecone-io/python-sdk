@@ -87,6 +87,30 @@ HYBRID_INDEX: dict[str, Any] = {
     },
 }
 
+# Pod deployment, not managed: `boolean`/`float`/`string_list` are metadata-only
+# declarations, which managed and BYOC creates reject outright, so a managed
+# fixture carrying them would be a response the real API can never return.
+POD_METADATA_INDEX: dict[str, Any] = {
+    **INDEX,
+    "name": "conformance-pod-metadata-index",
+    "host": "https://conformance-pod-metadata-index-abc123.svc.aws-us-east-1.pinecone.io",
+    "deployment": {
+        "deployment_type": "pod",
+        "environment": "us-east1-gcp",
+        "pod_type": "p1.x1",
+        "replicas": 1,
+        "shards": 1,
+    },
+    "schema": {
+        "fields": {
+            "embedding": {"type": "dense_vector", "dimension": 1024, "metric": "cosine"},
+            "is_published": {"type": "boolean", "description": None, "filterable": False},
+            "year": {"type": "float", "description": None, "filterable": False},
+            "tags": {"type": "string_list", "description": None, "filterable": False},
+        }
+    },
+}
+
 CREATE_SCHEMA: dict[str, Any] = {
     "fields": {"embedding": {"type": "dense_vector", "dimension": 1024, "metric": "cosine"}}
 }
@@ -205,6 +229,64 @@ async def test_async_create_index_hybrid_schema_from_builder(
     assert result.name == "conformance-hybrid-index"
     _assert_sparse_field_on_the_wire(route.calls.last.request)
     _conforms(claim, route, IndexModel, HYBRID_INDEX, INDEX_OPTIONALS)
+
+
+def _builder_pod_metadata_schema() -> dict[str, Any]:
+    return (
+        SchemaBuilder()
+        .add_dense_vector_field("embedding", dimension=1024, metric="cosine")
+        .add_boolean_field("is_published")
+        .add_float_field("year")
+        .add_string_list_field("tags")
+        .build()
+    )
+
+
+def _assert_filterable_on_the_wire(request: Any) -> None:
+    """Every metadata field the builder put on the wire carries ``filterable``.
+
+    #374 omitted the key whenever it was ``False`` — the documented default —
+    and the backend's ``MetadataSchemaField.filterable`` is a bare ``bool``
+    with no serde default, so the create body could not be deserialized at all.
+    Asserted against the bytes of the request rather than ``build()``'s return
+    value: nothing between the builder and the wire supplies a missing key, and
+    a dict-shape assertion is what let both this and #350 through.
+    """
+    fields = json.loads(request.content)["schema"]["fields"]
+    assert set(fields) == {"embedding", "is_published", "year", "tags"}
+    assert fields["is_published"] == {"type": "boolean", "filterable": False}
+    assert fields["year"] == {"type": "float", "filterable": False}
+    assert fields["tags"] == {"type": "string_list", "filterable": False}
+
+
+@api_op("db_control:create_index")
+def test_create_index_pod_metadata_schema_from_builder(
+    claim: Any, pc: Pinecone, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.post(f"{BASE_URL}/indexes").mock(
+        return_value=httpx.Response(201, json=POD_METADATA_INDEX)
+    )
+    result = pc.indexes.create(
+        name="conformance-pod-metadata-index", schema=_builder_pod_metadata_schema(), timeout=-1
+    )
+    assert result.name == "conformance-pod-metadata-index"
+    _assert_filterable_on_the_wire(route.calls.last.request)
+    _conforms(claim, route, IndexModel, POD_METADATA_INDEX, INDEX_OPTIONALS)
+
+
+@api_op("db_control:create_index")
+async def test_async_create_index_pod_metadata_schema_from_builder(
+    claim: Any, async_pc: AsyncPinecone, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.post(f"{BASE_URL}/indexes").mock(
+        return_value=httpx.Response(201, json=POD_METADATA_INDEX)
+    )
+    result = await async_pc.indexes.create(
+        name="conformance-pod-metadata-index", schema=_builder_pod_metadata_schema(), timeout=-1
+    )
+    assert result.name == "conformance-pod-metadata-index"
+    _assert_filterable_on_the_wire(route.calls.last.request)
+    _conforms(claim, route, IndexModel, POD_METADATA_INDEX, INDEX_OPTIONALS)
 
 
 @api_op("db_control:create_index_for_model")

@@ -514,12 +514,12 @@ class SchemaBuilder:
         tag-style metadata (e.g. ``["sci-fi", "mystery"]``) that should be
         filterable against individual elements.
 
-        The wire type is ``"string_list"``. ``filterable=False`` is omitted
-        from the wire payload; ``None`` values are omitted as well.
+        The wire type is ``"string_list"``.
 
         Args:
             name: Field name. Replaces any existing field with the same name.
-            filterable: Enable metadata-filter support.
+            filterable: Enable metadata-filter support. Always included in the
+                built schema, whether ``True`` or ``False``.
             description: Optional human-readable description.
             **additional_options: Extra parameters merged into the field dict
                 last, for forward compatibility with new API features.
@@ -534,9 +534,7 @@ class SchemaBuilder:
         """
         _validate_field_name(name)
         _validate_description(name, description)
-        field: dict[str, Any] = {"type": "string_list"}
-        if filterable:
-            field["filterable"] = filterable
+        field: dict[str, Any] = {"type": "string_list", "filterable": filterable}
         if description is not None:
             field["description"] = description
         field.update(additional_options)
@@ -563,12 +561,12 @@ class SchemaBuilder:
            BYOC indexes, include boolean values in documents instead; they
            are indexed for filtering automatically at upsert time.
 
-        The wire type is ``"boolean"``. ``filterable=False`` is omitted from
-        the wire payload; ``None`` description is omitted as well.
+        The wire type is ``"boolean"``.
 
         Args:
             name: Field name. Replaces any existing field with the same name.
-            filterable: Enable metadata-filter support on this field.
+            filterable: Enable metadata-filter support on this field. Always
+                included in the built schema, whether ``True`` or ``False``.
             description: Optional human-readable description.
             **additional_options: Extra parameters merged into the field dict
                 last, for forward compatibility with new API features.
@@ -583,9 +581,7 @@ class SchemaBuilder:
         """
         _validate_field_name(name)
         _validate_description(name, description)
-        field: dict[str, Any] = {"type": "boolean"}
-        if filterable:
-            field["filterable"] = filterable
+        field: dict[str, Any] = {"type": "boolean", "filterable": filterable}
         if description is not None:
             field["description"] = description
         field.update(additional_options)
@@ -620,8 +616,8 @@ class SchemaBuilder:
 
         Args:
             name: Field name. Replaces any existing field with the same name.
-            filterable: Enable filtering on this field. ``False`` is omitted
-                from the wire payload.
+            filterable: Enable filtering on this field. Always included in the
+                built schema, whether ``True`` or ``False``.
             description: Optional human-readable description.
             **additional_options: Extra parameters merged into the field dict
                 last, for forward compatibility with new API features.
@@ -631,9 +627,7 @@ class SchemaBuilder:
         """
         _validate_field_name(name)
         _validate_description(name, description)
-        field: dict[str, Any] = {"type": "float"}
-        if filterable:
-            field["filterable"] = filterable
+        field: dict[str, Any] = {"type": "float", "filterable": filterable}
         if description is not None:
             field["description"] = description
         field.update(additional_options)

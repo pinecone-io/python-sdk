@@ -370,14 +370,12 @@ def test_string_field_ngram_check_precedes_stop_words_check() -> None:
 
 def test_float_field_defaults() -> None:
     schema = SchemaBuilder().add_float_field("year").build()
-    field = schema["fields"]["year"]
-    assert field["type"] == "float"
-    assert "filterable" not in field
+    assert schema["fields"]["year"] == {"type": "float", "filterable": False}
 
 
-def test_float_field_filterable_false_omitted() -> None:
+def test_float_field_filterable_false_is_still_emitted() -> None:
     schema = SchemaBuilder().add_float_field("year", filterable=False).build()
-    assert "filterable" not in schema["fields"]["year"]
+    assert schema["fields"]["year"] == {"type": "float", "filterable": False}
 
 
 def test_float_field_description() -> None:
@@ -433,7 +431,7 @@ def test_duplicate_field_preserves_last_definition() -> None:
         .build()
     )
     assert schema["fields"]["score"]["description"] == "override"
-    assert "filterable" not in schema["fields"]["score"]
+    assert schema["fields"]["score"]["filterable"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -540,7 +538,7 @@ def test_build_output_json_round_trips_with_all_options_set() -> None:
 def test_string_list_field_defaults() -> None:
     schema = SchemaBuilder().add_string_list_field("tags").build()
     field = schema["fields"]["tags"]
-    assert field == {"type": "string_list"}
+    assert field == {"type": "string_list", "filterable": False}
 
 
 def test_string_list_field_filterable_true() -> None:
@@ -575,7 +573,7 @@ def test_string_list_field_emits_snake_case_tag_not_brackets() -> None:
 def test_boolean_field_defaults() -> None:
     schema = SchemaBuilder().add_boolean_field("is_published").build()
     field = schema["fields"]["is_published"]
-    assert field == {"type": "boolean"}
+    assert field == {"type": "boolean", "filterable": False}
 
 
 def test_boolean_field_filterable_true() -> None:
@@ -583,9 +581,9 @@ def test_boolean_field_filterable_true() -> None:
     assert schema["fields"]["is_published"]["filterable"] is True
 
 
-def test_boolean_field_filterable_false_omitted() -> None:
+def test_boolean_field_filterable_false_is_still_emitted() -> None:
     schema = SchemaBuilder().add_boolean_field("is_published", filterable=False).build()
-    assert "filterable" not in schema["fields"]["is_published"]
+    assert schema["fields"]["is_published"] == {"type": "boolean", "filterable": False}
 
 
 def test_boolean_field_description() -> None:
@@ -713,3 +711,95 @@ def test_preview_schema_builder_name_is_gone() -> None:
     import pinecone.schema_builder
 
     assert not hasattr(pinecone.schema_builder, "PreviewSchemaBuilder")
+
+
+# ---------------------------------------------------------------------------
+# `filterable` is required on the wire for the three metadata field types (#374)
+# ---------------------------------------------------------------------------
+#
+# All three deserialize into `MetadataSchemaField`, whose `filterable` is a bare
+# `bool` with no `#[serde(default)]` (pinecone-db
+# `pc-types/src/index_schema_def.rs:399-402` @ 71dacafc), so omitting the key
+# makes the whole create body undeserializable.
+#
+# Exact key sets rather than `"filterable" in field`, so that a *different*
+# unmodelled key reappearing here fails too — the #350 defect, which a
+# containment assertion would have missed.
+
+_METADATA_FIELD_TYPES = [
+    ("add_boolean_field", "boolean"),
+    ("add_float_field", "float"),
+    ("add_string_list_field", "string_list"),
+]
+
+
+@pytest.mark.parametrize(("method", "wire_type"), _METADATA_FIELD_TYPES)
+def test_metadata_field_emits_filterable_at_the_documented_default(
+    method: str, wire_type: str
+) -> None:
+    schema = getattr(SchemaBuilder(), method)("f").build()
+    assert schema["fields"]["f"] == {"type": wire_type, "filterable": False}
+
+
+@pytest.mark.parametrize(("method", "wire_type"), _METADATA_FIELD_TYPES)
+@pytest.mark.parametrize("filterable", [True, False])
+def test_metadata_field_emits_filterable_for_both_values(
+    method: str, wire_type: str, filterable: bool
+) -> None:
+    schema = getattr(SchemaBuilder(), method)("f", filterable=filterable).build()
+    assert schema["fields"]["f"] == {"type": wire_type, "filterable": filterable}
+
+
+@pytest.mark.parametrize(("method", "wire_type"), _METADATA_FIELD_TYPES)
+def test_metadata_field_emits_filterable_alongside_a_description(
+    method: str, wire_type: str
+) -> None:
+    schema = getattr(SchemaBuilder(), method)("f", description="d").build()
+    assert schema["fields"]["f"] == {
+        "type": wire_type,
+        "filterable": False,
+        "description": "d",
+    }
+
+
+@pytest.mark.parametrize(("method", "wire_type"), _METADATA_FIELD_TYPES)
+def test_metadata_field_filterable_survives_additional_options(method: str, wire_type: str) -> None:
+    # `additional_options` is merged last, so confirm it does not displace the
+    # required key on its way to the wire.
+    schema = getattr(SchemaBuilder(), method)("f", future_key="v").build()
+    assert schema["fields"]["f"] == {
+        "type": wire_type,
+        "filterable": False,
+        "future_key": "v",
+    }
+
+
+def test_metadata_fields_agree_with_the_response_side_models() -> None:
+    """The builder and the msgspec models must not disagree on this key.
+
+    The models already encode `filterable: false` (they are plain msgspec
+    Structs without ``omit_defaults``); only the builder omitted it. Pinning
+    the agreement keeps the two request-shaping paths from drifting apart
+    again.
+    """
+    from pinecone.models.indexes.schema import (
+        BooleanField,
+        FloatField,
+        IndexSchema,
+        StringListField,
+    )
+
+    built = (
+        SchemaBuilder()
+        .add_boolean_field("b")
+        .add_float_field("f")
+        .add_string_list_field("t")
+        .build()
+    )
+    modelled = IndexSchema(
+        fields={"b": BooleanField(), "f": FloatField(), "t": StringListField()}
+    ).to_dict()
+
+    for name in ("b", "f", "t"):
+        assert built["fields"][name]["filterable"] is False
+        assert modelled["fields"][name]["filterable"] is False

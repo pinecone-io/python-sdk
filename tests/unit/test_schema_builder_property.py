@@ -1,6 +1,6 @@
 """Property-based tests for SchemaBuilder (2026-07 create-schema rules).
 
-Four properties are pinned here (#106):
+Five properties are pinned here (#106, #374):
 
 * Arbitrary unicode field names are accepted iff they are 1-64 UTF-8 bytes
   and do not start with ``$`` or ``_``.
@@ -10,6 +10,8 @@ Four properties are pinned here (#106):
   ``build()`` round-trips the exact set of field names added.
 * Builder reuse: ``build()`` copies — later ``add_*`` calls never mutate
   earlier results.
+* ``boolean``/``float``/``string_list`` fields always carry ``filterable``,
+  which the backend requires (#374).
 """
 
 from __future__ import annotations
@@ -147,8 +149,10 @@ _add_string = st.tuples(
         }
     ),
 )
+_METADATA_METHODS = ("add_boolean_field", "add_float_field", "add_string_list_field")
+
 _add_metadata = st.tuples(
-    st.sampled_from(["add_boolean_field", "add_float_field", "add_string_list_field"]),
+    st.sampled_from(_METADATA_METHODS),
     _valid_name,
     st.fixed_dictionaries({"filterable": st.booleans(), "description": _description}),
 )
@@ -185,6 +189,8 @@ def test_build_json_serializable_and_round_trips_field_names(
             assert field["metric"] == kwargs["metric"]
         if method == "add_sparse_vector_field":
             assert set(field) <= {"type", "description"}
+        if method in _METADATA_METHODS:
+            assert field["filterable"] is kwargs["filterable"]
 
 
 @given(
@@ -206,3 +212,29 @@ def test_later_add_calls_never_mutate_earlier_build_results(
     builder.build()
 
     assert first == snapshot
+
+
+@given(calls=st.lists(_add_metadata, min_size=1, max_size=8))
+def test_metadata_fields_always_carry_filterable(
+    calls: list[tuple[str, str, dict[str, Any]]],
+) -> None:
+    """No builder-emitted `boolean`/`float`/`string_list` field ever omits `filterable`.
+
+    The backend deserializes all three into `MetadataSchemaField`, whose
+    `filterable` is a bare `bool` with no serde default, so a field that omits
+    the key makes the entire create body undeserializable (#374). Stated as an
+    invariant over arbitrary builder call sequences because the defect was
+    specifically in the `False` branch — the documented default, and the value
+    an example-based test is least likely to reach for.
+    """
+    builder = SchemaBuilder()
+    for call in calls:
+        _apply(builder, call)
+    schema = builder.build()
+
+    last_call_per_name = {name: kwargs for _, name, kwargs in calls}
+    for name, kwargs in last_call_per_name.items():
+        field = schema["fields"][name]
+        assert "filterable" in field
+        assert field["filterable"] is kwargs["filterable"]
+        assert set(field) <= {"type", "filterable", "description"}
