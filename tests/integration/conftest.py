@@ -47,13 +47,30 @@ import asyncio
 import os
 import time
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
+from typing import Protocol
 
 import pytest
 
 from pinecone import AsyncPinecone, Pinecone
+from tests.integration.legacy_index import (
+    LegacyIndex,
+    create_legacy_index,
+    delete_legacy_index,
+)
 from tests.live_suite import load_env, write_coverage_summary
+
+
+class LegacyIndexFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        dimension: int | None = None,
+        metric: str = "cosine",
+        vector_type: str = "dense",
+    ) -> LegacyIndex: ...
+
 
 _HERE = Path(__file__).resolve().parent
 
@@ -320,6 +337,50 @@ def client_pool() -> Pinecone:
     if not api_key:
         pytest.skip("PINECONE_API_KEY not set")
     return Pinecone(api_key=api_key, pool_threads=4)
+
+
+@pytest.fixture(scope="session")
+def legacy_index_factory(api_key: str) -> Generator[LegacyIndexFactory, None, None]:
+    """Create legacy (vectors-API) indexes, one per distinct shape.
+
+    2026-07 cannot create an index the vectors API will serve, so any test
+    that expects ``upsert`` / ``query`` / ``fetch`` to **succeed** has to get
+    its index from :mod:`tests.integration.legacy_index` instead of
+    ``pc.indexes.create``. See that module for the sanctioned pattern and for
+    why the SDK's own create path is bypassed.
+
+    Call it as ``legacy_index_factory(dimension=3)``, or
+    ``legacy_index_factory(vector_type="sparse", metric="dotproduct")``.
+    Results are cached per shape for the whole session and deleted at the end,
+    so callers sharing a shape share one index — isolate with a per-test
+    namespace, as the rest of this package does.
+    """
+    created: dict[tuple[int | None, str, str], LegacyIndex] = {}
+
+    def factory(
+        *,
+        dimension: int | None = None,
+        metric: str = "cosine",
+        vector_type: str = "dense",
+    ) -> LegacyIndex:
+        key = (dimension, metric, vector_type)
+        if key not in created:
+            created[key] = create_legacy_index(
+                api_key, dimension=dimension, metric=metric, vector_type=vector_type
+            )
+        return created[key]
+
+    try:
+        yield factory
+    finally:
+        for index in created.values():
+            delete_legacy_index(api_key, index.name)
+
+
+@pytest.fixture(scope="session")
+def legacy_index_dim3(legacy_index_factory: LegacyIndexFactory) -> LegacyIndex:
+    """A ready dim-3 cosine legacy index — the default shape for vector tests."""
+    return legacy_index_factory(dimension=3)
 
 
 @pytest.fixture
