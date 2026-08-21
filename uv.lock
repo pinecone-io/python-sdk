@@ -1626,6 +1626,7 @@ dependencies = [
     { name = "httpx", extra = ["http2"] },
     { name = "msgspec" },
     { name = "orjson" },
+    { name = "typing-extensions" },
 ]
 
 [package.optional-dependencies]
@@ -1686,6 +1687,7 @@ requires-dist = [
     { name = "sphinx", marker = "extra == 'docs'", specifier = ">=8.0" },
     { name = "sphinx-copybutton", marker = "extra == 'docs'" },
     { name = "sphinx-tabs", marker = "extra == 'docs'" },
+    { name = "typing-extensions", specifier = ">=4.0" },
 ]
 provides-extras = ["dev", "docs"]
 
