@@ -2,6 +2,19 @@
 
 Phase 2 Tier 1: metadata-filter, sparse-vectors, query-by-id, fetch-missing-ids,
 include-values-metadata, query-namespaces.
+
+The shared indexes come from :func:`legacy_index_factory`, not from
+``pc.indexes.create``: 2026-07 has no way to create an index the vectors API
+will serve, and every call in this module is a vectors-API call. See
+:mod:`tests.integration.legacy_index` for the sanctioned pattern and why the
+SDK's own create path is bypassed.
+
+Each shared-index fixture calls ``assert_serves_vectors_api`` once, because a
+document-schema index would not fail this module loudly — writes are refused
+but ``query`` / ``fetch`` / ``describe_index_stats`` succeed and return
+**empty**, so a read-only assertion would pass against data that was never
+there. Every test that reads live data writes first and asserts
+``upserted_count``, which is the other half of that defence.
 """
 # area tags covered: metadata-filter, sparse-vectors, query-by-id, fetch-missing-ids,
 # include-values-metadata, query-namespaces
@@ -9,13 +22,11 @@ include-values-metadata, query-namespaces.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Generator
 
 import pytest
 
 from pinecone import AsyncIndex, AsyncPinecone, Field, Pinecone
 from pinecone.models.indexes.index import IndexModel
-from pinecone.models.indexes.specs import ServerlessSpec
 from pinecone.models.vectors.query_aggregator import QueryNamespacesResults
 from pinecone.models.vectors.responses import (
     FetchByMetadataResponse,
@@ -29,11 +40,12 @@ from pinecone.models.vectors.responses import (
 from pinecone.models.vectors.sparse import SparseValues
 from pinecone.models.vectors.usage import Usage
 from pinecone.models.vectors.vector import ScoredVector, Vector
-from tests.integration.conftest import (
-    async_cleanup_resource,
-    async_poll_until,
-    ensure_index_deleted,
-    unique_name,
+from tests.integration.conftest import LegacyIndexFactory, async_poll_until
+from tests.integration.legacy_index import (
+    LEGACY_DENSE_FIELD,
+    LEGACY_SPARSE_FIELD,
+    LegacyIndex,
+    assert_serves_vectors_api,
 )
 
 # ---------------------------------------------------------------------------
@@ -42,75 +54,49 @@ from tests.integration.conftest import (
 
 
 @pytest.fixture(scope="module")
-def shared_index_dim2(api_key: str) -> Generator[str, None, None]:
-    """Shared serverless index (dim=2, cosine) reused across all dim=2 tests in this module."""
-    sync_pc = Pinecone(api_key=api_key)
-    name = unique_name("idx-shared-dim2-async")
-    sync_pc.indexes.create(
-        name=name,
-        dimension=2,
-        metric="cosine",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        timeout=300,
-    )
-    try:
-        yield name
-    finally:
-        ensure_index_deleted(sync_pc, name)
+def shared_index_dim2(client: Pinecone, legacy_index_factory: LegacyIndexFactory) -> str:
+    """Shared legacy index (dim=2, cosine) reused across all dim=2 tests in this module."""
+    index = legacy_index_factory(dimension=2)
+    assert_serves_vectors_api(client, index)
+    return index.name
 
 
 @pytest.fixture(scope="module")
-def shared_index_dim3(api_key: str) -> Generator[str, None, None]:
-    """Shared serverless index (dim=3, cosine) reused across all dim=3 tests in this module."""
-    sync_pc = Pinecone(api_key=api_key)
-    name = unique_name("idx-shared-dim3-async")
-    sync_pc.indexes.create(
-        name=name,
-        dimension=3,
-        metric="cosine",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        timeout=300,
-    )
-    try:
-        yield name
-    finally:
-        ensure_index_deleted(sync_pc, name)
+def shared_index_dim3(client: Pinecone, legacy_index_factory: LegacyIndexFactory) -> str:
+    """Shared legacy index (dim=3, cosine) reused across all dim=3 tests in this module."""
+    index = legacy_index_factory(dimension=3)
+    assert_serves_vectors_api(client, index)
+    return index.name
 
 
 @pytest.fixture(scope="module")
-def shared_index_dim4_dotproduct(api_key: str) -> Generator[str, None, None]:
-    """Shared serverless index (dim=4, dotproduct) reused across dim=4/dotproduct tests."""
-    sync_pc = Pinecone(api_key=api_key)
-    name = unique_name("idx-shared-dim4-dp-async")
-    sync_pc.indexes.create(
-        name=name,
-        dimension=4,
-        metric="dotproduct",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        timeout=300,
-    )
-    try:
-        yield name
-    finally:
-        ensure_index_deleted(sync_pc, name)
+def shared_index_dim4_dotproduct(client: Pinecone, legacy_index_factory: LegacyIndexFactory) -> str:
+    """Shared legacy index (dim=4, dotproduct) reused across dim=4/dotproduct tests.
+
+    Hybrid tests write ``sparse_values`` alongside dense values here. A legacy
+    index accepts that because it declares both reserved vector fields; a
+    2026-07 schema index would have to name a ``sparse_vector`` field to do
+    the same, and naming any field makes it a documents-API index.
+    """
+    index = legacy_index_factory(dimension=4, metric="dotproduct")
+    assert_serves_vectors_api(client, index)
+    return index.name
 
 
 @pytest.fixture(scope="module")
-def shared_index_dim4_cosine(api_key: str) -> Generator[str, None, None]:
-    """Shared serverless index (dim=4, cosine) reused across dim=4/cosine tests."""
-    sync_pc = Pinecone(api_key=api_key)
-    name = unique_name("idx-shared-dim4-cos-async")
-    sync_pc.indexes.create(
-        name=name,
-        dimension=4,
-        metric="cosine",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        timeout=300,
-    )
-    try:
-        yield name
-    finally:
-        ensure_index_deleted(sync_pc, name)
+def shared_index_dim4_cosine(client: Pinecone, legacy_index_factory: LegacyIndexFactory) -> str:
+    """Shared legacy index (dim=4, cosine) reused across dim=4/cosine tests."""
+    index = legacy_index_factory(dimension=4)
+    assert_serves_vectors_api(client, index)
+    return index.name
+
+
+@pytest.fixture(scope="module")
+def sparse_index(client: Pinecone, legacy_index_factory: LegacyIndexFactory) -> LegacyIndex:
+    """Shared sparse legacy index — no dimension, dotproduct metric."""
+    index = legacy_index_factory(vector_type="sparse", metric="dotproduct")
+    assert_serves_vectors_api(client, index)
+    return index
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +115,7 @@ async def test_metadata_filter_rest_async(
     idx = await async_client.index(name=shared_index_dim2)
 
     # Upsert vectors with metadata
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {
                 "id": "mf-v1",
@@ -149,6 +135,7 @@ async def test_metadata_filter_rest_async(
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait for all 3 vectors to be queryable (eventual consistency)
     await async_poll_until(
@@ -282,7 +269,7 @@ async def test_query_by_id_rest_async(async_client: AsyncPinecone, shared_index_
     idx = await async_client.index(name=shared_index_dim2)
 
     # Upsert 3 vectors
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {"id": "qbi-v1", "values": [0.1, 0.2]},
             {"id": "qbi-v2", "values": [0.3, 0.4]},
@@ -290,6 +277,7 @@ async def test_query_by_id_rest_async(async_client: AsyncPinecone, shared_index_
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait for all 3 vectors to be queryable
     await async_poll_until(
@@ -329,13 +317,14 @@ async def test_fetch_missing_ids_rest_async(
     idx = await async_client.index(name=shared_index_dim2)
 
     # Upsert 2 known vectors
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {"id": "fmi-v1", "values": [0.1, 0.2]},
             {"id": "fmi-v2", "values": [0.3, 0.4]},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     # Wait for both vectors to be fetchable (eventual consistency)
     await async_poll_until(
@@ -379,7 +368,7 @@ async def test_include_values_metadata_rest_async(
     idx = await async_client.index(name=shared_index_dim3)
 
     # Upsert vectors with metadata
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {
                 "id": "ivm-v1",
@@ -394,6 +383,7 @@ async def test_include_values_metadata_rest_async(
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     # Wait for both vectors to be queryable (eventual consistency)
     await async_poll_until(
@@ -460,20 +450,22 @@ async def test_query_namespaces_rest_async(
     idx = await async_client.index(name=shared_index_dim2)
 
     # Upsert different vectors into two named namespaces
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {"id": "qn-ns1-v1", "values": [0.1, 0.2]},
             {"id": "qn-ns1-v2", "values": [0.3, 0.4]},
         ],
         namespace=ns1,
     )
-    await idx.upsert(
+    assert upserted.upserted_count == 2
+    upserted = await idx.upsert(
         vectors=[
             {"id": "qn-ns2-v1", "values": [0.5, 0.6]},
             {"id": "qn-ns2-v2", "values": [0.7, 0.8]},
         ],
         namespace=ns2,
     )
+    assert upserted.upserted_count == 2
 
     # Wait until at least one vector from each namespace is queryable
     await async_poll_until(
@@ -550,7 +542,7 @@ async def test_metadata_filter_numeric_operators_rest_async(
     idx = await async_client.index(name=shared_index_dim2)
 
     # Upsert 4 vectors with distinct integer year metadata values
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {"id": "nf-v1", "values": [0.1, 0.2], "metadata": {"year": 2019}},
             {"id": "nf-v2", "values": [0.3, 0.4], "metadata": {"year": 2020}},
@@ -559,6 +551,7 @@ async def test_metadata_filter_numeric_operators_rest_async(
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 4
 
     # Wait until all 4 vectors are visible
     await async_poll_until(
@@ -665,7 +658,7 @@ async def test_metadata_filter_logical_operators_rest_async(
     idx = await async_client.index(name=shared_index_dim2)
 
     # Upsert 4 vectors with genre + year metadata
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {
                 "id": "lo-v1",
@@ -690,6 +683,7 @@ async def test_metadata_filter_logical_operators_rest_async(
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 4
 
     # Wait until all 4 vectors are visible
     await async_poll_until(
@@ -769,7 +763,7 @@ async def test_fetch_by_metadata_rest_async(
     idx = await async_client.index(name=shared_index_dim3)
 
     # Upsert vectors with metadata; only v1 and v3 have genre=comedy
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {
                 "id": "fm-v1",
@@ -789,6 +783,7 @@ async def test_fetch_by_metadata_rest_async(
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait until the 3 vectors are indexed in our namespace (eventual consistency)
     await async_poll_until(
@@ -847,7 +842,7 @@ async def test_metadata_filter_exists_operator_rest_async(
     idx = await async_client.index(name=shared_index_dim3)
 
     # v1 and v2 carry "premium" field; v3 does not
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {
                 "id": "ex-v1",
@@ -863,6 +858,7 @@ async def test_metadata_filter_exists_operator_rest_async(
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait until all 3 vectors are queryable (eventual consistency)
     await async_poll_until(
@@ -931,7 +927,7 @@ async def test_fetch_by_metadata_pagination_rest_async(
 
     # Upsert 5 vectors — all with genre=scifi so all match the filter
     target_ids = {"fbm-p1", "fbm-p2", "fbm-p3", "fbm-p4", "fbm-p5"}
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {"id": "fbm-p1", "values": [0.1, 0.2, 0.3], "metadata": {"genre": "scifi"}},
             {"id": "fbm-p2", "values": [0.2, 0.3, 0.4], "metadata": {"genre": "scifi"}},
@@ -941,6 +937,7 @@ async def test_fetch_by_metadata_pagination_rest_async(
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 5
 
     async def _paginate_all() -> set[str]:
         """Collect all IDs returned by limit=2 pagination, asserting invariants."""
@@ -1192,7 +1189,7 @@ async def test_metadata_filter_boolean_values_rest_async(
     idx = await async_client.index(name=shared_index_dim2)
 
     # Upsert 3 vectors: 2 active=True, 1 active=False
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {"id": "bool-a1", "values": [0.1, 0.2], "metadata": {"active": True, "label": "a"}},
             {
@@ -1204,6 +1201,7 @@ async def test_metadata_filter_boolean_values_rest_async(
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait until all 3 vectors are queryable (eventual consistency)
     await async_poll_until(
@@ -1287,6 +1285,7 @@ async def test_response_info_populated_on_data_plane_responses_async(
         namespace=ns,
     )
     assert isinstance(upsert_result, UpsertResponse)
+    assert upsert_result.upserted_count == 2
     assert upsert_result.response_info is not None, (
         "AsyncIndex UpsertResponse.response_info should be set (non-None) after a real API call"
     )
@@ -1351,13 +1350,14 @@ async def test_unicode_metadata_round_trip_rest_async(
     }
     ascii_meta = {"lang": "english", "emoji": "none", "accented": "plain"}
 
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {"id": "uni-a1", "values": [0.1, 0.9], "metadata": unicode_meta},
             {"id": "uni-a2", "values": [0.9, 0.1], "metadata": ascii_meta},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     # Wait until both vectors are queryable (eventual consistency)
     await async_poll_until(
@@ -1427,53 +1427,35 @@ async def test_unicode_metadata_round_trip_rest_async(
 
 @pytest.mark.integration
 @pytest.mark.anyio
-async def test_sparse_index_lifecycle_rest_async(async_client: AsyncPinecone) -> None:
-    """Create sparse index (vector_type='sparse', no dimension), describe to verify properties, upsert sparse-only vectors, fetch back (REST async).
+async def test_sparse_index_lifecycle_rest_async(
+    async_client: AsyncPinecone, sparse_index: LegacyIndex
+) -> None:
+    """Describe a sparse index to verify properties, upsert sparse-only vectors, fetch back (REST async).
 
     Verifies:
-    - unified-sparse-0001: Sparse index can be created without specifying a dimension, using dotproduct metric.
-    - unified-sparse-0002: Described sparse index reports vector_type='sparse', metric='dotproduct', dimension=None.
+    - unified-sparse-0001: A sparse index carries no dimension.
+    - unified-sparse-0002: A described sparse index reports a sparse vector field
+      and no dense one.
     - unified-vecfmt-0005: Can accept vectors as dictionaries with sparse values only (no dense values required).
+
+    The old ``vector_type`` / ``metric`` / ``dimension`` triple has no 2026-07
+    equivalent — ``IndexModel`` dropped all three, and a sparse vector field
+    carries neither a dimension nor a metric. What survives is the schema:
+    a sparse index declares the reserved sparse field and no dense field.
     """
-    name = unique_name("idx")
+    ns = f"ns-{uuid.uuid4().hex[:8]}"
     idx: AsyncIndex | None = None
     try:
-        # Create sparse index — no dimension, dotproduct metric, vector_type=sparse
-        model = await async_client.indexes.create(
-            name=name,
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-            vector_type="sparse",
-            metric="dotproduct",
-            timeout=300,
-        )
-
-        # Verify create() return — unified-sparse-0001
-        assert isinstance(model, IndexModel)
-        assert model.vector_type == "sparse", (
-            f"Expected vector_type='sparse', got {model.vector_type!r}"
-        )
-        assert model.metric == "dotproduct", f"Expected metric='dotproduct', got {model.metric!r}"
-        assert model.dimension is None, (
-            f"Sparse index must have dimension=None, got {model.dimension!r}"
-        )
-
-        # Populate host cache then get index handle
-        desc = await async_client.indexes.describe(name)
-
-        # Verify describe() — unified-sparse-0002
+        desc = await async_client.indexes.describe(sparse_index.name)
         assert isinstance(desc, IndexModel)
-        assert desc.vector_type == "sparse", (
-            f"Described index: expected vector_type='sparse', got {desc.vector_type!r}"
+        assert set(desc.schema.fields) == {LEGACY_SPARSE_FIELD}, (
+            f"Described sparse index should declare only {LEGACY_SPARSE_FIELD!r}; "
+            f"got {sorted(desc.schema.fields)}"
         )
-        assert desc.metric == "dotproduct", (
-            f"Described index: expected metric='dotproduct', got {desc.metric!r}"
-        )
-        assert desc.dimension is None, (
-            f"Described sparse index: expected dimension=None, got {desc.dimension!r}"
-        )
+        assert LEGACY_DENSE_FIELD not in desc.schema.fields
         assert desc.status.ready is True
 
-        idx = await async_client.index(name=name)
+        idx = await async_client.index(name=sparse_index.name)
 
         # Upsert sparse-only vectors (no dense values) — unified-vecfmt-0005
         upsert_resp = await idx.upsert(
@@ -1486,21 +1468,22 @@ async def test_sparse_index_lifecycle_rest_async(async_client: AsyncPinecone) ->
                     "id": "sp-a2",
                     "sparse_values": {"indices": [2, 7], "values": [0.3, 0.9]},
                 },
-            ]
+            ],
+            namespace=ns,
         )
         assert isinstance(upsert_resp, UpsertResponse)
         assert upsert_resp.upserted_count == 2
 
         # Wait for vectors to be fetchable (eventual consistency)
         await async_poll_until(
-            query_fn=lambda: idx.fetch(ids=["sp-a1", "sp-a2"]),
+            query_fn=lambda: idx.fetch(ids=["sp-a1", "sp-a2"], namespace=ns),
             check_fn=lambda r: len(r.vectors) == 2,
             timeout=120,
             description="sparse-only vectors fetchable after upsert (async REST)",
         )
 
         # Fetch and verify sparse-only structure
-        fetch_resp = await idx.fetch(ids=["sp-a1", "sp-a2"])
+        fetch_resp = await idx.fetch(ids=["sp-a1", "sp-a2"], namespace=ns)
         assert isinstance(fetch_resp, FetchResponse)
         assert "sp-a1" in fetch_resp.vectors
         assert "sp-a2" in fetch_resp.vectors
@@ -1539,11 +1522,6 @@ async def test_sparse_index_lifecycle_rest_async(async_client: AsyncPinecone) ->
     finally:
         if idx is not None:
             await idx.close()
-        await async_cleanup_resource(
-            lambda: async_client.indexes.delete(name),
-            name,
-            "index",
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -1632,13 +1610,14 @@ async def test_query_after_delete_reflects_deletion_async(
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     idx = await async_client.index(name=shared_index_dim4_dotproduct)
 
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {"id": "qada-v1", "values": [1.0, 0.0, 0.0, 0.0]},
             {"id": "qada-v2", "values": [0.0, 1.0, 0.0, 0.0]},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     # Wait until both vectors are queryable
     async def _query_both() -> QueryResponse:
@@ -1805,7 +1784,7 @@ async def test_query_with_sparse_values_object_async(
     idx = await async_client.index(name=shared_index_dim4_dotproduct)
 
     # Upsert two hybrid vectors
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {
                 "id": "svobja-v1",
@@ -1820,6 +1799,7 @@ async def test_query_with_sparse_values_object_async(
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     # Wait for eventual consistency
     await async_poll_until(
@@ -1878,7 +1858,7 @@ async def test_update_values_preserves_metadata_rest_async(
     idx = await async_client.index(name=shared_index_dim2)
 
     # Upsert a vector WITH metadata attached
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {
                 "id": "uvpma-v1",
@@ -1888,6 +1868,7 @@ async def test_update_values_preserves_metadata_rest_async(
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 1
 
     # Wait until the vector is fetchable with metadata
     await async_poll_until(
