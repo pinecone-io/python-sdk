@@ -100,7 +100,7 @@ class Projects:
                 exceeds 512 characters, or contains null bytes.
             :exc:`~pinecone.errors.exceptions.PaymentRequiredError`: If the organization's
                 billing state does not permit creating a project (402).
-            :exc:`~pinecone.errors.exceptions.ForbiddenError`: (403) Either the organization
+            :exc:`~pinecone.errors.exceptions.ForbiddenError`: Either the organization
                 has reached its project quota, or *force_encryption_with_cmek* was
                 requested without CMEK enabled. As elsewhere on the admin API, quota
                 exhaustion is a **403, not a 429**.
@@ -266,9 +266,9 @@ class Projects:
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *project_id* is empty,
                 or if *name* is empty, exceeds 512 characters, or contains null bytes.
-            :exc:`~pinecone.errors.exceptions.ForbiddenError`: (403) If
+            :exc:`~pinecone.errors.exceptions.ForbiddenError`: If
                 *force_encryption_with_cmek* is ``True`` and CMEK is not enabled for
-                the organization.
+                the organization (403).
             :exc:`ApiError`: If the API returns an error response — including the 400s for
                 a non-zero *max_pods* without pod access and for attempting to turn CMEK
                 back off.
@@ -499,9 +499,9 @@ class Projects:
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *project_id* is empty.
-            :exc:`~pinecone.errors.exceptions.FailedPreconditionError`: (412) If the project
-                still owns indexes, collections, assistants, or backups. The error names
-                what is blocking.
+            :exc:`~pinecone.errors.exceptions.FailedPreconditionError`: If the project
+                still owns indexes, collections, assistants, or backups (412). The error
+                names what is blocking.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:

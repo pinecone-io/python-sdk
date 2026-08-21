@@ -137,9 +137,9 @@ class Organizations:
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *organization_id* is empty.
-            :exc:`~pinecone.errors.exceptions.FailedPreconditionError`: (412) If the
+            :exc:`~pinecone.errors.exceptions.FailedPreconditionError`: If the
                 organization is on a paid plan, its payment status is not active, or it
-                still contains projects. The error names the blocker.
+                still contains projects (412). The error names the blocker.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:

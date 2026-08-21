@@ -117,7 +117,7 @@ class ApiKeys:
                 If *project_id* or *name* is empty, or if *name* exceeds 80 characters.
             :exc:`~pinecone.errors.exceptions.PaymentRequiredError`: If the organization's
                 billing state does not permit creating an API key (402).
-            :exc:`~pinecone.errors.exceptions.ForbiddenError`: (403) Either the project has
+            :exc:`~pinecone.errors.exceptions.ForbiddenError`: Either the project has
                 reached its API-key quota, or *roles* names a role the organization's plan
                 does not permit (see *roles* above). The error message distinguishes the
                 two. Note that quota exhaustion on the admin API is a **403, not a 429** —
@@ -204,8 +204,8 @@ class ApiKeys:
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *api_key_id* is empty.
-            :exc:`~pinecone.errors.exceptions.ForbiddenError`: (403) If *roles* names a role
-                the organization's plan does not permit for API keys. Unlike
+            :exc:`~pinecone.errors.exceptions.ForbiddenError`: If *roles* names a role
+                the organization's plan does not permit for API keys (403). Unlike
                 :meth:`create`, no API-key quota check applies here.
             :exc:`ApiError`: If the API returns an error response.
 
