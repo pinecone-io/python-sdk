@@ -58,10 +58,16 @@ full document-surface write-up, including the preview-to-GA renames, is
 | 6 | `start_import(error_mode=...)` omitted | documented as `"continue"` in two of three lanes | documented as `"abort"`, which is what the server has always done |
 | 7 | `create_namespace(schema=...)` omitted | read as "index every field" | inherits the index's own metadata-index configuration |
 | 8 | Enum members on the wire | mangled in inference request bodies and query strings | resolved to their values; no `db_data` call was affected |
+| 9 | `query(id=..., sparse_vector=...)` | only `id` alongside `vector` was rejected client-side; `id` alongside `sparse_vector` was forwarded | `id` is rejected alongside either `vector` or `sparse_vector` |
+| 10 | `update(filter=..., values=...)` / `update(filter=..., sparse_values=...)` | forwarded to the server | raises `PineconeValueError` before any request; a by-filter update cannot carry vector values |
+| 11 | Empty `filter={}` on `delete`, `update`, `fetch_by_metadata` | forwarded to the server, which rejected it | raises `PineconeValueError` locally, with the server's own wording |
+| 12 | `fetch(ids=...)`, `fetch_by_metadata(limit=...)`, `list_paginated(prefix=..., limit=...)` | `fetch` checked only that `ids` was non-empty; `fetch_by_metadata` checked only that `limit` was positive; `list_paginated` validated neither argument | all three validate the same ID/prefix shape and limit range every other vector operation already used |
 
 Rows 1, 3 and 4 change the bytes the SDK puts on the wire. Rows 2, 6 and 7
 change documentation that was wrong, not behavior. Row 5 changes what a working
-index declaration looks like. Row 8 is here so you can rule it out.
+index declaration looks like. Row 8 is here so you can rule it out. Rows 9-12
+add client-side checks for requests the server was already going to refuse —
+see each section for what was refused before and what raises locally now.
 
 ## 1. `query(top_k=...)` is bounded at both ends on every lane
 
@@ -304,6 +310,105 @@ name. No `db_data` operation takes an enum-valued query parameter.
 The query-string fix landed at the encoder every request passes through, so a
 `db_data` query parameter added after this release cannot reintroduce the
 problem either.
+
+## 9. `query` now rejects `id` alongside `sparse_vector`, not just `vector`
+
+`query` accepts a stored vector's `id`, literal `vector`/`sparse_vector` data,
+or both vector forms together for a hybrid query — but never `id` together
+with either, and never none of the three. Before this release only the
+`id`+`vector` combination was checked client-side; `id`+`sparse_vector` was
+forwarded and refused by the server instead. Both now raise before any
+request is sent:
+
+```python
+idx.query(id="article-101", sparse_vector={"indices": [0, 1], "values": [0.5, 0.5]}, top_k=10)
+# PineconeValueError: id is mutually exclusive with sparse_vector — a query uses
+# a stored vector's id OR literal vector data, not both. Pass id alone to query
+# by stored vector, or sparse_vector alone to query by value. Cannot provide
+# both 'ID' and 'sparse_vector' at the same time
+```
+
+A hybrid query — `vector` and `sparse_vector` together, no `id` — is unaffected
+and still works exactly as before.
+
+## 10. A by-filter `update` cannot carry `values` or `sparse_values`
+
+A by-filter update spans every record the filter matches, so it can only set
+metadata — there is no single vector for `values` or `sparse_values` to apply
+to. This was already true of the server; the SDK now catches it before the
+request leaves the process instead of forwarding it:
+
+```python
+idx.update(filter={"genre": {"$eq": "drama"}}, values=[0.1, 0.2, 0.3])
+# PineconeValueError: filter is mutually exclusive with values — a by-filter
+# update is metadata-only, because it spans every record the filter matches.
+# Pass set_metadata to update metadata by filter, or id to update one record's
+# vector values. Update by metadata request does not support updating vector
+# values.
+```
+
+Update by `id` to change one record's vector values; update by `filter` to
+change metadata on every record the filter matches, via `set_metadata`.
+
+**`id` and `filter` together were already rejected before this release, and
+still are** — that check did not change. It is worth restating here because
+`2026-07`'s spec text no longer describes `id` and `filter` as mutually
+exclusive, so a request built by hand against the raw HTTP API can carry both
+where the SDK cannot: doing so selects by `filter` and applies to every
+matching record, silently dropping `id` rather than reporting a conflict. The
+SDK keeps refusing the combination so that never happens through it.
+
+## 11. An empty `filter={}` now raises locally on `delete`, `update`, and `fetch_by_metadata`
+
+All three have always rejected a metadata filter with no conditions — an empty
+filter reads like "match nothing", but none of them treats it that way. Before
+this release the empty dict was forwarded and refused by the server; now it
+raises before any request is sent, quoting the same wording the server would
+have used:
+
+```python
+idx.delete(filter={})
+# PineconeValueError: filter must contain at least one condition, got {}.
+# Delete with empty metadata filter is not allowed
+```
+
+`update` and `fetch_by_metadata` raise the equivalent message for their own
+operations. Neither has an "everything" mode an empty filter could have stood
+in for: `update` always targets one `id` or one non-empty `filter`, and
+`fetch_by_metadata`'s `filter` has no default at all. `delete` is the one
+operation here with a true match-everything mode — spell it with
+`delete_all=True`, not an empty filter.
+
+## 12. `fetch`, `fetch_by_metadata`, and `list_paginated` validate IDs, prefixes, and page sizes up front
+
+`fetch`'s `ids`, `list_paginated`'s `prefix`, and every vector `id` elsewhere
+on this surface share one rule: 1-512 ASCII characters, no NUL. Before this
+release, `fetch` checked only that `ids` was non-empty and `list_paginated`
+validated neither `prefix` nor `limit` at all — an oversized or non-ASCII value
+cost a round trip and came back as a server error. Both now raise locally:
+
+```python
+idx.fetch(ids=["a" * 600])
+# PineconeValueError: ids[0] exceeds the maximum length of 512 characters, got 600: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'...'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' (600 characters)
+```
+
+Page sizes follow the same pattern. `list_paginated`'s `limit` — previously
+unchecked — is now bounded 1-100. `fetch_by_metadata`'s `limit` was already
+checked, but only for zero and negative values; it is now also bounded above,
+at 10000:
+
+```python
+idx.list_paginated(limit=500)
+# PineconeValueError: limit must be between 1 and 100, got 500
+
+idx.fetch_by_metadata(filter={"genre": {"$eq": "comedy"}}, limit=20000)
+# PineconeValueError: limit must be between 1 and 10000, got 20000
+```
+
+As with row 1's `top_k` bound: these are deployment settings the server
+enforces, not constants of the API. A call inside the documented range that
+the server still refuses arrives as an `ApiError`; catch `PineconeError` if you
+need to handle both.
 
 ## What you do **not** need to change
 
