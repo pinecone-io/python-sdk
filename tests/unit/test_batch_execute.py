@@ -10,6 +10,7 @@ from pinecone._internal.batch import (
     async_batch_execute,
     batch_execute,
 )
+from pinecone.errors import PineconeValueError
 from pinecone.models.batch import BatchResult
 from pinecone.models.response_info import ResponseInfo
 
@@ -90,19 +91,21 @@ def test_batch_execute_partial_failure() -> None:
 
 
 def test_batch_execute_invalid_batch_size() -> None:
-    """batch_size=0 raises ValueError."""
-    with pytest.raises(ValueError, match="batch_size must be >= 1"):
+    """batch_size=0 raises PineconeValueError (a ValueError subclass)."""
+    with pytest.raises(PineconeValueError, match="batch_size must be >= 1") as exc_info:
         batch_execute(
             items=[{"id": "x"}],
             operation=lambda b: None,
             batch_size=0,
             show_progress=False,
         )
+    assert type(exc_info.value) is PineconeValueError
+    assert isinstance(exc_info.value, ValueError)
 
 
 def test_batch_execute_invalid_max_concurrency_zero() -> None:
-    """max_concurrency=0 raises ValueError."""
-    with pytest.raises(ValueError, match="concurrency must be between"):
+    """max_concurrency=0 raises PineconeValueError (a ValueError subclass)."""
+    with pytest.raises(PineconeValueError, match="concurrency must be between") as exc_info:
         batch_execute(
             items=[{"id": "x"}],
             operation=lambda b: None,
@@ -110,11 +113,13 @@ def test_batch_execute_invalid_max_concurrency_zero() -> None:
             max_concurrency=0,
             show_progress=False,
         )
+    assert type(exc_info.value) is PineconeValueError
+    assert isinstance(exc_info.value, ValueError)
 
 
 def test_batch_execute_invalid_max_concurrency_too_high() -> None:
-    """max_concurrency=65 raises ValueError."""
-    with pytest.raises(ValueError, match="concurrency must be between"):
+    """max_concurrency=65 raises PineconeValueError (a ValueError subclass)."""
+    with pytest.raises(PineconeValueError, match="concurrency must be between") as exc_info:
         batch_execute(
             items=[{"id": "x"}],
             operation=lambda b: None,
@@ -122,11 +127,69 @@ def test_batch_execute_invalid_max_concurrency_too_high() -> None:
             max_concurrency=65,
             show_progress=False,
         )
+    assert type(exc_info.value) is PineconeValueError
+    assert isinstance(exc_info.value, ValueError)
 
 
 # ---------------------------------------------------------------------------
 # Async: async_batch_execute
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_batch_execute_invalid_batch_size() -> None:
+    """Async: batch_size=0 raises PineconeValueError (mirrors the sync path)."""
+
+    async def noop(batch: list[dict]) -> None:  # type: ignore[type-arg]
+        pass
+
+    with pytest.raises(PineconeValueError, match="batch_size must be >= 1") as exc_info:
+        await async_batch_execute(
+            items=[{"id": "x"}],
+            operation=noop,
+            batch_size=0,
+            show_progress=False,
+        )
+    assert type(exc_info.value) is PineconeValueError
+    assert isinstance(exc_info.value, ValueError)
+
+
+@pytest.mark.asyncio
+async def test_async_batch_execute_invalid_max_concurrency_zero() -> None:
+    """Async: max_concurrency=0 raises PineconeValueError (mirrors the sync path)."""
+
+    async def noop(batch: list[dict]) -> None:  # type: ignore[type-arg]
+        pass
+
+    with pytest.raises(PineconeValueError, match="concurrency must be between") as exc_info:
+        await async_batch_execute(
+            items=[{"id": "x"}],
+            operation=noop,
+            batch_size=1,
+            max_concurrency=0,
+            show_progress=False,
+        )
+    assert type(exc_info.value) is PineconeValueError
+    assert isinstance(exc_info.value, ValueError)
+
+
+@pytest.mark.asyncio
+async def test_async_batch_execute_invalid_max_concurrency_too_high() -> None:
+    """Async: max_concurrency=65 raises PineconeValueError (mirrors the sync path)."""
+
+    async def noop(batch: list[dict]) -> None:  # type: ignore[type-arg]
+        pass
+
+    with pytest.raises(PineconeValueError, match="concurrency must be between") as exc_info:
+        await async_batch_execute(
+            items=[{"id": "x"}],
+            operation=noop,
+            batch_size=1,
+            max_concurrency=65,
+            show_progress=False,
+        )
+    assert type(exc_info.value) is PineconeValueError
+    assert isinstance(exc_info.value, ValueError)
 
 
 @pytest.mark.asyncio

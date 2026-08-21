@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
+from pinecone.errors.exceptions import PineconeValueError
+
 if TYPE_CHECKING:
     from pinecone.models.assistant.evaluation import AlignmentResult
     from pinecone.models.assistant.list import ListAssistantsResponse
@@ -105,7 +107,7 @@ class AsyncAssistantsLegacyNamespaceMixin:
         Accepts ``assistant_name`` (legacy) or ``name`` (current), but not both.
         """
         if assistant_name is not None and name is not None:
-            raise TypeError(
+            raise PineconeValueError(
                 "describe_assistant() received both 'assistant_name' (legacy) and 'name'. "
                 "Pass only one — prefer 'name'."
             )

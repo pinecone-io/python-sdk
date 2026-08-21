@@ -15,6 +15,7 @@ from concurrent.futures import TimeoutError as _FuturesTimeoutError
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
+from pinecone.errors.exceptions import PineconeValueError
 from pinecone.models.batch import BatchError, BatchResult
 from pinecone.models.response_info import BatchResponseInfo
 
@@ -32,11 +33,13 @@ T = TypeVar("T")
 
 
 def _validate_batch_params(batch_size: int, concurrency: int) -> None:
-    """Raise ``ValueError`` for invalid batch_size or concurrency values."""
+    """Raise ``PineconeValueError`` for invalid batch_size or concurrency values."""
     if batch_size < 1:
-        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+        raise PineconeValueError(f"batch_size must be >= 1, got {batch_size}")
     if concurrency < 1 or concurrency > _MAX_WORKERS:
-        raise ValueError(f"concurrency must be between 1 and {_MAX_WORKERS}, got {concurrency}")
+        raise PineconeValueError(
+            f"concurrency must be between 1 and {_MAX_WORKERS}, got {concurrency}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +226,7 @@ def batch_execute(
         BatchResult with aggregated success/failure counts.
 
     Raises:
-        ValueError: If *batch_size* or *max_concurrency* is out of range.
+        PineconeValueError: If *batch_size* or *max_concurrency* is out of range.
     """
     _validate_batch_params(batch_size, max_concurrency)
 
@@ -408,7 +411,7 @@ async def async_batch_execute(
         BatchResult with aggregated success/failure counts.
 
     Raises:
-        ValueError: If *batch_size* or *max_concurrency* is out of range.
+        PineconeValueError: If *batch_size* or *max_concurrency* is out of range.
     """
     _validate_batch_params(batch_size, max_concurrency)
 
