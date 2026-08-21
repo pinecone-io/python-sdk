@@ -46,7 +46,7 @@ from pinecone._internal.adapters.inference_adapter import _EmbedEnvelope, _Model
 from pinecone._internal.config import PineconeConfig
 from pinecone._internal.constants import DEFAULT_BASE_URL
 from pinecone.client.inference import Inference
-from pinecone.models.enums import EmbedModel, RerankModel
+from pinecone.models.enums import EmbedModel, RerankModel, VectorType
 from pinecone.models.inference.embed import SparseEmbedding
 from pinecone.models.inference.models import ModelInfo
 from pinecone.models.inference.rerank import RerankResult
@@ -300,6 +300,33 @@ def test_list_models(claim: Any, inference: Inference, respx_mock: respx.MockRou
     request = route.calls.last.request
     assert request.url.params["type"] == "embed"
     assert request.url.params["vector_type"] == "dense"
+    claim.assert_request(request)
+    claim.assert_api_version(request)
+    claim.assert_roundtrip(_ModelListEnvelope, MODEL_LIST, optional_absent=["models"])
+
+
+@api_op("inference:list_models")
+@pytest.mark.parametrize("member", list(VectorType), ids=lambda m: m.name)
+def test_list_models_with_a_vector_type_member(
+    claim: Any, inference: Inference, respx_mock: respx.MockRouter, member: VectorType
+) -> None:
+    """A ``VectorType`` member must reach the query string as its value.
+
+    ``VectorType`` is a ``(str, Enum)`` mixin and httpx encodes query values with
+    ``str()``, so the member spelling sent ``?vector_type=VectorType.DENSE`` until
+    #371 — a value the gateway rejects. Parametrized over the whole enum so a
+    member added later is covered without editing this test.
+    """
+    route = respx_mock.get(f"{BASE_URL}/models").mock(
+        return_value=httpx.Response(200, json=MODEL_LIST)
+    )
+
+    result = inference.list_models(type="embed", vector_type=member)
+    assert result.names() == [MODEL_NAME]
+
+    request = route.calls.last.request
+    assert dict(request.url.params) == {"type": "embed", "vector_type": member.value}
+    assert "VectorType" not in str(request.url)
     claim.assert_request(request)
     claim.assert_api_version(request)
     claim.assert_roundtrip(_ModelListEnvelope, MODEL_LIST, optional_absent=["models"])

@@ -11,6 +11,7 @@ import socket
 import sys
 import time
 from collections.abc import AsyncGenerator, Generator, Mapping, Sequence
+from enum import Enum
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -216,6 +217,44 @@ def _prepare_json_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
         headers: dict[str, str] = kwargs.pop("headers", {})
         headers["Content-Type"] = "application/json"
         kwargs["headers"] = headers
+    return kwargs
+
+
+def _resolve_query_value(value: Any) -> Any:
+    """Return the wire form of one query-parameter value.
+
+    ``Enum`` members stand for their ``.value``; every other value is passed
+    through untouched so httpx keeps encoding ints and bools as it always has.
+    """
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, (list, tuple)):
+        return [_resolve_query_value(item) for item in value]
+    return value
+
+
+def _prepare_params(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """If *kwargs* contains ``params=``, replace enum members with their values.
+
+    httpx encodes every query value with ``str()``, and a ``(str, Enum)`` member
+    stringifies to ``"VectorType.DENSE"`` rather than ``"dense"`` — so a member
+    that reaches this boundary unresolved goes on the wire mangled. Bodies are
+    not exposed to this: orjson and msgspec both serialize a member by its value.
+    Normalizing here rather than at each call site covers every query parameter
+    on every surface, including ones added later (issue #371).
+
+    An already-encoded ``params`` — a query string, or an ``httpx.QueryParams``,
+    which stringifies its values on construction — is left alone. There is no
+    member left in it to resolve, and rebuilding one as a dict would drop
+    repeated keys.
+    """
+    params = kwargs.get("params")
+    if params is None or isinstance(params, (str, bytes, httpx.QueryParams)):
+        return kwargs
+    if isinstance(params, Mapping):
+        kwargs["params"] = {key: _resolve_query_value(value) for key, value in params.items()}
+    elif isinstance(params, (list, tuple)):
+        kwargs["params"] = [(key, _resolve_query_value(value)) for key, value in params]
     return kwargs
 
 
@@ -672,7 +711,7 @@ class HTTPClient:
         _log_curl("GET", self._build_url(path), dict(self._headers))
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = self._client.get(path, timeout=effective_timeout, **kwargs)
+            response = self._client.get(path, timeout=effective_timeout, **_prepare_params(kwargs))
         except httpx.TimeoutException as exc:
             raise PineconeTimeoutError(str(exc)) from exc
         except httpx.TransportError as exc:
@@ -745,7 +784,7 @@ class HTTPClient:
             return response
 
         # Slow path: caller passed params=, files=, headers=, content=, etc.
-        kwargs = _prepare_json_kwargs(kwargs)
+        kwargs = _prepare_params(_prepare_json_kwargs(kwargs))
         body = kwargs.get("content") if isinstance(kwargs.get("content"), bytes) else None
         merged_headers = {**self._headers, **kwargs.get("headers", {})}
         _log_curl("POST", self._build_url(path), merged_headers, body=body)
@@ -776,7 +815,7 @@ class HTTPClient:
         _log_curl("PUT", self._build_url(path), merged_headers, body=body)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = self._client.put(path, timeout=effective_timeout, **kwargs)
+            response = self._client.put(path, timeout=effective_timeout, **_prepare_params(kwargs))
         except httpx.TimeoutException as exc:
             raise PineconeTimeoutError(str(exc)) from exc
         except httpx.TransportError as exc:
@@ -794,7 +833,9 @@ class HTTPClient:
         _log_curl("PATCH", self._build_url(path), merged_headers, body=body)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = self._client.patch(path, timeout=effective_timeout, **kwargs)
+            response = self._client.patch(
+                path, timeout=effective_timeout, **_prepare_params(kwargs)
+            )
         except httpx.TimeoutException as exc:
             raise PineconeTimeoutError(str(exc)) from exc
         except httpx.TransportError as exc:
@@ -809,7 +850,9 @@ class HTTPClient:
         _log_curl("DELETE", self._build_url(path), dict(self._headers))
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = self._client.delete(path, timeout=effective_timeout, **kwargs)
+            response = self._client.delete(
+                path, timeout=effective_timeout, **_prepare_params(kwargs)
+            )
         except httpx.TimeoutException as exc:
             raise PineconeTimeoutError(str(exc)) from exc
         except httpx.TransportError as exc:
@@ -915,7 +958,9 @@ class AsyncHTTPClient:
     ) -> httpx.Response:
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = await self._ensure_client().get(path, timeout=effective_timeout, **kwargs)
+            response = await self._ensure_client().get(
+                path, timeout=effective_timeout, **_prepare_params(kwargs)
+            )
         except httpx.TimeoutException as exc:
             raise PineconeTimeoutError(str(exc)) from exc
         except httpx.TransportError as exc:
@@ -930,7 +975,7 @@ class AsyncHTTPClient:
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = await self._ensure_client().post(
-                path, timeout=effective_timeout, **_prepare_json_kwargs(kwargs)
+                path, timeout=effective_timeout, **_prepare_params(_prepare_json_kwargs(kwargs))
             )
         except httpx.TimeoutException as exc:
             raise PineconeTimeoutError(str(exc)) from exc
@@ -946,7 +991,7 @@ class AsyncHTTPClient:
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = await self._ensure_client().put(
-                path, timeout=effective_timeout, **_prepare_json_kwargs(kwargs)
+                path, timeout=effective_timeout, **_prepare_params(_prepare_json_kwargs(kwargs))
             )
         except httpx.TimeoutException as exc:
             raise PineconeTimeoutError(str(exc)) from exc
@@ -962,7 +1007,7 @@ class AsyncHTTPClient:
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = await self._ensure_client().patch(
-                path, timeout=effective_timeout, **_prepare_json_kwargs(kwargs)
+                path, timeout=effective_timeout, **_prepare_params(_prepare_json_kwargs(kwargs))
             )
         except httpx.TimeoutException as exc:
             raise PineconeTimeoutError(str(exc)) from exc
@@ -977,7 +1022,9 @@ class AsyncHTTPClient:
     ) -> httpx.Response:
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = await self._ensure_client().delete(path, timeout=effective_timeout, **kwargs)
+            response = await self._ensure_client().delete(
+                path, timeout=effective_timeout, **_prepare_params(kwargs)
+            )
         except httpx.TimeoutException as exc:
             raise PineconeTimeoutError(str(exc)) from exc
         except httpx.TransportError as exc:

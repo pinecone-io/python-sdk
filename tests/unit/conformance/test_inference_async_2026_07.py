@@ -38,7 +38,7 @@ import respx
 from pinecone._internal.adapters.inference_adapter import _EmbedEnvelope, _ModelListEnvelope
 from pinecone._internal.config import PineconeConfig
 from pinecone.async_client.inference import AsyncInference
-from pinecone.models.enums import EmbedModel, RerankModel
+from pinecone.models.enums import EmbedModel, RerankModel, VectorType
 from pinecone.models.inference.embed import SparseEmbedding
 from pinecone.models.inference.models import ModelInfo
 from pinecone.models.inference.rerank import RerankResult
@@ -219,6 +219,30 @@ async def test_async_list_models(
 
     request = route.calls.last.request
     assert dict(request.url.params) == {"type": "embed", "vector_type": "dense"}
+    claim.assert_request(request)
+    claim.assert_api_version(request)
+    claim.assert_roundtrip(_ModelListEnvelope, MODEL_LIST, optional_absent=["models"])
+
+
+@api_op("inference:list_models")
+@pytest.mark.parametrize("member", list(VectorType), ids=lambda m: m.name)
+async def test_async_list_models_with_a_vector_type_member(
+    claim: Any,
+    async_inference: AsyncInference,
+    respx_mock: respx.MockRouter,
+    member: VectorType,
+) -> None:
+    """The async twin of ``test_list_models_with_a_vector_type_member``."""
+    route = respx_mock.get(f"{BASE_URL}/models").mock(
+        return_value=httpx.Response(200, json=MODEL_LIST)
+    )
+
+    result = await async_inference.list_models(type="embed", vector_type=member)
+    assert result.names() == [MODEL_NAME]
+
+    request = route.calls.last.request
+    assert dict(request.url.params) == {"type": "embed", "vector_type": member.value}
+    assert "VectorType" not in str(request.url)
     claim.assert_request(request)
     claim.assert_api_version(request)
     claim.assert_roundtrip(_ModelListEnvelope, MODEL_LIST, optional_absent=["models"])
