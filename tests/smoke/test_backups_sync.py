@@ -14,7 +14,8 @@ import time
 
 import pytest
 
-from pinecone import NotFoundError, Pinecone, ServerlessSpec
+from pinecone import NotFoundError, Pinecone
+from tests.integration.index_shapes import MANAGED_AWS, dense_schema
 from tests.smoke.conftest import (
     SMOKE_PREFIX,
     ensure_index_deleted,
@@ -28,24 +29,22 @@ if os.getenv("SMOKE_RUN_BACKUPS") != "1":
         allow_module_level=True,
     )
 
-CLOUD = "aws"
-REGION = "us-east-1"
 DIM = 8
 
 
 @pytest.mark.smoke
 def test_backups_smoke(client: Pinecone) -> None:
-    """End-to-end backup walkthrough on a fresh serverless index."""
+    """End-to-end backup walkthrough on a fresh managed index."""
     index_name = unique_name(f"{SMOKE_PREFIX}-bkp")
     backup_id: str | None = None
 
     try:
-        # ----- Create a tiny serverless index to back up -----
+        # Nothing below touches the vectors API, so a 2026-07 document-schema
+        # index is a legitimate subject here (#322).
         client.indexes.create(
             name=index_name,
-            spec=ServerlessSpec(cloud=CLOUD, region=REGION),
-            dimension=DIM,
-            metric="cosine",
+            schema=dense_schema(DIM),
+            deployment=MANAGED_AWS,
         )
 
         # ----- backups.create -----

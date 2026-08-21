@@ -14,8 +14,9 @@ import os
 
 import pytest
 
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import Pinecone
 from pinecone.index import Index
+from tests.integration.index_shapes import MANAGED_AWS, dense_schema
 from tests.smoke.conftest import (
     SMOKE_PREFIX,
     ensure_index_deleted,
@@ -34,8 +35,6 @@ if not _IMPORT_URI:
         allow_module_level=True,
     )
 
-CLOUD = "aws"
-REGION = "us-east-1"
 DIM = 8
 
 
@@ -47,9 +46,8 @@ def test_imports_lifecycle_sync(client: Pinecone) -> None:
     try:
         client.indexes.create(
             name=name,
-            spec=ServerlessSpec(cloud=CLOUD, region=REGION),
-            dimension=DIM,
-            metric="cosine",
+            schema=dense_schema(DIM),
+            deployment=MANAGED_AWS,
         )
         raw_idx = client.index(name=name)
         assert isinstance(raw_idx, Index)

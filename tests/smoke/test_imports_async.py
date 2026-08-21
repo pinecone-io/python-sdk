@@ -14,7 +14,8 @@ import os
 
 import pytest
 
-from pinecone import AsyncPinecone, ServerlessSpec
+from pinecone import AsyncPinecone
+from tests.integration.index_shapes import MANAGED_AWS, dense_schema
 from tests.smoke.conftest import (
     SMOKE_PREFIX,
     async_ensure_index_deleted,
@@ -33,8 +34,6 @@ if not _IMPORT_URI:
         allow_module_level=True,
     )
 
-CLOUD = "aws"
-REGION = "us-east-1"
 DIM = 8
 
 
@@ -48,9 +47,8 @@ async def test_imports_lifecycle_async(api_key: str) -> None:
     try:
         await pc.indexes.create(
             name=name,
-            spec=ServerlessSpec(cloud=CLOUD, region=REGION),
-            dimension=DIM,
-            metric="cosine",
+            schema=dense_schema(DIM),
+            deployment=MANAGED_AWS,
         )
         idx = await pc.index(name=name)
         try:
