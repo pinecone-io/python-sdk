@@ -32,9 +32,21 @@ from tests.factories import make_index_response
 BASE_URL = "https://api.test.pinecone.io"
 GUIDE = Path(__file__).resolve().parents[2] / "docs/migration/v10-2026-07-db-control.md"
 
-CREATE_FIELDS = {"name", "schema", "deployment", "read_capacity", "tags", "deletion_protection"}
+CREATE_FIELDS = {
+    "name",
+    "schema",
+    "deployment",
+    "read_capacity",
+    "tags",
+    "deletion_protection",
+    "cmek_id",
+}
 CONFIGURE_FIELDS = {"deployment", "schema", "read_capacity", "tags", "deletion_protection"}
 REMOVED_FIELDS = {"spec", "dimension", "metric", "vector_type", "pods", "metadata_config", "embed"}
+
+# Excluded from CREATE_FIELDS deliberately: the server rejects both
+# unconditionally, so the allowlist should keep failing any example sending one.
+SERVER_REJECTED_CREATE_FIELDS = {"source_collection", "source_backup_id"}
 
 Block = tuple[str, str]
 
@@ -146,6 +158,30 @@ def test_create_for_model_still_sends_the_legacy_cloud_region_embed_shape() -> N
         b'{"name":"docs","cloud":"aws","region":"us-east-1",'
         b'"embed":{"model":"multilingual-e5-large","field_map":{"text":"chunk_text"}}}'
     )
+
+
+def test_create_allowlist_covers_the_whole_sendable_create_surface() -> None:
+    """``CREATE_FIELDS`` gates every docs ticket's examples, not just this file's.
+
+    An author whose valid example carries a field missing from the allowlist
+    reads "sent unknown fields" and concludes their example is wrong, when the
+    allowlist is. So derive the expectation from the request model instead of
+    restating it: adding a field to ``CreateIndexRequest`` now fails here until
+    the allowlist is widened (or the field is named as server-rejected).
+    """
+    from pinecone.models.indexes.requests import CreateIndexRequest
+
+    sendable = set(CreateIndexRequest.__struct_fields__) - SERVER_REJECTED_CREATE_FIELDS
+    assert sendable == CREATE_FIELDS, (
+        "CREATE_FIELDS is out of step with CreateIndexRequest; a valid documented "
+        "example would fail with a misleading 'unknown fields' message"
+    )
+
+
+def test_configure_allowlist_covers_the_whole_sendable_configure_surface() -> None:
+    from pinecone.models.indexes.requests import ConfigureIndexRequest
+
+    assert set(ConfigureIndexRequest.__struct_fields__) == CONFIGURE_FIELDS
 
 
 def test_read_capacity_kwarg_is_deliberately_not_intercepted() -> None:
