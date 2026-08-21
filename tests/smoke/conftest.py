@@ -33,16 +33,19 @@ from pinecone import Pinecone
 
 # Re-export shared helpers so smoke tests can import them from this conftest.
 from tests.integration.conftest import (  # noqa: F401 — re-exported for tests
+    LegacyIndexFactory,
     async_cleanup_resource,
     async_client,
     async_ensure_index_deleted,
     async_poll_until,
     cleanup_resource,
     ensure_index_deleted,
+    legacy_index_factory,
     poll_until,
     unique_name,
     wait_for_ready,
 )
+from tests.integration.legacy_index import LegacyIndex
 from tests.live_suite import load_env, write_coverage_summary
 
 _HERE = Path(__file__).resolve().parent
@@ -143,6 +146,40 @@ def client(api_key: str) -> Pinecone:
     closed inside one test must not affect the next.
     """
     return Pinecone(api_key=api_key)
+
+
+SMOKE_VECTOR_DIM = 8
+"""Dimension shared by every smoke module that exercises the vectors API.
+
+One value, so all of them share a single index from the session-scoped
+factory instead of provisioning one each.
+"""
+
+
+@pytest.fixture(scope="session")
+def legacy_index_dim8(legacy_index_factory: LegacyIndexFactory) -> LegacyIndex:  # noqa: F811
+    """A ready dim-8 cosine legacy (vectors-API) index.
+
+    ``pc.indexes.create`` cannot produce an index the vectors API will serve —
+    2026-07 always persists a schema, and a schema naming its own data fields
+    is served by the documents API, which refuses ``upsert`` / ``query`` /
+    ``fetch`` (#322). Smoke modules whose scenario *is* the vectors data plane
+    therefore take their index from here.
+
+    Sibling of ``legacy_index_dim3`` in ``tests/integration/conftest.py`` and
+    built from the same session-scoped factory, so this directory shares that
+    one implementation rather than carrying a second copy of it (#379). See
+    :mod:`tests.integration.legacy_index` for the sanctioned pattern.
+
+    Session-scoped and shared, so a caller must isolate itself with a
+    per-test namespace and must not delete the index.
+
+    The ``noqa: F811`` is unavoidable: ``tests/smoke`` is a sibling of
+    ``tests/integration``, not a child, so the factory has to be re-exported
+    above to be resolvable here — and ruff reads the parameter of the same
+    name as a redefinition of that import.
+    """
+    return legacy_index_factory(dimension=SMOKE_VECTOR_DIM)
 
 
 # ---------------------------------------------------------------------------
