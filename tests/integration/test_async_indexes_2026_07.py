@@ -25,6 +25,7 @@ import pytest
 from pinecone import AsyncPinecone
 from pinecone.errors import ApiError, NotFoundError, PineconeError
 from pinecone.models.indexes.index import IndexModel
+from pinecone.schema_builder import SchemaBuilder
 
 pytestmark = [pytest.mark.integration]
 
@@ -89,6 +90,13 @@ async def test_create_fts_index(async_client: AsyncPinecone, index_name: str) ->
         },
         timeout=300,
     )
+    assert created.status.ready is True
+    assert "body" in created.schema.fields
+
+
+async def test_create_fts_index_from_builder(async_client: AsyncPinecone, index_name: str) -> None:
+    schema = SchemaBuilder().add_string_field("body", language="en").build()
+    created = await async_client.indexes.create(name=index_name, schema=schema, timeout=300)
     assert created.status.ready is True
     assert "body" in created.schema.fields
 

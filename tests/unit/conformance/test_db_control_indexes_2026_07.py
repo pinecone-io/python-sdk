@@ -111,6 +111,22 @@ POD_METADATA_INDEX: dict[str, Any] = {
     },
 }
 
+FTS_STRING_INDEX: dict[str, Any] = {
+    **INDEX,
+    "name": "conformance-fts-string-index",
+    "host": "https://conformance-fts-string-index-abc123.svc.aws-us-east-1.pinecone.io",
+    "schema": {
+        "fields": {
+            "embedding": {"type": "dense_vector", "dimension": 1024, "metric": "cosine"},
+            "title": {
+                "type": "string",
+                "description": None,
+                "full_text_search": {"language": "en", "stemming": False, "stop_words": False},
+            },
+        }
+    },
+}
+
 CREATE_SCHEMA: dict[str, Any] = {
     "fields": {"embedding": {"type": "dense_vector", "dimension": 1024, "metric": "cosine"}}
 }
@@ -287,6 +303,57 @@ async def test_async_create_index_pod_metadata_schema_from_builder(
     assert result.name == "conformance-pod-metadata-index"
     _assert_filterable_on_the_wire(route.calls.last.request)
     _conforms(claim, route, IndexModel, POD_METADATA_INDEX, INDEX_OPTIONALS)
+
+
+def _builder_fts_string_schema() -> dict[str, Any]:
+    return (
+        SchemaBuilder()
+        .add_dense_vector_field("embedding", dimension=1024, metric="cosine")
+        .add_string_field("title", language="en")
+        .build()
+    )
+
+
+def _assert_fts_string_field_on_the_wire(request: Any) -> None:
+    """The FTS string field the builder put on the wire selects the search
+    variant, not the metadata variant (#391): `filterable` is absent and
+    `full_text_search` carries the caller's config. Asserted against the
+    bytes of the request, matching #350/#374's precedent above, because a
+    dict-shape assertion cannot tell a variant-selecting body from an
+    undeserializable one."""
+    fields = json.loads(request.content)["schema"]["fields"]
+    assert set(fields) == {"embedding", "title"}
+    assert fields["title"] == {"type": "string", "full_text_search": {"language": "en"}}
+
+
+@api_op("db_control:create_index")
+def test_create_index_fts_string_schema_from_builder(
+    claim: Any, pc: Pinecone, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.post(f"{BASE_URL}/indexes").mock(
+        return_value=httpx.Response(201, json=FTS_STRING_INDEX)
+    )
+    result = pc.indexes.create(
+        name="conformance-fts-string-index", schema=_builder_fts_string_schema(), timeout=-1
+    )
+    assert result.name == "conformance-fts-string-index"
+    _assert_fts_string_field_on_the_wire(route.calls.last.request)
+    _conforms(claim, route, IndexModel, FTS_STRING_INDEX, INDEX_OPTIONALS)
+
+
+@api_op("db_control:create_index")
+async def test_async_create_index_fts_string_schema_from_builder(
+    claim: Any, async_pc: AsyncPinecone, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.post(f"{BASE_URL}/indexes").mock(
+        return_value=httpx.Response(201, json=FTS_STRING_INDEX)
+    )
+    result = await async_pc.indexes.create(
+        name="conformance-fts-string-index", schema=_builder_fts_string_schema(), timeout=-1
+    )
+    assert result.name == "conformance-fts-string-index"
+    _assert_fts_string_field_on_the_wire(route.calls.last.request)
+    _conforms(claim, route, IndexModel, FTS_STRING_INDEX, INDEX_OPTIONALS)
 
 
 @api_op("db_control:create_index_for_model")

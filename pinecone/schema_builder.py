@@ -366,15 +366,18 @@ class SchemaBuilder:
 
         .. important::
 
-           At API version ``2026-07``, a string field **without**
-           ``full_text_search`` is a metadata-only declaration, and the
-           server rejects it when creating managed or BYOC indexes
+           At API version ``2026-07``, a string field's shape decides which
+           deployment family accepts it. **Without** ``full_text_search``,
+           it is a metadata-only declaration: pod indexes accept it as
+           filterable metadata, while managed and BYOC indexes reject it
            (``400``: the schema only accepts fields used for search).
-           Pod indexes are the exception — they still accept string
-           fields without ``full_text_search`` as filterable metadata
-           declarations. For managed and BYOC indexes, omit metadata-only
-           fields from the schema and include the values in documents;
-           they are indexed for filtering automatically at upsert time.
+           **With** ``full_text_search``, it is the other way around: managed
+           and BYOC indexes accept it, while pod indexes reject it
+           (``400``: full-text-search fields are not supported for that
+           deployment type). For managed and BYOC indexes, omit
+           metadata-only fields from the schema and include the values in
+           documents instead; they are indexed for filtering automatically
+           at upsert time.
 
         When both ``full_text_search`` dict and keyword arguments are provided,
         the keyword arguments take precedence for the same key.
@@ -410,8 +413,14 @@ class SchemaBuilder:
                 ``stemming=True``. Not all languages support stop words;
                 the server will reject unsupported combinations — the SDK
                 does not pre-validate that rule.
-            filterable: Enable metadata-filter support. ``False`` values are
-                omitted from the wire payload.
+            filterable: Enable metadata-filter support. Sent on the wire,
+                including the ``False`` default, unless ``full_text_search``
+                is also enabled and ``filterable`` was not requested. On
+                create, a string field is either searchable or filterable,
+                never both: passing ``filterable=True`` alongside
+                ``full_text_search`` makes the server keep the filter and
+                discard the search configuration, and it reports no error
+                for doing so.
             description: Optional human-readable description.
             **additional_options: Extra parameters merged into the field dict
                 last, for forward compatibility with new API features.
@@ -481,7 +490,11 @@ class SchemaBuilder:
         field: dict[str, Any] = {"type": "string"}
         if fts_enabled:
             field["full_text_search"] = fts_config
-        if filterable:
+        # `filterable` selects the metadata variant on the wire, so the
+        # `False` default is omitted only when `full_text_search` already
+        # selects the search variant and the caller did not also ask to be
+        # filterable — otherwise no variant would match this field at all.
+        if filterable or not fts_enabled:
             field["filterable"] = filterable
         if description is not None:
             field["description"] = description

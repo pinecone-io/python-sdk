@@ -133,12 +133,14 @@ def test_sparse_vector_field_additional_options() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_string_field_defaults_omit_false_booleans() -> None:
+def test_string_field_bare_call_emits_filterable_metadata_shape() -> None:
+    """A bare call has no way to select the search variant, so it must select
+    the metadata variant instead (#391) — the previous shape, `{"type":
+    "string"}`, matched neither of the server's two variants and was
+    rejected outright."""
     schema = SchemaBuilder().add_string_field("title").build()
     field = schema["fields"]["title"]
-    assert field["type"] == "string"
-    assert "full_text_search" not in field
-    assert "filterable" not in field
+    assert field == {"type": "string", "filterable": False}
 
 
 def test_string_field_full_text_search_empty_dict() -> None:
@@ -155,6 +157,52 @@ def test_string_field_full_text_search_with_language() -> None:
 def test_string_field_filterable_true() -> None:
     schema = SchemaBuilder().add_string_field("cat", filterable=True).build()
     assert schema["fields"]["cat"]["filterable"] is True
+
+
+# ---------------------------------------------------------------------------
+# add_string_field: every wire shape the server can actually deserialize
+# (#391) — measured against pinecone-db 71dacafc. Before the fix, the four
+# cases below all emitted `{"type": "string"}`, which matches neither of the
+# server's two `CreateStringSchemaField` variants and is rejected outright.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {},
+        {"description": "d"},
+        {"filterable": False},
+        {"full_text_search": False},
+    ],
+    ids=[
+        "bare",
+        "with description",
+        "explicit filterable=False",
+        "explicit full_text_search=False",
+    ],
+)
+def test_string_field_previously_rejected_spellings_now_emit_metadata_shape(
+    kwargs: dict[str, Any],
+) -> None:
+    field = SchemaBuilder().add_string_field("s", **kwargs).build()["fields"]["s"]
+    assert field["type"] == "string"
+    assert field["filterable"] is False
+    assert "full_text_search" not in field
+
+
+def test_string_field_fts_true_omits_filterable() -> None:
+    field = SchemaBuilder().add_string_field("t", full_text_search=True).build()["fields"]["t"]
+    assert field == {"type": "string", "full_text_search": {}}
+
+
+def test_string_field_fts_enabled_with_explicit_filterable_false_omits_filterable() -> None:
+    field = (
+        SchemaBuilder()
+        .add_string_field("t", full_text_search=True, filterable=False)
+        .build()["fields"]["t"]
+    )
+    assert field == {"type": "string", "full_text_search": {}}
 
 
 def test_string_field_omits_full_text_search_when_not_provided() -> None:
@@ -300,6 +348,9 @@ def test_string_field_additional_options_merged_last() -> None:
 
 
 def test_string_field_full_text_and_filterable_together() -> None:
+    """No client-side guard on this combination (#391): both keys reach the
+    wire, and the server keeps the filter while silently discarding the
+    search configuration."""
     schema = (
         SchemaBuilder()
         .add_string_field(
