@@ -431,13 +431,26 @@ jobs:
           name: wheels-x86_64-unknown-linux-gnu
           path: dist
 
+      # The pytest plugins here are load-bearing, not conveniences. Every ini
+      # key in [tool.pytest.ini_options] is owned by some plugin, and #306's
+      # `--strict-config` turns a key whose owner is absent into a usage error.
+      # In pytest 9 that error is raised after collection, so the job runs the
+      # suite's collect-time skips and *then* dies with exit 4 — a red job with
+      # a pile of skips and no test result, which reads like anything but a
+      # missing dependency (#399). `timeout` is pytest-timeout's; `anyio_mode`
+      # is anyio's own pytest plugin. anyio also arrives transitively via
+      # httpx, and naming it here is what keeps that from being load-bearing.
+      # tests/unit/tooling/test_smoke_ci_plugin_deps.py holds this list to the
+      # ini block, so a newly added key or marker fails the unit gate instead
+      # of surfacing here.
       - name: Install wheel and test deps
         run: |
           set -euo pipefail
           wheel=$(ls dist/*.whl | head -n1)
           echo "Installing ${wheel}"
           pip install --upgrade pip
-          pip install "${wheel}" pytest pytest-asyncio python-dotenv
+          pip install "${wheel}" \
+            pytest pytest-asyncio "pytest-timeout>=2.3" "anyio>=4.13.0" python-dotenv
 
       # Third consumer of the nonexistent `secrets.PINECONE_API_KEY` (#315).
       # It expands to empty, all 15 smoke tests this job collects skip themselves,

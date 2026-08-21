@@ -240,8 +240,19 @@ jobs:
           # the smoke suite exercises the wheel built from current main, not a
           # higher-versioned PyPI prerelease that pip would otherwise prefer.
           # --pre still required because the version specifier itself contains .dev.
+          #
+          # pytest-timeout and anyio are not optional: they own the `timeout`
+          # and `anyio_mode` keys in [tool.pytest.ini_options], and #306's
+          # `--strict-config` turns an ini key whose owning plugin is absent
+          # into a usage error. In pytest 9 it fires after collection, so the
+          # step reported "FAILED, 7 skipped" — the suite's collect-time skips
+          # followed by exit 4, with none of the 12 collected tests run (#399).
+          # anyio also arrives transitively via httpx; naming it keeps that
+          # from being load-bearing. Held to the ini block by
+          # tests/unit/tooling/test_smoke_ci_plugin_deps.py.
           pip install --pre --extra-index-url "${INDEX_URL}" \
-            "pinecone==${DEV_VERSION}" pytest pytest-asyncio python-dotenv
+            "pinecone==${DEV_VERSION}" \
+            pytest pytest-asyncio "pytest-timeout>=2.3" "anyio>=4.13.0" python-dotenv
 
       - name: Show installed version
         run: pip show pinecone | grep -E '^(Name|Version|Location):'
