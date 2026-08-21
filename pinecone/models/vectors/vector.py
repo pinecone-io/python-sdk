@@ -13,10 +13,9 @@ from pinecone.models.vectors.sparse import SparseValues
 class Vector(DictLikeStruct, Struct, rename="camel", gc=False):
     """A stored vector with optional sparse values and metadata.
 
-    At least one of ``values`` or ``sparse_values`` must be populated; the 2026-07 API models
-    this as ``anyOf: [required values, required sparseValues]``, so ``values`` is no longer
-    required on its own. A sparse-only vector still serializes an empty ``values`` array, which
-    satisfies that ``anyOf``.
+    At least one of ``values`` or ``sparse_values`` must be populated. ``values`` is not
+    required on its own: a sparse-only vector leaves it empty, and an empty dense array is
+    still sent so the pair reads as populated.
 
     Attributes:
         id (str): Unique identifier for the vector. ASCII, 1 to 512 characters, no NUL.

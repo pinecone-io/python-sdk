@@ -307,7 +307,7 @@ class ListDocumentsRequest(Struct, kw_only=True, omit_defaults=True):
             (ASCII, at most 512 characters), or ``None`` for no prefix
             filtering.
         limit: Maximum number of documents to return per page (1-100), or
-            ``None`` for the server default of 100.
+            ``None`` to let the server choose the page size.
         pagination_token: Token from a previous list response to retrieve
             the next page of results.
     """

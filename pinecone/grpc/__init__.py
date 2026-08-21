@@ -447,6 +447,11 @@ class GrpcIndex:
         If a vector with the same ID already exists in the namespace, it is
         overwritten.
 
+        One request is capped both on the number of vectors it carries and on
+        its encoded size, and with wide vectors or heavy metadata the size cap
+        is usually the one reached first. Pass ``batch_size`` to split a long
+        sequence into requests that stay under both.
+
         Args:
             vectors: Sequence of vectors to upsert. Each element can be a
                 ``Vector`` instance, a tuple of ``(id, values)`` or
@@ -475,6 +480,9 @@ class GrpcIndex:
             :exc:`ValueError`: If a vector element is malformed.
             :exc:`PineconeValueError`: If ``batch_size`` is not a positive integer
                 or ``max_concurrency`` is outside ``[1, 64]``.
+            :exc:`ApiError`: If one request exceeds the server's cap on vectors
+                per request or on encoded request size. Lower ``batch_size``
+                and retry.
             :exc:`PineconeTimeoutError`: If the call exceeds *timeout* or the server
                 returns CANCELLED with a timeout cause.
 
@@ -564,6 +572,12 @@ class GrpcIndex:
     ) -> QueryResponse:
         """Query a namespace for the nearest neighbors of a vector.
 
+        .. note::
+           Vector operations remain available for indexes created before 2026-07,
+           where you supply your own vectors. An index created at 2026-07 carries
+           a document schema instead, and its reads and writes go through the
+           document operations.
+
         Args:
             top_k (int): Number of results to return, 1-10000.
             vector (list[float] | None): Dense query vector values.
@@ -574,12 +588,14 @@ class GrpcIndex:
             include_metadata (bool): Whether to include metadata in results.
             sparse_vector (SparseValues | dict[str, Any] | None): Sparse query vector
                 with indices and values.
-            scan_factor (float | None): DRN optimization — adjusts how much of the
-                index is scanned. Range 0.5–4.0. Only supported for dedicated read
-                node indexes. None uses server default.
-            max_candidates (int | None): DRN optimization — caps candidate vectors to
-                rerank. Range 1–100000. Only supported for dedicated read node indexes.
-                None uses server default.
+            scan_factor (float | None): Recall/latency trade for dedicated read
+                node (DRN) indexes — a multiplier on how much of the index is
+                scanned. Above 1 scans more and favours recall; below 1 scans
+                less and favours latency. Omit to let the server choose.
+            max_candidates (int | None): Recall/latency trade for dedicated read
+                node (DRN) indexes — caps how many candidates are reranked before
+                ``top_k`` is taken. Must be at least ``top_k``: a smaller value is
+                rejected rather than clamped, since it could not fill the page.
             timeout (float | None): Per-call timeout in seconds. None uses the client-level default.
 
         Returns:
@@ -590,6 +606,9 @@ class GrpcIndex:
                 is combined with ``vector`` or ``sparse_vector``, none of
                 ``vector``, ``id``, or ``sparse_vector`` is provided, or ``id``
                 is not a legal vector ID.
+            :exc:`ApiError`: If ``scan_factor`` or ``max_candidates`` is out of
+                range, or the index is not a dense DRN index — both knobs are
+                rejected on on-demand indexes and on sparse indexes.
             :exc:`PineconeTimeoutError`: If the call exceeds *timeout* or the server
                 returns CANCELLED with a timeout cause.
 
@@ -677,11 +696,13 @@ class GrpcIndex:
             include_metadata: Whether to include metadata in results.
             sparse_vector: Sparse query vector with indices and values.
                 Required for sparse-only indexes when *vector* is omitted.
-            scan_factor: DRN performance tuning — controls how much of the
-                index is scanned during a query. Higher values scan more
-                data and may improve recall at the cost of latency.
-            max_candidates: DRN performance tuning — maximum number of
-                candidate vectors to consider during the search phase.
+            scan_factor: Recall/latency trade for dedicated read node (DRN)
+                indexes — a multiplier on how much of the index is scanned.
+                Above 1 scans more and favours recall; below 1 scans less and
+                favours latency. Applied to every namespace queried.
+            max_candidates: Recall/latency trade for dedicated read node (DRN)
+                indexes — caps how many candidates are reranked before ``top_k``
+                is taken, per namespace. Must be at least ``top_k``.
 
         Returns:
             :class:`QueryNamespacesResults` with the merged top-k matches, total
@@ -813,14 +834,11 @@ class GrpcIndex:
     ) -> FetchByMetadataResponse:
         """Fetch vectors matching a metadata filter expression.
 
-        Issued over gRPC as the ``FetchByMetadata`` rpc, which the 2026-07
-        proto defines alongside the other vector operations.
-
         Args:
             filter: Metadata filter expression (required, at least one condition).
             namespace: Namespace to fetch from. Defaults to the default namespace.
-            limit: Maximum number of vectors to return per page, 1-10000. When
-                ``None``, the server default (100) is used.
+            limit: Maximum number of vectors to return per page, 1-10000.
+                Omit to let the server choose the page size.
             pagination_token: Token from a previous response to fetch the next page.
             timeout (float | None): Per-call timeout in seconds.
 
@@ -879,6 +897,16 @@ class GrpcIndex:
 
         Exactly one of ``ids``, ``delete_all``, or ``filter`` must be specified.
 
+        A by-filter delete selects on metadata alone, so a text-match operator
+        (``$match_phrase``, ``$match_all``, ``$match_any``) in the filter is
+        rejected rather than ignored — evaluated there it would match everything
+        and widen the delete to every record the rest of the filter admits. Text
+        matching belongs in :meth:`search`.
+
+        A by-filter delete also reads before it writes, so a dedicated index
+        scaled to zero replicas refuses it; add replicas first. Deleting by ID or
+        with ``delete_all`` is unaffected.
+
         Args:
             ids (list[str] | None): List of vector IDs to delete.
             delete_all (bool): If True, delete all vectors in the namespace.
@@ -892,6 +920,8 @@ class GrpcIndex:
         Raises:
             :exc:`ValidationError`: If zero or more than one deletion mode is
                 specified, any ID is not a legal vector ID, or ``filter`` is empty.
+            :exc:`ApiError`: If a by-filter delete uses a text-match operator, or
+                the index is a dedicated index scaled to zero replicas.
             :exc:`PineconeTimeoutError`: If the call exceeds *timeout* or the server
                 returns CANCELLED with a timeout cause.
 
@@ -937,6 +967,16 @@ class GrpcIndex:
     ) -> UpdateResponse:
         """Update vectors by ID or metadata filter.
 
+        A by-filter update selects on metadata alone, so a text-match operator
+        (``$match_phrase``, ``$match_all``, ``$match_any``) in the filter is
+        rejected rather than ignored — evaluated there it would match everything
+        and widen the patch to every record the rest of the filter admits. Text
+        matching belongs in :meth:`search`.
+
+        A by-filter update also reads before it writes, so a dedicated index
+        scaled to zero replicas refuses it; add replicas first. Updating by ID is
+        unaffected.
+
         Args:
             id (str | None): ID of the vector to update.
             values (list[float] | None): New dense vector values.
@@ -956,6 +996,8 @@ class GrpcIndex:
                 provided, if ``filter`` is combined with ``values`` or
                 ``sparse_values``, if ``filter`` is empty, or if ``id`` is not
                 a legal vector ID.
+            :exc:`ApiError`: If a by-filter update uses a text-match operator, or
+                the index is a dedicated index scaled to zero replicas.
             :exc:`PineconeTimeoutError`: If the call exceeds *timeout* or the server
                 returns CANCELLED with a timeout cause.
 
@@ -1727,9 +1769,11 @@ class GrpcIndex:
                 keys. Use :class:`RerankConfig` for IDE autocompletion.
             match_terms (dict[str, Any] | None): Term-matching constraint for
                 sparse search. Requires keys ``"strategy"`` (currently only
-                ``"all"``) and ``"terms"`` (list of strings). Only supported
-                for sparse indexes using ``pinecone-sparse-english-v0``.
-                ``None`` disables term matching.
+                ``"all"``) and ``"terms"`` (list of strings).
+                Valid only on a text query — combined with ``vector`` or ``id``
+                it is rejected — and only on a sparse index whose embedding model
+                supports it; the server names the supported model when it
+                refuses. ``None`` disables term matching.
             query (dict[str, Any] | None): Legacy query body containing
                 ``top_k`` plus one of ``inputs``, ``vector``, or ``id``. Prefer
                 passing these fields directly.
@@ -1856,7 +1900,7 @@ class GrpcIndex:
                 prefix. Must be ASCII, must not contain the NUL character, and must
                 be at most 512 characters. The empty prefix matches every namespace.
             limit (int | None): Maximum number of namespaces to return in this page,
-                1-100. Defaults to 100 server-side.
+                1-100.
             pagination_token (str | None): Token from a previous response to fetch the next page.
             timeout (float | None): Per-call timeout in seconds.
 
@@ -1963,10 +2007,14 @@ class GrpcIndex:
                 namespace requests address when they omit a namespace, so it
                 always exists.
             schema (dict[str, Any] | None): Optional metadata-index configuration,
-                ``{"fields": {<field>: {"filterable": True}}}``. By default every
-                metadata field is indexed; when *schema* is given, only the listed
-                fields are. ``filterable`` is required on each field and must be
-                ``True`` — to leave a field unindexed, omit it from ``fields``.
+                ``{"fields": {<field>: {"filterable": True}}}``. Omitting it does
+                not mean "index everything": the namespace inherits the index's
+                own metadata-index configuration, so an index that restricts which
+                fields are indexed passes that restriction on. Supply *schema* to
+                override the inherited configuration for this namespace, indexing
+                exactly the fields listed. ``filterable`` is required on each field
+                and must be ``True`` — to leave a field unindexed, omit it from
+                ``fields``.
             timeout (float | None): Per-call timeout in seconds.
 
         Returns:
@@ -2114,17 +2162,22 @@ class GrpcIndex:
 
         .. note::
            The import URI must point to a directory of Parquet files in cloud
-           storage (``s3://`` or ``gs://``). Each Parquet file must follow the
-           Pinecone-required schema. See
+           storage. Each Parquet file must follow the Pinecone-required schema.
+           See
            `Pinecone import docs <https://docs.pinecone.io/guides/data/understanding-imports>`_
            for the required Parquet schema and supported storage formats.
 
         Args:
-            uri (str): Source URI for the import data (e.g.
-                ``"s3://my-bucket/vectors/"`` or ``"gs://my-bucket/vectors/"``).
-            error_mode (str | None): How to handle errors during import. Must be
-                ``"continue"`` or ``"abort"`` when supplied. Case-insensitive.
-                Optional; when omitted the backend default (``"continue"``) applies.
+            uri (str): Directory prefix holding the Parquet files, not a single
+                file. Three forms are accepted: ``s3://`` for Amazon S3,
+                ``gs://`` for Google Cloud Storage, and an ``https://`` URL
+                naming an Azure Blob Storage container. ``s3://`` additionally
+                requires that the index itself be hosted on AWS.
+            error_mode (str | None): How to handle a record the import cannot
+                read. ``"continue"`` skips it and imports the rest; ``"abort"``
+                ends the whole import at the first such record. Case-insensitive.
+                Defaults to ``"abort"`` when omitted, so an unreadable record
+                fails the import unless you opt into skipping.
             integration_id (str | None): Optional integration ID for the import.
 
         Returns:
@@ -2134,6 +2187,10 @@ class GrpcIndex:
         Raises:
             :exc:`PineconeValueError`: If ``error_mode`` is supplied but not
                 ``"continue"`` or ``"abort"``.
+            :exc:`ApiError`: If ``uri`` is empty or longer than the server
+                accepts, uses an unsupported scheme, is an ``s3://`` URI on an
+                index not hosted on AWS, or names an S3 directory bucket, which
+                imports do not support.
             :exc:`ApiError`: If the API returns an error response.
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
@@ -2154,10 +2211,10 @@ class GrpcIndex:
                     import_op = idx.describe_import(import_id)
                 print(f"Status: {import_op.status}, records imported: {import_op.records_imported}")
 
-                # Abort on first error instead of continuing
+                # Skip unreadable records instead of failing the import
                 response = idx.start_import(
                     uri="s3://my-bucket/vectors/",
-                    error_mode="abort",
+                    error_mode="continue",
                 )
 
         .. seealso::
@@ -2249,8 +2306,8 @@ class GrpcIndex:
         pages transparently until all results have been returned.
 
         Args:
-            limit (int | None): Maximum number of imports per page
-                (max 100, server default 100).
+            limit (int | None): Maximum number of imports per page. Omit to let
+                the server choose the page size.
             pagination_token (str | None): Token to resume pagination
                 from a previous call.
 

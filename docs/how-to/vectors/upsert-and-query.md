@@ -66,8 +66,12 @@ The default namespace is `""`.
 
 ### Large datasets
 
-For datasets larger than a single payload, pass `batch_size` to
-split the upload into chunks. Batches are sent **in parallel**
+A single upsert request is capped both on the number of vectors it carries
+and on its encoded size, and with wide vectors or heavy metadata the size
+cap is usually the one reached first — so a vector count that worked for one
+dataset can be rejected for another. Pass `batch_size` to
+split the upload into chunks that stay under both; lower it and retry if a
+request comes back rejected for size. Batches are sent **in parallel**
 via a `ThreadPoolExecutor` (sync) or `asyncio.Semaphore`
 (async) of `max_concurrency` workers. HTTP-level retries
 happen automatically per batch via the configured

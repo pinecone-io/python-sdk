@@ -63,10 +63,10 @@ def require_rerank_top_n(value: int | None) -> None:
 
 
 NAMESPACE_NAME_MAX_LEN = 512
-"""Longest namespace name the data plane accepts (``max_namespace_length``)."""
+"""Longest namespace name the data plane accepts."""
 
 NAMESPACE_LIST_LIMIT_MAX = 100
-"""Largest ``limit`` ``listNamespaces`` accepts (``max_list_limit``)."""
+"""Largest ``limit`` ``listNamespaces`` accepts."""
 
 RESERVED_DEFAULT_NAMESPACE = "__default__"
 """Alias for the namespace requests address when they omit one.
@@ -193,28 +193,24 @@ def require_valid_namespace_schema(param: str, value: Any) -> None:
 
 
 VECTOR_ID_MAX_LEN = 512
-"""Longest vector ID the data plane accepts (``max_id_length``)."""
+"""Longest vector ID the data plane accepts."""
 
 ID_PREFIX_MAX_LEN = 512
-"""Longest ``listVectors`` prefix the data plane accepts (also ``max_id_length``)."""
+"""Longest ``listVectors`` prefix the data plane accepts; the same rule as vector IDs."""
 
 LIST_LIMIT_MAX = 100
-"""Largest ``limit`` ``listVectors`` accepts (``max_list_limit``)."""
+"""Largest ``limit`` ``listVectors`` accepts."""
 
 QUERY_TOP_K_MAX = 10_000
-"""Largest ``top_k`` ``query`` accepts (``max_top_k_value``).
+"""Largest ``top_k`` ``query`` accepts.
 
-``QueryRequest.topK`` pins ``maximum: 10000``, matching the production default.
-The setting is per-deployment, so a deployment configured lower rejects values
-this client lets through — the same trade :data:`LIST_LIMIT_MAX` and
-:data:`FETCH_BY_METADATA_LIMIT_MAX` already make.
+Enforced here so an out-of-range value is reported against the argument that
+carried it. The server applies its own ceiling as well, and its error carries
+the specifics when the two differ.
 """
 
 FETCH_BY_METADATA_LIMIT_MAX = 10_000
-"""Largest ``limit`` ``fetch_by_metadata`` accepts.
-
-``max_vectors_per_fetch_by_metadata_request``.
-"""
+"""Largest ``limit`` ``fetch_by_metadata`` accepts."""
 
 DELETE_EMPTY_FILTER_MESSAGE = "Delete with empty metadata filter is not allowed"
 """``deleteVectors``' own wording for an empty filter, quoted in the client-side error."""
@@ -294,9 +290,8 @@ def require_valid_fetch_by_metadata_limit(param: str, value: Any) -> None:
 def require_non_empty_filter(param: str, value: Any, *, server_message: str) -> None:
     """Raise ValidationError unless *value* carries at least one filter condition.
 
-    2026-07 gives every selecting filter ``minProperties: 1``. An empty filter
-    reads as "match nothing" but the server rejects it outright, so *server_message*
-    lets the caller see the same bytes either way.
+    An empty filter reads as "match nothing" but the server rejects it outright,
+    so *server_message* lets the caller see the same bytes either way.
     """
     if not isinstance(value, Mapping):
         raise ValidationError(f"{param} must be a dict, got {type(value).__name__}")

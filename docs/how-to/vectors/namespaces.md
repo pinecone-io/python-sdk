@@ -168,6 +168,11 @@ print(ns.name, ns.record_count)
 Every field listed in `schema["fields"]` must set `filterable: True`; `filterable: False`
 is not supported. To leave a field unindexed, omit it from `fields` entirely.
 
+Omitting `schema` altogether is not the same as indexing every field. A namespace created
+without one inherits the index's own metadata-index configuration, so if the index
+restricts which fields are indexed, the new namespace carries that restriction too.
+Supplying `schema` overrides the inherited configuration for that namespace alone.
+
 ### Name rules
 
 Namespace names must be ASCII, must not contain the NUL character, and must be 1-512

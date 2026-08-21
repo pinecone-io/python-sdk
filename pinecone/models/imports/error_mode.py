@@ -13,7 +13,8 @@ class ImportErrorMode(str, Enum):
 
     Attributes:
         CONTINUE: Skip the failed record and continue importing remaining records.
-        ABORT: Abort the entire import when any record fails.
+        ABORT: Abort the entire import when any record fails. Omitting
+            ``error_mode`` selects this.
     """
 
     CONTINUE = "continue"
