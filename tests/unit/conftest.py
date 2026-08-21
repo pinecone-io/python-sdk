@@ -31,6 +31,34 @@ _REAL_TIME_SLEEP: Callable[[float], None] = time.sleep
 _REAL_ASYNCIO_SLEEP: Callable[[float], Awaitable[None]] = asyncio.sleep
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _hermetic_pinecone_env_session() -> Iterator[None]:
+    """Scrub ``PINECONE_*`` before any module- or session-scoped fixture runs (#426).
+
+    ``_hermetic_pinecone_env`` below is function-scoped and ``hermetic_pinecone_env_module``
+    is opt-in, so either one can be outrun: pytest instantiates higher-scoped
+    fixtures first, so a *new* module- or session-scoped fixture that depends
+    on neither — the shape of #345's shared property-test clients — sees the
+    developer's ambient environment before either scrub gets a chance to act.
+    Relying on every future fixture author to remember the opt-in is exactly
+    the gap Cursor Bugbot caught twice and we didn't.
+
+    Session scope is the one thing a module- or session-scoped fixture cannot
+    outrun: it is autouse, so it is requested by the very first test collected
+    under ``tests/unit/``, and pytest sets same-or-higher-scoped fixtures up
+    before it gets to any module-scoped one in that same closure. Held for the
+    whole session via ``MonkeyPatch.context()`` — like ``hermetic_pinecone_env_module``
+    below — so a variable removed here stays removed; it is not re-added by
+    this fixture, only by something later in the session (a lazy ``load_env()``
+    import, a test that sets one itself), which the per-test scrub still exists
+    to undo before the next test body runs.
+    """
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        for name in [n for n in os.environ if n.startswith(_PINECONE_ENV_PREFIX)]:
+            monkeypatch.delenv(name, raising=False)
+        yield
+
+
 @pytest.fixture(autouse=True)
 def _hermetic_pinecone_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Hide every ``PINECONE_*`` environment variable from unit tests (#353).
@@ -45,9 +73,11 @@ def _hermetic_pinecone_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
     Scrubbing by prefix, per test, closes both routes: it covers variables
     added to the SDK later, and because it runs per test it also undoes
-    pollution introduced at collection time. Tests that want a variable
-    set it themselves with ``monkeypatch.setenv``; pytest runs that after
-    this fixture, so those tests keep working.
+    pollution introduced at collection time — pollution introduced *after*
+    session start, which ``_hermetic_pinecone_env_session`` above cannot see
+    because it only runs once. Tests that want a variable set it themselves
+    with ``monkeypatch.setenv``; pytest runs that after this fixture, so
+    those tests keep working.
     """
     for name in [n for n in os.environ if n.startswith(_PINECONE_ENV_PREFIX)]:
         monkeypatch.delenv(name, raising=False)
@@ -58,12 +88,16 @@ def hermetic_pinecone_env_module() -> Iterator[None]:
     """The same scrub as ``_hermetic_pinecone_env``, for module-scoped fixtures.
 
     Ask for this from any module- or session-scoped fixture that builds an SDK
-    object. ``_hermetic_pinecone_env`` above is function-scoped, and pytest sets
-    higher-scoped fixtures up **first** — so a module-scoped fixture runs before
-    the scrub and sees the developer's ambient ``PINECONE_*`` variables. A
-    client built there bakes them in for every test in the module: measured on
-    #345's shared property-test clients, ``PINECONE_ADDITIONAL_HEADERS`` landed
-    in the client's header set that way.
+    object and wants the scrub to run at its *own* setup point rather than
+    relying on ``_hermetic_pinecone_env_session`` having already run once at
+    session start — for instance, a fixture that needs a variable it just set
+    with ``monkeypatch.setenv`` to be visible to itself but not leak beyond its
+    module. ``_hermetic_pinecone_env`` above is function-scoped, and pytest
+    sets higher-scoped fixtures up **first** — so a module-scoped fixture runs
+    before that scrub and sees the developer's ambient ``PINECONE_*``
+    variables. A client built there bakes them in for every test in the
+    module: measured on #345's shared property-test clients,
+    ``PINECONE_ADDITIONAL_HEADERS`` landed in the client's header set that way.
 
     Depending on this fixture puts the scrub back in front of the construction.
     It does not replace the per-test one, which still has to run to undo
