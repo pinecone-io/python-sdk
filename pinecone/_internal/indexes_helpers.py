@@ -14,7 +14,6 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any, TypedDict
 
 import msgspec
-from typing_extensions import NotRequired
 
 from pinecone._internal.validation import require_non_empty
 
@@ -53,10 +52,10 @@ class IndexKwargs(TypedDict):
     connection_pool_maxsize: int
 
 
-class _LegacyIndexKwargs(IndexKwargs):
+class _LegacyIndexKwargs(IndexKwargs, total=False):
     """IndexKwargs extended with the legacy pool_threads field (sync client only)."""
 
-    pool_threads: NotRequired[int]
+    pool_threads: int
 
 
 def resolve_enum_value(value: Any) -> Any:

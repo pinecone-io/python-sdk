@@ -362,11 +362,26 @@ jobs:
       # Move the source aside so `import pinecone` resolves to site-packages.
       - name: Move source pinecone/ aside (avoid shadowing installed wheel)
         run: mv pinecone _pinecone_source
+      # `import pinecone` on its own proves almost nothing: __init__ is lazy, so
+      # it reaches none of the modules that import third-party code. #411 was a
+      # missing runtime dependency that made every lazy attribute unreachable on
+      # 3.13/3.14 while this job stayed green on all five versions. Touching the
+      # attributes is what exercises the imports. No API key needed.
       - name: Verify import + Rust extension on this Python version
         run: |
           python -c "
           import pinecone
           print('OK: import pinecone on Python', __import__('sys').version_info[:2])
+          names = sorted(pinecone._LAZY_IMPORTS)
+          assert len(names) >= 100, f'only {len(names)} lazy exports found'
+          broken = []
+          for name in names:
+              try:
+                  getattr(pinecone, name)
+              except ModuleNotFoundError as exc:
+                  broken.append(f'{name}: missing {exc.name}')
+          assert not broken, 'undeclared runtime dependency: ' + '; '.join(broken[:8])
+          print('OK:', len(names), 'lazy exports resolved')
           import pinecone._grpc
           print('OK: import pinecone._grpc')
           ch = pinecone._grpc.GrpcChannel(

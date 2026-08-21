@@ -38,6 +38,11 @@ dependencies = [
     "httpx[http2]>=0.27,<1.0",
     "msgspec",
     "orjson",
+    # Imported at module scope by pinecone/async_client/assistants.py for async
+    # file IO. httpx happens to require it too, but every module the package
+    # imports eagerly is declared here rather than left to a transitive accident
+    # — tests/unit/tooling/test_declared_dependencies.py enforces that.
+    "anyio>=4.0",
 ]
 
 [project.optional-dependencies]
