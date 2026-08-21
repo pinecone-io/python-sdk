@@ -235,6 +235,9 @@ fn decorrelated_jitter(base: Duration, prev_delay: Duration, max_backoff: Durati
 ///
 /// Retries on any code listed in `config.retryable_codes` (default: UNAVAILABLE,
 /// RESOURCE_EXHAUSTED, ABORTED). All other error codes are returned immediately without retry.
+// result_large_err: `Status` is the error the generated clients hand us and that
+// `status_to_py_err` consumes; boxing here would only add wrap/unwrap at every call site.
+#[allow(clippy::result_large_err)]
 pub async fn retry_on_transient<F, Fut, T>(
     config: &RetryConfig,
     mut operation: F,
@@ -257,6 +260,8 @@ where
 ///
 /// Removing the remaining clone would mean not owning the payload per attempt —
 /// a shared or pre-encoded representation the generated client cannot take.
+// result_large_err: see `retry_on_transient` — same `tonic::Status` pass-through.
+#[allow(clippy::result_large_err)]
 pub async fn retry_on_transient_request<F, Fut, T, R>(
     config: &RetryConfig,
     request: R,
