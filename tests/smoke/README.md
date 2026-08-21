@@ -48,9 +48,9 @@ SMOKE_RUN_POD_SHIMS=1 SMOKE_RUN_BACKUPS=1 \
   PINECONE_IMPORT_INTEGRATION_ID=int-abc123 \
   uv run --with python-dotenv --with pytest-asyncio pytest tests/smoke/ -v -s
 
-# Orphan cleanup
-uv run --with python-dotenv python tests/smoke/scripts/cleanup_orphans.py --dry-run
-uv run --with python-dotenv python tests/smoke/scripts/cleanup_orphans.py
+# Orphan cleanup — as a module, so `tests.live_suite` resolves (#412)
+uv run --with python-dotenv python -m tests.smoke.scripts.cleanup_orphans --dry-run
+uv run --with python-dotenv python -m tests.smoke.scripts.cleanup_orphans
 ```
 
 ## CI integration

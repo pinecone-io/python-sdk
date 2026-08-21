@@ -4,9 +4,16 @@ Looks for resources whose names start with ``smoke-`` (the prefix every smoke
 test uses) and deletes them best-effort. Useful after a killed pytest run
 left indexes, collections, or assistants behind.
 
-Usage::
+Usage, from the repository root::
 
-    uv run python tests/smoke/scripts/cleanup_orphans.py
+    uv run python -m tests.smoke.scripts.cleanup_orphans
+
+Run it as a module, not as a path. ``python <path>`` puts the *script's own*
+directory on ``sys.path[0]``, so the ``tests.live_suite`` import below cannot
+resolve; ``-m`` puts the working directory there instead. The path form appears
+to work in a synced checkout only because the editable install adds the project
+root via a ``.pth`` file — an environment that installs a built wheel has no
+such entry, which is how both CI jobs ran this and cleaned up nothing (#412).
 
 Optionally pass ``--dry-run`` to print what would be deleted without
 actually deleting it.

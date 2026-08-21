@@ -293,10 +293,37 @@ jobs:
             --ignore=tests/smoke/test_pod_collections_async.py \
             --junitxml=install-smoke-results.xml
 
+      # `python -m`, not `python tests/smoke/scripts/cleanup_orphans.py`: the
+      # plain-path form makes sys.path[0] the *script's* directory, so
+      # `from tests.live_suite import load_env` cannot resolve and the step
+      # died before deleting anything. It reported success for its entire
+      # existence because `|| true` rewrote the exit code and continue-on-error
+      # swallowed what was left (#412). A local `uv run` on that same path form
+      # works only because the editable install drops a `pinecone.pth` naming
+      # the project root — a property these wheel-install jobs do not have.
+      #
+      # `|| true` is gone deliberately. continue-on-error already keeps a
+      # cleanup failure from failing the job; the `|| true` on top of it only
+      # bought silence. The summary block is what makes a leak legible without
+      # opening the log.
       - name: Orphan cleanup
         if: always()
         continue-on-error: true
-        run: python tests/smoke/scripts/cleanup_orphans.py || true
+        run: |
+          set -o pipefail
+          status=0
+          python -m tests.smoke.scripts.cleanup_orphans 2>&1 | tee orphan-cleanup.log || status=$?
+          {
+            echo "### Orphan cleanup"
+            echo
+            echo '```'
+            cat orphan-cleanup.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${status}" -ne 0 ]; then
+            echo "::warning::Orphan cleanup exited ${status}; leaked smoke resources may remain in the test project."
+          fi
+          exit "${status}"
 
       - name: Upload install-smoke results
         if: always()
