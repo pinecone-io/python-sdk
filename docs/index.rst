@@ -32,6 +32,7 @@ Pinecone Python SDK
    migration/v10-2026-07-assistant-chat
    migration/v10-2026-07-assistant-files
    migration/v10-2026-07-vector-models
+   migration/v10-2026-07-db-data-breaking-changes
    migration/v10-2026-07-inference-model-enums
    migration/v10-2026-07-query-param-enums
    migration/v10-2026-07-admin-oauth
