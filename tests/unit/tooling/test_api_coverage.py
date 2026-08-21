@@ -747,6 +747,248 @@ def test_real_constants_file_parses() -> None:
     assert "API_VERSION_HEADER" not in constants
 
 
+EXEMPT_OP = "db_metrics:fetch_prometheus_targets"
+OTHER_OP = "db_control:list_indexes"
+
+# Spelled out rather than read from cov.RELEASE_MILESTONES, so wiring the sum to
+# the wrong milestones fails these tests instead of relabelling them.
+RELEASE_MILESTONE_TITLES = (
+    "2026-07 M1: Foundations & version bumps",
+    "2026-07 M2: Shared models & validation",
+    "2026-07 M3: Transport implementations",
+    "2026-07 M4: Graduation cleanup, docs & release notes",
+)
+
+
+def _ops(*op_ids: str) -> dict[str, dict[str, object]]:
+    return {op_id: {"kind": "http"} for op_id in op_ids}
+
+
+def _milestone_payload(counts: tuple[int, int, int, int]) -> list[dict[str, object]]:
+    """The four release milestones at *counts*, alongside unrelated ones."""
+    return [
+        *(
+            {"title": title, "open_issues": count, "closed_issues": 0}
+            for title, count in zip(RELEASE_MILESTONE_TITLES, counts, strict=True)
+        ),
+        {"title": "9.2.0", "open_issues": 7, "closed_issues": 10},
+        {"title": "Bulk core rewrite", "open_issues": 3, "closed_issues": 9},
+    ]
+
+
+def test_the_db_metrics_exemption_is_named_and_cites_its_decision() -> None:
+    assert set(cov.COVERAGE_EXEMPTIONS) == {EXEMPT_OP}
+    assert EXEMPT_OP in manifest_operations()
+    assert "issuecomment-5365004482" in cov.COVERAGE_EXEMPTIONS[EXEMPT_OP]
+
+
+def test_coverage_status_honors_the_named_exemption() -> None:
+    status = cov.coverage_status(_ops(EXEMPT_OP, OTHER_OP), {OTHER_OP})
+    assert status.ok
+    assert status.problems == []
+    assert status.missing == []
+    assert f"1 deliberate omission(s): {EXEMPT_OP}" in status.detail
+    assert "uncovered" not in status.detail
+
+
+def test_coverage_status_still_fails_a_different_uncovered_operation() -> None:
+    status = cov.coverage_status(_ops(EXEMPT_OP, OTHER_OP), set())
+    assert not status.ok
+    assert status.problems == []
+    assert status.missing == [OTHER_OP]
+    assert "1 uncovered (run --gaps)" in status.detail
+
+
+def test_coverage_status_excuses_only_the_operation_the_exemption_names() -> None:
+    """One named operation, not a tolerance of one: which op is excused matters.
+
+    A count allowance would report the same *number* of gaps here while
+    excusing the wrong operation, so this asserts identity, not arithmetic.
+    """
+    third = "db_control:create_index"
+    status = cov.coverage_status(_ops(EXEMPT_OP, OTHER_OP, third), set())
+    assert not status.ok
+    assert status.missing == sorted([OTHER_OP, third])
+    assert EXEMPT_OP not in status.missing
+    assert "2 uncovered (run --gaps)" in status.detail
+
+
+def test_coverage_status_reports_a_stale_exemption() -> None:
+    ops = _ops(EXEMPT_OP, OTHER_OP)
+    status = cov.coverage_status(ops, set(ops))
+    assert not status.ok
+    assert len(status.problems) == 1
+    assert "STALE" in status.problems[0]
+    assert EXEMPT_OP in status.problems[0]
+
+
+def test_coverage_status_reports_an_exemption_for_an_operation_off_the_specs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(
+        cov.COVERAGE_EXEMPTIONS, "gone:removed_operation", "https://example/decision"
+    )
+    status = cov.coverage_status(_ops(OTHER_OP), {OTHER_OP})
+    assert not status.ok
+    assert any(
+        "gone:removed_operation" in p and "not in the 2026-07 specs" in p for p in status.problems
+    )
+
+
+def test_the_epoch_condition_reads_the_four_release_milestones() -> None:
+    assert cov.RELEASE_MILESTONES == RELEASE_MILESTONE_TITLES
+    assert "issuecomment-5365004630" in cov.RELEASE_MILESTONES_DECISION
+
+
+def test_the_epoch_condition_no_longer_reads_87s_capped_sub_issue_list() -> None:
+    assert not hasattr(cov, "fetch_open_subissues")
+
+
+def test_release_milestone_status_sums_only_the_release_milestones() -> None:
+    ok, message = cov.release_milestone_status(_milestone_payload((0, 0, 16, 15)))
+    assert not ok
+    assert "31 open issues" in message
+    assert "2026-07 M3 16" in message
+    assert "2026-07 M4 15" in message
+
+
+def test_release_milestone_status_passes_only_when_every_milestone_is_empty() -> None:
+    ok, message = cov.release_milestone_status(_milestone_payload((0, 0, 0, 0)))
+    assert ok
+    assert "zero open issues across the 4 2026-07 milestones" in message
+    assert not cov.release_milestone_status(_milestone_payload((0, 0, 0, 1)))[0]
+
+
+def test_release_milestone_status_fails_when_a_release_milestone_is_missing() -> None:
+    dropped = RELEASE_MILESTONE_TITLES[1]
+    payload = [m for m in _milestone_payload((0, 0, 0, 0)) if m["title"] != dropped]
+    ok, message = cov.release_milestone_status(payload)
+    assert not ok
+    assert dropped in message
+    assert "not found in this repo" in message
+
+
+def test_release_milestone_status_counts_a_later_release_milestone_too() -> None:
+    """A fifth 2026-07 milestone cannot hold work the gate never looks at."""
+    payload = [
+        *_milestone_payload((0, 0, 0, 0)),
+        {"title": "2026-07 M5: late addition", "open_issues": 2, "closed_issues": 0},
+    ]
+    ok, message = cov.release_milestone_status(payload)
+    assert not ok
+    assert "2 open issues across the 5 2026-07 milestones" in message
+
+
+def test_the_real_manifest_has_exactly_one_deliberate_omission() -> None:
+    """The exempt op is a named id, and it is the only one the gate excuses.
+
+    A bare 101/102 would read the same if a different operation silently
+    dropped out, so this asserts which operation is missing, not how many.
+    """
+    ops = manifest_operations()
+    required = set(ops) - {EXEMPT_OP}
+
+    status = cov.coverage_status(ops, required)
+    assert status.ok
+    assert status.missing == []
+    assert f"deliberate omission(s): {EXEMPT_OP}" in status.detail
+
+    dropped = cov.coverage_status(ops, required - {OTHER_OP})
+    assert not dropped.ok
+    assert dropped.missing == [OTHER_OP]
+
+
+def _issue(number: int, labels: list[str], milestone: str | None) -> dict[str, object]:
+    return {
+        "number": number,
+        "labels": [{"name": name} for name in labels],
+        "milestone": {"title": milestone} if milestone else None,
+    }
+
+
+def test_unclassified_release_issues_flags_a_ticket_the_milestone_sum_cannot_see() -> None:
+    """Unmilestoned does not imply `question` — the converse is where work hides."""
+    issues = [
+        _issue(371, ["release/2026-07", "lane:rest", "breaking-change"], None),
+        _issue(374, ["release/2026-07", "bug", "lane:models"], None),
+        _issue(368, ["release/2026-07", "question"], None),
+        _issue(366, ["release/2026-07", "lane:tooling"], "2026-07 M4: Graduation cleanup"),
+    ]
+    assert cov.unclassified_release_issues(issues, epoch_issue=87) == [371, 374]
+
+
+def test_unclassified_release_issues_excepts_the_epoch_parent_by_number() -> None:
+    """#87 carries the release label with no milestone and no `question` label."""
+    issues = [_issue(87, ["release/2026-07"], None)]
+    assert cov.unclassified_release_issues(issues, epoch_issue=87) == []
+    assert cov.unclassified_release_issues(issues, epoch_issue=999) == [87]
+
+
+def test_unclassified_release_issues_accepts_either_legitimate_state() -> None:
+    issues = [
+        _issue(1, ["release/2026-07"], "2026-07 M3: Transport implementations"),
+        _issue(2, ["release/2026-07", "question"], None),
+    ]
+    assert cov.unclassified_release_issues(issues, epoch_issue=87) == []
+
+
+def test_unclassified_release_issues_flags_a_ticket_on_a_non_release_milestone() -> None:
+    """Having *a* milestone is not classification — the sum must be the one counting it.
+
+    `release_milestone_status` only sums `2026-07*` titles, so a release ticket
+    parked on `9.2.0` reads as classified while being counted by nobody. The
+    two functions have to agree on which milestones count or the gap between
+    them is where work disappears.
+    """
+    issues = [
+        _issue(500, ["release/2026-07", "lane:rest"], "9.2.0"),
+        _issue(501, ["release/2026-07", "bug"], "Bulk core rewrite"),
+        _issue(502, ["release/2026-07"], "2026-07 M4: Graduation cleanup"),
+    ]
+    assert cov.unclassified_release_issues(issues, epoch_issue=87) == [500, 501]
+
+
+def test_fetch_milestones_follows_pagination_past_the_first_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A release milestone on page two still reaches the sum and holds it nonzero."""
+    pages = {
+        1: [{"title": f"m{i}", "open_issues": 0} for i in range(cov._PAGE_SIZE)],
+        2: [{"title": "2026-07 M9: late", "open_issues": 4}],
+    }
+    requested: list[str] = []
+
+    def fake_gh(args: list[str]) -> str:
+        requested.append(args[-1])
+        page = int(args[-1].split("page=")[-1])
+        return json.dumps(pages.get(page, []))
+
+    monkeypatch.setattr(cov, "_gh", fake_gh)
+    milestones = cov.fetch_milestones()
+    assert len(milestones) == cov._PAGE_SIZE + 1
+    assert {"title": "2026-07 M9: late", "open_issues": 4} in milestones
+    assert len(requested) == 2
+    assert not cov.release_milestone_status(milestones)[0]
+
+
+def test_fetch_milestones_refuses_a_listing_that_never_terminates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full = [{"title": f"m{i}", "open_issues": 0} for i in range(cov._PAGE_SIZE)]
+    monkeypatch.setattr(cov, "_gh", lambda args: json.dumps(full))
+    with pytest.raises(cov.SpecError, match="did not terminate"):
+        cov.fetch_milestones()
+
+
+def test_fetch_open_release_issues_refuses_a_possibly_truncated_listing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    at_limit = [{"number": n, "labels": [], "milestone": None} for n in range(cov._ISSUE_LIMIT)]
+    monkeypatch.setattr(cov, "_gh", lambda args: json.dumps(at_limit))
+    with pytest.raises(cov.SpecError, match="fetch limit"):
+        cov.fetch_open_release_issues()
+
+
 def test_coverage_counting_excludes_non_passing_tests() -> None:
     results = {
         "tests": {
@@ -969,6 +1211,8 @@ def test_report_mode_end_to_end() -> None:
     assert (http_total, grpc_total) == (102, 12)
     assert 0 <= http_covered <= http_total
     assert 0 <= grpc_covered <= grpc_total
+    assert f"deliberate omission: {EXEMPT_OP} — " in proc.stdout
+    assert "db_metrics" in proc.stdout
 
 
 # The #327 sweep for unit tests near the 5s ceiling turned this up as the only
@@ -987,8 +1231,15 @@ def test_gaps_mode_end_to_end() -> None:
 
     proc = _run([sys.executable, str(SCRIPT_PATH), "--gaps"])
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    gaps = proc.stdout.split()
+    lines = proc.stdout.splitlines()
+    gaps = [line.split("\t", 1)[0] for line in lines]
     uncovered = (http_total - http_covered) + (grpc_total - grpc_covered)
     assert len(gaps) == uncovered
     assert set(gaps) <= set(manifest_operations())
     assert "db_data_grpc:Upsert" not in gaps
+    # The exempt operation stays listed — annotated, not hidden, so an
+    # unexplained 101/102 cannot be mistaken for a regression.
+    assert EXEMPT_OP in gaps
+    annotated = next(line for line in lines if line.startswith(EXEMPT_OP))
+    assert "deliberate omission" in annotated
+    assert cov.COVERAGE_EXEMPTIONS[EXEMPT_OP] in annotated

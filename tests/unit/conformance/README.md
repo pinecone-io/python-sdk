@@ -12,6 +12,16 @@ uv run python scripts/api_coverage.py --verify   # run this suite; claimed tests
 uv run python scripts/api_coverage.py --gate     # the epoch stop condition
 ```
 
+## Deliberate omissions
+
+An operation cut from the release by decision is named in
+`COVERAGE_EXEMPTIONS` in `scripts/api_coverage.py`, with a link to the
+`DECISION:` comment that cut it. `db_metrics:fetch_prometheus_targets` is the
+only entry, which is why HTTP coverage lands at 101/102. An exemption excuses
+exactly the operation it names, the operation stays visible in `--report` and
+`--gaps`, and the gate fails if the operation later gains coverage while the
+entry is still there.
+
 ## Operation ids
 
 `<surface>:<operationId>` for HTTP operations, where `<surface>` is the OAS

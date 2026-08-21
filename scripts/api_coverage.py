@@ -43,14 +43,29 @@ Usage:
     uv run python scripts/api_coverage.py --gate
     uv run python scripts/api_coverage.py --write-manifest
 
+A handful of operations are cut from the release by decision rather than
+left uncovered by accident. Those are named one at a time in
+:data:`COVERAGE_EXEMPTIONS`, each pointing at the ``DECISION:`` comment that
+cut it. An exemption excuses exactly the operation it names — a *different*
+uncovered operation still fails the gate — and it stays visible in
+``--report`` / ``--gaps`` output rather than disappearing from the
+denominator, because an unexplained 101/102 is indistinguishable from a
+regression. An exemption that has become stale (the operation gained
+passing coverage after all) fails the gate too, so it gets deleted.
+
 ``--gate`` exits 0 only when all of the following hold:
 
-1. every OAS operation and proto rpc is covered by a passing conformance test
-2. no claimed conformance test failed or was skipped
+1. every OAS operation and proto rpc is covered by a passing conformance
+   test, except operations named in :data:`COVERAGE_EXEMPTIONS`
+2. no claimed conformance test failed or was skipped, and no exemption is
+   stale
 3. every version constant in pinecone/_internal/constants.py is 2026-07 or
    excepted by a ``DECISION:`` comment on the epoch issue
 4. rust/proto/db_data_2026-07.proto exists and rust/build.rs references it
-5. the epoch issue has zero open sub-issues
+5. the four :data:`RELEASE_MILESTONES` together have zero open issues, and
+   every open ``release/2026-07`` issue is classified into that count or
+   exempted from it — an unmilestoned, unlabelled ticket is invisible to the
+   sum, so it fails the gate instead of passing quietly
 6. every divergence exception and base-path override references an open
    ``question`` issue
 """
@@ -66,7 +81,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlparse
 
 import yaml
@@ -84,6 +99,33 @@ DEFAULT_SPECS_DIR = Path.home() / "workspace" / "apis" / "_build" / API_VERSION
 DEFAULT_EPOCH_ISSUE = 87
 GRPC_SURFACE = "db_data_grpc"
 RESULTS_ENV = "PINECONE_CONFORMANCE_RESULTS"
+
+_ISSUE_URL = "https://github.com/pinecone-io/python-sdk-internal/issues"
+
+# db_metrics:fetch_prometheus_targets — the Prometheus service-discovery
+# surface does not ship in 2026-07, so HTTP coverage lands at 101/102 by
+# decision. Delete this entry when the surface is picked up.
+COVERAGE_EXEMPTIONS: dict[str, str] = {
+    "db_metrics:fetch_prometheus_targets": f"{_ISSUE_URL}/87#issuecomment-5365004482",
+}
+
+RELEASE_MILESTONES_DECISION = f"{_ISSUE_URL}/87#issuecomment-5365004630"
+RELEASE_LABEL = f"release/{API_VERSION}"
+_PAGE_SIZE = 100
+_MAX_PAGES = 100
+_ISSUE_LIMIT = 1000
+
+# Milestones, not #87's sub-issue list: #87 hit GitHub's 100-sub-issue cap, so
+# closing a ticket stopped moving that count and "zero open" could never
+# become true. ``question`` issues carry no milestone and so are already
+# outside this count — a label filter here would be papering over a
+# mis-milestoned ticket.
+RELEASE_MILESTONES: tuple[str, ...] = (
+    f"{API_VERSION} M1: Foundations & version bumps",
+    f"{API_VERSION} M2: Shared models & validation",
+    f"{API_VERSION} M3: Transport implementations",
+    f"{API_VERSION} M4: Graduation cleanup, docs & release notes",
+)
 
 OperationMap = dict[str, dict[str, Any]]
 
@@ -673,6 +715,58 @@ def surface_of(op_id: str) -> str:
     return op_id.split(":", 1)[0]
 
 
+def exempt_operations(ops: OperationMap) -> dict[str, str]:
+    return {op_id: url for op_id, url in COVERAGE_EXEMPTIONS.items() if op_id in ops}
+
+
+def exemption_problems(ops: OperationMap, covered: set[str]) -> list[str]:
+    """Every reason an entry in :data:`COVERAGE_EXEMPTIONS` should be deleted.
+
+    An exemption for an operation the specs no longer contain, or for one that
+    has since gained passing coverage, is reported rather than ignored: a
+    forgotten exemption is a hole in the denominator that nothing else would
+    ever surface.
+    """
+    problems: list[str] = []
+    for op_id, url in sorted(COVERAGE_EXEMPTIONS.items()):
+        if op_id not in ops:
+            problems.append(
+                f"exemption names {op_id}, which is not in the {API_VERSION} specs — "
+                f"delete the exemption ({url})"
+            )
+        elif op_id in covered:
+            problems.append(
+                f"exemption for {op_id} is STALE: the operation now has passing "
+                f"conformance coverage — delete the exemption ({url})"
+            )
+    return problems
+
+
+class CoverageStatus(NamedTuple):
+    ok: bool
+    detail: str
+    problems: list[str]
+    missing: list[str]
+
+
+def coverage_status(ops: OperationMap, verified: set[str]) -> CoverageStatus:
+    """Whether coverage clears the bar, and exactly which operations fall short.
+
+    Exemptions excuse the operations they name and nothing else — ``missing``
+    is a set difference, not a count allowance, so a different uncovered
+    operation still fails.
+    """
+    exempt = exempt_operations(ops)
+    problems = exemption_problems(ops, verified)
+    missing = sorted(set(ops) - verified - set(exempt))
+    detail = f"{len(verified)}/{len(ops)} operations verified by passing conformance tests"
+    if exempt:
+        detail += f"; {len(exempt)} deliberate omission(s): {', '.join(sorted(exempt))}"
+    if missing:
+        detail += f"; {len(missing)} uncovered (run --gaps)"
+    return CoverageStatus(not missing and not problems, detail, problems, missing)
+
+
 def run_conformance_suite(collect_only: bool) -> tuple[int, dict[str, Any]]:
     """Run pytest over tests/unit/conformance/ and return (exit_code, results).
 
@@ -772,45 +866,123 @@ def fetch_decision_comments(epoch_issue: int) -> list[str]:
     ]
 
 
-def fetch_open_subissues(epoch_issue: int) -> list[dict[str, Any]]:
-    repo = json.loads(_gh(["repo", "view", "--json", "nameWithOwner"]))["nameWithOwner"]
-    owner, name = repo.split("/", 1)
-    query = """
-    query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
-      repository(owner: $owner, name: $name) {
-        issue(number: $number) {
-          subIssues(first: 100, after: $cursor) {
-            pageInfo { hasNextPage endCursor }
-            nodes { number state title }
-          }
-        }
-      }
-    }
+def fetch_milestones() -> list[dict[str, Any]]:
+    """Every milestone in the repo, open and closed, following pagination to the end.
+
+    A page cap that truncates silently is precisely what broke the check this
+    replaces. If a release milestone holding open issues fell off page one
+    while the four expected titles were empty, the epoch condition would go
+    green and the work would stay invisible — so this follows pages until one
+    comes back short, and refuses to guess if that never happens.
     """
-    open_issues: list[dict[str, Any]] = []
-    cursor: str | None = None
-    while True:
-        args = [
-            "api",
-            "graphql",
-            "-f",
-            f"query={query}",
-            "-f",
-            f"owner={owner}",
-            "-f",
-            f"name={name}",
-            "-F",
-            f"number={epoch_issue}",
-        ]
-        if cursor:
-            args += ["-f", f"cursor={cursor}"]
-        data = json.loads(_gh(args))
-        sub = data["data"]["repository"]["issue"]["subIssues"]
-        open_issues.extend(n for n in sub["nodes"] if n["state"] == "OPEN")
-        if not sub["pageInfo"]["hasNextPage"]:
-            break
-        cursor = sub["pageInfo"]["endCursor"]
-    return open_issues
+    milestones: list[dict[str, Any]] = []
+    for page in range(1, _MAX_PAGES + 1):
+        batch: list[dict[str, Any]] = json.loads(
+            _gh(
+                [
+                    "api",
+                    f"repos/:owner/:repo/milestones?state=all&per_page={_PAGE_SIZE}&page={page}",
+                ]
+            )
+        )
+        milestones.extend(batch)
+        if len(batch) < _PAGE_SIZE:
+            return milestones
+    raise SpecError(
+        f"milestone listing did not terminate within {_MAX_PAGES} pages of {_PAGE_SIZE} — "
+        "refusing to report a possibly-truncated count"
+    )
+
+
+def release_milestone_status(milestones: list[dict[str, Any]]) -> tuple[bool, str]:
+    """The epoch stop condition: zero open issues across the release milestones.
+
+    Every milestone titled for this release counts, so a fifth one added later
+    cannot hold open work the gate never looks at. On top of that, all four
+    :data:`RELEASE_MILESTONES` must exist — a renamed or deleted milestone would
+    otherwise drop silently out of the sum and turn the gate green by making
+    work invisible, which is exactly what the sub-issue cap did.
+    """
+    counted = {
+        str(m.get("title")): int(m.get("open_issues") or 0)
+        for m in milestones
+        if str(m.get("title") or "").startswith(API_VERSION)
+    }
+    missing = [title for title in RELEASE_MILESTONES if title not in counted]
+    if missing:
+        return False, (
+            f"milestone(s) not found in this repo: {'; '.join(missing)} — the open-issue "
+            f"sum cannot be trusted (decision: {RELEASE_MILESTONES_DECISION})"
+        )
+    breakdown = ", ".join(
+        f"{title.split(':', 1)[0]} {count}" for title, count in sorted(counted.items())
+    )
+    total = sum(counted.values())
+    if total:
+        return False, (
+            f"{total} open issues across the {len(counted)} {API_VERSION} milestones "
+            f"({breakdown}); run `gh issue list --milestone <title>` for the list"
+        )
+    return True, (
+        f"zero open issues across the {len(counted)} {API_VERSION} milestones ({breakdown})"
+    )
+
+
+def fetch_open_release_issues() -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = json.loads(
+        _gh(
+            [
+                "issue",
+                "list",
+                "--state",
+                "open",
+                "--label",
+                RELEASE_LABEL,
+                "--limit",
+                str(_ISSUE_LIMIT),
+                "--json",
+                "number,labels,milestone",
+            ]
+        )
+    )
+    if len(issues) >= _ISSUE_LIMIT:
+        raise SpecError(
+            f"open {RELEASE_LABEL} issues hit the {_ISSUE_LIMIT} fetch limit, so the listing "
+            "may be truncated — raise the limit rather than triaging a partial list"
+        )
+    return issues
+
+
+def unclassified_release_issues(issues: list[dict[str, Any]], epoch_issue: int) -> list[int]:
+    """Open release issues the milestone sum cannot see.
+
+    Two states are legitimate: a milestone :func:`release_milestone_status`
+    actually counts, or the ``question`` label, which marks an upstream
+    SPEC-vs-BACKEND item as out of scope. Anything else is invisible to the
+    sum — and that includes a release ticket parked on some *other* milestone
+    (``9.2.0``), which reads as classified while being counted by nobody.
+
+    The test is therefore "does the sum see it", not "does it have a
+    milestone": these two functions must agree on which milestones count, or
+    the gap between them is where work disappears. "Question issues carry no
+    milestone" does not give the converse either, so an unlabelled finding
+    filed mid-task is invisible too — that is the sub-issue cap's failure one
+    ticket at a time, a bet on filing discipline rather than a measure. The
+    epoch issue is the one legitimate exception: it is the parent, not a work
+    ticket.
+    """
+    unclassified: list[int] = []
+    for issue in issues:
+        number = int(issue["number"])
+        if number == epoch_issue:
+            continue
+        milestone = issue.get("milestone") or {}
+        if str(milestone.get("title") or "").startswith(API_VERSION):
+            continue
+        if "question" in {label["name"] for label in issue.get("labels") or []}:
+            continue
+        unclassified.append(number)
+    return sorted(unclassified)
 
 
 def rust_proto_wired() -> tuple[bool, str]:
@@ -855,18 +1027,23 @@ def print_report(ops: OperationMap, covered: set[str], basis: str) -> None:
     surfaces: dict[str, list[str]] = {}
     for op_id in ops:
         surfaces.setdefault(surface_of(op_id), []).append(op_id)
+    exempt = exempt_operations(ops)
     print(f"conformance coverage ({basis})")
     width = max(len(s) for s in surfaces)
     for surface in sorted(surfaces):
         total = len(surfaces[surface])
         done = sum(1 for op_id in surfaces[surface] if op_id in covered)
-        print(f"  {surface:<{width}}  {done:>3} / {total}")
+        omitted = sum(1 for op_id in surfaces[surface] if op_id in exempt)
+        suffix = f"   ({omitted} deliberate omission)" if omitted else ""
+        print(f"  {surface:<{width}}  {done:>3} / {total}{suffix}")
     http_ops = [op for op, entry in ops.items() if entry["kind"] == "http"]
     grpc_ops = [op for op, entry in ops.items() if entry["kind"] == "grpc"]
     http_done = sum(1 for op in http_ops if op in covered)
     grpc_done = sum(1 for op in grpc_ops if op in covered)
     print(f"overall http: {http_done}/{len(http_ops)}")
     print(f"overall grpc: {grpc_done}/{len(grpc_ops)}")
+    for op_id, url in sorted(exempt.items()):
+        print(f"deliberate omission: {op_id} — {url}")
 
 
 def mode_report(ops: OperationMap) -> int:
@@ -878,8 +1055,13 @@ def mode_report(ops: OperationMap) -> int:
 def mode_gaps(ops: OperationMap) -> int:
     _, results = run_conformance_suite(collect_only=True)
     claims = claimed_ops(results)
+    exempt = exempt_operations(ops)
     for op_id in sorted(ops):
-        if op_id not in claims:
+        if op_id in claims:
+            continue
+        if op_id in exempt:
+            print(f"{op_id}\t[deliberate omission — {exempt[op_id]}]")
+        else:
             print(op_id)
     return 0
 
@@ -911,13 +1093,11 @@ def mode_gate(ops: OperationMap, epoch_issue: int) -> int:
     conditions: list[tuple[bool, str]] = []
 
     green, verified, problems = run_verify(ops)
-    missing = sorted(set(ops) - verified)
-    coverage_ok = green and not missing
-    detail = f"{len(verified)}/{len(ops)} operations verified by passing conformance tests"
-    if missing:
-        detail += f"; {len(missing)} uncovered (run --gaps)"
-    conditions.append((coverage_ok, f"conformance: {detail}"))
-    conditions.extend((False, f"conformance: {problem}") for problem in problems)
+    status = coverage_status(ops, verified)
+    conditions.append((green and status.ok, f"conformance: {status.detail}"))
+    conditions.extend(
+        (False, f"conformance: {problem}") for problem in [*problems, *status.problems]
+    )
 
     constants = version_constants(CONSTANTS_PATH.read_text())
     try:
@@ -974,19 +1154,45 @@ def mode_gate(ops: OperationMap, epoch_issue: int) -> int:
         conditions.append((True, "divergence: no divergence exceptions registered"))
 
     try:
-        open_subissues = fetch_open_subissues(epoch_issue)
-        if open_subissues:
-            numbers = ", ".join(f"#{issue['number']}" for issue in open_subissues)
+        ok, message = release_milestone_status(fetch_milestones())
+        conditions.append((ok, f"epoch: {message}"))
+    except (
+        subprocess.CalledProcessError,
+        FileNotFoundError,
+        KeyError,
+        ValueError,
+        SpecError,
+    ) as exc:
+        conditions.append((False, f"epoch: could not list milestones via gh: {exc}"))
+
+    try:
+        unclassified = unclassified_release_issues(fetch_open_release_issues(), epoch_issue)
+        if unclassified:
+            numbers = ", ".join(f"#{number}" for number in unclassified)
             conditions.append(
                 (
                     False,
-                    f"epoch: {len(open_subissues)} open sub-issues on #{epoch_issue}: {numbers}",
+                    f"triage: {len(unclassified)} open {RELEASE_LABEL} issue(s) carry neither a "
+                    f"{API_VERSION} milestone nor the 'question' label, so the milestone sum "
+                    f"cannot see them: {numbers}",
                 )
             )
         else:
-            conditions.append((True, f"epoch: zero open sub-issues on #{epoch_issue}"))
-    except (subprocess.CalledProcessError, FileNotFoundError, KeyError) as exc:
-        conditions.append((False, f"epoch: could not list sub-issues via gh: {exc}"))
+            conditions.append(
+                (
+                    True,
+                    f"triage: every open {RELEASE_LABEL} issue is on a {API_VERSION} milestone "
+                    f"or marked 'question' (#{epoch_issue} excepted as the epoch parent)",
+                )
+            )
+    except (
+        subprocess.CalledProcessError,
+        FileNotFoundError,
+        KeyError,
+        ValueError,
+        SpecError,
+    ) as exc:
+        conditions.append((False, f"triage: could not list {RELEASE_LABEL} issues via gh: {exc}"))
 
     all_ok = all(ok for ok, _ in conditions)
     for ok, message in conditions:
@@ -1019,7 +1225,7 @@ def main(argv: list[str] | None = None) -> int:
         "--epoch-issue",
         type=int,
         default=DEFAULT_EPOCH_ISSUE,
-        help=f"epoch issue number for DECISION / sub-issue checks (default: {DEFAULT_EPOCH_ISSUE})",
+        help=f"epoch issue number for the DECISION-comment check (default: {DEFAULT_EPOCH_ISSUE})",
     )
     args = parser.parse_args(argv)
 
