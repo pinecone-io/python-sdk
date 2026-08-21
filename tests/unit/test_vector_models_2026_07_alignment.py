@@ -139,8 +139,9 @@ class TestSparseOnlyVector:
         assert encoded["sparseValues"] is None
 
     def test_a_vector_with_neither_is_refused(self) -> None:
-        with pytest.raises(ValueError, match="either values or sparse_values"):
+        with pytest.raises(PineconeValueError, match="either values or sparse_values") as exc_info:
             Vector(id="v1", values=[])
+        assert type(exc_info.value) is PineconeValueError
 
     def test_sparse_only_survives_a_round_trip(self) -> None:
         original = Vector(id="v1", values=[], sparse_values=SparseValues(indices=[3], values=[0.5]))

@@ -118,21 +118,25 @@ def test_configure_request_read_capacity_only_stays_sparse() -> None:
 
 class TestCreateRequestValidation:
     def test_empty_field_name_rejected(self) -> None:
-        with pytest.raises(ValueError, match="1-64 characters"):
+        with pytest.raises(PineconeValueError, match="1-64 characters") as exc_info:
             CreateIndexRequest(schema={"fields": {"": {"type": "dense_vector"}}})
+        assert type(exc_info.value) is PineconeValueError
 
     def test_leading_underscore_rejected(self) -> None:
-        with pytest.raises(ValueError, match="reserved for internal use"):
+        with pytest.raises(PineconeValueError, match="reserved for internal use") as exc_info:
             CreateIndexRequest(schema={"fields": {"_id": {"type": "dense_vector"}}})
+        assert type(exc_info.value) is PineconeValueError
 
     def test_leading_dollar_rejected(self) -> None:
-        with pytest.raises(ValueError, match="filter operator"):
+        with pytest.raises(PineconeValueError, match="filter operator") as exc_info:
             CreateIndexRequest(schema={"fields": {"$and": {"type": "dense_vector"}}})
+        assert type(exc_info.value) is PineconeValueError
 
     def test_over_64_chars_rejected(self) -> None:
         long_name = "f" * 65
-        with pytest.raises(ValueError, match="exceeds"):
+        with pytest.raises(PineconeValueError, match="exceeds") as exc_info:
             CreateIndexRequest(schema={"fields": {long_name: {"type": "dense_vector"}}})
+        assert type(exc_info.value) is PineconeValueError
 
     def test_64_chars_accepted(self) -> None:
         ok_name = "f" * 64
@@ -142,11 +146,39 @@ class TestCreateRequestValidation:
         assert ok_name in req.schema["fields"]  # type: ignore[union-attr, index, operator]
 
     def test_error_message_names_field_and_value(self) -> None:
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(PineconeValueError) as exc_info:
             CreateIndexRequest(schema={"fields": {"_secret": {"type": "dense_vector"}}})
         message = str(exc_info.value)
         assert "_secret" in message
         assert "Rename" in message
+
+    @pytest.mark.parametrize(
+        "field_name",
+        ["", "_id", "$and", "f" * 65],
+        ids=["empty", "leading-underscore", "leading-dollar", "over-64-chars"],
+    )
+    def test_schema_field_name_raises_pinecone_value_error(self, field_name: str) -> None:
+        """A rejected schema field name must be catchable as the documented type.
+
+        ``create()`` documents ``PineconeValueError`` for a malformed schema
+        dict, so ``except PineconeValueError`` has to catch this. The exact-type
+        assertion is what fails if the raise reverts to a bare ``ValueError`` --
+        ``pytest.raises(ValueError)`` alone passes either way, because
+        ``PineconeValueError`` subclasses ``ValueError``.
+        """
+        with pytest.raises(PineconeValueError) as exc_info:
+            CreateIndexRequest(schema={"fields": {field_name: {"type": "dense_vector"}}})
+        assert type(exc_info.value) is PineconeValueError
+        assert isinstance(exc_info.value, ValueError)
+
+    @pytest.mark.parametrize(
+        "field_name",
+        ["", "_id", "$and", "f" * 65],
+        ids=["empty", "leading-underscore", "leading-dollar", "over-64-chars"],
+    )
+    def test_schema_field_name_caught_as_pinecone_error(self, field_name: str) -> None:
+        with pytest.raises(PineconeError):
+            CreateIndexRequest(schema={"fields": {field_name: {"type": "dense_vector"}}})
 
     def test_unknown_deployment_type_lists_allowed_values(self) -> None:
         with pytest.raises(PineconeValueError) as exc_info:

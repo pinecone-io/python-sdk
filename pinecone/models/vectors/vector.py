@@ -6,6 +6,7 @@ from typing import Any
 
 from msgspec import Struct
 
+from pinecone.errors.exceptions import PineconeValueError
 from pinecone.models._mixin import DictLikeStruct
 from pinecone.models.vectors.sparse import SparseValues
 
@@ -41,7 +42,7 @@ class Vector(DictLikeStruct, Struct, rename="camel", gc=False):
     def __post_init__(self) -> None:
         """Require at least one of ``values`` or ``sparse_values`` to be populated."""
         if not self.values and self.sparse_values is None:
-            raise ValueError("Vector must have either values or sparse_values")
+            raise PineconeValueError("Vector must have either values or sparse_values")
 
     @staticmethod
     def from_dict(vector_dict: dict[str, Any]) -> Vector:

@@ -32,27 +32,27 @@ def validate_schema_field_name(name: str) -> None:
     validating here fails fast before any HTTP request.
 
     Raises:
-        ValueError: If the name violates any rule. The message names the
-            field, the rule violated, and the fix.
+        PineconeValueError: If the name violates any rule. The message names
+            the field, the rule violated, and the fix.
     """
     if not name:
-        raise ValueError(
+        raise PineconeValueError(
             "Invalid schema field name '': field names must be 1-64 characters. "
             "Provide a non-empty field name."
         )
     if len(name) > _MAX_FIELD_NAME_LENGTH:
-        raise ValueError(
+        raise PineconeValueError(
             f"Invalid schema field name {name!r}: {len(name)} characters exceeds "
             f"the maximum length of {_MAX_FIELD_NAME_LENGTH}. Shorten the field name."
         )
     if name.startswith("_"):
-        raise ValueError(
+        raise PineconeValueError(
             f"Invalid schema field name {name!r}: names beginning with '_' are "
             "reserved for internal use (e.g. _id, _values, _sparse_values). "
             "Rename the field without the leading underscore."
         )
     if name.startswith("$"):
-        raise ValueError(
+        raise PineconeValueError(
             f"Invalid schema field name {name!r}: names beginning with '$' are "
             "not allowed because '$' introduces a filter operator. "
             "Rename the field without the leading '$'."

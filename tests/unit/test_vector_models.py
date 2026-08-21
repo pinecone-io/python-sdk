@@ -7,6 +7,7 @@ from typing import Any
 import msgspec
 import pytest
 
+from pinecone.errors import PineconeError, PineconeValueError
 from pinecone.models.vectors.responses import (
     DescribeIndexStatsResponse,
     FetchResponse,
@@ -72,8 +73,29 @@ class TestVector:
     def test_empty_vector_raises(self) -> None:
         # Vector with neither values nor sparse_values raises at construction time
         # (claim model-0042).
-        with pytest.raises(ValueError, match="values or sparse_values"):
+        with pytest.raises(PineconeValueError, match="values or sparse_values"):
             Vector(id="empty")
+
+    def test_empty_vector_raises_pinecone_value_error(self) -> None:
+        """``upsert`` documents ``PineconeValueError`` for a malformed vector element.
+
+        The exact-type assertion is the load-bearing one: a plain
+        ``pytest.raises(ValueError)`` passes whether or not this site raises the
+        Pinecone type, because ``PineconeValueError`` subclasses ``ValueError``.
+        """
+        with pytest.raises(PineconeValueError) as exc_info:
+            Vector(id="empty")
+        assert type(exc_info.value) is PineconeValueError
+        assert isinstance(exc_info.value, ValueError)
+
+    def test_empty_vector_caught_as_pinecone_error(self) -> None:
+        with pytest.raises(PineconeError):
+            Vector(id="empty")
+
+    def test_empty_vector_from_dict_raises_pinecone_value_error(self) -> None:
+        with pytest.raises(PineconeValueError) as exc_info:
+            Vector.from_dict({"id": "empty"})
+        assert type(exc_info.value) is PineconeValueError
 
     def test_from_dict(self) -> None:
         data: dict[str, Any] = {

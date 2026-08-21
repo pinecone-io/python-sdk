@@ -393,10 +393,11 @@ async def test_create_invalid_name_raises_with_rule(
 
 
 async def test_create_invalid_schema_field_name_raises(indexes: AsyncIndexes) -> None:
-    with pytest.raises(ValueError, match="_values"):
+    with pytest.raises(PineconeValueError, match="_values") as exc_info:
         await indexes.create(
             schema={"fields": {"_values": {"type": "dense_vector", "dimension": 3}}}
         )
+    assert type(exc_info.value) is PineconeValueError
 
 
 async def test_create_empty_deployment_raises(indexes: AsyncIndexes) -> None:
@@ -441,6 +442,21 @@ async def test_create_invalid_deployment_type_raises(
 ) -> None:
     with pytest.raises(PineconeValueError, match="deployment_type") as exc_info:
         await indexes.create(schema=DENSE_SCHEMA, deployment={"deployment_type": deployment_type})
+    assert type(exc_info.value) is PineconeValueError
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["", "_id", "$and", "f" * 65],
+    ids=["empty", "leading-underscore", "leading-dollar", "over-64-chars"],
+)
+async def test_create_schema_field_name_rule_raises_pinecone_value_error(
+    indexes: AsyncIndexes, field_name: str
+) -> None:
+    with pytest.raises(PineconeValueError, match="Invalid schema field name") as exc_info:
+        await indexes.create(
+            schema={"fields": {field_name: {"type": "dense_vector", "dimension": 3}}}
+        )
     assert type(exc_info.value) is PineconeValueError
 
 

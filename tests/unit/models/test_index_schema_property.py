@@ -17,6 +17,7 @@ import msgspec
 from hypothesis import given
 from hypothesis import strategies as st
 
+from pinecone.errors.exceptions import PineconeValueError
 from pinecone.models.indexes.requests import CreateIndexRequest
 from pinecone.models.indexes.schema import (
     BooleanField,
@@ -161,5 +162,6 @@ _invalid_field_names = st.one_of(
 def test_invalid_field_names_rejected_before_any_http(name: str) -> None:
     import pytest
 
-    with pytest.raises(ValueError, match="Invalid schema field name"):
+    with pytest.raises(PineconeValueError, match="Invalid schema field name") as exc_info:
         CreateIndexRequest(schema={"fields": {name: {"type": "dense_vector", "dimension": 3}}})
+    assert type(exc_info.value) is PineconeValueError
