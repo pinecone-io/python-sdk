@@ -70,8 +70,38 @@ message but still lacking ``V202607`` in its enum, a message-sensitive
 comparison would see ``'2026-07'`` vs ``'9999-99'``, call the two responses
 different, and report **PASS on a server that rejects us**. Interpolating
 the request back into the response makes message text a mirror, not
-evidence. The same reasoning excludes the response body and any
-date/trace/request-id headers.
+evidence. The same reasoning excludes date/trace/request-id headers.
+
+**The response body — for a second, stronger, and independent reason:
+at least one probed operation is genuinely nondeterministic.** #348 called
+``POST /evaluation/metrics/alignment`` six times at a single *fixed*
+version and got two distinct bodies back (``alignment: 1.0`` and
+``alignment: 0.0``) — LLM-sampling noise inside the eval service, not a
+version effect. A body-sensitive oracle would disagree with itself on that
+endpoint roughly five runs in six, reporting an intermittent, unreproducible
+FAIL on a server that is doing nothing wrong — the hardest kind of false
+positive to diagnose, because rerunning it can just as easily "confirm" the
+false alarm as dispel it. **Do not add response-body comparison, including
+behind a flag: an oracle that is wrong on a nondeterministic endpoint five-
+sixths of the time is worse than one that is silent on bodies altogether.**
+
+This is not the only body-shaped trap #348 found, and the other one is why
+body comparison would not even be sufficient if it were safe: byte-identical
+bodies do not prove a version is respected. ``GET /bulk/imports`` and
+``GET /bulk/imports/{id}`` compare byte-identical at ``2026-07`` and at the
+bogus version — but the bodies are degenerate (``{"data": []}``, a plain
+"not found" 404), and an empty list or a 404 would also compare equal on a
+*correctly* gated endpoint with nothing to return. Identity there is
+necessary, not sufficient, so it was never a candidate for the signature.
+What actually distinguished "this route ignores the version header" from
+"this route is gated and legitimately has nothing to show" was a same-host
+differential outside this script: on the identical host/auth/transcoding
+path, ``GET /vectors/list`` and ``GET /namespaces`` answer the bogus version
+with ``403 {"code": 7, "message": "Unsupported API version..."}`` while
+``/bulk/imports`` answers ``200``. If a future body-shaped ambiguity needs
+resolving, that differential against a known-gated sibling on the same host
+— not a body comparison in this probe — is the technique, and #348 is the
+worked example.
 
 Content-type is kept, and normalised to a bare media type (parameters like
 ``charset`` dropped): it is what separates #319's ``text/html`` blank page
@@ -268,7 +298,10 @@ class Signature:
 
     Deliberately excludes message text, body, and per-request headers — see
     the module docstring for why including any of them turns a broken server
-    into a PASS.
+    into a PASS. The body exclusion is the one to read before "fixing" it:
+    #348 found a probed operation whose body is genuinely nondeterministic,
+    which would make a body-sensitive oracle intermittently wrong rather than
+    reliably right.
     """
 
     status: int
