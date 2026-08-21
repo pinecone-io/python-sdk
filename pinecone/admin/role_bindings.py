@@ -31,11 +31,6 @@ _VALID_RESOURCE_TYPES = [r.value for r in ResourceType]
 _VALID_ROLE_NAMES = [r.value for r in RoleName]
 
 
-def _as_str(value: str | PrincipalType | ResourceType | RoleName) -> str:
-    """Accept an enum member or a plain string and return the wire string."""
-    return value.value if isinstance(value, (PrincipalType, ResourceType, RoleName)) else value
-
-
 class RoleBindings:
     """Control-plane operations for the organization's role bindings.
 
@@ -180,30 +175,26 @@ class RoleBindings:
                 f"{', '.join(repr(r) for r in _VALID_RESOURCE_TYPES)}."
             )
 
-        principal_type_value = None if principal_type is None else _as_str(principal_type)
-        resource_type_value = None if resource_type is None else _as_str(resource_type)
-        role_value = None if role is None else _as_str(role)
-
-        if principal_type_value is not None:
-            require_one_of("principal_type", principal_type_value, _VALID_PRINCIPAL_TYPES)
-        if resource_type_value is not None:
-            require_one_of("resource_type", resource_type_value, _VALID_RESOURCE_TYPES)
-        if role_value is not None:
-            require_one_of("role", role_value, _VALID_ROLE_NAMES)
+        if principal_type is not None:
+            require_one_of("principal_type", principal_type, _VALID_PRINCIPAL_TYPES)
+        if resource_type is not None:
+            require_one_of("resource_type", resource_type, _VALID_RESOURCE_TYPES)
+        if role is not None:
+            require_one_of("role", role, _VALID_ROLE_NAMES)
         if limit is not None:
             require_in_range("limit", limit, _LIMIT_MIN, _LIMIT_MAX)
 
         filters: dict[str, str] = {}
-        if principal_type_value is not None:
-            filters["principal_type"] = principal_type_value
+        if principal_type is not None:
+            filters["principal_type"] = principal_type
         if principal_id is not None:
             filters["principal_id"] = principal_id
-        if resource_type_value is not None:
-            filters["resource_type"] = resource_type_value
+        if resource_type is not None:
+            filters["resource_type"] = resource_type
         if resource_id is not None:
             filters["resource_id"] = resource_id
-        if role_value is not None:
-            filters["role"] = role_value
+        if role is not None:
+            filters["role"] = role
 
         logger.info("Listing role bindings (filters=%r, limit=%r)", sorted(filters), limit)
 
@@ -320,20 +311,19 @@ class RoleBindings:
                     role=RoleName.DATA_PLANE_EDITOR,
                 )
         """
-        principal_type_value = _as_str(principal_type)
-        require_one_of("principal_type", principal_type_value, _VALID_PRINCIPAL_TYPES)
+        require_one_of("principal_type", principal_type, _VALID_PRINCIPAL_TYPES)
         require_non_empty("principal_id", principal_id)
 
         scope = RoleBindingInput(resource_type=resource_type, role=role, resource_id=resource_id)
         body: dict[str, str] = {
-            "principal_type": principal_type_value,
+            "principal_type": principal_type,
             "principal_id": principal_id,
             **binding_to_payload(scope),
         }
 
         logger.info(
             "Creating role binding (principal_type=%r, resource_type=%r, role=%r)",
-            principal_type_value,
+            principal_type,
             scope.resource_type,
             scope.role,
         )

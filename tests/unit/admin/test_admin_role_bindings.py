@@ -12,6 +12,16 @@ owns whether a grant is legal — role-vs-scope, api-key role restrictions, and
 plan gating are all 403s whose messages must reach the caller verbatim, so the
 tests assert pass-through rather than local rules.
 
+A fourth concern arrived with #408. This namespace accepts ``PrincipalType``,
+``ResourceType``, and ``RoleName`` members interchangeably with plain strings, and
+it no longer converts them itself: query parameters are resolved at the
+``_prepare_params`` boundary (#371) and bodies by the JSON encoder. Both are
+structural rather than local, so the tests that pin them assert on
+``request.url`` and ``request.content`` and are parametrized over the enum classes
+themselves — a member added later is covered without editing them — and a premise
+test asserts the mangling those two mechanisms prevent is still real, so the
+byte-identity assertions cannot silently become tautologies.
+
 The simulator does not paginate this collection (minicone#50), so the multi-page
 cursor walk is exercised against mocks only.
 """
@@ -20,6 +30,7 @@ from __future__ import annotations
 
 import itertools
 from collections.abc import Iterator
+from enum import Enum
 from typing import Any
 
 import httpx
@@ -56,6 +67,18 @@ PROJECT_ID = "a2f7dddb-1597-4eff-9f71-535fde243f58"
 ORG_ID = "-ExampleOrgId0000000"
 
 _FILTER_PARAMS = ("principal_type", "principal_id", "resource_type", "resource_id", "role")
+
+_FILTER_ENUM_MEMBERS = [
+    *(("principal_type", m) for m in PrincipalType),
+    *(("resource_type", m) for m in ResourceType),
+    *(("role", m) for m in RoleName),
+]
+
+
+def _enum_member_id(value: object) -> str:
+    if isinstance(value, Enum):
+        return f"{type(value).__name__}.{value.name}"
+    return str(value)
 
 
 def _binding(
@@ -200,6 +223,29 @@ def test_list_accepts_enum_members_for_filters(role_bindings: RoleBindings) -> N
     assert params["principal_type"] == "service_account"
     assert params["resource_type"] == "project"
     assert params["role"] == "DataPlaneEditor"
+
+
+@pytest.mark.parametrize(("param", "member"), _FILTER_ENUM_MEMBERS, ids=_enum_member_id)
+@respx.mock
+def test_list_query_string_is_identical_for_member_and_string(
+    role_bindings: RoleBindings, param: str, member: Enum
+) -> None:
+    """A member and its own ``.value`` produce the same query string, for every member.
+
+    Parametrized over the enum classes themselves so a member added to any of the
+    three is covered without editing this test, and asserted on the real
+    ``request.url`` so it cannot pass while the request carries something else.
+    """
+    route = respx.get(f"{BASE_URL}/admin/role-bindings").mock(
+        return_value=httpx.Response(200, json=_page([]))
+    )
+
+    role_bindings.list(**{param: member}).to_list()
+    role_bindings.list(**{param: member.value}).to_list()
+
+    assert str(route.calls[0].request.url) == str(route.calls[1].request.url)
+    assert route.calls[0].request.url.params[param] == member.value
+    assert type(member).__name__ not in str(route.calls[0].request.url)
 
 
 @respx.mock
@@ -570,6 +616,54 @@ def test_create_enum_and_string_bodies_are_identical(role_bindings: RoleBindings
     )
 
     assert route.calls[0].request.content == route.calls[1].request.content
+
+
+@pytest.mark.parametrize("member", list(PrincipalType), ids=_enum_member_id)
+@respx.mock
+def test_create_body_bytes_are_identical_for_member_and_string(
+    role_bindings: RoleBindings, member: PrincipalType
+) -> None:
+    """``principal_type`` is the one enum-valued input on this surface that feeds a BODY.
+
+    Query parameters are normalized structurally at ``_prepare_params`` (#371);
+    bodies are not, and are instead safe because the JSON encoder resolves a
+    member to its value. This pins that for every member, on the real
+    ``request.content``, so the mechanism cannot quietly stop holding (#408).
+    """
+    route = respx.post(f"{BASE_URL}/admin/role-bindings").mock(
+        return_value=httpx.Response(200, json=_binding())
+    )
+
+    role_bindings.create(
+        principal_type=member,
+        principal_id=PRINCIPAL_ID,
+        resource_type="organization",
+        role="OrgMember",
+    )
+    role_bindings.create(
+        principal_type=member.value,
+        principal_id=PRINCIPAL_ID,
+        resource_type="organization",
+        role="OrgMember",
+    )
+
+    assert route.calls[0].request.content == route.calls[1].request.content
+    assert orjson.loads(route.calls[0].request.content)["principal_type"] == member.value
+    assert b"PrincipalType" not in route.calls[0].request.content
+
+
+def test_enum_members_would_be_mangled_without_the_encoder_and_the_boundary() -> None:
+    """The premise both preceding tests rest on: ``str()`` of these members is wrong.
+
+    ``role_bindings`` normalizes nothing itself (#408 removed its ``_as_str``), so
+    if this ever stops being true the two byte-identity tests above become
+    tautologies and the guarantee they describe needs restating.
+    """
+    assert len(_FILTER_ENUM_MEMBERS) == len(PrincipalType) + len(ResourceType) + len(RoleName)
+    for _, member in _FILTER_ENUM_MEMBERS:
+        assert str(member) != member.value
+        assert str(httpx.QueryParams({"k": member})) == f"k={type(member).__name__}.{member.name}"
+        assert orjson.loads(orjson.dumps({"k": member}))["k"] == member.value
 
 
 @respx.mock
