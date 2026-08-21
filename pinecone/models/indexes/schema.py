@@ -201,7 +201,11 @@ class StringField(Struct, tag="string", tag_field="type", kw_only=True):
     Attributes:
         description: Optional human-readable description of the field.
         filterable: Whether the field can be used in metadata filters.
-            Defaults to ``False``.
+            Defaults to ``False``. On create a string field is either
+            searchable or filterable, never both: passing
+            ``filterable=True`` alongside ``full_text_search`` makes the
+            server keep the filter and discard the search configuration,
+            and it reports no error for doing so.
         full_text_search: Full-text search configuration. Presence (even
             an empty config) indicates the field is full-text searchable;
             absence (``None``) means it is not.
@@ -371,3 +375,29 @@ class IndexSchema(Struct, kw_only=True):
         """
         result: dict[str, Any] = _strip_untyped_tags(msgspec.to_builtins(self))
         return result
+
+
+def _encode_schema_for_request(schema: IndexSchema) -> dict[str, Any]:
+    """Encode a typed schema for a create or configure request body.
+
+    ``filterable`` is omitted from a :class:`StringField` that carries a
+    ``full_text_search`` config and did not ask to be filterable.  The
+    server reads a string field as filter-only metadata as soon as
+    ``filterable`` is present and discards the full-text-search
+    configuration, so emitting the ``False`` default would turn every
+    full-text-search field into a filter-only one.  An explicit
+    ``filterable=True`` is still sent as given.
+
+    Every other field type, and a schema passed as a plain dict, is
+    encoded unchanged.
+    """
+    encoded: dict[str, Any] = msgspec.to_builtins(schema)
+    fields: dict[str, Any] = encoded["fields"]
+    for name, field in schema.fields.items():
+        if (
+            isinstance(field, StringField)
+            and field.full_text_search is not None
+            and not field.filterable
+        ):
+            fields[name].pop("filterable")
+    return encoded

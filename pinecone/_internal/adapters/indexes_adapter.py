@@ -13,7 +13,11 @@ from pinecone.errors.exceptions import ResponseParsingError
 from pinecone.models.indexes.index import IndexModel
 from pinecone.models.indexes.list import IndexList
 from pinecone.models.indexes.requests import ConfigureIndexRequest, CreateIndexRequest
-from pinecone.models.indexes.schema import _tag_untyped_schema_fields
+from pinecone.models.indexes.schema import (
+    IndexSchema,
+    _encode_schema_for_request,
+    _tag_untyped_schema_fields,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -53,18 +57,29 @@ def _drop_none(obj: Any) -> Any:
     return obj
 
 
+def _encode_index_request(
+    request: CreateIndexRequest | ConfigureIndexRequest,
+    schema: dict[str, Any] | IndexSchema | None,
+) -> bytes:
+    """Encode a create/configure request body, applying the typed-schema wire rules."""
+    body: dict[str, Any] = msgspec.to_builtins(request)
+    if isinstance(schema, IndexSchema):
+        body["schema"] = _encode_schema_for_request(schema)
+    return orjson.dumps(_drop_none(body))
+
+
 class IndexesAdapter:
     """Transforms raw API JSON into IndexModel / IndexList instances."""
 
     @staticmethod
     def to_create_request(request: CreateIndexRequest) -> bytes:
         """Encode a CreateIndexRequest as JSON bytes with no null-valued keys."""
-        return orjson.dumps(_drop_none(msgspec.to_builtins(request)))
+        return _encode_index_request(request, request.schema)
 
     @staticmethod
     def to_configure_request(request: ConfigureIndexRequest) -> bytes:
         """Encode a ConfigureIndexRequest as sparse JSON bytes with no null-valued keys."""
-        return orjson.dumps(_drop_none(msgspec.to_builtins(request)))
+        return _encode_index_request(request, request.schema)
 
     @staticmethod
     def to_index_model(data: bytes) -> IndexModel:
