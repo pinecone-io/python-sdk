@@ -197,6 +197,11 @@ class AsyncInference:
                 (list, tuple, etc.) of strings or Mappings is accepted.
             parameters (Mapping[str, Any] | None): Model-specific parameters
                 (e.g., ``{"input_type": "passage", "truncate": "END"}``).
+                To discover valid parameters for a model, call
+                :meth:`get_model`::
+
+                    info = await pc.inference.get_model(model="multilingual-e5-large")
+                    info.supported_parameters
 
         Returns:
             An :class:`EmbeddingsList` with ``.data``, ``.model``, and ``.usage``.
@@ -204,7 +209,10 @@ class AsyncInference:
         Raises:
             :exc:`PineconeValueError`: If *model* is empty or *inputs* is empty.
             :exc:`PineconeTypeError`: If *inputs* has an invalid type.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`NotFoundError`: If *model* is not available to this project —
+                either no such model exists, or the project is not authorized to
+                use it. The error does not distinguish the two cases.
+            :exc:`ApiError`: If the API returns another error response.
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -260,7 +268,12 @@ class AsyncInference:
                 Defaults to ``True``.
             top_n (int | None): Number of top documents to return.
                 ``None`` returns all.
-            parameters (dict[str, Any] | None): Model-specific parameters.
+            parameters (Mapping[str, Any] | None): Model-specific parameters.
+                To discover valid parameters for a model, call
+                :meth:`get_model`::
+
+                    info = await pc.inference.get_model(model="bge-reranker-v2-m3")
+                    info.supported_parameters
 
         Returns:
             A :class:`RerankResult` with ``.data`` and ``.usage``.
@@ -268,7 +281,9 @@ class AsyncInference:
         Raises:
             :exc:`PineconeValueError`: If *model*, *query*, or *documents* is empty.
             :exc:`PineconeTypeError`: If *documents* has an invalid type.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ForbiddenError`: If the project is not authorized to use
+                *model*, including when *model* has been deprecated.
+            :exc:`ApiError`: If the API returns another error response.
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -284,6 +299,12 @@ class AsyncInference:
                         documents=["Apple is a fruit.", "Acme Inc. revolutionized tech."],
                         top_n=1,
                     )
+
+        .. note::
+           The model that serves a request is not always the model named in it —
+           Pinecone may substitute a different one. ``result.model`` reports the
+           model that actually served the request, so read it there rather than
+           assuming it echoes *model*.
         """
         require_non_empty("model", str(model))
         require_non_empty("query", query)

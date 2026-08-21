@@ -7,8 +7,10 @@ import pytest
 from pinecone.models.enums import (
     CloudProvider,
     DeletionProtection,
+    EmbedModel,
     Metric,
     PodType,
+    RerankModel,
     VectorType,
 )
 
@@ -121,6 +123,71 @@ class TestVectorType:
     def test_invalid_value(self) -> None:
         with pytest.raises(ValueError, match="'hybrid' is not a valid VectorType"):
             VectorType("hybrid")
+
+
+class TestEmbedModel:
+    def test_members(self) -> None:
+        assert EmbedModel.Multilingual_E5_Large.value == "multilingual-e5-large"
+        assert EmbedModel.Pinecone_Sparse_English_V0.value == "pinecone-sparse-english-v0"
+        assert EmbedModel.Llama_Text_Embed_V2.value == "llama-text-embed-v2"
+        assert EmbedModel.Pinecone_Sparse_Multilingual_V0.value == "pinecone-sparse-multilingual-v0"
+
+    def test_length(self) -> None:
+        assert len(EmbedModel) == 4
+
+    def test_string_coercion(self) -> None:
+        assert _str_eq(EmbedModel.Llama_Text_Embed_V2, "llama-text-embed-v2")
+        assert _str_eq(
+            EmbedModel.Pinecone_Sparse_Multilingual_V0, "pinecone-sparse-multilingual-v0"
+        )
+
+    def test_construction_from_string(self) -> None:
+        assert EmbedModel("llama-text-embed-v2") == EmbedModel.Llama_Text_Embed_V2
+        assert (
+            EmbedModel("pinecone-sparse-multilingual-v0")
+            == EmbedModel.Pinecone_Sparse_Multilingual_V0
+        )
+
+    def test_pre_existing_members_keep_their_positions(self) -> None:
+        """The 2026-07 additions are appended, so declaration order stays stable.
+
+        ``EmbedModel`` is public and iterable, so reordering it would silently
+        change what ``list(EmbedModel)[0]`` means for callers. This ticket is
+        labelled additive; pinning the order keeps it that way.
+        """
+        assert [m.value for m in EmbedModel] == [
+            "multilingual-e5-large",
+            "pinecone-sparse-english-v0",
+            "llama-text-embed-v2",
+            "pinecone-sparse-multilingual-v0",
+        ]
+
+    def test_invalid_value(self) -> None:
+        with pytest.raises(ValueError, match="'no-such-model' is not a valid EmbedModel"):
+            EmbedModel("no-such-model")
+
+
+class TestRerankModel:
+    def test_members(self) -> None:
+        assert RerankModel.Bge_Reranker_V2_M3.value == "bge-reranker-v2-m3"
+        assert RerankModel.Cohere_Rerank_3_5.value == "cohere-rerank-3.5"
+        assert RerankModel.Pinecone_Rerank_V0.value == "pinecone-rerank-v0"
+
+    def test_length(self) -> None:
+        assert len(RerankModel) == 3
+
+    def test_deprecated_member_is_still_addressable(self) -> None:
+        """``pinecone-rerank-v0`` is deprecated server-side, not removed here.
+
+        Dropping the member would break imports for callers who reference it,
+        and projects on the rollout allow-list can still use it, so the
+        deprecation lives in the docstring rather than in the enum.
+        """
+        assert RerankModel("pinecone-rerank-v0") == RerankModel.Pinecone_Rerank_V0
+
+    def test_invalid_value(self) -> None:
+        with pytest.raises(ValueError, match="'no-such-model' is not a valid RerankModel"):
+            RerankModel("no-such-model")
 
 
 class TestPodType:

@@ -12,14 +12,20 @@ import respx
 from pinecone._internal.config import PineconeConfig
 from pinecone._internal.constants import API_VERSION_HEADER
 from pinecone.async_client.inference import AsyncInference
-from pinecone.errors.exceptions import ValidationError
+from pinecone.errors.exceptions import (
+    ApiError,
+    ForbiddenError,
+    NotFoundError,
+    ValidationError,
+)
 from pinecone.models.enums import EmbedModel, RerankModel
-from pinecone.models.inference.embed import EmbeddingsList
+from pinecone.models.inference.embed import EmbeddingsList, SparseEmbedding
 from pinecone.models.inference.model_list import ModelInfoList
 from pinecone.models.inference.models import ModelInfo
 from pinecone.models.inference.rerank import RerankResult
 from tests.factories import (
     make_embed_response,
+    make_error_response,
     make_model_info,
     make_model_list_response,
     make_rerank_response,
@@ -605,3 +611,242 @@ async def test_async_inference_model_get_conflict_raises(inference: AsyncInferen
 async def test_async_inference_model_get_unexpected_kwarg_raises(inference: AsyncInference) -> None:
     with pytest.raises(TypeError, match="unexpected keyword arguments"):
         await inference.model.get(model_alias="foo")
+
+
+# ---------------------------------------------------------------------------
+# 2026-07 inference alignment (#257) — async mirror of tests/unit/test_inference.py
+# ---------------------------------------------------------------------------
+
+_NEW_2026_07_EMBED_MODELS = [
+    (EmbedModel.Llama_Text_Embed_V2, "llama-text-embed-v2"),
+    (EmbedModel.Pinecone_Sparse_Multilingual_V0, "pinecone-sparse-multilingual-v0"),
+]
+
+
+@respx.mock
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("member", "wire_value"), _NEW_2026_07_EMBED_MODELS)
+async def test_async_embed_serializes_2026_07_embed_model_ids(
+    inference: AsyncInference, member: EmbedModel, wire_value: str
+) -> None:
+    """The two model ids added for 2026-07 reach the wire and round-trip back.
+
+    Mirrors the sync case, including the ``member.value`` workaround for the
+    ``str(model)`` serialization defect tracked as #296.
+    """
+    route = respx.post(f"{BASE_URL}/embed").mock(
+        return_value=httpx.Response(200, json=make_embed_response(model=wire_value)),
+    )
+
+    result = await inference.embed(member.value, ["hello"])
+
+    body = orjson.loads(route.calls[0].request.content)
+    assert body["model"] == wire_value
+    assert result.model == wire_value
+    assert route.calls.last.request.headers[API_VERSION_HEADER] == "2026-07"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_embed_deserializes_sparse_response_without_sparse_tokens(
+    inference: AsyncInference,
+) -> None:
+    """A sparse embed response decodes with sparse_tokens absent."""
+    respx.post(f"{BASE_URL}/embed").mock(
+        return_value=httpx.Response(
+            200,
+            json=make_embed_response(
+                model="pinecone-sparse-multilingual-v0",
+                vector_type="sparse",
+                data=[
+                    {
+                        "sparse_values": [0.5, 0.25],
+                        "sparse_indices": [10, 20],
+                        "vector_type": "sparse",
+                    }
+                ],
+            ),
+        ),
+    )
+
+    result = await inference.embed(EmbedModel.Pinecone_Sparse_Multilingual_V0, ["hello"])
+
+    assert result.vector_type == "sparse"
+    embedding = result.data[0]
+    assert isinstance(embedding, SparseEmbedding)
+    assert embedding.sparse_indices == [10, 20]
+    assert embedding.sparse_values == [0.5, 0.25]
+    assert embedding.sparse_tokens is None
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_embed_deserializes_sparse_response_with_sparse_tokens(
+    inference: AsyncInference,
+) -> None:
+    respx.post(f"{BASE_URL}/embed").mock(
+        return_value=httpx.Response(
+            200,
+            json=make_embed_response(
+                model="pinecone-sparse-multilingual-v0",
+                vector_type="sparse",
+                data=[
+                    {
+                        "sparse_values": [0.5],
+                        "sparse_indices": [10],
+                        "sparse_tokens": ["hello"],
+                        "vector_type": "sparse",
+                    }
+                ],
+            ),
+        ),
+    )
+
+    result = await inference.embed(EmbedModel.Pinecone_Sparse_Multilingual_V0, ["hello"])
+
+    embedding = result.data[0]
+    assert isinstance(embedding, SparseEmbedding)
+    assert embedding.sparse_tokens == ["hello"]
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_embed_deserializes_dense_response_for_llama_text_embed_v2(
+    inference: AsyncInference,
+) -> None:
+    respx.post(f"{BASE_URL}/embed").mock(
+        return_value=httpx.Response(200, json=make_embed_response(model="llama-text-embed-v2")),
+    )
+
+    result = await inference.embed(EmbedModel.Llama_Text_Embed_V2, ["hello"])
+
+    assert result.vector_type == "dense"
+    assert result.data[0].values == [0.1, 0.2, 0.3]
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_embed_unknown_parameters_key_surfaces_plain_text_422(
+    inference: AsyncInference,
+) -> None:
+    """An unknown ``parameters`` key is rejected by the server, not by the SDK."""
+    plain_text = (
+        "Failed to deserialize the JSON body into the target type: "
+        "parameters: unknown field `not_a_real_param`, expected one of "
+        "`input_type`, `truncate`, `dimension`, `return_tokens`, "
+        "`max_tokens_per_sequence` at line 1 column 74"
+    )
+    route = respx.post(f"{BASE_URL}/embed").mock(
+        return_value=httpx.Response(422, text=plain_text),
+    )
+
+    with pytest.raises(ApiError) as excinfo:
+        await inference.embed(
+            EmbedModel.Llama_Text_Embed_V2, ["hello"], parameters={"not_a_real_param": 1}
+        )
+
+    assert excinfo.value.status_code == 422
+    assert excinfo.value.message == plain_text
+    assert excinfo.value.error_code is None
+    body = orjson.loads(route.calls[0].request.content)
+    assert body["parameters"] == {"not_a_real_param": 1}
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_embed_project_not_authorized_is_masked_as_404(
+    inference: AsyncInference,
+) -> None:
+    """embed reports an authorization failure as 404, unlike rerank's 403."""
+    message = "Model 'llama-text-embed-v2' not found"
+    respx.post(f"{BASE_URL}/embed").mock(
+        return_value=httpx.Response(404, json=make_error_response(404, message)),
+    )
+
+    with pytest.raises(NotFoundError) as excinfo:
+        await inference.embed(EmbedModel.Llama_Text_Embed_V2, ["hello"])
+
+    assert excinfo.value.status_code == 404
+    assert excinfo.value.message == message
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_rerank_project_not_authorized_surfaces_403(
+    inference: AsyncInference,
+) -> None:
+    message = "Project is not authorized to use model bge-reranker-v2-m3"
+    respx.post(f"{BASE_URL}/rerank").mock(
+        return_value=httpx.Response(403, json=make_error_response(403, message)),
+    )
+
+    with pytest.raises(ForbiddenError) as excinfo:
+        await inference.rerank(model=RerankModel.Bge_Reranker_V2_M3, query="q", documents=["doc"])
+
+    assert excinfo.value.status_code == 403
+    assert excinfo.value.message == message
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_rerank_deprecated_pinecone_rerank_v0_surfaces_403(
+    inference: AsyncInference,
+) -> None:
+    """pinecone-rerank-v0 is deprecated server-side and 403s off the allow-list."""
+    message = (
+        "Model pinecone-rerank-v0 has been deprecated, please use a different "
+        "reranking model from (https://docs.pinecone.io/models)"
+    )
+    respx.post(f"{BASE_URL}/rerank").mock(
+        return_value=httpx.Response(403, json=make_error_response(403, message)),
+    )
+
+    with pytest.raises(ForbiddenError) as excinfo:
+        await inference.rerank(model=RerankModel.Pinecone_Rerank_V0, query="q", documents=["doc"])
+
+    assert excinfo.value.status_code == 403
+    assert "has been deprecated" in excinfo.value.message
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_rerank_response_model_may_differ_from_requested_model(
+    inference: AsyncInference,
+) -> None:
+    """cohere-rerank-3.5 can be served by cohere-rerank-4-fast."""
+    respx.post(f"{BASE_URL}/rerank").mock(
+        return_value=httpx.Response(200, json=make_rerank_response(model="cohere-rerank-4-fast")),
+    )
+
+    result = await inference.rerank(
+        model=RerankModel.Cohere_Rerank_3_5, query="q", documents=["doc"]
+    )
+
+    assert result.model == "cohere-rerank-4-fast"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_rerank_unknown_parameters_key_surfaces_plain_text_422(
+    inference: AsyncInference,
+) -> None:
+    plain_text = (
+        "Failed to deserialize the JSON body into the target type: "
+        "parameters: unknown field `not_a_real_param`, expected one of "
+        "`truncate`, `max_chunks_per_doc`, `max_tokens_per_doc` at line 1 column 90"
+    )
+    respx.post(f"{BASE_URL}/rerank").mock(
+        return_value=httpx.Response(422, text=plain_text),
+    )
+
+    with pytest.raises(ApiError) as excinfo:
+        await inference.rerank(
+            model=RerankModel.Bge_Reranker_V2_M3,
+            query="q",
+            documents=["doc"],
+            parameters={"not_a_real_param": 1},
+        )
+
+    assert excinfo.value.status_code == 422
+    assert excinfo.value.message == plain_text
+    assert excinfo.value.error_code is None

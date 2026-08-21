@@ -36,14 +36,30 @@ class VectorType(str, Enum):
 
 
 class EmbedModel(str, Enum):
-    """Known embedding models for integrated indexes."""
+    """Known embedding models for integrated indexes.
+
+    A convenience enum rather than an exhaustive list: ``model`` is also accepted
+    as a plain string, so a model added after this SDK release can still be used.
+    Call :meth:`~pinecone.client.inference.Inference.list_models` for the models
+    currently available.
+    """
 
     Multilingual_E5_Large = "multilingual-e5-large"
     Pinecone_Sparse_English_V0 = "pinecone-sparse-english-v0"
+    Llama_Text_Embed_V2 = "llama-text-embed-v2"
+    Pinecone_Sparse_Multilingual_V0 = "pinecone-sparse-multilingual-v0"
 
 
 class RerankModel(str, Enum):
-    """Known reranking models."""
+    """Known reranking models.
+
+    Like :class:`EmbedModel`, a convenience enum rather than an exhaustive list.
+
+    .. note::
+       ``Pinecone_Rerank_V0`` is deprecated and most projects can no longer use
+       it: a request naming it is rejected with a permission error whose message
+       points to a current model. Prefer another member of this enum.
+    """
 
     Bge_Reranker_V2_M3 = "bge-reranker-v2-m3"
     Cohere_Rerank_3_5 = "cohere-rerank-3.5"
