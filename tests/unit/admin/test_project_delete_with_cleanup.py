@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, create_autospec, patch
 
+import httpx
 import pytest
+import respx
 
 from pinecone._internal.config import PineconeConfig
 from pinecone._internal.constants import ADMIN_API_VERSION
 from pinecone._internal.http_client import HTTPClient
 from pinecone.admin.projects import Projects
-from pinecone.errors.exceptions import ApiError, ForbiddenError, PineconeError
+from pinecone.client.assistants import Assistants
+from pinecone.errors.exceptions import (
+    ApiError,
+    FailedPreconditionError,
+    ForbiddenError,
+    PineconeError,
+)
+from pinecone.models.assistant.model import AssistantModel
 
 BASE_URL = "https://api.test.pinecone.io"
 
@@ -42,6 +51,54 @@ def mock_admin() -> MagicMock:
 @pytest.fixture
 def projects(http_client: HTTPClient, mock_admin: MagicMock) -> Projects:
     return Projects(http=http_client, admin=mock_admin)
+
+
+def _assistant_blocked_project(remaining: set[str]) -> object:
+    """Build a fake project client whose only resource is an assistant.
+
+    ``Assistants`` is autospecced so a delete called with the wrong signature
+    fails here rather than silently recording a call that never happened.
+    """
+    assistants = create_autospec(Assistants, instance=True)
+    assistants.list.side_effect = lambda **_kw: [
+        AssistantModel(name=name, status="Ready") for name in sorted(remaining)
+    ]
+    assistants.delete.side_effect = lambda **kw: remaining.discard(kw["name"])
+
+    mock_pc = MagicMock()
+    mock_pc.assistants = assistants
+    mock_pc.indexes.list.return_value = []
+    mock_pc.collections.list.return_value = []
+    mock_pc.backups.list.return_value = []
+    return mock_pc
+
+
+def _project_delete_route(
+    respx_mock: respx.MockRouter, remaining: set[str], project_id: str
+) -> respx.Route:
+    """Mock DELETE /admin/projects/<id> the way the server answers it.
+
+    412 while the project still owns an assistant, 204 once it does not.
+    """
+
+    def respond(_request: httpx.Request) -> httpx.Response:
+        if remaining:
+            return httpx.Response(
+                412,
+                json={
+                    "error": {
+                        "code": "FAILED_PRECONDITION",
+                        "message": (
+                            f"{len(remaining)} assistants still exist in this project. "
+                            "Please delete all assistants before deleting this project."
+                        ),
+                    },
+                    "status": 412,
+                },
+            )
+        return httpx.Response(204)
+
+    return respx_mock.delete(f"{BASE_URL}/admin/projects/{project_id}").mock(side_effect=respond)
 
 
 def test_delete_with_cleanup_happy_path(projects: Projects, mock_admin: MagicMock) -> None:
@@ -243,6 +300,46 @@ def test_delete_with_cleanup_non_403_key_create_failure_propagates_unchanged(
         assert excinfo.value is original
         mock_cleanup.assert_not_called()
         mock_delete.assert_not_called()
+
+
+def test_delete_with_cleanup_deletes_a_project_holding_only_an_assistant(
+    projects: Projects, mock_admin: MagicMock, respx_mock: respx.MockRouter
+) -> None:
+    """The regression from #298: an assistant alone no longer blocks the delete."""
+    mock_admin.api_keys.create.return_value = _make_temp_key()
+    remaining = {"assistant-1"}
+    route = _project_delete_route(respx_mock, remaining, "proj-123")
+
+    with patch(
+        "pinecone._client.Pinecone", return_value=_assistant_blocked_project(remaining)
+    ) as mock_pinecone_cls:
+        projects.delete_with_cleanup(project_id="proj-123", max_attempts=1)
+
+    mock_pinecone_cls.assert_called_once_with(api_key="pcsk_secret")
+    assert remaining == set()
+    assert route.call_count == 1
+
+
+def test_the_412_harness_actually_fires_when_the_assistant_survives(
+    projects: Projects, mock_admin: MagicMock, respx_mock: respx.MockRouter
+) -> None:
+    """Guard for the test above: prove the mocked project delete really can 412.
+
+    Without this, a cleanup that stopped deleting assistants would still let
+    the previous test pass for free, and the regression it guards would be
+    invisible.
+    """
+    mock_admin.api_keys.create.return_value = _make_temp_key()
+    remaining = {"assistant-1"}
+    route = _project_delete_route(respx_mock, remaining, "proj-123")
+
+    with patch.object(projects, "_cleanup_project_resources"):
+        with pytest.raises(FailedPreconditionError) as excinfo:
+            projects.delete_with_cleanup(project_id="proj-123", max_attempts=1)
+
+    assert "assistants still exist" in excinfo.value.message
+    assert remaining == {"assistant-1"}
+    assert route.call_count == 1
 
 
 def test_delete_with_cleanup_call_order(projects: Projects, mock_admin: MagicMock) -> None:

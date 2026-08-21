@@ -307,9 +307,14 @@ class Projects:
         return result
 
     def _cleanup_project_resources(self, *, api_key: str) -> None:
-        """Delete all indexes, collections, and backups in the project scoped to *api_key*.
+        """Delete every index, collection, assistant, and backup in the project scoped to *api_key*.
 
         This is the inner loop of the project-deletion-with-cleanup workflow.
+
+        Each deletion waits for the resource to actually disappear rather than
+        just acknowledging the request, because a resource that is still
+        winding down continues to block the project delete.
+
         Each deletion is wrapped in a try/except for :exc:`NotFoundError` to
         handle race conditions where a resource is deleted between the list
         and delete calls.
@@ -337,6 +342,13 @@ class Projects:
                 except NotFoundError:
                     logger.debug("Cleanup: collection %r already deleted", collection.name)
 
+            for assistant in pc.assistants.list():
+                try:
+                    logger.debug("Cleanup: deleting assistant %r", assistant.name)
+                    pc.assistants.delete(name=assistant.name)
+                except NotFoundError:
+                    logger.debug("Cleanup: assistant %r already deleted", assistant.name)
+
             # Delete all backups
             for backup in pc.backups.list():
                 try:
@@ -357,8 +369,8 @@ class Projects:
         """Delete a project after cleaning up all its resources.
 
         Creates a temporary API key scoped to the project, uses it to delete
-        all indexes, collections, and backups, then deletes the temporary key
-        and finally deletes the project itself.
+        every index, collection, assistant, and backup, then deletes the
+        temporary key and finally deletes the project itself.
 
         The cleanup is retried up to *max_attempts* times with *retry_delay*
         seconds between attempts to handle transient failures.
@@ -368,10 +380,9 @@ class Projects:
         403 is re-raised with the quota named as the blocker and nothing is
         deleted. Free a key slot and call again.
 
-        Cleanup covers indexes, collections, and backups — **not assistants**,
-        which also block a project delete. A project that still owns assistants
-        therefore finishes cleanup and then fails the final delete with a 412.
-        Delete the assistants yourself first, then call this again.
+        Cleanup covers every resource that blocks a project delete. It is not
+        atomic, though: a resource created in the project while cleanup is
+        running can still leave the final delete blocked.
 
         Args:
             project_id: The identifier of the project to delete.
@@ -384,9 +395,10 @@ class Projects:
             :exc:`~pinecone.errors.exceptions.ForbiddenError`: If the temporary API key
                 cannot be created — typically because the project's API-key quota is
                 exhausted. No resources are deleted in this case.
-            :exc:`~pinecone.errors.exceptions.FailedPreconditionError`: (412) If the final
-                delete is still blocked after cleanup — in practice because the project
-                owns assistants, which cleanup does not remove.
+            :exc:`~pinecone.errors.exceptions.FailedPreconditionError`: A 412 raised
+                when the project is still not empty as the final delete runs, which
+                happens when something is created in it after cleanup. The error names
+                what is blocking.
             :exc:`ApiError`: If resource cleanup or project deletion fails after all retries.
 
         Examples:
@@ -479,8 +491,7 @@ class Projects:
         backups all block deletion, and the error names what is still there. API
         keys are *not* a blocker — they are deleted along with the project.
 
-        :meth:`delete_with_cleanup` clears indexes, collections, and backups for
-        you, but not assistants.
+        :meth:`delete_with_cleanup` clears all of them for you.
 
         Args:
             project_id (str): The identifier of the project to delete.
