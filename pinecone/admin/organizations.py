@@ -120,14 +120,27 @@ class Organizations:
     def delete(self, *, organization_id: str) -> None:
         """Delete an organization.
 
+        Deletion has three preconditions, and each failure is a 412 whose message
+        says which one blocked:
+
+        - The organization must be on the Free plan; any paid plan must be
+          downgraded first.
+        - Its payment status must be active, with no open invoices.
+        - It must contain no projects (see
+          :meth:`~pinecone.admin.projects.Projects.delete`).
+
+        Having no projects is necessary but not sufficient: a paid-plan organization
+        with no projects still cannot be deleted.
+
         Args:
             organization_id (str): The identifier of the organization to delete.
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *organization_id* is empty.
-            :exc:`~pinecone.errors.exceptions.FailedPreconditionError`: If the organization
-                does not meet the preconditions for deletion (412). The message names them.
-            :exc:`ApiError`: If the API returns an error response (e.g. 4xx if org has projects).
+            :exc:`~pinecone.errors.exceptions.FailedPreconditionError`: (412) If the
+                organization is on a paid plan, its payment status is not active, or it
+                still contains projects. The error names the blocker.
+            :exc:`ApiError`: If the API returns an error response.
 
         Examples:
             >>> admin.organizations.delete(organization_id="org-abc123")

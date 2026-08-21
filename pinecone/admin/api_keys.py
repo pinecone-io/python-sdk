@@ -101,6 +101,12 @@ class ApiKeys:
                 ``"DataPlaneEditor"``, and ``"DataPlaneViewer"``.
                 Defaults to ``["ProjectEditor"]`` if omitted.
 
+                Which of these a key may actually hold is plan-dependent: on the
+                Free and Builder plans the only accepted role is
+                ``"ProjectEditor"``, and any other value is refused with a
+                :exc:`~pinecone.errors.exceptions.ForbiddenError`. The error
+                names the role and the plan it needs.
+
         Returns:
             An :class:`APIKeyWithSecret` containing the key metadata and secret value.
             The secret value is only available at creation time.
@@ -110,6 +116,11 @@ class ApiKeys:
                 If *project_id* or *name* is empty, or if *name* exceeds 80 characters.
             :exc:`~pinecone.errors.exceptions.PaymentRequiredError`: If the organization's
                 billing state does not permit creating an API key (402).
+            :exc:`~pinecone.errors.exceptions.ForbiddenError`: (403) Either the project has
+                reached its API-key quota, or *roles* names a role the organization's plan
+                does not permit (see *roles* above). The error message distinguishes the
+                two. Note that quota exhaustion on the admin API is a **403, not a 429** —
+                :exc:`~pinecone.errors.exceptions.RateLimitError` will not catch it.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -180,15 +191,21 @@ class ApiKeys:
 
         Args:
             api_key_id (str): The identifier of the API key to update.
-            name (str | None): New name for the API key.
+            name (str | None): New name for the API key. Unlike :meth:`create`, the
+                length limit is not checked locally — an over-long name is rejected
+                by the server instead.
             roles (list[APIKeyRole | str] | None): New roles for the API key.
-                Replaces all existing roles.
+                Replaces all existing roles. Subject to the same plan-dependent
+                restriction as :meth:`create`.
 
         Returns:
             An :class:`APIKeyModel` with the updated API key details.
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *api_key_id* is empty.
+            :exc:`~pinecone.errors.exceptions.ForbiddenError`: (403) If *roles* names a role
+                the organization's plan does not permit for API keys. Unlike
+                :meth:`create`, no API-key quota check applies here.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:

@@ -82,8 +82,15 @@ class Projects:
         Args:
             name (str): Name for the new project.
             max_pods (int | None): Maximum number of pods allowed. Omitted if None.
+                Pod-based capacity is legacy: unless the organization has
+                pre-existing pod access, only ``0`` — the default, meaning
+                serverless-only — is accepted, and a non-zero value is rejected with
+                a 400 explaining what to do.
             force_encryption_with_cmek (bool | None): Whether to enforce CMEK encryption.
-                Omitted if None.
+                Omitted if None. Requesting ``True`` requires CMEK to be enabled for
+                the organization; otherwise the request is refused with a
+                :exc:`~pinecone.errors.exceptions.ForbiddenError`. ``False`` and
+                ``None`` are always accepted.
 
         Returns:
             A :class:`ProjectModel` with the created project details.
@@ -92,7 +99,12 @@ class Projects:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *name* is empty.
             :exc:`~pinecone.errors.exceptions.PaymentRequiredError`: If the organization's
                 billing state does not permit creating a project (402).
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`~pinecone.errors.exceptions.ForbiddenError`: (403) Either the organization
+                has reached its project quota, or *force_encryption_with_cmek* was
+                requested without CMEK enabled. As elsewhere on the admin API, quota
+                exhaustion is a **403, not a 429**.
+            :exc:`ApiError`: If the API returns an error response — including the 400
+                raised for a non-zero *max_pods* without pod access.
 
         Examples:
             >>> from pinecone import Admin
@@ -239,8 +251,13 @@ class Projects:
         Args:
             project_id (str): The identifier of the project to update.
             name (str | None): New name for the project.
-            max_pods (int | None): New maximum pod count.
+            max_pods (int | None): New maximum pod count. Subject to the same
+                pod-access constraint as :meth:`create`.
             force_encryption_with_cmek (bool | None): New CMEK enforcement setting.
+                Enabling it requires the same entitlement as :meth:`create`. CMEK is a
+                one-way door: once a project has it enabled it cannot be turned back
+                off, and attempting to is rejected with a 400. Passing ``False`` for a
+                project that never had it enabled is a no-op.
 
         Returns:
             A :class:`ProjectModel` with the updated project details.
@@ -248,7 +265,12 @@ class Projects:
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *project_id* is empty,
                 or if *name* is empty, exceeds 512 characters, or contains null bytes.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`~pinecone.errors.exceptions.ForbiddenError`: (403) If
+                *force_encryption_with_cmek* is ``True`` and CMEK is not enabled for
+                the organization.
+            :exc:`ApiError`: If the API returns an error response — including the 400s for
+                a non-zero *max_pods* without pod access and for attempting to turn CMEK
+                back off.
 
         Examples:
             >>> from pinecone import Admin
@@ -346,6 +368,11 @@ class Projects:
         403 is re-raised with the quota named as the blocker and nothing is
         deleted. Free a key slot and call again.
 
+        Cleanup covers indexes, collections, and backups — **not assistants**,
+        which also block a project delete. A project that still owns assistants
+        therefore finishes cleanup and then fails the final delete with a 412.
+        Delete the assistants yourself first, then call this again.
+
         Args:
             project_id: The identifier of the project to delete.
             max_attempts: Maximum number of cleanup attempts. Defaults to 5.
@@ -357,6 +384,9 @@ class Projects:
             :exc:`~pinecone.errors.exceptions.ForbiddenError`: If the temporary API key
                 cannot be created — typically because the project's API-key quota is
                 exhausted. No resources are deleted in this case.
+            :exc:`~pinecone.errors.exceptions.FailedPreconditionError`: (412) If the final
+                delete is still blocked after cleanup — in practice because the project
+                owns assistants, which cleanup does not remove.
             :exc:`ApiError`: If resource cleanup or project deletion fails after all retries.
 
         Examples:
@@ -445,14 +475,22 @@ class Projects:
     def delete(self, *, project_id: str) -> None:
         """Delete a project.
 
+        The project must be empty first. Indexes, collections, assistants, and
+        backups all block deletion, and the error names what is still there. API
+        keys are *not* a blocker — they are deleted along with the project.
+
+        :meth:`delete_with_cleanup` clears indexes, collections, and backups for
+        you, but not assistants.
+
         Args:
             project_id (str): The identifier of the project to delete.
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *project_id* is empty.
-            :exc:`~pinecone.errors.exceptions.FailedPreconditionError`: If the project still
-                owns resources that block deletion (412). The message names them.
-            :exc:`ApiError`: If the API returns an error (project still has indexes or collections).
+            :exc:`~pinecone.errors.exceptions.FailedPreconditionError`: (412) If the project
+                still owns indexes, collections, assistants, or backups. The error names
+                what is blocking.
+            :exc:`ApiError`: If the API returns an error response.
 
         Examples:
             >>> from pinecone import Admin

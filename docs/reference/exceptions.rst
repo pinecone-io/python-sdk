@@ -28,6 +28,7 @@ Class Hierarchy
        ├── UnauthorizedError (401)
        ├── PaymentRequiredError (402)
        ├── FailedPreconditionError (412)
+       ├── RateLimitError (429)
        └── ServiceError (5xx)
 
 Base & Configuration Errors
@@ -96,6 +97,10 @@ API Errors
    :show-inheritance:
 
 .. autoexception:: pinecone.errors.exceptions.FailedPreconditionError
+   :members:
+   :show-inheritance:
+
+.. autoexception:: pinecone.errors.exceptions.RateLimitError
    :members:
    :show-inheritance:
 
