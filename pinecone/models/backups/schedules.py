@@ -1,17 +1,19 @@
 """Backup schedule models (2026-07 API).
 
 A backup schedule attaches an automatic, time-based backup cadence to a
-single index. The API supports exactly one schedule *type* --
-``"time-based"`` -- and three cadences (``daily``, ``weekly``,
+single index, at one of three cadences (``daily``, ``weekly``,
 ``monthly``). **There is no cron support**: the run time is chosen
-server-side (a fixed preferred hour, UTC) and surfaced through
+server-side and surfaced through
 :attr:`BackupScheduleModel.next_scheduled_run`; there is no way to
 express an arbitrary cron expression or a caller-chosen timezone.
 
-Because ``schedule.type`` has exactly one legal value, the request models
-here take **flat** keyword arguments and build the nested wire body
-themselves (see :meth:`CreateBackupScheduleRequest.to_wire`), so callers
-write ``frequency="daily", retention_days=90`` instead of assembling
+The only schedule type the SDK sends is ``"time-based"``. That is a
+client-side decision, not an API constraint -- the server neither
+validates nor rejects other values, it stores and echoes back whatever it
+was given (established under issue #334). So the request models here take
+**flat** keyword arguments and fill the type in themselves (see
+:meth:`CreateBackupScheduleRequest.to_wire`): callers write
+``frequency="daily", retention_days=90`` instead of assembling
 ``{"schedule": {"type": ..., "frequency": ...}, "retention": {...}}``.
 
 Timestamps on these models are ``datetime`` objects rather than the
@@ -40,7 +42,7 @@ __all__ = [
     "UpdateBackupScheduleRequest",
 ]
 
-#: The only schedule type the API accepts. Sent for you by the request models.
+#: The only schedule type the SDK sends. Filled in by the request models.
 SCHEDULE_TYPE_TIME_BASED = "time-based"
 
 #: Cadences accepted by ``frequency``. There is no cron alternative.
@@ -67,10 +69,9 @@ def _validate_frequency(frequency: str) -> None:
 def _validate_retention_days(retention_days: int) -> None:
     """Reject a retention window the API will certainly reject.
 
-    Only the lower bound (1) is checked here. The upper bound is your
-    project's ``max_backup_retention_days``, which the SDK does not know,
-    so a too-large value is rejected server-side with the same
-    "must be between 1 and N" shape.
+    Only the lower bound (1) is checked here, because it is the one the SDK
+    knows. The upper bound is a per-project setting, so a too-large value is
+    rejected server-side rather than here.
 
     Raises:
         ValueError: If *retention_days* is less than 1.
@@ -103,8 +104,10 @@ class BackupScheduleModel(Struct, kw_only=True):
             index does not inherit the old schedule.
         project_id: Project containing the schedule, always the same
             project as the source index.
-        schedule_type: Schedule category. Always ``"time-based"`` -- the
-            API defines no other value.
+        schedule_type: Schedule category. ``"time-based"`` for any schedule
+            created through this SDK, which always sends that value; the
+            server does not constrain the field, so a schedule created by
+            another client can report something else.
         frequency: Cadence, one of ``"daily"``, ``"weekly"``, ``"monthly"``.
         retention_expire_after_days: Days each backup produced by this
             schedule is retained. (The create/update request models spell
@@ -411,8 +414,8 @@ class CreateBackupScheduleRequest(Struct, kw_only=True):
     """Request model for creating a backup schedule.
 
     Takes flat keyword arguments and builds the nested request body in
-    :meth:`to_wire`. ``schedule.type`` has exactly one legal value, so the
-    SDK fills it in rather than making every caller repeat it.
+    :meth:`to_wire`, filling in ``schedule.type`` rather than making every
+    caller repeat the one value the SDK sends.
 
     Attributes:
         name: Name for the schedule (required). Produced backups are named
@@ -420,8 +423,8 @@ class CreateBackupScheduleRequest(Struct, kw_only=True):
         frequency: Cadence (required), one of ``"daily"``, ``"weekly"``,
             ``"monthly"``. Validated on construction.
         retention_days: Days to retain each backup this schedule produces
-            (required). Must be at least 1; the maximum is your project's
-            ``max_backup_retention_days`` and is enforced server-side.
+            (required). Must be at least 1, which is checked here; the
+            maximum is a per-project setting enforced server-side.
             Serialised as ``retention.expire_after_days``.
 
     Raises:

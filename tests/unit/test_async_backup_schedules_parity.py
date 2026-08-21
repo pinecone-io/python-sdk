@@ -594,7 +594,7 @@ def test_the_documented_footguns_survive_on_both_lanes() -> None:
     update = _directives(AsyncBackupSchedules.update.__doc__)
     delete = _directives(AsyncBackupSchedules.delete.__doc__)
 
-    assert any("28 characters or fewer" in d for d in create)
+    assert any("Keep the schedule name short" in d for d in create)
     assert any("immediately" in d and "enqueues a backup run" in d for d in update)
     assert any("not safe to retry blindly" in d for d in delete)
 

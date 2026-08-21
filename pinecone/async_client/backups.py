@@ -68,33 +68,28 @@ class AsyncBackups:
         Raises:
             :exc:`PineconeValueError`: If *index_name* is empty.
             :exc:`ForbiddenError`: If the organization's plan does not include
-                backups — see the note below.
+                backups. This is settled before the index name is, so it wins
+                over the ``404`` when both are wrong.
             :exc:`NotFoundError`: If *index_name* does not resolve to an index
                 in this project.
             :exc:`ApiError`: If the API returns another error response,
                 including the ``400``\\ s in the note below.
 
         .. note::
-           The server runs these checks in order and stops at the first
-           failure, so a Free-plan caller sees the ``403`` even when the index
-           name is also invalid or unknown:
+           Three things make an otherwise well-formed request a ``400``, none
+           of them checked client-side:
 
-           1. **Plan gate.** Free and Builder organizations are refused with
-              ``403`` and the message "Your organization's plan does not
-              include backups. Upgrade to Standard or Enterprise to enable
-              this feature." Standard, Enterprise, their trials, Dedicated and
-              Internal plans pass.
-           2. **Backup name.** When *name* is given it must be 1-45 **bytes**
-              — not characters, so a name with multi-byte characters hits the
-              cap sooner than its length suggests — consisting of lowercase
-              alphanumerics and ``-``, and may not start or end with ``-``.
-              Anything else is ``400``. This is not validated client-side.
-           3. **Index.** An unknown name, or one owned by another project, is
-              ``404``.
-           4. **Pod indexes** cannot be backed up: ``400`` "Indexes of pod
-              type {family} do not support backup creation".
-           5. **Encrypted indexes** cannot be backed up yet: ``400`` "Backups
-              are not yet supported for indexes with encryption enabled".
+           * A *name* that is not a valid resource name — lowercase
+             alphanumerics and ``-``, not starting or ending with ``-``. Its
+             length is capped in **bytes** rather than characters, so
+             multi-byte characters use the budget up faster than the string
+             looks.
+           * A **pod** source index. Only serverless and BYOC indexes can be
+             backed up.
+           * An **encrypted** source index. Backups of these are not
+             supported yet.
+
+           The server's message names which one it was.
 
         Examples:
 
@@ -160,37 +155,31 @@ class AsyncBackups:
            the name was never used in this project.
 
         .. note::
-           **Pagination here is offset-based, not cursor-based.** The token is
-           base64url-encoded JSON of the shape ``{"limit": N, "offset": M}`` —
-           a position in the result set, not a stable cursor over a snapshot.
-           Three consequences worth planning for:
+           **Pagination here is offset-based, not cursor-based**: the token
+           names a position in the result set rather than a stable cursor over
+           a snapshot. Two consequences worth planning for:
 
-           * *limit* applies even when sent alongside a token, replacing the
-             page size the token was minted with while keeping its offset. Send
-             the same *limit* for the whole walk, or only on the first call:
-             changing it mid-walk resizes the window at a fixed offset and can
-             skip or repeat rows.
            * Backups created or deleted between requests shift every later
              offset, so a walk can miss rows and return others twice.
              De-duplicate by ``backup_id`` rather than trusting the sequence.
            * A malformed or truncated token is rejected with ``400``
              (:exc:`ApiError`) rather than restarting the listing.
 
-           ``pagination`` is ``None`` only when a page comes back *shorter*
-           than *limit*, so a final page that happens to be exactly *limit*
-           long still carries a token — following it costs one extra request
-           that returns nothing. Terminate on ``pagination is None``.
+           A final page that happens to be exactly as long as the page size
+           still carries a token, so following it costs one extra request that
+           returns nothing. Terminate on ``pagination is None``.
 
         Args:
             index_name (str | None): Index name to scope the listing to, or
                 ``None`` for every backup in the project.
-            limit (int | None): Maximum number of results per page, 1-100.
-                When ``None``, the parameter is omitted and the server applies
-                its own default of 100. Applies **even alongside**
-                *pagination_token* — see the pagination note above.
+            limit (int | None): Maximum number of results per page. When
+                ``None``, the parameter is omitted and the server applies its
+                own default. Omitted too when *pagination_token* is given: the
+                token already carries the page size it was minted with, and a
+                different one sent alongside it would skip or repeat rows.
             pagination_token (str | None): Offset token naming the next page,
-                taken from ``BackupList.pagination.next``. Combines with
-                *limit* — see the pagination note above.
+                taken from ``BackupList.pagination.next``. Takes precedence
+                over *limit* — see above.
             include_deleted (bool | None): When ``True``, include backups of
                 every index that has ever used *index_name*, deleted ones
                 included. When ``None`` (the default) the parameter is

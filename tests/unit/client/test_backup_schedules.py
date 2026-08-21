@@ -787,6 +787,13 @@ class TestPlanGate:
         assert exc.value.error_code == "PERMISSION_DENIED"
         assert exc.value.status_code == 403
 
+    def test_the_hint_does_not_offer_on_demand_backups_as_a_fallback(self) -> None:
+        """create_backup is gated on the same entitlement and 403s identically."""
+        assert "gated on the same entitlement" in SCHEDULED_BACKUPS_PLAN_HINT
+        assert "no fallback that avoids it" in SCHEDULED_BACKUPS_PLAN_HINT
+        assert "need no entitlement" not in SCHEDULED_BACKUPS_PLAN_HINT
+        assert "remain available" not in SCHEDULED_BACKUPS_PLAN_HINT
+
     @respx.mock
     def test_the_backends_403_keeps_its_own_wording_as_the_prefix(
         self, schedules: BackupSchedules

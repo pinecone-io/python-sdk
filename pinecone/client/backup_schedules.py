@@ -1,23 +1,21 @@
 """BackupSchedules namespace — automatic, time-based index backups.
 
-A backup schedule attaches a recurring backup cadence to one index. The API
-supports exactly one schedule *type* (``"time-based"``) and three cadences
-(``daily``, ``weekly``, ``monthly``); the run time is chosen server-side and
-reported through
+A backup schedule attaches a recurring backup cadence to one index, at one of
+three cadences (``daily``, ``weekly``, ``monthly``); the run time is chosen
+server-side and reported through
 :attr:`~pinecone.models.backups.schedules.BackupScheduleModel.next_scheduled_run`.
 **There is no cron support anywhere in this API**, so there is no way to ask
 for an arbitrary expression or a caller-chosen timezone.
 
-Only ``"time-based"`` is a supported type and the SDK always sends it for you,
-so :meth:`create` takes no ``type`` argument. The server does not enforce it,
-though: ``schedule.type`` is a plain string that is stored and echoed back
-unvalidated, and the 2026-07 OAS declares ``time-based`` as a documentation-only
-``x-enum`` rather than a JSON Schema ``enum``. Nothing rejects a typo, so
+The SDK always sends ``"time-based"`` as the schedule type, so :meth:`create`
+takes no ``type`` argument. That is a client-side decision rather than an API
+constraint: the server stores the value and echoes it back without validating
+it, so
 :attr:`~pinecone.models.backups.schedules.BackupScheduleModel.schedule_type`
-reports whatever the schedule was created with. It is always ``"time-based"``
-for schedules created through this SDK, and not guaranteed for one created by
-another client. ``frequency`` is the opposite: a real server-side enum, checked
-here as well.
+reports whatever the schedule was created with -- always ``"time-based"`` for
+schedules created through this SDK, not guaranteed for one created by another
+client. ``frequency`` is the opposite: a real server-side enum, checked here as
+well.
 
 Two shapes are offered for each of the two listings.
 :meth:`BackupSchedules.list` and :meth:`BackupSchedules.history` return one
@@ -65,13 +63,11 @@ class BackupSchedules:
         http (HTTPClient): HTTP client for making API requests.
 
     Note:
-        Scheduled backups are a plan entitlement. Where it is enforced, the
-        check runs *before* the index or schedule is looked up, so a project
-        without the entitlement gets 403 even for a schedule that does not
-        exist — the SDK appends that clarification to the 403 while keeping
-        the backend's own message as the prefix. The API documents the 403 on
-        all six operations; today's backend only enforces it on
-        :meth:`create` and on re-enabling via :meth:`update`.
+        Backups are a plan entitlement. A project without it gets a 403 rather
+        than a 404 for a schedule that does not exist, and the SDK appends that
+        clarification to the 403 while keeping the server's own message as the
+        prefix. On-demand backups are gated on the same entitlement, so they
+        are not a fallback.
 
     Examples:
 
@@ -109,16 +105,14 @@ class BackupSchedules:
         """Create a time-based backup schedule for an index.
 
         .. important::
-           **Keep *name* to 28 characters or fewer.** Each run names its backup
-           ``"{name}-{run timestamp}"``, and the timestamp suffix is a fixed 17
-           characters (``-YYYYMMDDTHHMMSSZ``), against a 45-character resource
-           name limit. Nothing validates this: the API declares no length limit
-           on a schedule name, and the create-schedule path does not check the
-           derived backup name either. So a longer schedule name is accepted
-           here and then produces backup names that the backup endpoints
-           themselves would have rejected — a failure that surfaces later, on
-           the runs, rather than on this call. The SDK does not enforce the
-           limit, because doing so would reject names the API accepts.
+           **Keep the schedule name short.** Each run names its backup
+           ``"{name}-{run timestamp}"``, so a long schedule name pushes the
+           derived backup name past the length limit backup names are held to.
+           Nothing checks this at create time: the API declares no length limit
+           on a schedule name, and the SDK does not invent one, because that
+           would reject names the API accepts. An over-long name is therefore
+           accepted here and fails later, on the runs, rather than on this
+           call.
 
         Args:
             index_name (str): Name of the index to attach the schedule to.
@@ -128,10 +122,9 @@ class BackupSchedules:
                 ``"monthly"``. Validated before any HTTP request; there is no
                 cron alternative.
             retention_days (int): Days to retain each backup this schedule
-                produces. Must be at least 1. The upper bound is the
-                project's ``max_backup_retention_days`` (365 by default),
-                which the SDK does not know per-project, so a too-large value
-                is rejected server-side rather than here.
+                produces. Must be at least 1, which is checked here. The upper
+                bound is a per-project setting the SDK does not know, so a
+                too-large value is rejected server-side rather than here.
 
         Returns:
             A :class:`~pinecone.models.backups.schedules.BackupScheduleModel`
@@ -148,9 +141,7 @@ class BackupSchedules:
             :exc:`NotFoundError`: If the index does not exist.
             :exc:`ConflictError`: If the index already has an *enabled*
                 schedule — only one per index is allowed, so disable or delete
-                the existing one first. The backend's message ("This index
-                already has an enabled backup schedule. Disable or delete it
-                first.") is surfaced intact.
+                the existing one first.
             :exc:`ApiError`: If the API returns another error response, such
                 as a 400 for a pod-based index, which cannot be scheduled.
 
@@ -214,11 +205,12 @@ class BackupSchedules:
             index_name (str): Name of the index whose schedules to list.
             limit (int | None): Maximum results per page. When ``None``, the
                 parameter is omitted and the server applies its own default.
-                **Ignored when *pagination_token* is given**: the token
+                **Ignored when a pagination token is given**: the token
                 already carries the page size it was minted with, and sending
                 a different one alongside it would skip or repeat rows.
-            pagination_token (str | None): Token for cursor-based pagination.
-                Takes precedence over *limit* — see above.
+            pagination_token (str | None): Token naming the next page, taken
+                from the previous page's ``pagination.next``. Takes precedence
+                over *limit* — see above.
 
         Returns:
             A :class:`~pinecone.models.backups.list.BackupScheduleList`
@@ -428,16 +420,13 @@ class BackupSchedules:
                 entitlement as :meth:`create`.
             :exc:`NotFoundError`: If the schedule does not exist.
             :exc:`ConflictError`: If ``enabled=True`` and another schedule on
-                the same index is already enabled. The backend words this
-                409 differently from :meth:`create`'s, naming re-enabling
-                specifically; both are surfaced intact.
+                the same index is already enabled.
             :exc:`ApiError`: If the API returns another error response.
 
         Note:
             Passing none of *frequency*, *retention_days*, or *enabled* sends
             an empty body, which the API accepts as a no-op and answers with
-            the unchanged schedule. It is not rejected client-side, because
-            rejecting it would be SDK-invented behaviour.
+            the unchanged schedule.
 
         Examples:
             >>> from pinecone import Pinecone
@@ -536,11 +525,12 @@ class BackupSchedules:
                 to list.
             limit (int | None): Maximum results per page. When ``None``, the
                 parameter is omitted and the server applies its own default.
-                **Ignored when *pagination_token* is given**: the token
+                **Ignored when a pagination token is given**: the token
                 already carries the page size it was minted with, and sending
                 a different one alongside it would skip or repeat rows.
-            pagination_token (str | None): Token for cursor-based pagination.
-                Takes precedence over *limit* — see above.
+            pagination_token (str | None): Token naming the next page, taken
+                from the previous page's ``pagination.next``. Takes precedence
+                over *limit* — see above.
 
         Returns:
             A :class:`~pinecone.models.backups.list.BackupScheduleHistoryList`

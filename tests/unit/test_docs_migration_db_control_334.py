@@ -226,13 +226,14 @@ def test_the_schedule_type_paragraph_is_byte_identical_across_the_two_lanes() ->
 
     def paragraph(module: Any) -> bytes:
         doc = module.__doc__ or ""
-        start = doc.index('Only ``"time-based"`` is a supported type')
+        start = doc.index('The SDK always sends ``"time-based"``')
         return doc[start : doc.index("\n\n", start)].encode()
 
     block = paragraph(sync_module)
     assert paragraph(async_module) == block
-    assert b"stored and echoed back\nunvalidated" in block
-    assert b"documentation-only\n``x-enum``" in block
+    assert b"client-side decision rather than an API\nconstraint" in block
+    assert b"echoes it back without validating" in block
+    assert b"x-enum" not in block
 
 
 def test_the_configure_docstring_says_the_tag_cap_counts_the_merge() -> None:

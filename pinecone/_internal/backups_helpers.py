@@ -23,18 +23,18 @@ INCLUDE_DELETED_IS_INDEX_SCOPED = (
 
 LIMIT_AND_PAGINATION_ARE_EXCLUSIVE = (
     "A pagination token already carries the page size it was minted with. "
-    "The control-plane token is a base64 {limit, offset} pair, and a limit "
-    "sent alongside it overrides the token's limit while keeping its offset "
-    "-- so the next page starts where the old page size said it would and "
-    "runs for the new length, skipping or repeating rows. The SDK therefore "
-    "omits limit whenever a token is present."
+    "A limit sent alongside it overrides that page size while keeping the "
+    "token's position -- so the next page starts where the old page size "
+    "said it would and runs for the new length, skipping or repeating rows. "
+    "The SDK therefore omits limit whenever a token is present."
 )
 
 SCHEDULED_BACKUPS_PLAN_HINT = (
-    "Scheduled backups are a plan entitlement, and it is checked before the "
-    "index or schedule is looked up — so this is about the project's plan, "
-    "not a missing resource and not a key permission. On-demand backups via "
-    "pc.backups.create() need no entitlement and remain available."
+    "Backups are a plan entitlement, so this is about the project's plan, "
+    "not a missing resource and not a key permission — an un-entitled "
+    "project sees this even for a schedule that does not exist. On-demand "
+    "backups via pc.backups.create() are gated on the same entitlement and "
+    "fail the same way, so there is no fallback that avoids it."
 )
 
 
@@ -138,16 +138,13 @@ def scheduled_backups_plan_gate() -> Iterator[None]:
 def annotate_plan_gated_forbidden(exc: ForbiddenError) -> ForbiddenError:
     """Return *exc* with the scheduled-backups plan hint appended, or *exc*.
 
-    Every schedule operation answers 403 for one reason: the project's plan
-    does not include scheduled backups. The backend's own message
-    ("Scheduled backups are not available for your plan") says nothing about
-    what to do next, so the hint is appended *after* it -- the backend text
-    stays intact as the prefix.
+    The hint is appended *after* the server's own message rather than
+    replacing it, so that text stays intact as the prefix.
 
     A 403 that is not the plan gate (an API key without project permissions,
-    say) is returned untouched rather than being given a misleading upgrade
-    hint, which is why this matches on the message instead of on the
-    ``PERMISSION_DENIED`` code the two cases share.
+    say) is returned untouched rather than being given a misleading plan
+    hint, which is why this matches on the message rather than on the
+    permission-denied error code the two cases share.
     """
     message = exc.message or ""
     if "plan" not in message.lower():

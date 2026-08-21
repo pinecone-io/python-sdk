@@ -51,19 +51,19 @@ class RestoreJobs:
     ) -> RestoreJobList:
         """List one page of the project's restore jobs.
 
-        Pagination is **offset-based**, not cursor-based: the token is
-        base64url-encoded JSON of the shape ``{"limit": N, "offset": M}``. This
-        returns a **single page** and does not auto-fetch:
+        Pagination is **offset-based**, not cursor-based: the token names a
+        position in the result set rather than a stable cursor. This returns a
+        **single page** and does not auto-fetch:
         :class:`RestoreJobList` carries a ``pagination`` token but never follows
         it, so iterating the return value sees at most one page. Drive the token
         yourself to walk the rest — see *Examples*.
 
         Args:
             limit (int | None): Maximum number of results per page. When ``None``,
-                the backend applies its own default (100). Applies **even
-                alongside** *pagination_token*, replacing the page size the
-                token was minted with while keeping its offset — so send the
-                same *limit* for the whole walk, or only on the first call.
+                the parameter is omitted and the server applies its own
+                default. Omitted too when *pagination_token* is given: the
+                token already carries the page size it was minted with, and a
+                different one sent alongside it would skip or repeat rows.
             pagination_token (str | None): Offset token naming the next page,
                 taken from ``RestoreJobList.pagination.next``. A malformed or
                 truncated token is rejected with ``400`` (:exc:`ApiError`)
@@ -77,19 +77,12 @@ class RestoreJobs:
             :exc:`ApiError`: If the API returns an error response.
 
         .. warning::
-            **Against today's backend this listing can silently drop restore
-            jobs, stop paginating early, and repeat rows across pages.** The
-            server pages over raw import operations, filters them down to
-            restore jobs, and then computes the next-page token from the
-            *post-filter* count. A page of 100 raw operations that happens to
-            contain 3 restore jobs therefore looks like a short final page:
-            pagination ends there, and every restore job behind it is never
-            returned. When pagination does continue, the server's offset
-            advances by the filtered count rather than the raw count, so a
-            later page can re-return jobs you have already seen. Separately, a
-            restore job whose target index has been deleted is dropped from the
-            listing entirely, which shortens the page and can itself trigger
-            the early stop.
+            **This listing can silently drop restore jobs, stop paginating
+            early, and repeat rows across pages.** The token stream can end
+            while restore jobs remain, and successive pages can overlap, so
+            pages are neither exhaustive nor disjoint. A restore job whose
+            target index has been deleted is dropped from the listing
+            entirely.
 
             What that means for you: treat the result as a best-effort sample
             rather than an exhaustive inventory, never conclude a restore job
@@ -97,7 +90,7 @@ class RestoreJobs:
             ``restore_job_id`` while walking pages. The SDK offers no
             workaround on purpose — the token stream itself ends early, so no
             client-side code can recover pages the server never points at.
-            Tracked upstream in `pinecone-io/python-sdk-internal#250
+            Tracked in `pinecone-io/python-sdk-internal#250
             <https://github.com/pinecone-io/python-sdk-internal/issues/250>`_.
 
         Examples:
@@ -160,21 +153,21 @@ class RestoreJobs:
 
         .. warning::
             **A ``404`` from this endpoint cannot be trusted to mean "no such
-            restore job".** Against today's backend every failure to read the
-            restore-job store — a store outage included — is flattened into a
-            ``404``, so :exc:`NotFoundError` here means "could not produce this
-            job", not "this job does not exist". Any retry policy or control
+            restore job".** Every failure to read the restore-job store, an
+            outage included, is answered with a ``404``, so
+            :exc:`NotFoundError` here means "could not produce this job", not
+            "this job does not exist". Any retry policy or control
             flow keyed on a ``404`` from ``describe`` is therefore unsafe:
             giving up, deleting local state, or reporting the job as gone can
             each be the wrong call on what was really a transient store
             failure. Treat it as possibly transient unless you have
             independent evidence the id is bad.
 
-            The same flattening means a restore job whose target index has been
-            deleted also answers ``404``, carrying a message about index
-            metadata rather than "Restore job not found" — so do not match on
-            the message text either. Such a job is dropped from :meth:`list`
-            entirely rather than reported. Tracked upstream in
+            A restore job whose target index has been deleted also answers
+            ``404``, and the message it carries is not the one a genuinely
+            missing job produces — so do not match on the message text either.
+            Such a job is dropped from :meth:`list` entirely rather than
+            reported. Tracked in
             `pinecone-io/python-sdk-internal#250
             <https://github.com/pinecone-io/python-sdk-internal/issues/250>`_.
 

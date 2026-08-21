@@ -50,8 +50,7 @@ class AsyncCollections:
         readiness.
 
         Collections are a **pod-only** feature. The source index must be a pod
-        index and must already be ``Ready``; see the note below for the exact
-        checks and the order the server applies them in.
+        index and must already be ``Ready`` — see the note below.
 
         Args:
             name (str): Name for the new collection.
@@ -70,21 +69,14 @@ class AsyncCollections:
                 server error).
 
         .. note::
-           The server checks the source index in this order and stops at the
-           first failure:
+           Readiness is settled before capacity mode, so a *serverless* source
+           that is still initialising is refused for not being ``Ready`` and
+           never told the real problem — that only pod indexes can be
+           collected at all. Once it is ready, a serverless *or* BYOC source is
+           refused with a ``400`` whose message names serverless in both cases,
+           so do not match on that text to tell them apart.
 
-           1. **Existence.** An unknown *source* is ``404``.
-           2. **Readiness.** A source index that is not yet ``Ready`` is
-              ``400`` "Source index is not ready". This is checked *before*
-              the capacity-mode check, so a serverless index that is still
-              initialising reports a readiness failure rather than naming the
-              real problem.
-           3. **Capacity mode.** Only pod indexes can be collected. A
-              serverless *or* BYOC source is ``400`` "Cannot create
-              collections from serverless indexes" — the message says
-              "serverless" for a BYOC source too.
-
-           A per-project collection quota is enforced after these checks.
+           A per-project collection quota applies as well.
 
         Examples:
 
