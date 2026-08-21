@@ -435,9 +435,13 @@ async def test_create_invalid_deletion_protection_raises(indexes: AsyncIndexes) 
         await indexes.create(schema=DENSE_SCHEMA, deletion_protection="on")
 
 
-async def test_create_invalid_deployment_type_raises(indexes: AsyncIndexes) -> None:
-    with pytest.raises(ValueError, match="deployment_type"):
-        await indexes.create(schema=DENSE_SCHEMA, deployment={"deployment_type": "serverless"})
+@pytest.mark.parametrize("deployment_type", ["serverless", "MANAGED", "Pod"])
+async def test_create_invalid_deployment_type_raises(
+    indexes: AsyncIndexes, deployment_type: str
+) -> None:
+    with pytest.raises(PineconeValueError, match="deployment_type") as exc_info:
+        await indexes.create(schema=DENSE_SCHEMA, deployment={"deployment_type": deployment_type})
+    assert type(exc_info.value) is PineconeValueError
 
 
 # ---------------------------------------------------------------------------

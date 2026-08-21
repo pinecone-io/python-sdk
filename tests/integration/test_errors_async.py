@@ -245,15 +245,41 @@ async def test_create_index_invalid_name_async(async_client: AsyncPinecone) -> N
 async def test_create_index_empty_deployment_dict_rejected_client_side_async() -> None:
     """async indexes.create(deployment={}) raises PineconeValueError before any await.
 
-    Covers the client-side half of unified-index-0044 for the async transport:
-    the empty dict is the only deployment shape the SDK still rejects on its
-    own. Uses a fake host so no network call is required.
+    Covers one client-side half of unified-index-0044 for the async transport.
+    Uses a fake host so no network call is required.
     """
     async with AsyncPinecone(api_key="testkey", host="https://fake-control.pinecone.io") as client:
         with pytest.raises(PineconeValueError):
             await client.indexes.create(
                 name="test-idx-deployment", schema=_DENSE_SCHEMA_2D, deployment={}
             )
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+@pytest.mark.parametrize("deployment_type", ["MANAGED", "Serverless", "serverless"])
+async def test_create_index_invalid_deployment_type_rejected_client_side_async(
+    deployment_type: str,
+) -> None:
+    """A bad ``deployment_type`` raises PineconeValueError before any await.
+
+    The discriminator match is case-sensitive, so ``"MANAGED"`` is as invalid
+    as an unknown value. Asserting the narrow ``PineconeValueError`` (not its
+    ``ValueError`` base) is the point: the two are indistinguishable to
+    ``pytest.raises(ValueError)``. Uses a fake host — no network call.
+    """
+    async with AsyncPinecone(api_key="testkey", host="https://fake-control.pinecone.io") as client:
+        with pytest.raises(PineconeValueError) as exc_info:
+            await client.indexes.create(
+                name="test-idx-deployment",
+                schema=_DENSE_SCHEMA_2D,
+                deployment={
+                    "deployment_type": deployment_type,
+                    "cloud": "aws",
+                    "region": "us-east-1",
+                },
+            )
+        assert type(exc_info.value) is PineconeValueError
 
 
 @pytest.mark.integration

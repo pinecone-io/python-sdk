@@ -12,6 +12,7 @@ from typing import Any
 
 from msgspec import Struct
 
+from pinecone.errors.exceptions import PineconeValueError
 from pinecone.models.indexes.deployment import IndexDeployment
 from pinecone.models.indexes.schema import IndexSchema
 
@@ -73,7 +74,7 @@ def _validate_deployment(deployment: dict[str, Any] | IndexDeployment | None) ->
     deployment_type = deployment.get("deployment_type")
     if deployment_type is not None and deployment_type not in _ALLOWED_DEPLOYMENT_TYPES:
         allowed = " | ".join(_ALLOWED_DEPLOYMENT_TYPES)
-        raise ValueError(
+        raise PineconeValueError(
             f"Invalid deployment_type {deployment_type!r}: expected one of {allowed}. "
             "Set deployment={'deployment_type': 'managed', 'cloud': ..., 'region': ...} "
             "for a serverless index."
@@ -102,6 +103,11 @@ class CreateIndexRequest(Struct, kw_only=True, omit_defaults=True):
             index from.
         cmek_id: Optional customer-managed encryption key ID (valid for
             managed/BYOC indexes without full-text search fields).
+
+    Raises:
+        PineconeValueError: If ``deployment`` names a ``deployment_type``
+            that is not one of the discriminator values. The comparison is
+            case-sensitive, so ``"MANAGED"`` is rejected.
     """
 
     schema: dict[str, Any] | IndexSchema

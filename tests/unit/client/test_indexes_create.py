@@ -421,9 +421,11 @@ def test_create_invalid_deletion_protection_raises(indexes: Indexes) -> None:
         indexes.create(schema=DENSE_SCHEMA, deletion_protection="on")
 
 
-def test_create_invalid_deployment_type_raises(indexes: Indexes) -> None:
-    with pytest.raises(ValueError, match="deployment_type"):
-        indexes.create(schema=DENSE_SCHEMA, deployment={"deployment_type": "serverless"})
+@pytest.mark.parametrize("deployment_type", ["serverless", "MANAGED", "Pod"])
+def test_create_invalid_deployment_type_raises(indexes: Indexes, deployment_type: str) -> None:
+    with pytest.raises(PineconeValueError, match="deployment_type") as exc_info:
+        indexes.create(schema=DENSE_SCHEMA, deployment={"deployment_type": deployment_type})
+    assert type(exc_info.value) is PineconeValueError
 
 
 # ---------------------------------------------------------------------------

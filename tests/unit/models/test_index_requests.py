@@ -5,6 +5,7 @@ from __future__ import annotations
 import msgspec
 import pytest
 
+from pinecone.errors import PineconeError, PineconeValueError
 from pinecone.models.indexes.requests import (
     ConfigureIndexRequest,
     CreateIndexRequest,
@@ -148,7 +149,7 @@ class TestCreateRequestValidation:
         assert "Rename" in message
 
     def test_unknown_deployment_type_lists_allowed_values(self) -> None:
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(PineconeValueError) as exc_info:
             CreateIndexRequest(
                 schema=_SCHEMA,
                 deployment={"deployment_type": "serverless", "cloud": "aws"},
@@ -156,6 +157,23 @@ class TestCreateRequestValidation:
         message = str(exc_info.value)
         assert "serverless" in message
         assert "managed | pod | byoc" in message
+
+    @pytest.mark.parametrize("deployment_type", ["MANAGED", "Pod", "serverless", "managed "])
+    def test_bad_deployment_type_raises_pinecone_value_error(self, deployment_type: str) -> None:
+        """PineconeValueError subclasses ValueError, so pytest.raises(ValueError)
+        cannot distinguish the two; the exact-type assert is what fails pre-fix.
+        """
+        with pytest.raises(PineconeValueError) as exc_info:
+            CreateIndexRequest(
+                schema=_SCHEMA,
+                deployment={"deployment_type": deployment_type, "cloud": "aws"},
+            )
+        assert type(exc_info.value) is PineconeValueError
+        assert deployment_type in str(exc_info.value)
+
+    def test_bad_deployment_type_is_catchable_as_pinecone_error(self) -> None:
+        with pytest.raises(PineconeError):
+            CreateIndexRequest(schema=_SCHEMA, deployment={"deployment_type": "MANAGED"})
 
     def test_valid_deployment_types_accepted(self) -> None:
         for deployment_type in ("managed", "pod", "byoc"):
