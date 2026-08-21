@@ -1128,8 +1128,11 @@ class GrpcIndex:
         """Return statistics for this index.
 
         Args:
-            filter (dict[str, Any] | None): Metadata filter expression. When
-                provided, only vectors matching the filter are counted.
+            filter (dict[str, Any] | None): Metadata filter expression. Accepted
+                for API compatibility, but a non-empty filter is rejected for
+                every index type, so the call fails instead of returning
+                filtered counts. Leave it unset: the statistics returned always
+                describe the whole index.
 
         Returns:
             :class:`DescribeIndexStatsResponse` with namespace summaries, dimension,
@@ -1141,11 +1144,6 @@ class GrpcIndex:
 
                 stats = idx.describe_index_stats()
                 print(stats.total_vector_count, stats.dimension)
-
-                # With filter — only count vectors matching the expression
-                stats = idx.describe_index_stats(
-                    filter={"genre": {"$eq": "drama"}}
-                )
         """
         logger.info("Describing index stats via gRPC")
         result = self._channel.describe_index_stats(filter=filter, timeout_s=timeout)

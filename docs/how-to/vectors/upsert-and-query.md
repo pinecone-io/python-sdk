@@ -323,11 +323,12 @@ for namespace, summary in stats.namespaces.items():
     print(namespace, summary.vector_count)
 ```
 
-Pass a `filter` to count only matching vectors:
-
-```python
-stats = index.describe_index_stats(filter={"genre": {"$eq": "action"}})
-print(stats.total_vector_count)
+```{note}
+These counts always cover the whole index. `describe_index_stats` accepts a
+`filter` argument for API compatibility, but a non-empty filter is rejected for
+every index type, so a filtered stats call fails rather than returning a subset
+count. There is no operation that counts only the vectors matching a metadata
+filter.
 ```
 
 
