@@ -127,7 +127,7 @@ class Organizations:
           downgraded first.
         - Its payment status must be active, with no open invoices.
         - It must contain no projects (see
-          :meth:`~pinecone.admin.projects.Projects.delete`).
+          :meth:`Projects.delete <pinecone.admin.projects.Projects.delete>`).
 
         Having no projects is necessary but not sufficient: an organization on a paid
         plan with no projects still cannot be deleted.
