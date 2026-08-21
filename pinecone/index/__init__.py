@@ -2389,7 +2389,7 @@ class Index:
         """
         str_id = self._validate_import_id(id)
         logger.info("Describing import %s", str_id)
-        response = self._http.get(f"/bulk/imports/{str_id}")
+        response = self._http.get(f"/bulk/imports/{quote(str_id, safe='')}")
         return self._imports_adapter.to_import_model(response.content)
 
     def cancel_import(self, id: str | int) -> None:
@@ -2415,7 +2415,7 @@ class Index:
         """
         str_id = self._validate_import_id(id)
         logger.info("Cancelling import %s", str_id)
-        self._http.delete(f"/bulk/imports/{str_id}")
+        self._http.delete(f"/bulk/imports/{quote(str_id, safe='')}")
 
     def list_imports(
         self,

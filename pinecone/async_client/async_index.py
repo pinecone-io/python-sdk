@@ -2287,7 +2287,7 @@ class AsyncIndex:
         """
         str_id = self._validate_import_id(id)
         logger.info("Describing import %s", str_id)
-        response = await self._http.get(f"/bulk/imports/{str_id}")
+        response = await self._http.get(f"/bulk/imports/{quote(str_id, safe='')}")
         return self._imports_adapter.to_import_model(response.content)
 
     async def cancel_import(self, id: str | int) -> None:
@@ -2314,7 +2314,7 @@ class AsyncIndex:
         """
         str_id = self._validate_import_id(id)
         logger.info("Cancelling import %s", str_id)
-        await self._http.delete(f"/bulk/imports/{str_id}")
+        await self._http.delete(f"/bulk/imports/{quote(str_id, safe='')}")
 
     async def list_imports(
         self,
