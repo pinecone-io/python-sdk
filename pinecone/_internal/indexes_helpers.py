@@ -13,15 +13,13 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any, TypedDict
 
-import msgspec
-
 from pinecone._internal.validation import require_non_empty
 
 if TYPE_CHECKING:
     from pinecone.models.indexes.index import IndexModel
 from pinecone.errors.exceptions import ValidationError
 from pinecone.models.enums import DeletionProtection, Metric, VectorType
-from pinecone.models.indexes.specs import ByocSpec, IntegratedSpec, PodSpec, ServerlessSpec
+from pinecone.models.indexes.specs import ByocSpec, IntegratedSpec
 
 _VALID_DELETION_PROTECTION = frozenset({"enabled", "disabled"})
 
@@ -78,50 +76,6 @@ def validate_read_capacity(read_capacity: dict[str, Any]) -> None:
             manual = dedicated.get("manual")
             if manual is not None and not isinstance(manual, dict):
                 raise ValidationError("dedicated read_capacity manual must be a dict")
-
-
-def build_create_body(
-    *,
-    name: str,
-    spec: ServerlessSpec | PodSpec | ByocSpec | dict[str, Any],
-    dimension: int | None,
-    metric: Metric | str,
-    vector_type: VectorType | str,
-    deletion_protection: DeletionProtection | str,
-    tags: Mapping[str, str] | None,
-    schema: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Build the JSON body for POST /indexes."""
-    body: dict[str, Any] = {
-        "name": name,
-        "metric": resolve_enum_value(metric),
-        "vector_type": resolve_enum_value(vector_type),
-        "deletion_protection": resolve_enum_value(deletion_protection),
-    }
-    if dimension is not None:
-        body["dimension"] = dimension
-    if tags is not None:
-        body["tags"] = tags
-
-    if isinstance(spec, ServerlessSpec):
-        serverless_dict: dict[str, Any] = {"cloud": spec.cloud, "region": spec.region}
-        if spec.read_capacity is not None:
-            serverless_dict["read_capacity"] = spec.read_capacity
-        if spec.schema is not None:
-            serverless_dict["schema"] = _normalize_schema(spec.schema)
-        body["spec"] = {"serverless": serverless_dict}
-    elif isinstance(spec, PodSpec):
-        body["spec"] = {"pod": msgspec.to_builtins(spec)}
-    elif isinstance(spec, dict):
-        body["spec"] = {k: dict(v) if isinstance(v, dict) else v for k, v in spec.items()}
-
-    if schema is not None:
-        normalized = _normalize_schema(schema)
-        spec_dict = body["spec"]
-        for key in spec_dict:
-            spec_dict[key]["schema"] = normalized
-
-    return body
 
 
 def validate_byoc_inputs(

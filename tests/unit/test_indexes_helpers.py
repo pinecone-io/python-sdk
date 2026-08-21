@@ -10,7 +10,6 @@ from pinecone._internal.indexes_helpers import (
     _normalize_schema,
     async_poll_index_until_ready,
     build_byoc_body,
-    build_create_body,
     build_integrated_body,
     poll_index_until_ready,
     validate_read_capacity,
@@ -19,25 +18,7 @@ from pinecone.errors.exceptions import IndexInitFailedError, IndexTerminatedErro
 from pinecone.models.indexes.deployment import ManagedDeployment
 from pinecone.models.indexes.index import IndexModel, IndexStatus
 from pinecone.models.indexes.schema import DenseVectorField, IndexSchema
-from pinecone.models.indexes.specs import ByocSpec, EmbedConfig, IntegratedSpec, ServerlessSpec
-
-
-def test_build_create_body_dict_spec_not_mutated_by_schema() -> None:
-    """Passing a dict spec with a schema must not mutate the caller's original dict."""
-    spec = {"serverless": {"cloud": "aws", "region": "us-east-1"}}
-
-    build_create_body(
-        name="test",
-        spec=spec,
-        dimension=3,
-        metric="cosine",
-        vector_type="dense",
-        deletion_protection="disabled",
-        tags=None,
-        schema={"fields": {"genre": "string"}},
-    )
-
-    assert "schema" not in spec["serverless"]
+from pinecone.models.indexes.specs import ByocSpec, EmbedConfig, IntegratedSpec
 
 
 def test_validate_read_capacity_dedicated_partial_shards_only() -> None:
@@ -135,62 +116,6 @@ def test_build_integrated_body_read_capacity_absent_when_none() -> None:
         read_capacity=None,
     )
     assert "read_capacity" not in body
-
-
-def test_build_create_body_serverless_includes_read_capacity() -> None:
-    spec = ServerlessSpec(
-        cloud="aws",
-        region="us-east-1",
-        read_capacity={
-            "mode": "Dedicated",
-            "dedicated": {
-                "node_type": "t1",
-                "scaling": "Manual",
-                "manual": {"shards": 2, "replicas": 3},
-            },
-        },
-    )
-    body = build_create_body(
-        name="test-index",
-        spec=spec,
-        dimension=128,
-        metric="cosine",
-        vector_type="dense",
-        deletion_protection="disabled",
-        tags=None,
-        schema=None,
-    )
-    assert body["spec"]["serverless"]["read_capacity"]["mode"] == "Dedicated"
-
-
-def test_build_create_body_serverless_read_capacity_absent_when_none() -> None:
-    spec = ServerlessSpec(cloud="aws", region="us-east-1")
-    body = build_create_body(
-        name="test-index",
-        spec=spec,
-        dimension=128,
-        metric="cosine",
-        vector_type="dense",
-        deletion_protection="disabled",
-        tags=None,
-        schema=None,
-    )
-    assert "read_capacity" not in body["spec"]["serverless"]
-
-
-def test_build_create_body_serverless_spec_schema_included() -> None:
-    spec = ServerlessSpec(cloud="aws", region="us-east-1", schema={"genre": {"type": "str"}})
-    body = build_create_body(
-        name="test-index",
-        spec=spec,
-        dimension=128,
-        metric="cosine",
-        vector_type="dense",
-        deletion_protection="disabled",
-        tags=None,
-        schema=None,
-    )
-    assert body["spec"]["serverless"]["schema"] == {"fields": {"genre": {"type": "str"}}}
 
 
 def _make_byoc_body(**kwargs: object) -> dict[object, object]:
@@ -310,47 +235,6 @@ def test_build_byoc_body_method_and_spec_schema_normalized_match() -> None:
         == body_via_method["spec"]["byoc"]["schema"]
         == wrapped
     )
-
-
-# ServerlessSpec schema round-trip tests
-
-
-def test_build_create_body_serverless_spec_schema_wrapped_input_passes_through() -> None:
-    spec = ServerlessSpec(
-        cloud="aws",
-        region="us-east-1",
-        schema={"fields": {"genre": {"filterable": True}}},
-    )
-    body = build_create_body(
-        name="test-index",
-        spec=spec,
-        dimension=128,
-        metric="cosine",
-        vector_type="dense",
-        deletion_protection="disabled",
-        tags=None,
-        schema=None,
-    )
-    assert body["spec"]["serverless"]["schema"] == {"fields": {"genre": {"filterable": True}}}
-
-
-def test_build_create_body_serverless_spec_schema_bare_input_gets_wrapped() -> None:
-    spec = ServerlessSpec(
-        cloud="aws",
-        region="us-east-1",
-        schema={"genre": {"filterable": True}},
-    )
-    body = build_create_body(
-        name="test-index",
-        spec=spec,
-        dimension=128,
-        metric="cosine",
-        vector_type="dense",
-        deletion_protection="disabled",
-        tags=None,
-        schema=None,
-    )
-    assert body["spec"]["serverless"]["schema"] == {"fields": {"genre": {"filterable": True}}}
 
 
 # Integrated schema round-trip tests
