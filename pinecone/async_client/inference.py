@@ -84,6 +84,7 @@ class AsyncModelResource:
             A :class:`ModelInfoList` supporting iteration, len(), and ``.names()``.
 
         Raises:
+            :exc:`PineconeValueError`: If *type* or *vector_type* is not a valid value.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -109,6 +110,7 @@ class AsyncModelResource:
             A :class:`ModelInfo` with full model details.
 
         Raises:
+            :exc:`PineconeValueError`: If *model* is empty.
             :exc:`NotFoundError`: If the model does not exist.
             :exc:`ApiError`: If the API returns another error response.
 
@@ -288,6 +290,9 @@ class AsyncInference:
             :exc:`PineconeValueError`: If *model*, *query*, or *documents* is
                 empty, or *top_n* is less than 1.
             :exc:`PineconeTypeError`: If *documents* has an invalid type.
+            :exc:`NotFoundError`: If *model* does not name a model the API
+                serves. A typo in the model name surfaces here, so check this
+                before assuming the request body was at fault.
             :exc:`ForbiddenError`: If the project is not authorized to use
                 *model*, including when *model* has been deprecated.
             :exc:`ApiError`: If the API returns another error response.

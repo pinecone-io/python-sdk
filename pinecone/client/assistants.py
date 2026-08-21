@@ -519,6 +519,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             ``limit``.
 
         Raises:
+            :exc:`NotFoundError`: If the assistant does not exist.
             :exc:`ApiError`: If the API returns an error response.
 
         Note:
@@ -580,6 +581,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             ``next`` continuation token.
 
         Raises:
+            :exc:`NotFoundError`: If the assistant does not exist.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -660,6 +662,9 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             ``None``
 
         Raises:
+            :exc:`NotFoundError`: If *file_id* does not name a file on this
+                assistant. A delete is not idempotent in that sense: deleting
+                an id that is already gone raises rather than returning.
             :exc:`PineconeError`: If the deletion operation reports failure.
             :exc:`PineconeTimeoutError`: If the deletion has not finished
                 after *timeout* seconds.
@@ -728,10 +733,8 @@ class Assistants(AssistantsLegacyNamespaceMixin):
 
         Raises:
             :exc:`NotFoundError`: If the assistant or the operation does not
-                exist. Operation rows are dropped by a row-deletion policy 60
-                days after ``updated_on`` — not 30 days after completion — so a
-                finished operation stays describable until then, and 404s
-                afterwards.
+                exist. A finished operation stays describable until it ages out
+                of the API's retention window, and 404s from then on.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -761,8 +764,8 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         """List an assistant's operations with lazy pagination.
 
         Covers operations that are still in progress as well as ones that
-        finished — both successes and failures are retained until 60 days
-        after ``updated_on``, not 30 days after completion.
+        finished — both successes and failures — until they age out of the
+        API's retention window.
 
         Args:
             assistant_name: Name of the assistant whose operations to list.
@@ -834,10 +837,10 @@ class Assistants(AssistantsLegacyNamespaceMixin):
                 ``"Processing"``, ``"Completed"`` or ``"Failed"``
                 (case-sensitive).
             page_size: Maximum number of operations in this page, sent as the
-                ``limit`` query parameter. The API accepts 0-100 and defaults
-                to 50. Unlike the files listing, this path has no zero-check,
-                so ``0`` is accepted rather than rejected; only a value above
-                100 is refused, with 400 ``"Limit cannot exceed 100"``.
+                ``limit`` query parameter. Only sent when explicitly provided;
+                omitted, the API chooses the page size. A value outside the
+                range the API accepts comes back as an :exc:`ApiError` naming
+                the bound it broke.
             pagination_token: Token from a previous response to fetch the next
                 page.
 
@@ -1104,11 +1107,9 @@ class Assistants(AssistantsLegacyNamespaceMixin):
 
         Args:
             page_size (int | None): Maximum number of assistants per page.
-                Only sent when explicitly provided. The backend accepts 1-1000
-                and defaults to 50 — wider than the 2026-07 OAS, which
-                documents a maximum of 100. ``0`` is refused with 400 ``"Limit
-                must be at least 1"`` and anything above 1000 with 400 ``"Limit
-                cannot exceed 1000"``.
+                Only sent when explicitly provided; omitted, the API chooses
+                the page size. A value outside the range the API accepts comes
+                back as an :exc:`ApiError` naming the bound it broke.
             pagination_token (str | None): Token from a previous response
                 to fetch the next page.
 
