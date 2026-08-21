@@ -19,7 +19,7 @@ fixtures.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from typing import Any
 
 import httpx
@@ -302,8 +302,52 @@ async def test_async_chat_response_without_the_new_fields_decodes(
     assert result.content_filter_results is None
 
 
+@pytest.fixture(scope="module")
+def property_loop() -> Iterator[asyncio.AbstractEventLoop]:
+    """One event loop for every example of the property test below (#345).
+
+    ``asyncio.run`` builds and tears down a loop per example, which is setup
+    rather than anything the property asserts.
+    """
+    loop = asyncio.new_event_loop()
+    yield loop
+    # asyncio.run() does this for the loop it owns; a hand-rolled loop has to
+    # do it too, or the last example's response iterators are collected after
+    # the loop is gone and each one reports an un-awaited aclose().
+    loop.run_until_complete(loop.shutdown_asyncgens())
+    loop.close()
+
+
+@pytest.fixture(scope="module")
+def property_assistants(
+    property_loop: asyncio.AbstractEventLoop,
+    hermetic_pinecone_env_module: None,
+) -> Iterator[AsyncAssistants]:
+    """One client reused by every example of the property test below.
+
+    The client builds its control-plane and data-plane HTTP clients on first
+    use, and each one parses the whole CA bundle into a fresh
+    ``ssl.SSLContext`` — the work that dominated this test and the part that
+    amplifies on slower CI runners (#345). None of it is exercised: respx
+    intercepts at the transport, so no example opens a socket. Every example
+    still streams its own transcript through its own routes; only the client
+    build leaves the loop, so the data-plane host is resolved once instead of
+    once per example.
+
+    It is built on ``property_loop`` so the lazily created ``AsyncClient``
+    belongs to the loop the examples run on.
+    """
+    client = AsyncAssistants(config=PineconeConfig(api_key="conformance-key", host=BASE_URL))
+    yield client
+    property_loop.run_until_complete(client.close())
+
+
 @given(sizes=st.lists(st.integers(min_value=1, max_value=64), min_size=1, max_size=24))
-def test_async_sse_chunk_boundaries_do_not_change_the_parsed_stream(sizes: list[int]) -> None:
+def test_async_sse_chunk_boundaries_do_not_change_the_parsed_stream(
+    sizes: list[int],
+    property_assistants: AsyncAssistants,
+    property_loop: asyncio.AbstractEventLoop,
+) -> None:
     """Chunk boundaries are a transport artifact on the async path too.
 
     ``aiter_lines`` has to reassemble by line rather than by read, exactly as
@@ -328,20 +372,14 @@ def test_async_sse_chunk_boundaries_do_not_change_the_parsed_stream(sizes: list[
             respx.post(f"{DATA_URL}/chat/{ASSISTANT_NAME}").mock(
                 return_value=httpx.Response(200, content=_async_body(pieces))
             )
-            client = AsyncAssistants(
-                config=PineconeConfig(api_key="conformance-key", host=BASE_URL)
+            stream = await property_assistants.chat(
+                assistant_name=ASSISTANT_NAME,
+                messages=[{"content": "What is Pinecone?"}],
+                stream=True,
             )
-            try:
-                stream = await client.chat(
-                    assistant_name=ASSISTANT_NAME,
-                    messages=[{"content": "What is Pinecone?"}],
-                    stream=True,
-                )
-                assert isinstance(stream, AsyncChatStream)
-                chunks = [chunk async for chunk in stream]
-            finally:
-                await client.close()
+            assert isinstance(stream, AsyncChatStream)
+            chunks = [chunk async for chunk in stream]
 
         assert summarise(chunks) == EXPECTED_CHAT_STREAM
 
-    asyncio.run(check())
+    property_loop.run_until_complete(check())

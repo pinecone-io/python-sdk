@@ -13,6 +13,7 @@ than looping forever. The simulator does not paginate this collection
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
@@ -927,9 +928,28 @@ def test_resend_429_without_retry_after_header(invites: Invites) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(scope="module")
+def property_invites(hermetic_pinecone_env_module: None) -> Iterator[Invites]:
+    """One namespace reused by every example of the property tests below.
+
+    Constructing an ``HTTPClient`` builds a fresh ``ssl.SSLContext`` and parses
+    the whole CA bundle into it, which dominated these tests and is the part
+    that amplifies on slower CI runners (#345). None of it is exercised: respx
+    intercepts at the transport, so no example opens a socket. The examples
+    still register their own routes and assert on their own request, so this
+    only moves setup out of the loop.
+    """
+    config = PineconeConfig(api_key="test-key", host=BASE_URL)
+    http = HTTPClient(config, ADMIN_API_VERSION)
+    yield Invites(http=http)
+    http.close()
+
+
 @settings(max_examples=200, deadline=None)
 @given(email=st.text(min_size=1, max_size=254).filter(lambda s: bool(s.strip())))
-def test_email_survives_json_body_encoding_unmodified(email: str) -> None:
+def test_email_survives_json_body_encoding_unmodified(
+    email: str, property_invites: Invites
+) -> None:
     """Whatever string the caller passes is the string the server receives.
 
     The SDK deliberately does not validate address format — the server owns
@@ -938,14 +958,11 @@ def test_email_survives_json_body_encoding_unmodified(email: str) -> None:
     encoding byte-for-byte, or a rejected address would come back with a
     message about a string the caller never sent.
     """
-    config = PineconeConfig(api_key="test-key", host=BASE_URL)
-    namespace = Invites(http=HTTPClient(config, ADMIN_API_VERSION))
-
     with respx.mock:
         route = respx.post(f"{BASE_URL}/admin/invites").mock(
             return_value=httpx.Response(200, json=_invite())
         )
-        namespace.create(email=email, role_bindings=[ORG_BINDING])
+        property_invites.create(email=email, role_bindings=[ORG_BINDING])
 
         body = orjson.loads(route.calls.last.request.content)
 

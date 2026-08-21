@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from typing import Any
 
 import pytest
@@ -51,6 +51,28 @@ def _hermetic_pinecone_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     for name in [n for n in os.environ if n.startswith(_PINECONE_ENV_PREFIX)]:
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(scope="module")
+def hermetic_pinecone_env_module() -> Iterator[None]:
+    """The same scrub as ``_hermetic_pinecone_env``, for module-scoped fixtures.
+
+    Ask for this from any module- or session-scoped fixture that builds an SDK
+    object. ``_hermetic_pinecone_env`` above is function-scoped, and pytest sets
+    higher-scoped fixtures up **first** — so a module-scoped fixture runs before
+    the scrub and sees the developer's ambient ``PINECONE_*`` variables. A
+    client built there bakes them in for every test in the module: measured on
+    #345's shared property-test clients, ``PINECONE_ADDITIONAL_HEADERS`` landed
+    in the client's header set that way.
+
+    Depending on this fixture puts the scrub back in front of the construction.
+    It does not replace the per-test one, which still has to run to undo
+    pollution introduced at collection time.
+    """
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        for name in [n for n in os.environ if n.startswith(_PINECONE_ENV_PREFIX)]:
+            monkeypatch.delenv(name, raising=False)
+        yield
 
 
 @pytest.fixture

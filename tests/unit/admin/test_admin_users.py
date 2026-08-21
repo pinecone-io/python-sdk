@@ -9,6 +9,7 @@ looping forever.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
@@ -441,9 +442,26 @@ def test_delete_409_surfaces_code_and_message(users: Users) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(scope="module")
+def property_users(hermetic_pinecone_env_module: None) -> Iterator[Users]:
+    """One namespace reused by every example of the property tests below.
+
+    Constructing an ``HTTPClient`` builds a fresh ``ssl.SSLContext`` and parses
+    the whole CA bundle into it, which dominated these tests and is the part
+    that amplifies on slower CI runners (#345). None of it is exercised: respx
+    intercepts at the transport, so no example opens a socket. The examples
+    still register their own routes and assert on their own request, so this
+    only moves setup out of the loop.
+    """
+    config = PineconeConfig(api_key="test-key", host=BASE_URL)
+    http = HTTPClient(config, ADMIN_API_VERSION)
+    yield Users(http=http)
+    http.close()
+
+
 @settings(max_examples=200, deadline=None)
 @given(email=st.text(min_size=0, max_size=254))
-def test_email_filter_survives_url_encoding(email: str) -> None:
+def test_email_filter_survives_url_encoding(email: str, property_users: Users) -> None:
     """Whatever string the caller passes is the string the server receives.
 
     ``email`` is a server-validated filter, so the SDK forwards it verbatim
@@ -452,14 +470,11 @@ def test_email_filter_survives_url_encoding(email: str) -> None:
     encoding intact — a mangled filter would silently return the wrong users
     instead of erroring.
     """
-    config = PineconeConfig(api_key="test-key", host=BASE_URL)
-    namespace = Users(http=HTTPClient(config, ADMIN_API_VERSION))
-
     with respx.mock:
         route = respx.get(f"{BASE_URL}/admin/users").mock(
             return_value=httpx.Response(200, json=_page([]))
         )
-        namespace.list(email=email).to_list()
+        property_users.list(email=email).to_list()
 
         request = route.calls.last.request
 

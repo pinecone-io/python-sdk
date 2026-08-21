@@ -19,6 +19,7 @@ cursor walk is exercised against mocks only.
 from __future__ import annotations
 
 import itertools
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
@@ -993,6 +994,23 @@ _RESOURCE_TYPES = [r.value for r in ResourceType]
 _ROLE_NAMES = [r.value for r in RoleName]
 
 
+@pytest.fixture(scope="module")
+def property_role_bindings(hermetic_pinecone_env_module: None) -> Iterator[RoleBindings]:
+    """One namespace reused by every example of the property tests below.
+
+    Constructing an ``HTTPClient`` builds a fresh ``ssl.SSLContext`` and parses
+    the whole CA bundle into it, which dominated these tests and is the part
+    that amplifies on slower CI runners (#345). None of it is exercised: respx
+    intercepts at the transport, so no example opens a socket. The examples
+    still register their own routes and assert on their own request, so this
+    only moves setup out of the loop.
+    """
+    config = PineconeConfig(api_key="test-key", host=BASE_URL)
+    http = HTTPClient(config, ADMIN_API_VERSION)
+    yield RoleBindings(http=http)
+    http.close()
+
+
 @settings(max_examples=300, deadline=None)
 @given(
     principal_type=st.one_of(st.none(), st.sampled_from(_PRINCIPAL_TYPES)),
@@ -1009,6 +1027,7 @@ def test_list_query_params_match_supplied_filters_exactly(
     resource_id: str | None,
     role: str | None,
     limit: int | None,
+    property_role_bindings: RoleBindings,
 ) -> None:
     """The query string is exactly the non-``None`` filters — nothing dropped or invented.
 
@@ -1026,15 +1045,12 @@ def test_list_query_params_match_supplied_filters_exactly(
     }
     expected = {k: v for k, v in supplied.items() if v is not None}
 
-    config = PineconeConfig(api_key="test-key", host=BASE_URL)
-    namespace = RoleBindings(http=HTTPClient(config, ADMIN_API_VERSION))
-
     with respx.mock:
         route = respx.get(f"{BASE_URL}/admin/role-bindings").mock(
             return_value=httpx.Response(200, json=_page([]))
         )
         try:
-            namespace.list(
+            property_role_bindings.list(
                 principal_type=principal_type,
                 principal_id=principal_id,
                 resource_type=resource_type,
@@ -1063,7 +1079,9 @@ def test_list_query_params_match_supplied_filters_exactly(
     filters=st.sets(st.sampled_from(_FILTER_PARAMS), min_size=0, max_size=5),
     role=st.sampled_from(_ROLE_NAMES),
 )
-def test_list_never_sends_a_filter_the_caller_omitted(filters: set[str], role: str) -> None:
+def test_list_never_sends_a_filter_the_caller_omitted(
+    filters: set[str], role: str, property_role_bindings: RoleBindings
+) -> None:
     """Omitted filters are absent from the URL, not sent empty.
 
     An empty-string query value is not the same as an absent one: the server
@@ -1083,14 +1101,11 @@ def test_list_never_sends_a_filter_the_caller_omitted(filters: set[str], role: s
     if "resource_id" in kwargs:
         kwargs["resource_type"] = values["resource_type"]
 
-    config = PineconeConfig(api_key="test-key", host=BASE_URL)
-    namespace = RoleBindings(http=HTTPClient(config, ADMIN_API_VERSION))
-
     with respx.mock:
         route = respx.get(f"{BASE_URL}/admin/role-bindings").mock(
             return_value=httpx.Response(200, json=_page([]))
         )
-        namespace.list(**kwargs).to_list()
+        property_role_bindings.list(**kwargs).to_list()
         params = route.calls.last.request.url.params
 
     for name in _FILTER_PARAMS:

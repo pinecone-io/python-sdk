@@ -101,6 +101,16 @@ def _resolve(records: list[dict[str, Any]], path: str) -> Any:
     return node
 
 
+# Deliberately left on the global 5s default, unlike the eight other tests #345
+# looked at. Those were slow because each Hypothesis example rebuilt an
+# HTTPClient and reparsed the CA bundle, which is setup and was hoisted out of
+# the loop. Here the cost is the property's own recursive draw, so the only ways
+# to speed it up are fewer examples or a shallower strategy — both of which
+# would test less. Measured on run 32450307704: 1.61s worst of py3.10-3.14 (and
+# under 1s on py3.13/3.14) against 0.31s locally, so the ~5x runner
+# amplification is already priced into that 1.61s. A pytest.mark.timeout here
+# would only raise its ceiling and hide the next regression; 3.1x of measured
+# margin is better served by leaving the ceiling where it is.
 @given(_RECORDS)
 @settings(max_examples=200, deadline=None)
 def test_encodable_records_are_one_line_each(records: list[dict[str, Any]]) -> None:

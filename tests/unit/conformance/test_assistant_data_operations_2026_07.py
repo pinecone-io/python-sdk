@@ -113,6 +113,23 @@ def assistants(respx_mock: respx.MockRouter) -> Iterator[Assistants]:
     client.close()
 
 
+@pytest.fixture(scope="module")
+def property_assistants(hermetic_pinecone_env_module: None) -> Iterator[Assistants]:
+    """One client reused by every example of the property test below.
+
+    Building an ``Assistants`` builds two HTTP clients, and each one parses
+    the whole CA bundle into a fresh ``ssl.SSLContext`` — the work that
+    dominated this test and the part that amplifies on slower CI runners
+    (#345). None of it is exercised: respx intercepts at the transport, so no
+    example opens a socket. Every example still registers its own routes and
+    asserts on its own request; only the client build leaves the loop, so the
+    data-plane host is resolved once instead of once per example.
+    """
+    client = Assistants(config=PineconeConfig(api_key="conformance-key", host=BASE_URL))
+    yield client
+    client.close()
+
+
 @api_op("assistant_data:list_operations")
 def test_list_operations(claim: Any, assistants: Assistants, respx_mock: respx.MockRouter) -> None:
     route = respx_mock.get(f"{DATA_URL}/operations/{ASSISTANT_NAME}").mock(
@@ -481,7 +498,7 @@ def test_describe_operation_and_the_polling_loop_share_one_client(
     ),
 )
 def test_the_paginator_terminates_and_never_replays_a_consumed_token(
-    page_sizes: list[int], tokens: list[str]
+    page_sizes: list[int], tokens: list[str], property_assistants: Assistants
 ) -> None:
     """Any cursor sequence the server can hand back must terminate exactly once.
 
@@ -511,11 +528,7 @@ def test_the_paginator_terminates_and_never_replays_a_consumed_token(
             return_value=httpx.Response(200, json=ASSISTANT)
         )
         respx.get(f"{DATA_URL}/operations/{ASSISTANT_NAME}").mock(side_effect=respond)
-        client = Assistants(config=PineconeConfig(api_key="conformance-key", host=BASE_URL))
-        try:
-            collected = client.list_operations(assistant_name=ASSISTANT_NAME).to_list()
-        finally:
-            client.close()
+        collected = property_assistants.list_operations(assistant_name=ASSISTANT_NAME).to_list()
 
     assert [op.operation_id for op in collected] == [
         str(body["id"]) for page in pages for body in page

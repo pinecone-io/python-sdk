@@ -153,6 +153,23 @@ def assistants(respx_mock: respx.MockRouter) -> Iterator[Assistants]:
     client.close()
 
 
+@pytest.fixture(scope="module")
+def property_assistants(hermetic_pinecone_env_module: None) -> Iterator[Assistants]:
+    """One client reused by every example of the property test below.
+
+    Building an ``Assistants`` builds two HTTP clients, and each one parses
+    the whole CA bundle into a fresh ``ssl.SSLContext`` — the work that
+    dominated this test and the part that amplifies on slower CI runners
+    (#345). None of it is exercised: respx intercepts at the transport, so no
+    example opens a socket. Every example still registers its own routes and
+    asserts on its own request; only the client build leaves the loop, so the
+    data-plane host is resolved once instead of once per example.
+    """
+    client = Assistants(config=PineconeConfig(api_key="conformance-key", host=BASE_URL))
+    yield client
+    client.close()
+
+
 def mock_upload_completion(respx_mock: respx.MockRouter, file_id: str = FILE_ID) -> None:
     respx_mock.get(f"{DATA_URL}/operations/{ASSISTANT_NAME}/{OPERATION_ID}").mock(
         return_value=httpx.Response(200, json=COMPLETED_UPLOAD)
@@ -492,7 +509,9 @@ metadata_values = st.recursive(
         st.text(min_size=1, max_size=30), metadata_values, min_size=1, max_size=6
     )
 )
-def test_metadata_round_trips_through_the_multipart_field(metadata: dict[str, Any]) -> None:
+def test_metadata_round_trips_through_the_multipart_field(
+    metadata: dict[str, Any], property_assistants: Assistants
+) -> None:
     """Any metadata document arrives as valid JSON in the field, never in the URL.
 
     Nested containers, unicode keys and dates-as-strings all have to survive
@@ -509,17 +528,13 @@ def test_metadata_round_trips_through_the_multipart_field(metadata: dict[str, An
         respx.get(f"{DATA_URL}/files/{ASSISTANT_NAME}/{FILE_ID}").mock(
             return_value=httpx.Response(200, json=FILE)
         )
-        client = Assistants(config=PineconeConfig(api_key="conformance-key", host=BASE_URL))
-        try:
-            client.upload_file(
-                assistant_name=ASSISTANT_NAME,
-                file_stream=io.BytesIO(b"data"),
-                file_name="report.pdf",
-                metadata=metadata,
-                timeout=-1,
-            )
-        finally:
-            client.close()
+        property_assistants.upload_file(
+            assistant_name=ASSISTANT_NAME,
+            file_stream=io.BytesIO(b"data"),
+            file_name="report.pdf",
+            metadata=metadata,
+            timeout=-1,
+        )
 
         request = route.calls.last.request
 

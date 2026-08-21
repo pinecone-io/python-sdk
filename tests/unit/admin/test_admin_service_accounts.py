@@ -17,6 +17,7 @@ exercised against mocks only.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
@@ -788,9 +789,30 @@ def test_secret_is_masked_in_repr_and_str(service_accounts: ServiceAccounts) -> 
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(scope="module")
+def property_service_accounts(
+    hermetic_pinecone_env_module: None,
+) -> Iterator[ServiceAccounts]:
+    """One namespace reused by every example of the property tests below.
+
+    Constructing an ``HTTPClient`` builds a fresh ``ssl.SSLContext`` and parses
+    the whole CA bundle into it, which dominated these tests and is the part
+    that amplifies on slower CI runners (#345). None of it is exercised: respx
+    intercepts at the transport, so no example opens a socket. The examples
+    still register their own routes and assert on their own request, so this
+    only moves setup out of the loop.
+    """
+    config = PineconeConfig(api_key="test-key", host=BASE_URL)
+    http = HTTPClient(config, ADMIN_API_VERSION)
+    yield ServiceAccounts(http=http)
+    http.close()
+
+
 @settings(max_examples=200, deadline=None)
 @given(name=st.text(min_size=1, max_size=80).filter(lambda s: bool(s.strip())))
-def test_name_survives_json_body_encoding_unmodified(name: str) -> None:
+def test_name_survives_json_body_encoding_unmodified(
+    name: str, property_service_accounts: ServiceAccounts
+) -> None:
     """Whatever string the caller passes is the string the server receives.
 
     The SDK deliberately does not validate the name — the server owns length
@@ -799,14 +821,11 @@ def test_name_survives_json_body_encoding_unmodified(name: str) -> None:
     to survive JSON encoding byte-for-byte, or a rejected name would come back
     with a message about a string the caller never sent.
     """
-    config = PineconeConfig(api_key="test-key", host=BASE_URL)
-    namespace = ServiceAccounts(http=HTTPClient(config, ADMIN_API_VERSION))
-
     with respx.mock:
         route = respx.post(f"{BASE_URL}/admin/service-accounts").mock(
             return_value=httpx.Response(201, json=_with_secret())
         )
-        namespace.create(name=name)
+        property_service_accounts.create(name=name)
 
         body = orjson.loads(route.calls.last.request.content)
 

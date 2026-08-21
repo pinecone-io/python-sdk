@@ -8,9 +8,9 @@ import time — the same reason ``test_integration_async_marker_policy.py`` scan
 instead of importing. Regex over ``tomllib`` so it runs on Python 3.10.
 
 The failure this exists to prevent: raising the global default to accommodate a
-slow live test. ``timeout = 5`` is what nine unit tests sitting within 1.8-3.1x
-of it (#345) are measured against; a global raise would hide exactly what that
-ticket exists to fix. Slow trees get their own ceiling instead.
+slow live test. ``timeout = 5`` is the pressure that got the nine unit tests of
+#345 made fast rather than marked; a global raise would have hidden them
+instead. Slow trees get their own ceiling instead.
 """
 
 from __future__ import annotations
