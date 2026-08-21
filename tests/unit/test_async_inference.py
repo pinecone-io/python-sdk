@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import patch
 
 import httpx
@@ -133,13 +134,15 @@ async def test_async_embed_forwards_parameters_to_request_body(inference: AsyncI
 @respx.mock
 @pytest.mark.asyncio
 async def test_async_embed_accepts_embed_model_enum(inference: AsyncInference) -> None:
-    respx.post(f"{BASE_URL}/embed").mock(
+    route = respx.post(f"{BASE_URL}/embed").mock(
         return_value=httpx.Response(200, json=make_embed_response()),
     )
 
     result = await inference.embed(EmbedModel.Multilingual_E5_Large, ["hello"])
 
     assert isinstance(result, EmbeddingsList)
+    body = orjson.loads(route.calls.last.request.content)
+    assert body["model"] == "multilingual-e5-large"
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +282,7 @@ async def test_async_rerank_tuple_documents_accepted(inference: AsyncInference) 
 @respx.mock
 @pytest.mark.asyncio
 async def test_async_rerank_accepts_rerank_model_enum(inference: AsyncInference) -> None:
-    respx.post(f"{BASE_URL}/rerank").mock(
+    route = respx.post(f"{BASE_URL}/rerank").mock(
         return_value=httpx.Response(200, json=make_rerank_response()),
     )
 
@@ -290,6 +293,8 @@ async def test_async_rerank_accepts_rerank_model_enum(inference: AsyncInference)
     )
 
     assert isinstance(result, RerankResult)
+    body = orjson.loads(route.calls.last.request.content)
+    assert body["model"] == "bge-reranker-v2-m3"
 
 
 # ---------------------------------------------------------------------------
@@ -631,14 +636,13 @@ async def test_async_embed_serializes_2026_07_embed_model_ids(
 ) -> None:
     """The two model ids added for 2026-07 reach the wire and round-trip back.
 
-    Mirrors the sync case, including the ``member.value`` workaround for the
-    ``str(model)`` serialization defect tracked as #296.
+    Mirrors the sync case.
     """
     route = respx.post(f"{BASE_URL}/embed").mock(
         return_value=httpx.Response(200, json=make_embed_response(model=wire_value)),
     )
 
-    result = await inference.embed(member.value, ["hello"])
+    result = await inference.embed(member, ["hello"])
 
     body = orjson.loads(route.calls[0].request.content)
     assert body["model"] == wire_value
@@ -850,3 +854,128 @@ async def test_async_rerank_unknown_parameters_key_surfaces_plain_text_422(
     assert excinfo.value.status_code == 422
     assert excinfo.value.message == plain_text
     assert excinfo.value.error_code is None
+
+
+# ---------------------------------------------------------------------------
+# Enum members serialize as model ids, not as "EmbedModel.X" (#296)
+# async mirror of tests/unit/test_inference.py
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+@pytest.mark.asyncio
+@pytest.mark.parametrize("member", list(EmbedModel), ids=lambda m: m.name)
+async def test_async_embed_sends_the_model_id_for_every_embed_model_member(
+    inference: AsyncInference, member: EmbedModel
+) -> None:
+    """Parametrized over the whole enum so a member added later is covered too."""
+    route = respx.post(f"{BASE_URL}/embed").mock(
+        return_value=httpx.Response(200, json=make_embed_response(model=member.value)),
+    )
+
+    result = await inference.embed(member, ["hello"])
+
+    request = route.calls.last.request
+    assert orjson.loads(request.content) == {
+        "model": member.value,
+        "inputs": [{"text": "hello"}],
+    }
+    assert b"EmbedModel." not in request.content
+    assert result.model == member.value
+    assert request.headers[API_VERSION_HEADER] == "2026-07"
+
+
+@respx.mock
+@pytest.mark.asyncio
+@pytest.mark.parametrize("member", list(RerankModel), ids=lambda m: m.name)
+async def test_async_rerank_sends_the_model_id_for_every_rerank_model_member(
+    inference: AsyncInference, member: RerankModel
+) -> None:
+    route = respx.post(f"{BASE_URL}/rerank").mock(
+        return_value=httpx.Response(200, json=make_rerank_response(model=member.value)),
+    )
+
+    result = await inference.rerank(model=member, query="q", documents=["doc"])
+
+    request = route.calls.last.request
+    assert orjson.loads(request.content) == {
+        "model": member.value,
+        "query": "q",
+        "documents": [{"text": "doc"}],
+        "rank_fields": ["text"],
+        "return_documents": True,
+    }
+    assert b"RerankModel." not in request.content
+    assert result.model == member.value
+    assert request.headers[API_VERSION_HEADER] == "2026-07"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_embed_still_sends_a_plain_model_string_unchanged(
+    inference: AsyncInference,
+) -> None:
+    """Both parameters accept a plain string, including an id this SDK has no member for."""
+    route = respx.post(f"{BASE_URL}/embed").mock(
+        return_value=httpx.Response(200, json=make_embed_response(model="future-embed-model-v9")),
+    )
+
+    await inference.embed("future-embed-model-v9", ["hello"])
+
+    assert orjson.loads(route.calls.last.request.content)["model"] == "future-embed-model-v9"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_rerank_still_sends_a_plain_model_string_unchanged(
+    inference: AsyncInference,
+) -> None:
+    route = respx.post(f"{BASE_URL}/rerank").mock(
+        return_value=httpx.Response(200, json=make_rerank_response(model="future-rerank-model-v9")),
+    )
+
+    await inference.rerank(model="future-rerank-model-v9", query="q", documents=["doc"])
+
+    assert orjson.loads(route.calls.last.request.content)["model"] == "future-rerank-model-v9"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_mangled_model_id_this_release_stopped_sending_still_404s(
+    inference: AsyncInference,
+) -> None:
+    """What callers saw before this fix, reproduced by sending the old string by hand."""
+    old_wire_value = "EmbedModel.Multilingual_E5_Large"
+    message = f"Model '{old_wire_value}' not found."
+    route = respx.post(f"{BASE_URL}/embed").mock(
+        return_value=httpx.Response(404, json=make_error_response(404, message)),
+    )
+
+    with pytest.raises(NotFoundError) as excinfo:
+        await inference.embed(old_wire_value, ["hello"])
+
+    assert orjson.loads(route.calls.last.request.content)["model"] == old_wire_value
+    assert excinfo.value.message == message
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_logs_name_the_model_id_not_the_enum_member(
+    inference: AsyncInference, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An operator grepping the logs for a model id has to find it there too."""
+    respx.post(f"{BASE_URL}/embed").mock(
+        return_value=httpx.Response(200, json=make_embed_response()),
+    )
+    respx.post(f"{BASE_URL}/rerank").mock(
+        return_value=httpx.Response(200, json=make_rerank_response()),
+    )
+
+    with caplog.at_level(logging.INFO, logger="pinecone.async_client.inference"):
+        await inference.embed(EmbedModel.Multilingual_E5_Large, ["hello"])
+        await inference.rerank(model=RerankModel.Bge_Reranker_V2_M3, query="q", documents=["doc"])
+
+    assert "'multilingual-e5-large'" in caplog.text
+    assert "'bge-reranker-v2-m3'" in caplog.text
+    assert "EmbedModel." not in caplog.text
+    assert "RerankModel." not in caplog.text

@@ -12,6 +12,7 @@ from pinecone._internal.adapters.inference_adapter import (
     InferenceAdapter,
     normalize_embed_inputs,
     normalize_rerank_documents,
+    resolve_model_id,
 )
 from pinecone._internal.constants import INFERENCE_API_VERSION
 from pinecone._internal.validation import require_non_empty, require_one_of
@@ -229,17 +230,18 @@ class Inference:
            to let Pinecone handle embedding server-side — no manual embed step
            required.
         """
-        require_non_empty("model", str(model))
+        model_id = resolve_model_id(model)
+        require_non_empty("model", model_id)
         normalized_inputs = normalize_embed_inputs(inputs)
 
         body: dict[str, Any] = {
-            "model": str(model),
+            "model": model_id,
             "inputs": normalized_inputs,
         }
         if parameters is not None:
             body["parameters"] = parameters
 
-        logger.info("Generating embeddings with model %r", str(model))
+        logger.info("Generating embeddings with model %r", model_id)
         response = self._http.post("/embed", json=body)
         result = self._adapter.to_embeddings_list(response.content)
         logger.debug("Generated %d embeddings", len(result.data))
@@ -306,14 +308,15 @@ class Inference:
            model that actually served the request, so read it there rather than
            assuming it echoes *model*.
         """
-        require_non_empty("model", str(model))
+        model_id = resolve_model_id(model)
+        require_non_empty("model", model_id)
         require_non_empty("query", query)
         normalized_docs = normalize_rerank_documents(documents)
         if top_n is not None and top_n < 1:
             raise ValidationError("top_n must be >= 1")
 
         body: dict[str, Any] = {
-            "model": str(model),
+            "model": model_id,
             "query": query,
             "documents": normalized_docs,
             "rank_fields": rank_fields,
@@ -324,7 +327,7 @@ class Inference:
         if parameters is not None:
             body["parameters"] = parameters
 
-        logger.info("Reranking %d documents with model %r", len(normalized_docs), str(model))
+        logger.info("Reranking %d documents with model %r", len(normalized_docs), model_id)
         response = self._http.post("/rerank", json=body)
         result = self._adapter.to_rerank_result(response.content)
         logger.debug("Reranked documents, got %d results", len(result.data))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from enum import Enum
 from typing import Any
 
 from msgspec import Struct
@@ -81,6 +82,15 @@ class InferenceAdapter:
         """Decode raw JSON bytes from the list-models endpoint into a ModelInfoList."""
         envelope = decode_response(data, _ModelListEnvelope)
         return ModelInfoList(envelope.models)
+
+
+def resolve_model_id(model: str | Enum) -> str:
+    """Return the wire identifier for a model.
+
+    ``EmbedModel``/``RerankModel`` are ``(str, Enum)`` mixins, so ``str(member)``
+    yields ``"EmbedModel.X"`` rather than the model id — read ``.value`` instead.
+    """
+    return str(model.value) if isinstance(model, Enum) else str(model)
 
 
 def normalize_embed_inputs(

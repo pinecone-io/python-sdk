@@ -38,6 +38,7 @@ import respx
 from pinecone._internal.adapters.inference_adapter import _EmbedEnvelope, _ModelListEnvelope
 from pinecone._internal.config import PineconeConfig
 from pinecone.async_client.inference import AsyncInference
+from pinecone.models.enums import EmbedModel, RerankModel
 from pinecone.models.inference.embed import SparseEmbedding
 from pinecone.models.inference.models import ModelInfo
 from pinecone.models.inference.rerank import RerankResult
@@ -146,6 +147,59 @@ async def test_async_rerank(
         "return_documents": True,
         "top_n": 2,
         "parameters": {"truncate": "END"},
+    }
+    claim.assert_request(request)
+    claim.assert_api_version(request)
+    claim.assert_roundtrip(RerankResult, RERANK, optional_absent=[])
+
+
+@api_op("inference:embed")
+async def test_async_embed_with_an_embed_model_member(
+    claim: Any, async_inference: AsyncInference, respx_mock: respx.MockRouter
+) -> None:
+    """Async twin of the sync module's enum-member embed claim (#296)."""
+    route = respx_mock.post(f"{BASE_URL}/embed").mock(
+        return_value=httpx.Response(200, json=EMBED_DENSE)
+    )
+
+    result = await async_inference.embed(
+        model=EmbedModel.Multilingual_E5_Large, inputs=["the quick brown fox"]
+    )
+    assert result.to_dict() == EMBED_DENSE
+
+    request = route.calls.last.request
+    assert orjson.loads(request.content) == {
+        "model": MODEL_NAME,
+        "inputs": [{"text": "the quick brown fox"}],
+    }
+    claim.assert_request(request)
+    claim.assert_api_version(request)
+    claim.assert_roundtrip(_EmbedEnvelope, EMBED_DENSE, optional_absent=[])
+
+
+@api_op("inference:rerank")
+async def test_async_rerank_with_a_rerank_model_member(
+    claim: Any, async_inference: AsyncInference, respx_mock: respx.MockRouter
+) -> None:
+    """Async twin of the sync module's enum-member rerank claim (#296)."""
+    route = respx_mock.post(f"{BASE_URL}/rerank").mock(
+        return_value=httpx.Response(200, json=RERANK)
+    )
+
+    result = await async_inference.rerank(
+        model=RerankModel.Bge_Reranker_V2_M3,
+        query="What is the capital of France?",
+        documents=DOCUMENTS,
+    )
+    assert result.to_dict() == RERANK
+
+    request = route.calls.last.request
+    assert orjson.loads(request.content) == {
+        "model": "bge-reranker-v2-m3",
+        "query": "What is the capital of France?",
+        "documents": DOCUMENTS,
+        "rank_fields": ["text"],
+        "return_documents": True,
     }
     claim.assert_request(request)
     claim.assert_api_version(request)

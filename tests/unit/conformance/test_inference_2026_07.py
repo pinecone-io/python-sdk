@@ -46,6 +46,7 @@ from pinecone._internal.adapters.inference_adapter import _EmbedEnvelope, _Model
 from pinecone._internal.config import PineconeConfig
 from pinecone._internal.constants import DEFAULT_BASE_URL
 from pinecone.client.inference import Inference
+from pinecone.models.enums import EmbedModel, RerankModel
 from pinecone.models.inference.embed import SparseEmbedding
 from pinecone.models.inference.models import ModelInfo
 from pinecone.models.inference.rerank import RerankResult
@@ -224,6 +225,63 @@ def test_rerank(claim: Any, inference: Inference, respx_mock: respx.MockRouter) 
         "return_documents": True,
         "top_n": 2,
         "parameters": {"truncate": "END"},
+    }
+    claim.assert_request(request)
+    claim.assert_api_version(request)
+    claim.assert_roundtrip(RerankResult, RERANK, optional_absent=[])
+
+
+@api_op("inference:embed")
+def test_embed_with_an_embed_model_member(
+    claim: Any, inference: Inference, respx_mock: respx.MockRouter
+) -> None:
+    """An ``EmbedModel`` member must put the model id on the wire, not its repr.
+
+    ``EmbedModel`` is a ``(str, Enum)`` mixin, so the mangled ``"EmbedModel.X"``
+    is what a plain ``str()`` produces and what shipped until #296. Passing the
+    member — the spelling both signatures advertise — is therefore the case
+    worth pinning against the spec, not the equivalent plain string.
+    """
+    route = respx_mock.post(f"{BASE_URL}/embed").mock(
+        return_value=httpx.Response(200, json=EMBED_DENSE)
+    )
+
+    result = inference.embed(model=EmbedModel.Multilingual_E5_Large, inputs=["the quick brown fox"])
+    assert result.to_dict() == EMBED_DENSE
+
+    request = route.calls.last.request
+    assert orjson.loads(request.content) == {
+        "model": MODEL_NAME,
+        "inputs": [{"text": "the quick brown fox"}],
+    }
+    claim.assert_request(request)
+    claim.assert_api_version(request)
+    claim.assert_roundtrip(_EmbedEnvelope, EMBED_DENSE, optional_absent=[])
+
+
+@api_op("inference:rerank")
+def test_rerank_with_a_rerank_model_member(
+    claim: Any, inference: Inference, respx_mock: respx.MockRouter
+) -> None:
+    """The rerank twin of ``test_embed_with_an_embed_model_member``."""
+    route = respx_mock.post(f"{BASE_URL}/rerank").mock(
+        return_value=httpx.Response(200, json=RERANK)
+    )
+
+    result = inference.rerank(
+        model=RerankModel.Bge_Reranker_V2_M3,
+        query="What is the capital of France?",
+        documents=DOCUMENTS,
+    )
+    assert result.to_dict() == RERANK
+
+    request = route.calls.last.request
+    assert orjson.loads(request.content) == {
+        "model": "bge-reranker-v2-m3",
+        "query": "What is the capital of France?",
+        "documents": DOCUMENTS,
+        "rank_fields": ["text"],
+        "return_documents": True,
     }
     claim.assert_request(request)
     claim.assert_api_version(request)
