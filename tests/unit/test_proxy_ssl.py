@@ -11,7 +11,13 @@ import httpx
 import pytest
 
 from pinecone._internal.config import PineconeConfig
-from pinecone._internal.http_client import AsyncHTTPClient, HTTPClient
+from pinecone._internal.http_client import (
+    AsyncHTTPClient,
+    HTTPClient,
+    _AsyncRetryTransport,
+    _build_socket_options,
+    _RetryTransport,
+)
 
 API_VERSION = "2025-10"
 
@@ -33,6 +39,28 @@ def _socket_ssl_context(client: httpx.Client | httpx.AsyncClient) -> ssl.SSLCont
     transport = client._transport_for_url(httpx.URL("https://api.example.com"))
     inner = getattr(transport, "_transport", transport)
     return inner._pool._ssl_context  # type: ignore[no-any-return, union-attr]
+
+
+def _selected_transport(
+    client: httpx.Client | httpx.AsyncClient,
+) -> httpx.BaseTransport | httpx.AsyncBaseTransport:
+    """Return the transport httpx will actually use for a request to our host.
+
+    #447: a proxy handed to ``httpx.Client``/``httpx.AsyncClient`` makes httpx
+    mount a second transport for proxied requests, and this is the method
+    (``Client._transport_for_url``) that returns that mount instead of the
+    ``_RetryTransport`` we built — silently dropping retries and socket
+    options for every proxied request. Reading it back here is the same
+    boundary ``_socket_ssl_context`` reads for #421.
+    """
+    return client._transport_for_url(httpx.URL("https://api.example.com"))
+
+
+def _pool_socket_options(client: httpx.Client | httpx.AsyncClient) -> object:
+    """Return the socket_options set on the pool of the transport httpx selects."""
+    transport = _selected_transport(client)
+    inner = getattr(transport, "_transport", transport)
+    return inner._pool._socket_options  # type: ignore[union-attr]
 
 
 def _one_ca_pem() -> str:
@@ -57,20 +85,47 @@ def _async_context(**overrides: object) -> ssl.SSLContext:
     return _socket_ssl_context(client._ensure_client())
 
 
+def _sync_client(**overrides: object) -> httpx.Client:
+    return HTTPClient(_make_config(**overrides), API_VERSION)._client
+
+
+def _async_client(**overrides: object) -> httpx.AsyncClient:
+    return AsyncHTTPClient(_make_config(**overrides), API_VERSION)._ensure_client()
+
+
 class TestSyncProxyUrl:
+    @patch("pinecone._internal.http_client.httpx.HTTPTransport")
+    def test_sync_proxy_url_reaches_the_transport(self, mock_transport_cls: MagicMock) -> None:
+        config = _make_config(proxy_url="http://proxy:8080")
+        HTTPClient(config, API_VERSION)
+        _, kwargs = mock_transport_cls.call_args
+        assert kwargs["proxy"] == "http://proxy:8080"
+
+    @patch("pinecone._internal.http_client.httpx.HTTPTransport")
+    def test_sync_no_proxy_by_default(self, mock_transport_cls: MagicMock) -> None:
+        config = _make_config()
+        HTTPClient(config, API_VERSION)
+        _, kwargs = mock_transport_cls.call_args
+        assert kwargs["proxy"] is None
+
+    @patch("pinecone._internal.http_client.httpx.HTTPTransport")
+    def test_sync_proxy_headers_become_an_httpx_proxy(self, mock_transport_cls: MagicMock) -> None:
+        config = _make_config(
+            proxy_url="http://proxy:8080",
+            proxy_headers={"Proxy-Authorization": "Basic abc"},
+        )
+        HTTPClient(config, API_VERSION)
+        _, kwargs = mock_transport_cls.call_args
+        proxy = kwargs["proxy"]
+        assert isinstance(proxy, httpx.Proxy)
+        assert proxy.headers["Proxy-Authorization"] == "Basic abc"
+
     @patch("pinecone._internal.http_client.httpx.Client")
-    def test_sync_proxy_url_passed(self, mock_client_cls: MagicMock) -> None:
+    def test_sync_client_receives_no_proxy_kwarg(self, mock_client_cls: MagicMock) -> None:
         config = _make_config(proxy_url="http://proxy:8080")
         HTTPClient(config, API_VERSION)
         _, kwargs = mock_client_cls.call_args
-        assert kwargs["proxy"] == "http://proxy:8080"
-
-    @patch("pinecone._internal.http_client.httpx.Client")
-    def test_sync_no_proxy_by_default(self, mock_client_cls: MagicMock) -> None:
-        config = _make_config()
-        HTTPClient(config, API_VERSION)
-        _, kwargs = mock_client_cls.call_args
-        assert kwargs["proxy"] is None
+        assert "proxy" not in kwargs
 
 
 class TestSyncSSL:
@@ -86,31 +141,49 @@ class TestSyncSSL:
         _, transport_kwargs = mock_transport_cls.call_args
         _, client_kwargs = mock_client_cls.call_args
         assert isinstance(transport_kwargs["verify"], ssl.SSLContext)
-        assert client_kwargs["verify"] is transport_kwargs["verify"]
+        assert "verify" not in client_kwargs
 
-    @patch("pinecone._internal.http_client.httpx.Client")
-    def test_sync_ssl_verify_false(self, mock_client_cls: MagicMock) -> None:
+    @patch("pinecone._internal.http_client.httpx.HTTPTransport")
+    def test_sync_ssl_verify_false(self, mock_transport_cls: MagicMock) -> None:
         config = _make_config(ssl_verify=False)
         HTTPClient(config, API_VERSION)
-        _, kwargs = mock_client_cls.call_args
+        _, kwargs = mock_transport_cls.call_args
         assert kwargs["verify"] is False
 
-    @patch("pinecone._internal.http_client.httpx.Client")
-    def test_sync_ssl_verify_true_by_default(self, mock_client_cls: MagicMock) -> None:
+    @patch("pinecone._internal.http_client.httpx.HTTPTransport")
+    def test_sync_ssl_verify_true_by_default(self, mock_transport_cls: MagicMock) -> None:
         config = _make_config()
         HTTPClient(config, API_VERSION)
-        _, kwargs = mock_client_cls.call_args
+        _, kwargs = mock_transport_cls.call_args
         assert kwargs["verify"] is True
 
 
 class TestAsyncProxyUrl:
-    @patch("pinecone._internal.http_client.httpx.AsyncClient")
-    def test_async_proxy_url_passed(self, mock_client_cls: MagicMock) -> None:
+    @patch("pinecone._internal.http_client.httpx.AsyncHTTPTransport")
+    def test_async_proxy_url_reaches_the_transport(self, mock_transport_cls: MagicMock) -> None:
         config = _make_config(proxy_url="http://proxy:8080")
-        client = AsyncHTTPClient(config, API_VERSION)
-        client._ensure_client()
-        _, kwargs = mock_client_cls.call_args
+        AsyncHTTPClient(config, API_VERSION)._ensure_client()
+        _, kwargs = mock_transport_cls.call_args
         assert kwargs["proxy"] == "http://proxy:8080"
+
+    @patch("pinecone._internal.http_client.httpx.AsyncHTTPTransport")
+    def test_async_proxy_headers_become_an_httpx_proxy(self, mock_transport_cls: MagicMock) -> None:
+        config = _make_config(
+            proxy_url="http://proxy:8080",
+            proxy_headers={"Proxy-Authorization": "Basic abc"},
+        )
+        AsyncHTTPClient(config, API_VERSION)._ensure_client()
+        _, kwargs = mock_transport_cls.call_args
+        proxy = kwargs["proxy"]
+        assert isinstance(proxy, httpx.Proxy)
+        assert proxy.headers["Proxy-Authorization"] == "Basic abc"
+
+    @patch("pinecone._internal.http_client.httpx.AsyncClient")
+    def test_async_client_receives_no_proxy_kwarg(self, mock_client_cls: MagicMock) -> None:
+        config = _make_config(proxy_url="http://proxy:8080")
+        AsyncHTTPClient(config, API_VERSION)._ensure_client()
+        _, kwargs = mock_client_cls.call_args
+        assert "proxy" not in kwargs
 
 
 class TestAsyncSSL:
@@ -126,14 +199,14 @@ class TestAsyncSSL:
         _, transport_kwargs = mock_transport_cls.call_args
         _, client_kwargs = mock_client_cls.call_args
         assert isinstance(transport_kwargs["verify"], ssl.SSLContext)
-        assert client_kwargs["verify"] is transport_kwargs["verify"]
+        assert "verify" not in client_kwargs
 
-    @patch("pinecone._internal.http_client.httpx.AsyncClient")
-    def test_async_ssl_verify_false(self, mock_client_cls: MagicMock) -> None:
+    @patch("pinecone._internal.http_client.httpx.AsyncHTTPTransport")
+    def test_async_ssl_verify_false(self, mock_transport_cls: MagicMock) -> None:
         config = _make_config(ssl_verify=False)
         client = AsyncHTTPClient(config, API_VERSION)
         client._ensure_client()
-        _, kwargs = mock_client_cls.call_args
+        _, kwargs = mock_transport_cls.call_args
         assert kwargs["verify"] is False
 
 
@@ -200,3 +273,46 @@ class TestSSLConfigReachesTheSocket:
         context = context_for(ssl_ca_certs=str(bundle), ssl_verify=False)
         assert context.verify_mode is ssl.CERT_REQUIRED
         assert len(context.get_ca_certs()) == 1
+
+
+class TestProxyDoesNotBypassRetryOrSocketOptions:
+    """#447: proxy_url must not route requests around _RetryTransport or socket tuning."""
+
+    @pytest.mark.parametrize("client_for", [_sync_client, _async_client], ids=["sync", "async"])
+    def test_retry_transport_selected_without_proxy(
+        self, client_for: Callable[..., httpx.Client | httpx.AsyncClient]
+    ) -> None:
+        transport = _selected_transport(client_for())
+        assert isinstance(transport, (_RetryTransport, _AsyncRetryTransport))
+
+    @pytest.mark.parametrize("client_for", [_sync_client, _async_client], ids=["sync", "async"])
+    def test_retry_transport_still_selected_with_proxy(
+        self, client_for: Callable[..., httpx.Client | httpx.AsyncClient]
+    ) -> None:
+        transport = _selected_transport(client_for(proxy_url="http://proxy:8080"))
+        assert isinstance(transport, (_RetryTransport, _AsyncRetryTransport))
+
+    @pytest.mark.parametrize("client_for", [_sync_client, _async_client], ids=["sync", "async"])
+    def test_socket_options_reach_the_pool_with_proxy(
+        self, client_for: Callable[..., httpx.Client | httpx.AsyncClient]
+    ) -> None:
+        client = client_for(proxy_url="http://proxy:8080")
+        assert _pool_socket_options(client) == _build_socket_options()
+
+    @pytest.mark.parametrize("client_for", [_sync_client, _async_client], ids=["sync", "async"])
+    def test_pool_is_proxy_aware_when_proxy_url_set(
+        self, client_for: Callable[..., httpx.Client | httpx.AsyncClient]
+    ) -> None:
+        client = client_for(proxy_url="http://proxy:8080")
+        transport = _selected_transport(client)
+        inner = getattr(transport, "_transport", transport)
+        assert "Proxy" in type(inner._pool).__name__
+
+    @pytest.mark.parametrize("client_for", [_sync_client, _async_client], ids=["sync", "async"])
+    def test_pool_is_plain_without_proxy_url(
+        self, client_for: Callable[..., httpx.Client | httpx.AsyncClient]
+    ) -> None:
+        client = client_for()
+        transport = _selected_transport(client)
+        inner = getattr(transport, "_transport", transport)
+        assert "Proxy" not in type(inner._pool).__name__

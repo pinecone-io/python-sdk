@@ -357,6 +357,61 @@ class TestAdminProxyAndSsl:
         assert context.verify_mode is ssl.CERT_REQUIRED
         assert context.check_hostname is True
 
+    @staticmethod
+    def _oauth_transport(**kwargs: Any) -> httpx.HTTPTransport:
+        """The transport the OAuth token exchange's ``_RetryTransport`` wraps.
+
+        Mirrors ``_oauth_ssl_context``: the token exchange builds its own
+        ``httpx.Client``/``_RetryTransport`` pair, so #447 (a proxy silently
+        bypassing retries and socket options) has to be checked on this
+        transport too, not just on the config-driven client.
+        """
+        respx.post(_OAUTH_URL).mock(return_value=Response(200, json=_token_response()))
+        created: list[httpx.HTTPTransport] = []
+        real = httpx.HTTPTransport
+
+        def spy(**transport_kwargs: Any) -> httpx.HTTPTransport:
+            transport = real(**transport_kwargs)
+            created.append(transport)
+            return transport
+
+        with patch("pinecone.admin.admin.httpx.HTTPTransport", spy):
+            admin = Admin(client_id="test-id", client_secret="test-secret", **kwargs)
+        admin.close()
+        assert created, "the OAuth token exchange built no transport"
+        return created[0]
+
+    @respx.mock
+    def test_admin_oauth_proxy_reaches_the_transport(self) -> None:
+        transport = self._oauth_transport(proxy_url="http://proxy.example.com:8080")
+        assert "Proxy" in type(transport._pool).__name__  # type: ignore[attr-defined]
+
+    @respx.mock
+    def test_admin_oauth_transport_has_no_proxy_by_default(self) -> None:
+        transport = self._oauth_transport()
+        assert "Proxy" not in type(transport._pool).__name__  # type: ignore[attr-defined]
+
+    @respx.mock
+    def test_admin_oauth_client_receives_no_proxy_or_verify_kwarg(self) -> None:
+        respx.post(_OAUTH_URL).mock(return_value=Response(200, json=_token_response()))
+        real_client = httpx.Client
+        captured: list[dict[str, Any]] = []
+
+        def spy(**client_kwargs: Any) -> httpx.Client:
+            captured.append(client_kwargs)
+            return real_client(**client_kwargs)
+
+        with patch("pinecone.admin.admin.httpx.Client", spy):
+            admin = Admin(
+                client_id="test-id",
+                client_secret="test-secret",
+                proxy_url="http://proxy.example.com:8080",
+            )
+        admin.close()
+        assert captured, "the OAuth token exchange built no client"
+        assert "proxy" not in captured[0]
+        assert "verify" not in captured[0]
+
 
 class TestAdminContextManager:
     """Test context manager support."""

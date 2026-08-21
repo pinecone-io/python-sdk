@@ -77,6 +77,22 @@ def _build_ssl_verify(config: PineconeConfig) -> ssl.SSLContext | bool:
     return ssl.create_default_context(cafile=ca_certs)
 
 
+def _build_proxy(config: PineconeConfig) -> httpx.Proxy | str | None:
+    """Resolve the caller's proxy settings into an httpx ``proxy`` value.
+
+    Returned for use on our own transport, not on ``httpx.Client``/
+    ``httpx.AsyncClient``: handing it to the Client instead makes httpx mount a
+    second, separate transport for proxied requests that carries none of
+    ``_RetryTransport``'s retries and none of ``_build_socket_options()``'s
+    socket tuning, since that mount is never the transport we built.
+    """
+    if not config.proxy_url:
+        return None
+    if config.proxy_headers:
+        return httpx.Proxy(url=config.proxy_url, headers=config.proxy_headers)
+    return config.proxy_url
+
+
 def _default_pool_size() -> int:
     """Return the default connection pool size: 5x CPU count with a floor of 20."""
     return max(5 * (os.cpu_count() or 1), 20)
@@ -718,30 +734,26 @@ class HTTPClient:
             max_keepalive_connections=pool_size // 2,
         )
         # httpx.Client discards its own verify= when an explicit transport is
-        # supplied, so the transport must carry it. It stays on the Client too,
-        # where it configures the proxy transport httpx mounts under a proxy.
+        # supplied, so the transport must carry it. The proxy goes on the same
+        # transport rather than on the Client: a proxy passed to the Client
+        # makes httpx mount a second transport for proxied requests, and that
+        # mount — not this one — is what Client._transport_for_url returns, so
+        # _RetryTransport and its socket options would never be reached.
         transport = _RetryTransport(
             transport=httpx.HTTPTransport(
                 verify=verify,
                 http2=False,
                 limits=limits,
+                proxy=_build_proxy(config),
                 socket_options=_build_socket_options(),
             ),
             retry_config=config.retry_config,
         )
-        proxy: httpx.Proxy | str | None = None
-        if config.proxy_url:
-            if config.proxy_headers:
-                proxy = httpx.Proxy(url=config.proxy_url, headers=config.proxy_headers)
-            else:
-                proxy = config.proxy_url
         self._client = httpx.Client(
             base_url=config.host or DEFAULT_BASE_URL,
             headers=self._headers,
             timeout=config.timeout,
             transport=transport,
-            proxy=proxy,
-            verify=verify,
         )
         # Pre-built per-request constants for the POST hot path. Lets us
         # bypass httpx.Client.build_request's URL/header/cookie/queryparam
@@ -1015,25 +1027,16 @@ class AsyncHTTPClient:
                     verify=verify,
                     http2=False,
                     limits=limits,
+                    proxy=_build_proxy(self._config),
                     socket_options=_build_socket_options(),
                 ),
                 retry_config=self._config.retry_config,
             )
-            proxy: httpx.Proxy | str | None = None
-            if self._config.proxy_url:
-                if self._config.proxy_headers:
-                    proxy = httpx.Proxy(
-                        url=self._config.proxy_url, headers=self._config.proxy_headers
-                    )
-                else:
-                    proxy = self._config.proxy_url
             self._client = httpx.AsyncClient(
                 base_url=self._config.host or DEFAULT_BASE_URL,
                 headers=self._headers,
                 timeout=self._config.timeout,
                 transport=transport,
-                proxy=proxy,
-                verify=verify,
             )
         return self._client
 

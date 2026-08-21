@@ -402,14 +402,13 @@ class Admin:
 
         transport = _RetryTransport(
             transport=httpx.HTTPTransport(
-                verify=ssl_verify, http2=False, socket_options=_build_socket_options()
+                verify=ssl_verify,
+                http2=False,
+                proxy=proxy_url or None,
+                socket_options=_build_socket_options(),
             ),
         )
-        with httpx.Client(
-            transport=transport,
-            proxy=proxy_url or None,
-            verify=ssl_verify,
-        ) as client:
+        with httpx.Client(transport=transport) as client:
             try:
                 response = client.post(
                     oauth_url or _OAUTH_URL,
