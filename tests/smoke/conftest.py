@@ -49,12 +49,51 @@ _HERE = Path(__file__).resolve().parent
 
 _CREDENTIAL_VARS = ("PINECONE_API_KEY",)
 
+_SMOKE_TIMEOUT_SECONDS = 600
+"""Wall-clock ceiling for one smoke test, sized from measurement (#347).
+
+- Slowest measured smoke run is ``test_backups_sync`` at 43.19s on a live
+  2026-07 backend, so this is ~14x the observed worst case.
+- ``Indexes.create()`` defaults to ``timeout=None``, which polls for readiness
+  **indefinitely**. Most smoke tests create without a timeout, so nothing
+  inside the test bounds a stuck provision and this ceiling is the only bound.
+- The bounded waits a smoke test *does* make sum to 510s in the worst module
+  CI runs (``test_serverless_dense_sync``: 60 + 60 + 30 + 4x60 + 120). A lower
+  ceiling would replace those helpers' diagnostic ``TimeoutError`` with an
+  opaque pytest kill.
+- Both smoke jobs cap the whole job above this (``timeout-minutes`` 20 and 30),
+  so a hang fails as one named test, not an unattributed job kill.
+
+The pod/collections modules are the exception — internal waits summing to
+~4320s — and are ``--ignore``d by both smoke jobs, so sizing them is left to
+whoever revives them.
+"""
+
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
         "smoke: end-to-end smoke tests that hit a real Pinecone backend",
     )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Raise the timeout for smoke tests, which provision real infrastructure (#347).
+
+    Sibling of the ``tests/integration`` hook and path-filtered for the same
+    reason: pytest hands a conftest hook the whole session's item list, not
+    only the items collected beneath that conftest. An unfiltered loop would
+    hand ``tests/unit`` this ceiling too, and ``timeout = 5`` there is a real
+    CI gate — nine unit tests already sit within 1.8-3.1x of it (#345).
+
+    Items carrying their own ``timeout`` marker are left alone, so an explicit
+    per-test value keeps winning.
+    """
+    for item in items:
+        if _HERE not in item.path.parents:
+            continue
+        if item.get_closest_marker("timeout") is None:
+            item.add_marker(pytest.mark.timeout(_SMOKE_TIMEOUT_SECONDS))
 
 
 _ENV_SOURCE = load_env(_HERE)
