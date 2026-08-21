@@ -377,9 +377,9 @@ class AsyncInference:
         if type is not None:
             require_one_of("type", type, ("embed", "rerank"))
         if vector_type is not None:
+            if type == "rerank":
+                raise ValidationError("vector_type is not supported when type='rerank'")
             require_one_of("vector_type", vector_type, ("dense", "sparse"))
-        if type == "rerank" and vector_type is not None:
-            raise ValidationError("vector_type is not supported when type='rerank'")
 
         params: dict[str, Any] = {}
         if type is not None:

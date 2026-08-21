@@ -358,6 +358,14 @@ async def test_async_list_models_rerank_vector_type_raises(inference: AsyncInfer
         await inference.list_models(type="rerank", vector_type="dense")
 
 
+@pytest.mark.asyncio
+async def test_async_list_models_rerank_invalid_vector_type_raises_mutual_exclusion(
+    inference: AsyncInference,
+) -> None:
+    with pytest.raises(ValidationError, match="vector_type is not supported"):
+        await inference.list_models(type="rerank", vector_type="bogus")
+
+
 @respx.mock
 @pytest.mark.asyncio
 async def test_async_list_models_filter_by_type(inference: AsyncInference) -> None:
