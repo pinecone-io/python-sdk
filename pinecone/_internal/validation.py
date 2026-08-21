@@ -52,6 +52,16 @@ def require_one_of(name: str, value: str, allowed: Sequence[str]) -> None:
         raise ValidationError(f"{name} must be one of {opts}, got {value!r}")
 
 
+def require_rerank_top_n(value: int | None) -> None:
+    """Raise ValidationError unless *value* is a legal ``rerank`` result count.
+
+    ``None`` asks for every document back, and any value from 1 up is legal —
+    including values above the document count, which return every document.
+    """
+    if value is not None and value < 1:
+        raise ValidationError("top_n must be >= 1")
+
+
 NAMESPACE_NAME_MAX_LEN = 512
 """Longest namespace name the data plane accepts (``max_namespace_length``)."""
 

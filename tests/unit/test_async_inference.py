@@ -17,6 +17,7 @@ from pinecone.errors.exceptions import (
     ApiError,
     ForbiddenError,
     NotFoundError,
+    PineconeValueError,
     ValidationError,
 )
 from pinecone.models.enums import EmbedModel, RerankModel
@@ -174,6 +175,28 @@ async def test_async_rerank_returns_rerank_result_with_model_and_usage(
     assert result.data[0].score == 0.95
     assert result.usage.rerank_units == 1
     assert route.called
+
+
+@respx.mock
+@pytest.mark.asyncio
+@pytest.mark.parametrize("top_n", [0, -1])
+async def test_async_rerank_top_n_below_one_raises_before_any_request(
+    inference: AsyncInference, top_n: int
+) -> None:
+    route = respx.post(f"{BASE_URL}/rerank").mock(
+        return_value=httpx.Response(200, json=make_rerank_response()),
+    )
+
+    with pytest.raises(PineconeValueError, match="top_n must be >= 1") as exc_info:
+        await inference.rerank(
+            model="bge-reranker-v2-m3",
+            query="test query",
+            documents=["doc"],
+            top_n=top_n,
+        )
+
+    assert type(exc_info.value) is PineconeValueError
+    assert not route.called
 
 
 @pytest.mark.asyncio

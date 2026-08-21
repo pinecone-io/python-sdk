@@ -71,6 +71,8 @@ _ERROR_CASES: list[tuple[str, dict[str, Any]]] = [
     ("rerank", {"model": "m", "query": "q", "documents": []}),
     ("rerank", {"model": "m", "query": "q", "documents": "not a list"}),
     ("rerank", {"model": "m", "query": "q", "documents": ["a string", 123]}),
+    ("rerank", {"model": "m", "query": "q", "documents": ["d"], "top_n": 0}),
+    ("rerank", {"model": "m", "query": "q", "documents": ["d"], "top_n": -1}),
     ("list_models", {"type": "invalid"}),
     ("list_models", {"vector_type": "invalid"}),
     ("list_models", {"type": "rerank", "vector_type": "dense"}),

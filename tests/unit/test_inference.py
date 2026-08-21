@@ -17,6 +17,7 @@ from pinecone.errors.exceptions import (
     ApiError,
     ForbiddenError,
     NotFoundError,
+    PineconeValueError,
     ValidationError,
 )
 from pinecone.models.enums import EmbedModel, RerankModel
@@ -242,24 +243,23 @@ def test_rerank_non_list_documents_raises(inference: Inference) -> None:
         )
 
 
-def test_rerank_top_n_negative_raises(inference: Inference) -> None:
-    with pytest.raises(ValidationError, match="top_n must be >= 1"):
+@respx.mock
+@pytest.mark.parametrize("top_n", [0, -1])
+def test_rerank_top_n_below_one_raises_before_any_request(inference: Inference, top_n: int) -> None:
+    route = respx.post(f"{BASE_URL}/rerank").mock(
+        return_value=httpx.Response(200, json=make_rerank_response()),
+    )
+
+    with pytest.raises(PineconeValueError, match="top_n must be >= 1") as exc_info:
         inference.rerank(
             model="bge-reranker-v2-m3",
             query="test query",
             documents=["doc"],
-            top_n=-1,
+            top_n=top_n,
         )
 
-
-def test_rerank_top_n_zero_raises(inference: Inference) -> None:
-    with pytest.raises(ValidationError, match="top_n must be >= 1"):
-        inference.rerank(
-            model="bge-reranker-v2-m3",
-            query="test query",
-            documents=["doc"],
-            top_n=0,
-        )
+    assert type(exc_info.value) is PineconeValueError
+    assert not route.called
 
 
 @respx.mock

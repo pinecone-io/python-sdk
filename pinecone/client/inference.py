@@ -15,7 +15,11 @@ from pinecone._internal.adapters.inference_adapter import (
     resolve_model_id,
 )
 from pinecone._internal.constants import INFERENCE_API_VERSION
-from pinecone._internal.validation import require_non_empty, require_one_of
+from pinecone._internal.validation import (
+    require_non_empty,
+    require_one_of,
+    require_rerank_top_n,
+)
 from pinecone.errors.exceptions import ValidationError
 from pinecone.models import enums as _enums
 
@@ -281,7 +285,8 @@ class Inference:
             A :class:`RerankResult` with ``.data`` and ``.usage``.
 
         Raises:
-            :exc:`PineconeValueError`: If *model*, *query*, or *documents* is empty.
+            :exc:`PineconeValueError`: If *model*, *query*, or *documents* is
+                empty, or *top_n* is less than 1.
             :exc:`PineconeTypeError`: If *documents* has an invalid type.
             :exc:`ForbiddenError`: If the project is not authorized to use
                 *model*, including when *model* has been deprecated.
@@ -312,8 +317,7 @@ class Inference:
         require_non_empty("model", model_id)
         require_non_empty("query", query)
         normalized_docs = normalize_rerank_documents(documents)
-        if top_n is not None and top_n < 1:
-            raise ValidationError("top_n must be >= 1")
+        require_rerank_top_n(top_n)
 
         body: dict[str, Any] = {
             "model": model_id,
