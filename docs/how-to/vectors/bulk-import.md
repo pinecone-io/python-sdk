@@ -5,7 +5,7 @@ Storage) into a Pinecone index. The import runs server-side, so it handles milli
 without keeping a long-lived client connection open.
 
 The source must be a directory of Parquet files formatted to the
-`Pinecone-required schema <https://docs.pinecone.io/guides/data/understanding-imports>`_.
+[Pinecone-required schema](https://docs.pinecone.io/guides/data/understanding-imports).
 
 The `uri` names that directory prefix, never an individual file, and takes one of three
 forms: `s3://` for Amazon S3, `gs://` for Google Cloud Storage, or an `https://` URL
