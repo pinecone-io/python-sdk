@@ -6,6 +6,19 @@ name: Release Readiness
 #
 # A green run within the last 7 days is the manual go/no-go signal for a
 # real release.
+#
+# What the install jobs below cover, and what they don't (#431):
+# `install-tests` and `multi-python-install-verify` install the dev wheel
+# most recently published to Artifact Registry by Dev Build & Publish, which
+# only ever builds from `main` (see resolve-dev-version). Dispatching this
+# workflow against a different ref does not change which wheel those two
+# jobs install, so a green run from them is publish-path and cross-Python
+# compatibility signal for main's latest wheel, never for the ref this
+# workflow happens to be running against. For signal about a specific
+# branch, read `wheel-install-verify` in on-push.yml instead — it builds the
+# wheel from that ref's checkout. multi-python-install-verify's job name
+# spells out "main dev wheel" so this scope is legible without opening this
+# comment; install-tests' own header carries the same note.
 
 on:
   workflow_dispatch:
@@ -182,7 +195,9 @@ jobs:
   # ---------------------------------------------------------------------------
   # Install the latest dev wheel from GCP Artifact Registry and smoke-test it.
   # Validates the publish/install path end-to-end (not just that the wheel was
-  # built — the smoke job in dev-publish already covers that).
+  # built — the smoke job in dev-publish already covers that). Like
+  # multi-python-install-verify below, the wheel installed here is always
+  # main's, independent of the ref this workflow is dispatched against (#431).
   #
   # Same missing secret as integration-tests above: `secrets.PINECONE_API_KEY`
   # exists at neither repo nor org level, so it expands to the empty string and
@@ -334,11 +349,15 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Multi-Python install verify: exercises the abi3 promise on every supported
-  # Python version (3.10–3.14). The published wheel is cp310-abi3, so it must
+  # Python version (3.10–3.14) using the dev wheel resolved above, which is
+  # always built from main regardless of what ref this workflow runs against
+  # (#431) — read this job's result as "main's latest published wheel loads
+  # its Rust extension and resolves its declared deps on py3.10-3.14", not as
+  # signal about any other ref. The published wheel is cp310-abi3, so it must
   # install and load the Rust extension on each Python we claim to support.
   # ---------------------------------------------------------------------------
   multi-python-install-verify:
-    name: Multi-Python install verify (py${{ matrix.python-version }})
+    name: Multi-Python install verify, main dev wheel (py${{ matrix.python-version }})
     needs: resolve-dev-version
     runs-on: ubuntu-latest
     timeout-minutes: 15
