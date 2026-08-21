@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -41,9 +42,13 @@ class TestBasicConstruction:
         pc = Pinecone(api_key="test-key", proxy_url="http://proxy:8080")
         assert pc.config.proxy_url == "http://proxy:8080"
 
-    def test_ssl_ca_certs(self) -> None:
-        pc = Pinecone(api_key="test-key", ssl_ca_certs="/path/to/certs.pem")
-        assert pc.config.ssl_ca_certs == "/path/to/certs.pem"
+    def test_ssl_ca_certs(self, tmp_path: Path) -> None:
+        pc = Pinecone(api_key="test-key", ssl_ca_certs=str(tmp_path))
+        assert pc.config.ssl_ca_certs == str(tmp_path)
+
+    def test_ssl_ca_certs_missing_path_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(FileNotFoundError):
+            Pinecone(api_key="test-key", ssl_ca_certs=str(tmp_path / "absent.pem"))
 
     def test_ssl_verify_default_true(self) -> None:
         pc = Pinecone(api_key="test-key")

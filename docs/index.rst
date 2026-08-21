@@ -37,6 +37,7 @@ Pinecone Python SDK
    migration/v10-2026-07-assistant-inference-release-notes
    migration/v10-2026-07-query-param-enums
    migration/v10-2026-07-admin-oauth
+   migration/v10-2026-07-ssl-config
    migration/v9-migration
    migration/v9.2-grpc-partial-failures
    faq

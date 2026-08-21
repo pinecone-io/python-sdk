@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ssl
 from typing import Any
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -318,6 +320,42 @@ class TestAdminProxyAndSsl:
         )
         assert admin._http._config.ssl_verify is False
         admin.close()
+
+    @staticmethod
+    def _oauth_ssl_context(**kwargs: Any) -> ssl.SSLContext:
+        """The SSL context the OAuth token exchange's own transport connects with.
+
+        The token exchange builds a separate ``httpx.Client``, so it does not
+        inherit the fix applied to the config-driven client (#421). Capturing the
+        transport instance is the only way to see what it will really connect
+        with: ``httpx.Client`` discards its own ``verify`` when handed one.
+        """
+        respx.post(_OAUTH_URL).mock(return_value=Response(200, json=_token_response()))
+        created: list[httpx.HTTPTransport] = []
+        real = httpx.HTTPTransport
+
+        def spy(**transport_kwargs: Any) -> httpx.HTTPTransport:
+            transport = real(**transport_kwargs)
+            created.append(transport)
+            return transport
+
+        with patch("pinecone.admin.admin.httpx.HTTPTransport", spy):
+            admin = Admin(client_id="test-id", client_secret="test-secret", **kwargs)
+        admin.close()
+        assert created, "the OAuth token exchange built no transport"
+        return created[0]._pool._ssl_context  # type: ignore[attr-defined, no-any-return]
+
+    @respx.mock
+    def test_admin_ssl_verify_false_reaches_the_oauth_transport(self) -> None:
+        context = self._oauth_ssl_context(ssl_verify=False)
+        assert context.verify_mode is ssl.CERT_NONE
+        assert context.check_hostname is False
+
+    @respx.mock
+    def test_admin_oauth_transport_verifies_by_default(self) -> None:
+        context = self._oauth_ssl_context()
+        assert context.verify_mode is ssl.CERT_REQUIRED
+        assert context.check_hostname is True
 
 
 class TestAdminContextManager:

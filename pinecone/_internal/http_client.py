@@ -8,6 +8,7 @@ import logging
 import os
 import random
 import socket
+import ssl
 import sys
 import time
 from collections.abc import AsyncGenerator, Generator, Mapping, Sequence
@@ -57,6 +58,23 @@ def _build_socket_options() -> list[tuple[int, int, int]]:
     elif sys.platform == "darwin":
         opts.append((socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 60))
     return opts
+
+
+def _build_ssl_verify(config: PineconeConfig) -> ssl.SSLContext | bool:
+    """Resolve the caller's SSL settings into an httpx ``verify`` value.
+
+    ``ssl_ca_certs`` is turned into a context here rather than handed to httpx
+    as a path, because httpx deprecated ``verify=<str>`` in 0.28 and drops the
+    form entirely in 1.0. Raises ``FileNotFoundError`` if the bundle does not
+    exist, since a CA path that cannot be loaded means the caller does not have
+    the trust they asked for.
+    """
+    ca_certs = config.ssl_ca_certs
+    if not ca_certs:
+        return config.ssl_verify
+    if os.path.isdir(ca_certs):
+        return ssl.create_default_context(capath=ca_certs)
+    return ssl.create_default_context(cafile=ca_certs)
 
 
 def _default_pool_size() -> int:
@@ -689,7 +707,7 @@ class HTTPClient:
     def __init__(self, config: PineconeConfig, api_version: str) -> None:
         self._config = config
         self._headers = _build_headers(config, api_version)
-        verify: str | bool = config.ssl_ca_certs or config.ssl_verify
+        verify = _build_ssl_verify(config)
         pool_size = (
             config.connection_pool_maxsize
             if config.connection_pool_maxsize > 0
@@ -699,9 +717,15 @@ class HTTPClient:
             max_connections=pool_size,
             max_keepalive_connections=pool_size // 2,
         )
+        # httpx.Client discards its own verify= when an explicit transport is
+        # supplied, so the transport must carry it. It stays on the Client too,
+        # where it configures the proxy transport httpx mounts under a proxy.
         transport = _RetryTransport(
             transport=httpx.HTTPTransport(
-                http2=False, limits=limits, socket_options=_build_socket_options()
+                verify=verify,
+                http2=False,
+                limits=limits,
+                socket_options=_build_socket_options(),
             ),
             retry_config=config.retry_config,
         )
@@ -976,7 +1000,7 @@ class AsyncHTTPClient:
     def _ensure_client(self) -> httpx.AsyncClient:
         """Return the underlying client, creating it on first use."""
         if self._client is None:
-            verify: str | bool = self._config.ssl_ca_certs or self._config.ssl_verify
+            verify = _build_ssl_verify(self._config)
             pool_size = (
                 self._config.connection_pool_maxsize
                 if self._config.connection_pool_maxsize > 0
@@ -988,7 +1012,10 @@ class AsyncHTTPClient:
             )
             transport = _AsyncRetryTransport(
                 transport=httpx.AsyncHTTPTransport(
-                    http2=False, limits=limits, socket_options=_build_socket_options()
+                    verify=verify,
+                    http2=False,
+                    limits=limits,
+                    socket_options=_build_socket_options(),
                 ),
                 retry_config=self._config.retry_config,
             )
