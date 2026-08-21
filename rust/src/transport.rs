@@ -766,6 +766,9 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: this closure's return type is `Result<Response<_>, tonic::Status>`
+        // (from `retry_on_transient_request`); the lint fires on the closure itself, not just
+        // fn signatures, so the statement-level allow below is load-bearing, not vestigial.
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
@@ -852,6 +855,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
@@ -913,6 +917,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
@@ -981,6 +986,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         py.detach(|| {
             self.runtime
@@ -1049,6 +1055,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
@@ -1107,6 +1114,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
@@ -1180,6 +1188,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
@@ -1258,6 +1267,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
@@ -1318,6 +1328,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
@@ -1363,6 +1374,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         py.detach(|| {
             self.runtime
@@ -1414,6 +1426,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
@@ -1471,6 +1484,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
