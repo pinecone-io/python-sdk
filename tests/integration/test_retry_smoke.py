@@ -1,8 +1,15 @@
 """Opt-in smoke test that exercises retry behavior against the real Pinecone API.
 
-Gated behind PINECONE_RETRY_SMOKE=1. Creates a serverless index, drives a
-high-concurrency upsert until the API rate-limits, and asserts the operation
-completes successfully. Costs < $1 per run.
+Gated behind PINECONE_RETRY_SMOKE=1. Creates a legacy (vectors-API) index,
+drives a high-concurrency upsert until the API rate-limits, and asserts the
+operation completes successfully. Costs < $1 per run.
+
+Each lane gets its own dedicated legacy index from
+:func:`tests.integration.legacy_index.create_legacy_index` rather than the
+shared :func:`legacy_index_factory` -- these tests drive 100K vectors per
+lane and measure per-lane wall-clock throttling, so sharing one index across
+lanes would mix their write load. See :mod:`tests.integration.legacy_index`
+for why 2026-07 cannot create an index the vectors API will serve at all.
 """
 
 from __future__ import annotations
@@ -15,8 +22,11 @@ from collections.abc import Generator
 import pytest
 
 from pinecone import AsyncPinecone, Pinecone
-from pinecone.models.indexes.specs import ServerlessSpec
-from tests.integration.conftest import ensure_index_deleted, unique_name
+from tests.integration.legacy_index import (
+    assert_serves_vectors_api,
+    create_legacy_index,
+    delete_legacy_index,
+)
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("PINECONE_RETRY_SMOKE") != "1",
@@ -31,57 +41,36 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.fixture(scope="module")
-def smoke_index_rest(api_key: str) -> Generator[str, None, None]:
-    """Module-scoped serverless index (dim=1536) for REST smoke tests."""
-    pc = Pinecone(api_key=api_key)
-    name = unique_name("smoke-rest")
-    pc.indexes.create(
-        name=name,
-        dimension=1536,
-        metric="cosine",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        timeout=300,
-    )
+def smoke_index_rest(api_key: str, client: Pinecone) -> Generator[str, None, None]:
+    """Module-scoped legacy index (dim=1536, cosine) for REST smoke tests."""
+    legacy_idx = create_legacy_index(api_key, dimension=1536, metric="cosine")
+    assert_serves_vectors_api(client, legacy_idx)
     try:
-        yield name
+        yield legacy_idx.name
     finally:
-        ensure_index_deleted(pc, name)
+        delete_legacy_index(api_key, legacy_idx.name)
 
 
 @pytest.fixture(scope="module")
-def smoke_index_async(api_key: str) -> Generator[str, None, None]:
-    """Module-scoped serverless index (dim=1536) for async smoke tests."""
-    pc = Pinecone(api_key=api_key)
-    name = unique_name("smoke-async")
-    pc.indexes.create(
-        name=name,
-        dimension=1536,
-        metric="cosine",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        timeout=300,
-    )
+def smoke_index_async(api_key: str, client: Pinecone) -> Generator[str, None, None]:
+    """Module-scoped legacy index (dim=1536, cosine) for async smoke tests."""
+    legacy_idx = create_legacy_index(api_key, dimension=1536, metric="cosine")
+    assert_serves_vectors_api(client, legacy_idx)
     try:
-        yield name
+        yield legacy_idx.name
     finally:
-        ensure_index_deleted(pc, name)
+        delete_legacy_index(api_key, legacy_idx.name)
 
 
 @pytest.fixture(scope="module")
-def smoke_index_grpc(api_key: str) -> Generator[str, None, None]:
-    """Module-scoped serverless index (dim=1536) for gRPC smoke tests."""
-    pc = Pinecone(api_key=api_key)
-    name = unique_name("smoke-grpc")
-    pc.indexes.create(
-        name=name,
-        dimension=1536,
-        metric="cosine",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        timeout=300,
-    )
+def smoke_index_grpc(api_key: str, client: Pinecone) -> Generator[str, None, None]:
+    """Module-scoped legacy index (dim=1536, cosine) for gRPC smoke tests."""
+    legacy_idx = create_legacy_index(api_key, dimension=1536, metric="cosine")
+    assert_serves_vectors_api(client, legacy_idx)
     try:
-        yield name
+        yield legacy_idx.name
     finally:
-        ensure_index_deleted(pc, name)
+        delete_legacy_index(api_key, legacy_idx.name)
 
 
 @pytest.mark.integration

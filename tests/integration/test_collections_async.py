@@ -15,7 +15,7 @@ from pinecone import AsyncPinecone
 from pinecone.errors.exceptions import ApiError
 from pinecone.models.collections.list import CollectionList
 from pinecone.models.collections.model import CollectionModel
-from pinecone.models.indexes.specs import PodSpec, ServerlessSpec
+from pinecone.models.indexes.specs import PodSpec
 from tests.integration.conftest import async_cleanup_resource, async_poll_until, unique_name
 
 # ---------------------------------------------------------------------------
@@ -146,12 +146,17 @@ async def test_collection_from_serverless_raises_error_async(async_client: Async
     col_name = unique_name("col")
 
     try:
-        # Create a serverless index (quick to provision)
+        # Create a plain 2026-07 serverless index. This test does not touch
+        # the vectors API (it only checks that collections.create rejects a
+        # non-pod source), so it needs no legacy-index workaround.
         await async_client.indexes.create(
             name=index_name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema={
+                "fields": {
+                    "embedding": {"type": "dense_vector", "dimension": 2, "metric": "cosine"}
+                }
+            },
+            deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
             timeout=120,
         )
 
