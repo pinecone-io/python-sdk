@@ -191,6 +191,15 @@ ID_PREFIX_MAX_LEN = 512
 LIST_LIMIT_MAX = 100
 """Largest ``limit`` ``listVectors`` accepts (``max_list_limit``)."""
 
+QUERY_TOP_K_MAX = 10_000
+"""Largest ``top_k`` ``query`` accepts (``max_top_k_value``).
+
+``QueryRequest.topK`` pins ``maximum: 10000``, matching the production default.
+The setting is per-deployment, so a deployment configured lower rejects values
+this client lets through — the same trade :data:`LIST_LIMIT_MAX` and
+:data:`FETCH_BY_METADATA_LIMIT_MAX` already make.
+"""
+
 FETCH_BY_METADATA_LIMIT_MAX = 10_000
 """Largest ``limit`` ``fetch_by_metadata`` accepts.
 

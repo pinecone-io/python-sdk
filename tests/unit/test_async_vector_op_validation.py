@@ -2,8 +2,8 @@
 
 The async twin of ``tests/unit/test_vector_op_validation.py`` (#122 ∥ #123). The
 rules live once in ``pinecone/_internal/validation.py`` and the expected messages
-live once in that file's ``VECTOR_OP_VALIDATION_CASES`` and ``QUERY_TRUTH_TABLE``
-tables; here each case id is bound to an :class:`AsyncIndex` call instead of being
+live once in that file's ``VECTOR_OP_VALIDATION_CASES``, ``QUERY_TRUTH_TABLE`` and
+``QUERY_TOP_K_RANGE_TABLE`` tables; here each case id is bound to an :class:`AsyncIndex` call instead of being
 restated, so the two lanes cannot drift apart in wording — a message that changes
 in one fails in both.
 
@@ -43,8 +43,10 @@ from tests.unit.test_vector_op_validation import (
     LIST_LIMIT_MAX,
     OVERLONG,
     PREFIX_MAX,
+    QUERY_TOP_K_RANGE_TABLE,
     QUERY_TRUTH_TABLE,
     SPARSE,
+    TOP_K_MAX,
     VECTOR,
     VECTOR_ID,
     VECTOR_OP_VALIDATION_CASES,
@@ -82,6 +84,9 @@ ASYNC_INVOCATIONS: dict[str, AsyncInvoke] = {
         top_k=1, id=VECTOR_ID, sparse_vector=SPARSE
     ),
     "query_no_selector": lambda idx: idx.query(top_k=1),
+    "query_top_k_zero": lambda idx: idx.query(top_k=0, vector=VECTOR),
+    "query_top_k_negative": lambda idx: idx.query(top_k=-1, vector=VECTOR),
+    "query_top_k_over_max": lambda idx: idx.query(top_k=TOP_K_MAX + 1, vector=VECTOR),
     "query_non_ascii_id": lambda idx: idx.query(top_k=1, id="naïve"),
     "query_overlong_id": lambda idx: idx.query(top_k=1, id=OVERLONG),
     "delete_no_selector": lambda idx: idx.delete(),
@@ -152,21 +157,22 @@ async def test_rejected_before_any_http_call(
 
 
 @pytest.mark.parametrize(
-    ("has_vector", "has_id", "has_sparse", "accepted"),
-    [pytest.param(v, i, s, ok, id=case_id) for case_id, v, i, s, ok in QUERY_TRUTH_TABLE],
+    ("has_vector", "has_id", "has_sparse", "top_k", "accepted"),
+    [pytest.param(v, i, s, k, ok, id=case_id) for case_id, v, i, s, k, ok in QUERY_TRUTH_TABLE],
 )
 async def test_query_selector_truth_table(
     index: AsyncIndex,
     has_vector: bool,
     has_id: bool,
     has_sparse: bool,
+    top_k: int,
     accepted: bool,
     respx_mock: respx.MockRouter,
 ) -> None:
     route = respx_mock.post(f"{BASE_URL}/query").mock(
         return_value=httpx.Response(200, json=_query_response())
     )
-    kwargs = query_kwargs(has_vector, has_id, has_sparse)
+    kwargs = query_kwargs(has_vector, has_id, has_sparse, top_k)
 
     if accepted:
         await index.query(**kwargs)
@@ -174,6 +180,26 @@ async def test_query_selector_truth_table(
     else:
         with pytest.raises(ValidationError):
             await index.query(**kwargs)
+        assert not respx_mock.calls, "rejection must happen before the request goes out"
+
+
+@pytest.mark.parametrize(
+    ("top_k", "accepted"),
+    [pytest.param(k, ok, id=case_id) for case_id, k, ok in QUERY_TOP_K_RANGE_TABLE],
+)
+async def test_query_top_k_range_table(
+    index: AsyncIndex, top_k: int, accepted: bool, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.post(f"{BASE_URL}/query").mock(
+        return_value=httpx.Response(200, json=_query_response())
+    )
+
+    if accepted:
+        await index.query(top_k=top_k, vector=VECTOR)
+        assert orjson.loads(route.calls.last.request.content)["topK"] == top_k
+    else:
+        with pytest.raises(ValidationError):
+            await index.query(top_k=top_k, vector=VECTOR)
         assert not respx_mock.calls, "rejection must happen before the request goes out"
 
 

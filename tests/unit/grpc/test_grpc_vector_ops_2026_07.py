@@ -3,7 +3,9 @@
 A caller who switches transports must not get a differently worded rejection,
 so this module does not restate any expected text. It binds the REST lane's own
 cross-lane fixtures — :data:`tests.unit.test_vector_op_validation.QUERY_TRUTH_TABLE`
-(the spec's ``anyOf``/``not`` truth table for ``query``) and
+(the spec's ``anyOf``/``not`` truth table for ``query``),
+:data:`~tests.unit.test_vector_op_validation.QUERY_TOP_K_RANGE_TABLE` (``topK``'s
+``minimum``/``maximum``) and
 :data:`~tests.unit.test_vector_op_validation.VECTOR_OP_VALIDATION_CASES` (the
 exact rejection text for every tightened rule) — to a :class:`GrpcIndex`,
 following the precedent ``test_grpc_namespace_2026_07.py`` set for the
@@ -35,7 +37,9 @@ from pinecone._internal.constants import DATA_PLANE_API_VERSION
 from pinecone.errors.exceptions import ValidationError
 from pinecone.grpc import GrpcIndex
 from tests.unit.test_vector_op_validation import (
+    QUERY_TOP_K_RANGE_TABLE,
     QUERY_TRUTH_TABLE,
+    VECTOR,
     VECTOR_OP_VALIDATION_CASES,
     Invoke,
     query_kwargs,
@@ -90,8 +94,8 @@ def grpc_index(mock_channel: MagicMock) -> GrpcIndex:
 
 class TestQueryTruthTable:
     @pytest.mark.parametrize(
-        ("has_vector", "has_id", "has_sparse", "accepted"),
-        [pytest.param(v, i, s, ok, id=case_id) for case_id, v, i, s, ok in QUERY_TRUTH_TABLE],
+        ("has_vector", "has_id", "has_sparse", "top_k", "accepted"),
+        [pytest.param(v, i, s, k, ok, id=case_id) for case_id, v, i, s, k, ok in QUERY_TRUTH_TABLE],
     )
     def test_query_selector_truth_table(
         self,
@@ -100,9 +104,10 @@ class TestQueryTruthTable:
         has_vector: bool,
         has_id: bool,
         has_sparse: bool,
+        top_k: int,
         accepted: bool,
     ) -> None:
-        kwargs = query_kwargs(has_vector, has_id, has_sparse)
+        kwargs = query_kwargs(has_vector, has_id, has_sparse, top_k)
 
         if accepted:
             grpc_index.query(**kwargs)
@@ -114,9 +119,27 @@ class TestQueryTruthTable:
                 "rejection must happen before the call reaches the channel"
             )
 
+    @pytest.mark.parametrize(
+        ("top_k", "accepted"),
+        [pytest.param(k, ok, id=case_id) for case_id, k, ok in QUERY_TOP_K_RANGE_TABLE],
+    )
+    def test_query_top_k_range_table(
+        self, grpc_index: GrpcIndex, mock_channel: MagicMock, top_k: int, accepted: bool
+    ) -> None:
+        if accepted:
+            grpc_index.query(top_k=top_k, vector=VECTOR)
+            assert mock_channel.query.call_args.args[0] == top_k
+        else:
+            with pytest.raises(ValidationError):
+                grpc_index.query(top_k=top_k, vector=VECTOR)
+            assert not mock_channel.method_calls, (
+                "rejection must happen before the call reaches the channel"
+            )
+
     def test_the_truth_table_is_not_empty(self) -> None:
         """A silently-emptied table would make every parity case vacuous."""
         assert len(QUERY_TRUTH_TABLE) == 8
+        assert len(QUERY_TOP_K_RANGE_TABLE) == 6
 
 
 # ---------------------------------------------------------------------------

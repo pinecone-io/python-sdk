@@ -230,13 +230,18 @@ class TestQueryValidation:
 
     def test_top_k_zero_raises(self) -> None:
         idx = _make_index()
-        with pytest.raises(ValidationError, match="top_k must be a positive integer"):
+        with pytest.raises(ValidationError, match="top_k must be between 1 and 10000, got 0"):
             idx.query(top_k=0, vector=[0.1])
 
     def test_top_k_negative_raises(self) -> None:
         idx = _make_index()
-        with pytest.raises(ValidationError, match="top_k must be a positive integer"):
+        with pytest.raises(ValidationError, match="top_k must be between 1 and 10000, got -1"):
             idx.query(top_k=-1, vector=[0.1])
+
+    def test_top_k_over_max_raises(self) -> None:
+        idx = _make_index()
+        with pytest.raises(ValidationError, match="top_k must be between 1 and 10000, got 10001"):
+            idx.query(top_k=10_001, vector=[0.1])
 
     def test_both_vector_and_id_raises(self) -> None:
         idx = _make_index()

@@ -13,6 +13,7 @@ Spec basis (``apis`` @ 5f808858, ``db_data_2026-07.oas.yaml``):
 
 - ``:2230-2244`` — ``QueryRequest`` ``anyOf`` vector|id|sparseVector, with
   ``not anyOf`` [id+vector, id+sparseVector]
+- ``:2153-2159`` — ``QueryRequest.topK`` ``minimum: 1`` / ``maximum: 10000``
 - ``:1882-1889`` — ``DeleteRequest`` ``anyOf`` ids|filter|deleteAll; filter
   ``minProperties: 1``
 - ``:2415-2427`` — ``UpdateRequest`` ``anyOf`` id|filter, ``not anyOf``
@@ -43,6 +44,9 @@ Backend basis (``pinecone-db`` @ f6fd0a40), authoritative on behavior and wordin
   metadata requires a non-empty filter and a limit in 1..max
 - ``config/default.toml:241,261,267`` — ``max_id_length`` 512, ``max_list_limit``
   100, ``max_vectors_per_fetch_by_metadata_request`` 10000
+- ``pc-validation/src/data_plane/mod.rs:352-362`` (@ ``cbee5a67fe``) —
+  ``validate_top_k``: 1..``max_top_k_value``, 10_000 at ``config/default.toml:240``
+  and ``pc-settings/src/settings.rs:240``
 - ``pc-validation/src/error.rs`` — the server strings quoted verbatim in the
   client-side messages
 
@@ -52,12 +56,18 @@ simulator accepts and production refuses — a simulator gap, filed as
 ``pinecone-io/minicone#55``. The backend and the OAS agree, so precedence puts the
 rule in.
 
-Two tables here are the cross-lane parity fixtures the async (#123) and gRPC
+Three tables here are the cross-lane parity fixtures the async (#123) and gRPC
 (#124) lanes bind their own callables to, following the precedent
 ``tests/unit/test_namespace_validation.py`` set: ``QUERY_TRUTH_TABLE`` is the
-spec's ``anyOf``/``not`` truth table, and ``VECTOR_OP_VALIDATION_CASES`` pins the
-exact rejection text. Identical inputs must produce identical ``ValidationError``
+spec's ``anyOf``/``not`` truth table, ``QUERY_TOP_K_RANGE_TABLE`` is ``topK``'s
+``minimum``/``maximum``, and ``VECTOR_OP_VALIDATION_CASES`` pins the exact
+rejection text. Identical inputs must produce identical ``ValidationError``
 messages in every lane, so the expected text lives here once.
+
+``query``'s ``topK`` range (#266) is the case that shows why the tables have to
+carry every axis: they pinned ``top_k=1`` on every row, so REST and asyncio kept
+a ``>= 1``-only check with its own wording for four milestones while gRPC alone
+enforced the spec's ``maximum: 10000`` (``:2153-2162``).
 """
 
 from __future__ import annotations
@@ -88,6 +98,7 @@ ID_MAX = 512
 PREFIX_MAX = 512
 LIST_LIMIT_MAX = 100
 FBM_LIMIT_MAX = 10_000
+TOP_K_MAX = 10_000
 
 FILTER = {"genre": {"$eq": "comedy"}}
 VECTOR = [0.1, 0.2]
@@ -122,26 +133,48 @@ def _list_response() -> dict[str, Any]:
 # The query anyOf/not truth table (cross-lane fixture)
 # ---------------------------------------------------------------------------
 
-QUERY_TRUTH_TABLE: list[tuple[str, bool, bool, bool, bool]] = [
-    ("none", False, False, False, False),
-    ("vector", True, False, False, True),
-    ("id", False, True, False, True),
-    ("sparse_vector", False, False, True, True),
-    ("vector+sparse_vector", True, False, True, True),
-    ("id+vector", True, True, False, False),
-    ("id+sparse_vector", False, True, True, False),
-    ("id+vector+sparse_vector", True, True, True, False),
+QUERY_TRUTH_TABLE: list[tuple[str, bool, bool, bool, int, bool]] = [
+    ("none", False, False, False, 1, False),
+    ("vector", True, False, False, 1, True),
+    ("id", False, True, False, TOP_K_MAX, True),
+    ("sparse_vector", False, False, True, 100, True),
+    ("vector+sparse_vector", True, False, True, TOP_K_MAX, True),
+    ("id+vector", True, True, False, 1, False),
+    ("id+sparse_vector", False, True, True, 1, False),
+    ("id+vector+sparse_vector", True, True, True, 1, False),
 ]
-"""``(case_id, has_vector, has_id, has_sparse, accepted)`` per 2026-07's ``anyOf``/``not``.
+"""``(case_id, has_vector, has_id, has_sparse, top_k, accepted)`` per 2026-07's ``anyOf``/``not``.
 
 ``id`` names a stored vector, so it stands alone; the two literal forms combine
 into a hybrid query. Everything else is a contradiction or an empty selector set.
+
+``accepted`` is the *selector* verdict, so every ``top_k`` here is in range —
+spread over both ends of ``[1, TOP_K_MAX]`` so that an accepted row proves the
+upper bound does not reject a legal value. Out-of-range ``top_k`` lives in
+:data:`QUERY_TOP_K_RANGE_TABLE`.
+"""
+
+QUERY_TOP_K_RANGE_TABLE: list[tuple[str, int, bool]] = [
+    ("top_k_negative", -1, False),
+    ("top_k_zero", 0, False),
+    ("top_k_min", 1, True),
+    ("top_k_mid", 10, True),
+    ("top_k_max", TOP_K_MAX, True),
+    ("top_k_over_max", TOP_K_MAX + 1, False),
+]
+"""``(case_id, top_k, accepted)`` for ``QueryRequest.topK``'s ``minimum``/``maximum``.
+
+Split out from :data:`QUERY_TRUTH_TABLE` because it varies an orthogonal axis:
+each row pairs the ``top_k`` under test with a selector the truth table already
+accepts, so a failure here can only be the range check.
 """
 
 
-def query_kwargs(has_vector: bool, has_id: bool, has_sparse: bool) -> dict[str, Any]:
+def query_kwargs(
+    has_vector: bool, has_id: bool, has_sparse: bool, top_k: int = 1
+) -> dict[str, Any]:
     """Build ``query`` kwargs for one row of :data:`QUERY_TRUTH_TABLE`."""
-    kwargs: dict[str, Any] = {"top_k": 1}
+    kwargs: dict[str, Any] = {"top_k": top_k}
     if has_vector:
         kwargs["vector"] = VECTOR
     if has_id:
@@ -152,8 +185,8 @@ def query_kwargs(has_vector: bool, has_id: bool, has_sparse: bool) -> dict[str, 
 
 
 @pytest.mark.parametrize(
-    ("has_vector", "has_id", "has_sparse", "accepted"),
-    [pytest.param(v, i, s, ok, id=case_id) for case_id, v, i, s, ok in QUERY_TRUTH_TABLE],
+    ("has_vector", "has_id", "has_sparse", "top_k", "accepted"),
+    [pytest.param(v, i, s, k, ok, id=case_id) for case_id, v, i, s, k, ok in QUERY_TRUTH_TABLE],
 )
 @respx.mock
 def test_query_selector_truth_table(
@@ -161,13 +194,14 @@ def test_query_selector_truth_table(
     has_vector: bool,
     has_id: bool,
     has_sparse: bool,
+    top_k: int,
     accepted: bool,
     respx_mock: respx.MockRouter,
 ) -> None:
     route = respx_mock.post(f"{BASE_URL}/query").mock(
         return_value=httpx.Response(200, json=_query_response())
     )
-    kwargs = query_kwargs(has_vector, has_id, has_sparse)
+    kwargs = query_kwargs(has_vector, has_id, has_sparse, top_k)
 
     if accepted:
         index.query(**kwargs)
@@ -175,6 +209,27 @@ def test_query_selector_truth_table(
     else:
         with pytest.raises(ValidationError):
             index.query(**kwargs)
+        assert not respx_mock.calls, "rejection must happen before the request goes out"
+
+
+@pytest.mark.parametrize(
+    ("top_k", "accepted"),
+    [pytest.param(k, ok, id=case_id) for case_id, k, ok in QUERY_TOP_K_RANGE_TABLE],
+)
+@respx.mock
+def test_query_top_k_range_table(
+    index: Index, top_k: int, accepted: bool, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.post(f"{BASE_URL}/query").mock(
+        return_value=httpx.Response(200, json=_query_response())
+    )
+
+    if accepted:
+        index.query(top_k=top_k, vector=VECTOR)
+        assert orjson.loads(route.calls.last.request.content)["topK"] == top_k
+    else:
+        with pytest.raises(ValidationError):
+            index.query(top_k=top_k, vector=VECTOR)
         assert not respx_mock.calls, "rejection must happen before the request goes out"
 
 
@@ -221,6 +276,21 @@ VECTOR_OP_VALIDATION_CASES: list[tuple[str, Invoke, str]] = [
         "query_no_selector",
         lambda idx: idx.query(top_k=1),
         "At least one of vector, id, or sparse_vector must be provided",
+    ),
+    (
+        "query_top_k_zero",
+        lambda idx: idx.query(top_k=0, vector=VECTOR),
+        f"top_k must be between 1 and {TOP_K_MAX}, got 0",
+    ),
+    (
+        "query_top_k_negative",
+        lambda idx: idx.query(top_k=-1, vector=VECTOR),
+        f"top_k must be between 1 and {TOP_K_MAX}, got -1",
+    ),
+    (
+        "query_top_k_over_max",
+        lambda idx: idx.query(top_k=TOP_K_MAX + 1, vector=VECTOR),
+        f"top_k must be between 1 and {TOP_K_MAX}, got {TOP_K_MAX + 1}",
     ),
     (
         "query_non_ascii_id",
@@ -407,7 +477,7 @@ def test_rejected_before_any_http_call(
 
 def test_every_message_names_the_offending_argument() -> None:
     """Every rejection has to be actionable without reading the SDK source."""
-    named = {"id", "ids", "filter", "limit", "prefix", "At", "Must", "Cannot", "Exactly"}
+    named = {"id", "ids", "filter", "limit", "prefix", "top_k", "At", "Must", "Cannot", "Exactly"}
     for case_id, _fn, message in VECTOR_OP_VALIDATION_CASES:
         first = message.split()[0].split("[")[0]
         assert first in named, f"{case_id}: message does not open by naming the rule: {message!r}"
@@ -483,7 +553,7 @@ def test_empty_filter_quotes_the_server_wording_verbatim(
 
 @pytest.mark.parametrize(
     ("has_vector", "has_id", "has_sparse", "accepted"),
-    [pytest.param(v, i, s, ok, id=case_id) for case_id, v, i, s, ok in QUERY_TRUTH_TABLE],
+    [pytest.param(v, i, s, ok, id=case_id) for case_id, v, i, s, _k, ok in QUERY_TRUTH_TABLE],
 )
 def test_shared_query_validator_matches_the_truth_table(
     has_vector: bool, has_id: bool, has_sparse: bool, accepted: bool

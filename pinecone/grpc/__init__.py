@@ -28,6 +28,7 @@ from pinecone._internal.keyword_only import keyword_only_methods
 from pinecone._internal.validation import (
     DELETE_EMPTY_FILTER_MESSAGE,
     FETCH_BY_METADATA_EMPTY_FILTER_MESSAGE,
+    QUERY_TOP_K_MAX,
     UPDATE_EMPTY_FILTER_MESSAGE,
     require_creatable_namespace_name,
     require_delete_selectors,
@@ -564,7 +565,7 @@ class GrpcIndex:
         """Query a namespace for the nearest neighbors of a vector.
 
         Args:
-            top_k (int): Number of results to return (must be >= 1).
+            top_k (int): Number of results to return, 1-10000.
             vector (list[float] | None): Dense query vector values.
             id (str | None): ID of a stored vector to use as the query.
             namespace (str): Namespace to query. Defaults to the default namespace.
@@ -603,7 +604,7 @@ class GrpcIndex:
                 for match in response.matches:
                     print(match.id, match.score)
         """
-        require_in_range("top_k", top_k, 1, 10_000)
+        require_in_range("top_k", top_k, 1, QUERY_TOP_K_MAX)
         require_query_selectors(vector=vector, id=id, sparse_vector=sparse_vector)
         if id is not None:
             require_valid_vector_id("id", id)

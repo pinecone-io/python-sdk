@@ -222,8 +222,14 @@ class TestAsyncQuery:
     @pytest.mark.asyncio
     async def test_query_top_k_validation(self) -> None:
         idx = _make_async_index()
-        with pytest.raises(ValidationError, match="top_k must be a positive integer"):
+        with pytest.raises(ValidationError, match="top_k must be between 1 and 10000, got 0"):
             await idx.query(top_k=0, vector=[0.1])
+
+    @pytest.mark.asyncio
+    async def test_query_top_k_over_max_validation(self) -> None:
+        idx = _make_async_index()
+        with pytest.raises(ValidationError, match="top_k must be between 1 and 10000, got 10001"):
+            await idx.query(top_k=10_001, vector=[0.1])
 
     @pytest.mark.asyncio
     async def test_query_both_vector_and_id_raises(self) -> None:
