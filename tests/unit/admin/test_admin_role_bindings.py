@@ -350,18 +350,17 @@ def test_list_sends_limit(role_bindings: RoleBindings) -> None:
 
 
 @respx.mock
-@pytest.mark.parametrize("bad_limit", [0, -1, 101, 1000])
-def test_list_rejects_out_of_range_limit_before_network(
-    role_bindings: RoleBindings, bad_limit: int
+@pytest.mark.parametrize("limit", [0, -1, 101, 1000])
+def test_list_sends_previously_rejected_limits_verbatim(
+    role_bindings: RoleBindings, limit: int
 ) -> None:
     route = respx.get(f"{BASE_URL}/admin/role-bindings").mock(
         return_value=httpx.Response(200, json=_page([]))
     )
 
-    with pytest.raises(ValidationError):
-        role_bindings.list(limit=bad_limit)
+    role_bindings.list(limit=limit).to_list()
 
-    assert route.call_count == 0
+    assert route.calls.last.request.url.params["limit"] == str(limit)
 
 
 @respx.mock
@@ -1112,7 +1111,7 @@ def property_role_bindings(hermetic_pinecone_env_module: None) -> Iterator[RoleB
     resource_type=st.one_of(st.none(), st.sampled_from(_RESOURCE_TYPES)),
     resource_id=st.one_of(st.none(), st.text(min_size=1, max_size=40)),
     role=st.one_of(st.none(), st.sampled_from(_ROLE_NAMES)),
-    limit=st.one_of(st.none(), st.integers(min_value=1, max_value=100)),
+    limit=st.one_of(st.none(), st.integers(min_value=-10, max_value=1000)),
 )
 def test_list_query_params_match_supplied_filters_exactly(
     principal_type: str | None,

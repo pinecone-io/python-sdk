@@ -96,7 +96,7 @@ class Organizations:
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`:
-                If *organization_id* or *name* is empty.
+                If *organization_id* is empty.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -107,7 +107,6 @@ class Organizations:
             'New Name'
         """
         require_non_empty("organization_id", organization_id)
-        require_non_empty("name", name)
         logger.info("Updating organization %r", organization_id)
         response = self._http.patch(
             f"/admin/organizations/{organization_id}",

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from pinecone._internal.adapters.admin_adapter import AdminAdapter
 from pinecone._internal.role_bindings import binding_to_payload
-from pinecone._internal.validation import require_in_range, require_non_empty, require_one_of
+from pinecone._internal.validation import require_non_empty, require_one_of
 from pinecone.errors.exceptions import ValidationError
 from pinecone.models.admin.role_binding import (
     PrincipalType,
@@ -22,9 +22,6 @@ if TYPE_CHECKING:
     from pinecone._internal.http_client import HTTPClient
 
 logger = logging.getLogger(__name__)
-
-_LIMIT_MIN = 1
-_LIMIT_MAX = 100
 
 _VALID_PRINCIPAL_TYPES = [p.value for p in PrincipalType]
 _VALID_RESOURCE_TYPES = [r.value for r in ResourceType]
@@ -118,11 +115,11 @@ class RoleBindings:
                 :class:`~pinecone.models.admin.role_binding.RoleName` members are
                 accepted interchangeably. Omitted when ``None``.
             limit (int | None): Number of bindings the server returns **per
-                page**, between 1 and 100. It caps each page, not how many
-                bindings the paginator yields in total; the paginator keeps
-                following cursors until the pages run out. Use
-                :func:`itertools.islice` to cap the total. When ``None`` the
-                parameter is omitted and the server chooses the page size.
+                page**. It caps each page, not how many bindings the paginator
+                yields in total; the paginator keeps following cursors until
+                the pages run out. Use :func:`itertools.islice` to cap the
+                total. When ``None`` the parameter is omitted and the server
+                chooses the page size.
             pagination_token (str | None): Cursor from a prior response's
                 ``pagination.next``, to resume where a previous iteration
                 stopped. Reuse it with the same filters and ``limit``.
@@ -136,10 +133,9 @@ class RoleBindings:
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`:
                 If *principal_id* is given without *principal_type*, or
-                *resource_id* without *resource_type*; if *principal_type*,
+                *resource_id* without *resource_type*; or if *principal_type*,
                 *resource_type*, or *role* names a value this SDK release does
-                not know; or if *limit* is outside 1-100. Raised before any
-                network call.
+                not know. Raised before any network call.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -181,8 +177,6 @@ class RoleBindings:
             require_one_of("resource_type", resource_type, _VALID_RESOURCE_TYPES)
         if role is not None:
             require_one_of("role", role, _VALID_ROLE_NAMES)
-        if limit is not None:
-            require_in_range("limit", limit, _LIMIT_MIN, _LIMIT_MAX)
 
         filters: dict[str, str] = {}
         if principal_type is not None:

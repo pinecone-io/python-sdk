@@ -144,9 +144,18 @@ def test_update_requires_organization_id(organizations: Organizations) -> None:
         organizations.update(organization_id="", name="New Name")
 
 
-def test_update_requires_name(organizations: Organizations) -> None:
-    with pytest.raises(ValidationError, match="name"):
-        organizations.update(organization_id="org-abc123", name="")
+@respx.mock
+def test_update_sends_empty_name_verbatim(organizations: Organizations) -> None:
+    route = respx.patch(f"{BASE_URL}/admin/organizations/org-abc123").mock(
+        return_value=httpx.Response(200, json=_org_response(name="")),
+    )
+
+    result = organizations.update(organization_id="org-abc123", name="")
+
+    assert result.name == ""
+    request = route.calls[0].request
+    expected_body = httpx.Request("PATCH", "/", json={"name": ""})
+    assert request.content == expected_body.content
 
 
 # ---------------------------------------------------------------------------
