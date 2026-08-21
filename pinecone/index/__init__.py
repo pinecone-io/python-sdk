@@ -127,6 +127,11 @@ class Index:
 
     Raises:
         :exc:`PineconeValueError`: If no API key can be resolved or the host is invalid.
+        :exc:`FileNotFoundError`: If ``ssl_ca_certs`` names a path that does not
+            exist, raised when the client is constructed, so a mistyped path
+            cannot leave you silently verifying against the default trust store
+            instead. A bundle that exists but cannot be parsed as a certificate
+            raises :exc:`ssl.SSLError` instead.
 
     Examples:
         .. code-block:: python

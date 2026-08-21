@@ -70,6 +70,12 @@ class AsyncPinecone:
     Raises:
         :exc:`PineconeValueError`: If no API key can be resolved from arguments or
             environment variables.
+        :exc:`FileNotFoundError`: If ``ssl_ca_certs`` names a path that does not
+            exist, so a mistyped path cannot leave you silently verifying against
+            the default trust store instead. The connection pool is built lazily,
+            so this is raised on the first request rather than at construction. A
+            bundle that exists but cannot be parsed as a certificate raises
+            :exc:`ssl.SSLError` at the same point.
 
     Examples:
 

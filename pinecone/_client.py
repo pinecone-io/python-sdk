@@ -77,6 +77,11 @@ class Pinecone:
     Raises:
         :exc:`PineconeValueError`: If no API key can be resolved from arguments or
             environment variables.
+        :exc:`FileNotFoundError`: If ``ssl_ca_certs`` names a path that does not
+            exist, raised when the client is constructed, so a mistyped path
+            cannot leave you silently verifying against the default trust store
+            instead. A bundle that exists but cannot be parsed as a certificate
+            raises :exc:`ssl.SSLError` instead.
 
     Examples:
 
