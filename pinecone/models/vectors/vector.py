@@ -21,7 +21,7 @@ class Vector(DictLikeStruct, Struct, rename="camel", gc=False):
     Attributes:
         id (str): Unique identifier for the vector. ASCII, 1 to 512 characters, no NUL.
         values (list[float]): Dense vector values as a list of floats. Empty for a sparse-only
-            vector, and empty on a response whenever values were not returned.
+            vector.
         sparse_values (SparseValues | None): Sparse vector component, or ``None`` if the vector
             has no sparse values.
         metadata (dict[str, Any] | None): User-defined metadata key-value pairs, or ``None`` if
@@ -32,6 +32,9 @@ class Vector(DictLikeStruct, Struct, rename="camel", gc=False):
             accepted, including empty and non-ASCII keys. The field is typed ``Any`` rather than
             narrowed to that grammar so that decoding a response never fails on a value shape
             the server has started returning; requests are validated on the way out instead.
+
+    Raises:
+        PineconeValueError: If neither ``values`` nor ``sparse_values`` is populated.
     """
 
     id: str

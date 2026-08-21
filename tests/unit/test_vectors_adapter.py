@@ -6,8 +6,10 @@ import msgspec
 import pytest
 
 from pinecone._internal.adapters.vectors_adapter import VectorsAdapter
+from pinecone.errors.exceptions import PineconeError, ResponseParsingError
 from pinecone.models.vectors.responses import (
     DescribeIndexStatsResponse,
+    FetchByMetadataResponse,
     FetchResponse,
     ListResponse,
     QueryResponse,
@@ -212,6 +214,76 @@ class TestToFetchResponse:
         )
         result = VectorsAdapter.to_fetch_response(data)
         assert result.namespace == "ns"
+
+    def test_fetch_sparse_only_vector_has_empty_values(self) -> None:
+        data = msgspec.json.encode(
+            {
+                "vectors": {
+                    "v1": {
+                        "id": "v1",
+                        "values": [],
+                        "sparseValues": {"indices": [3], "values": [0.9]},
+                    }
+                },
+                "namespace": "ns",
+            }
+        )
+        result = VectorsAdapter.to_fetch_response(data)
+        v = result.vectors["v1"]
+        assert v.values == []
+        assert v.sparse_values is not None
+
+    def test_fetch_vector_with_neither_values_nor_sparse_raises_pinecone_error(self) -> None:
+        data = msgspec.json.encode(
+            {"vectors": {"v1": {"id": "v1", "values": [], "sparseValues": None}}}
+        )
+        with pytest.raises(ResponseParsingError) as exc_info:
+            VectorsAdapter.to_fetch_response(data)
+        assert isinstance(exc_info.value, PineconeError)
+        assert isinstance(exc_info.value.cause, msgspec.ValidationError)
+
+
+class TestToFetchByMetadataResponse:
+    """Tests for to_fetch_by_metadata_response."""
+
+    def test_basic_fetch_by_metadata(self) -> None:
+        data = msgspec.json.encode(
+            {
+                "vectors": {"id-1": {"id": "id-1", "values": [1.0, 1.5]}},
+                "namespace": "test-ns",
+            }
+        )
+        result = VectorsAdapter.to_fetch_by_metadata_response(data)
+        assert isinstance(result, FetchByMetadataResponse)
+        assert result.vectors["id-1"].values == [1.0, 1.5]
+
+    def test_fetch_by_metadata_sparse_only_vector_has_empty_values(self) -> None:
+        data = msgspec.json.encode(
+            {
+                "vectors": {
+                    "v1": {
+                        "id": "v1",
+                        "values": [],
+                        "sparseValues": {"indices": [3], "values": [0.9]},
+                    }
+                }
+            }
+        )
+        result = VectorsAdapter.to_fetch_by_metadata_response(data)
+        v = result.vectors["v1"]
+        assert v.values == []
+        assert v.sparse_values is not None
+
+    def test_fetch_by_metadata_vector_with_neither_values_nor_sparse_raises_pinecone_error(
+        self,
+    ) -> None:
+        data = msgspec.json.encode(
+            {"vectors": {"v1": {"id": "v1", "values": [], "sparseValues": None}}}
+        )
+        with pytest.raises(ResponseParsingError) as exc_info:
+            VectorsAdapter.to_fetch_by_metadata_response(data)
+        assert isinstance(exc_info.value, PineconeError)
+        assert isinstance(exc_info.value.cause, msgspec.ValidationError)
 
 
 class TestToStatsResponse:
