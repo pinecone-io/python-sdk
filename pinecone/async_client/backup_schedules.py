@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from pinecone._internal.adapters.backup_schedules_adapter import BackupSchedulesAdapter
 from pinecone._internal.backups_helpers import (
@@ -188,7 +189,7 @@ class AsyncBackupSchedules:
         logger.info("Creating backup schedule %r for index %r", name, index_name)
         with scheduled_backups_plan_gate():
             response = await self._http.post(
-                f"/indexes/{index_name}/backup-schedules", json=request.to_wire()
+                f"/indexes/{quote(index_name, safe='')}/backup-schedules", json=request.to_wire()
             )
         result = self._adapter.to_schedule(response.content)
         logger.debug("Created backup schedule %r", result.schedule_id)
@@ -256,7 +257,7 @@ class AsyncBackupSchedules:
         logger.info("Listing backup schedules for index %r", index_name)
         with scheduled_backups_plan_gate():
             response = await self._http.get(
-                f"/indexes/{index_name}/backup-schedules", params=params
+                f"/indexes/{quote(index_name, safe='')}/backup-schedules", params=params
             )
         result = self._adapter.to_schedule_list(response.content)
         logger.debug("Listed %d backup schedules", len(result))
@@ -320,7 +321,7 @@ class AsyncBackupSchedules:
             logger.info("Listing backup schedules for index %r", index_name)
             with scheduled_backups_plan_gate():
                 response = await self._http.get(
-                    f"/indexes/{index_name}/backup-schedules", params=params
+                    f"/indexes/{quote(index_name, safe='')}/backup-schedules", params=params
                 )
             result = self._adapter.to_schedule_list(response.content)
             next_token = result.pagination.next if result.pagination is not None else None
@@ -362,7 +363,7 @@ class AsyncBackupSchedules:
         require_non_empty("schedule_id", schedule_id)
         logger.info("Describing backup schedule %r", schedule_id)
         with scheduled_backups_plan_gate():
-            response = await self._http.get(f"/backup-schedules/{schedule_id}")
+            response = await self._http.get(f"/backup-schedules/{quote(schedule_id, safe='')}")
         result = self._adapter.to_schedule(response.content)
         logger.debug("Described backup schedule %r", schedule_id)
         return result
@@ -489,7 +490,7 @@ class AsyncBackupSchedules:
         logger.info("Updating backup schedule %r", schedule_id)
         with scheduled_backups_plan_gate():
             response = await self._http.patch(
-                f"/backup-schedules/{schedule_id}", json=request.to_wire()
+                f"/backup-schedules/{quote(schedule_id, safe='')}", json=request.to_wire()
             )
         result = self._adapter.to_schedule(response.content)
         logger.debug("Updated backup schedule %r", schedule_id)
@@ -537,7 +538,7 @@ class AsyncBackupSchedules:
         require_non_empty("schedule_id", schedule_id)
         logger.info("Deleting backup schedule %r", schedule_id)
         with scheduled_backups_plan_gate():
-            await self._http.delete(f"/backup-schedules/{schedule_id}")
+            await self._http.delete(f"/backup-schedules/{quote(schedule_id, safe='')}")
         logger.debug("Deleted backup schedule %r", schedule_id)
 
     async def history(
@@ -606,7 +607,7 @@ class AsyncBackupSchedules:
         logger.info("Listing history for backup schedule %r", schedule_id)
         with scheduled_backups_plan_gate():
             response = await self._http.get(
-                f"/backup-schedules/{schedule_id}/history", params=params
+                f"/backup-schedules/{quote(schedule_id, safe='')}/history", params=params
             )
         result = self._adapter.to_history_list(response.content)
         logger.debug("Listed %d backup schedule history rows", len(result))
@@ -671,7 +672,7 @@ class AsyncBackupSchedules:
             logger.info("Listing history for backup schedule %r", schedule_id)
             with scheduled_backups_plan_gate():
                 response = await self._http.get(
-                    f"/backup-schedules/{schedule_id}/history", params=params
+                    f"/backup-schedules/{quote(schedule_id, safe='')}/history", params=params
                 )
             result = self._adapter.to_history_list(response.content)
             next_token = result.pagination.next if result.pagination is not None else None

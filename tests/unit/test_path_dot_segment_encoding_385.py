@@ -493,7 +493,14 @@ def test_namespace_request_is_never_collapsed(value: str) -> None:
 @example(value="")
 @example(value="ünïcødé")
 def test_index_request_is_never_collapsed(value: str) -> None:
-    """Same invariant on a control-plane route, which applies no encoding of its own."""
+    """Same invariant on a control-plane route, plus the stronger one #417 bought.
+
+    ``/indexes/{name}`` now percent-encodes its parameter, so this route can
+    assert what the namespace one above still cannot: the name occupies exactly
+    one segment, so no value can reach ``/indexes/{name}/backups`` or any other
+    sibling route. The namespace assertion stays weaker only because most path
+    sites remain unencoded.
+    """
     with respx.mock(assert_all_called=False) as router:
         router.route().mock(return_value=httpx.Response(200, json={}))
         client = Pinecone(api_key="test-key")
@@ -503,4 +510,6 @@ def test_index_request_is_never_collapsed(value: str) -> None:
 
     if not calls:
         return
-    _assert_not_collapsed("/indexes/", value, calls[0].request.url.raw_path.decode())
+    path = calls[0].request.url.raw_path.decode()
+    _assert_not_collapsed("/indexes/", value, path)
+    assert path.count("/") == 2, f"{value!r} injected a path segment: {path!r}"

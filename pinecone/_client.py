@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import quote
 
 from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
 from pinecone._internal.config import PineconeConfig, RetryConfig
@@ -572,7 +573,7 @@ class Pinecone:
             read_capacity=read_capacity,
         )
         response = self._http.post(
-            f"/backups/{backup_id}/create-index",
+            f"/backups/{quote(backup_id, safe='')}/create-index",
             content=BackupsAdapter.to_create_index_from_backup_request(request),
             headers={"Content-Type": "application/json"},
         )

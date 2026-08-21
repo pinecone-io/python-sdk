@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 from pinecone._internal.adapters.collections_adapter import CollectionsAdapter
 from pinecone._internal.validation import require_non_empty, require_valid_resource_name
@@ -137,7 +138,7 @@ class Collections:
         """
         require_non_empty("name", name)
         logger.info("Describing collection %r", name)
-        response = self._http.get(f"/collections/{name}")
+        response = self._http.get(f"/collections/{quote(name, safe='')}")
         result = self._adapter.to_collection(response.content)
         logger.debug("Described collection %r", name)
         return result
@@ -158,5 +159,5 @@ class Collections:
         """
         require_non_empty("name", name)
         logger.info("Deleting collection %r", name)
-        self._http.delete(f"/collections/{name}")
+        self._http.delete(f"/collections/{quote(name, safe='')}")
         logger.debug("Deleted collection %r", name)

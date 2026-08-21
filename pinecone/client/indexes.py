@@ -6,6 +6,7 @@ import logging
 import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from pinecone._internal.adapters.backups_adapter import BackupsAdapter
 from pinecone._internal.adapters.indexes_adapter import IndexesAdapter
@@ -191,7 +192,7 @@ class Indexes:
         """
         require_non_empty("name", name)
         logger.info("Describing index %r", name)
-        response = self._http.get(f"/indexes/{name}")
+        response = self._http.get(f"/indexes/{quote(name, safe='')}")
         model = self._adapter.to_index_model(response.content)
         if model.host is not None:
             self._host_cache[name] = model.host
@@ -260,7 +261,7 @@ class Indexes:
         """
         require_non_empty("name", name)
         logger.info("Deleting index %r", name)
-        self._http.delete(f"/indexes/{name}")
+        self._http.delete(f"/indexes/{quote(name, safe='')}")
         self._host_cache.pop(name, None)
         logger.debug("Deleted index %r", name)
 
@@ -700,7 +701,7 @@ class Indexes:
 
         logger.info("Configuring index %r", name)
         response = self._http.patch(
-            f"/indexes/{name}",
+            f"/indexes/{quote(name, safe='')}",
             content=self._adapter.to_configure_request(request),
             headers=_JSON_HEADERS,
         )
@@ -755,7 +756,7 @@ class Indexes:
             body["description"] = description
 
         logger.info("Creating backup for index %r", index_name)
-        response = self._http.post(f"/indexes/{index_name}/backups", json=body)
+        response = self._http.post(f"/indexes/{quote(index_name, safe='')}/backups", json=body)
         result = BackupsAdapter.to_backup(response.content)
         logger.debug("Created backup %r", result.backup_id)
         return result
@@ -833,7 +834,9 @@ class Indexes:
                 include_deleted=include_deleted,
             )
             logger.info("Listing backups for index %r", index_name)
-            response = self._http.get(f"/indexes/{index_name}/backups", params=params)
+            response = self._http.get(
+                f"/indexes/{quote(index_name, safe='')}/backups", params=params
+            )
             result = BackupsAdapter.to_backup_list(response.content)
             next_token = result.pagination.next if result.pagination is not None else None
             return Page(items=list(result), pagination_token=next_token)
@@ -868,7 +871,7 @@ class Indexes:
         """
         require_non_empty("backup_id", backup_id)
         logger.info("Describing backup %r", backup_id)
-        response = self._http.get(f"/backups/{backup_id}")
+        response = self._http.get(f"/backups/{quote(backup_id, safe='')}")
         return BackupsAdapter.to_backup(response.content)
 
     @staticmethod

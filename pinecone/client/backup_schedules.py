@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from pinecone._internal.adapters.backup_schedules_adapter import BackupSchedulesAdapter
 from pinecone._internal.backups_helpers import (
@@ -178,7 +179,7 @@ class BackupSchedules:
         logger.info("Creating backup schedule %r for index %r", name, index_name)
         with scheduled_backups_plan_gate():
             response = self._http.post(
-                f"/indexes/{index_name}/backup-schedules", json=request.to_wire()
+                f"/indexes/{quote(index_name, safe='')}/backup-schedules", json=request.to_wire()
             )
         result = self._adapter.to_schedule(response.content)
         logger.debug("Created backup schedule %r", result.schedule_id)
@@ -243,7 +244,9 @@ class BackupSchedules:
 
         logger.info("Listing backup schedules for index %r", index_name)
         with scheduled_backups_plan_gate():
-            response = self._http.get(f"/indexes/{index_name}/backup-schedules", params=params)
+            response = self._http.get(
+                f"/indexes/{quote(index_name, safe='')}/backup-schedules", params=params
+            )
         result = self._adapter.to_schedule_list(response.content)
         logger.debug("Listed %d backup schedules", len(result))
         return result
@@ -301,7 +304,9 @@ class BackupSchedules:
             params = backup_schedule_list_params(limit=limit, pagination_token=token)
             logger.info("Listing backup schedules for index %r", index_name)
             with scheduled_backups_plan_gate():
-                response = self._http.get(f"/indexes/{index_name}/backup-schedules", params=params)
+                response = self._http.get(
+                    f"/indexes/{quote(index_name, safe='')}/backup-schedules", params=params
+                )
             result = self._adapter.to_schedule_list(response.content)
             next_token = result.pagination.next if result.pagination is not None else None
             return Page(items=list(result), pagination_token=next_token)
@@ -339,7 +344,7 @@ class BackupSchedules:
         require_non_empty("schedule_id", schedule_id)
         logger.info("Describing backup schedule %r", schedule_id)
         with scheduled_backups_plan_gate():
-            response = self._http.get(f"/backup-schedules/{schedule_id}")
+            response = self._http.get(f"/backup-schedules/{quote(schedule_id, safe='')}")
         result = self._adapter.to_schedule(response.content)
         logger.debug("Described backup schedule %r", schedule_id)
         return result
@@ -456,7 +461,9 @@ class BackupSchedules:
 
         logger.info("Updating backup schedule %r", schedule_id)
         with scheduled_backups_plan_gate():
-            response = self._http.patch(f"/backup-schedules/{schedule_id}", json=request.to_wire())
+            response = self._http.patch(
+                f"/backup-schedules/{quote(schedule_id, safe='')}", json=request.to_wire()
+            )
         result = self._adapter.to_schedule(response.content)
         logger.debug("Updated backup schedule %r", schedule_id)
         return result
@@ -499,7 +506,7 @@ class BackupSchedules:
         require_non_empty("schedule_id", schedule_id)
         logger.info("Deleting backup schedule %r", schedule_id)
         with scheduled_backups_plan_gate():
-            self._http.delete(f"/backup-schedules/{schedule_id}")
+            self._http.delete(f"/backup-schedules/{quote(schedule_id, safe='')}")
         logger.debug("Deleted backup schedule %r", schedule_id)
 
     def history(
@@ -564,7 +571,9 @@ class BackupSchedules:
 
         logger.info("Listing history for backup schedule %r", schedule_id)
         with scheduled_backups_plan_gate():
-            response = self._http.get(f"/backup-schedules/{schedule_id}/history", params=params)
+            response = self._http.get(
+                f"/backup-schedules/{quote(schedule_id, safe='')}/history", params=params
+            )
         result = self._adapter.to_history_list(response.content)
         logger.debug("Listed %d backup schedule history rows", len(result))
         return result
@@ -623,7 +632,9 @@ class BackupSchedules:
             params = backup_schedule_list_params(limit=limit, pagination_token=token)
             logger.info("Listing history for backup schedule %r", schedule_id)
             with scheduled_backups_plan_gate():
-                response = self._http.get(f"/backup-schedules/{schedule_id}/history", params=params)
+                response = self._http.get(
+                    f"/backup-schedules/{quote(schedule_id, safe='')}/history", params=params
+                )
             result = self._adapter.to_history_list(response.content)
             next_token = result.pagination.next if result.pagination is not None else None
             return Page(items=list(result), pagination_token=next_token)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from pinecone._internal.adapters.restore_jobs_adapter import RestoreJobsAdapter
 from pinecone._internal.backups_helpers import restore_job_list_params
@@ -187,7 +188,7 @@ class AsyncRestoreJobs:
         """
         require_non_empty("job_id", job_id)
         logger.info("Describing restore job %r", job_id)
-        response = await self._http.get(f"/restore-jobs/{job_id}")
+        response = await self._http.get(f"/restore-jobs/{quote(job_id, safe='')}")
         result = self._adapter.to_restore_job(response.content)
         logger.debug("Described restore job %r", job_id)
         return result

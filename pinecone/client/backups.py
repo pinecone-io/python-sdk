@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from pinecone._internal.adapters.backups_adapter import BackupsAdapter
 from pinecone._internal.backups_helpers import (
@@ -110,7 +111,7 @@ class Backups:
         if description is not None:
             body["description"] = description
         logger.info("Creating backup for index %r", index_name)
-        response = self._http.post(f"/indexes/{index_name}/backups", json=body)
+        response = self._http.post(f"/indexes/{quote(index_name, safe='')}/backups", json=body)
         result = self._adapter.to_backup(response.content)
         logger.debug("Created backup %r", result.backup_id)
         return result
@@ -212,7 +213,7 @@ class Backups:
         )
 
         if index_name is not None:
-            path = f"/indexes/{index_name}/backups"
+            path = f"/indexes/{quote(str(index_name), safe='')}/backups"
         else:
             path = "/backups"
 
@@ -245,7 +246,7 @@ class Backups:
         """
         require_non_empty("backup_id", backup_id)
         logger.info("Describing backup %r", backup_id)
-        response = self._http.get(f"/backups/{backup_id}")
+        response = self._http.get(f"/backups/{quote(backup_id, safe='')}")
         result = self._adapter.to_backup(response.content)
         logger.debug("Described backup %r", backup_id)
         return result
@@ -291,5 +292,5 @@ class Backups:
         """
         require_non_empty("backup_id", backup_id)
         logger.info("Deleting backup %r", backup_id)
-        self._http.delete(f"/backups/{backup_id}")
+        self._http.delete(f"/backups/{quote(backup_id, safe='')}")
         logger.debug("Deleted backup %r", backup_id)
