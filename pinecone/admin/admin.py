@@ -66,9 +66,9 @@ def _refresh_deadline(expires_in: int | None) -> float | None:
 class _TokenRefreshingHTTPClient(HTTPClient):
     """:class:`HTTPClient` that keeps the Admin OAuth Bearer token current.
 
-    The token endpoint issues short-lived tokens — 10 hours in production — and
-    the Bearer value is baked into the headers the underlying httpx client was
-    built with. Left alone, an :class:`Admin` held past that lifetime would
+    The token endpoint issues short-lived tokens and the Bearer value is baked
+    into the headers the underlying httpx client was built with. Left alone, an
+    :class:`Admin` held past that lifetime would
     return bare 401s forever. So the live token is consulted before every
     request, re-minted a margin ahead of its expiry, and a request that still
     comes back 401 is retried exactly once against a freshly minted token.
@@ -179,38 +179,62 @@ class Admin:
     A common workflow bridges both: use :class:`Admin` to create a project and API key, then
     pass that key to :class:`~pinecone.Pinecone` for data-plane operations::
 
-        from pinecone import Admin, Pinecone, ServerlessSpec
+        from pinecone import Admin, Pinecone
 
         admin = Admin(client_id="...", client_secret="...")
         project = admin.projects.create(name="my-project")
         key = admin.api_keys.create(project_id=project.id, name="my-key")
         pc = Pinecone(api_key=key.value)
-        pc.indexes.create(name="my-index", dimension=1536, metric="cosine",
-                          spec=ServerlessSpec(cloud="aws", region="us-east-1"))
+        pc.indexes.create(
+            name="my-index",
+            schema={"fields": {"values": {"type": "dense_vector",
+                                          "dimension": 1536, "metric": "cosine"}}},
+            deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
+        )
 
     Projects are created within the organization associated with your OAuth credentials.
 
-    .. note::
-        **Obtaining OAuth credentials** — Service account credentials (``client_id`` and
-        ``client_secret``) are created in the Pinecone console:
+    Operations are grouped into seven namespaces:
 
-        1. Go to `console.pinecone.io <https://console.pinecone.io>`_.
-        2. Navigate to **Organization Settings** → **Service Accounts**.
-        3. Click **Create Service Account**, assign the desired role, and save the generated
-           ``client_id`` and ``client_secret``.
+    - :attr:`organizations` — the organizations these credentials can reach
+    - :attr:`projects` — create, configure, and delete projects
+    - :attr:`api_keys` — the project-scoped keys :class:`~pinecone.Pinecone` authenticates with
+    - :attr:`users` — the organization's members
+    - :attr:`invites` — pending and expired invitations to join the organization
+    - :attr:`service_accounts` — the OAuth principals this client itself authenticates as
+    - :attr:`role_bindings` — every grant of a role to a principal, at organization or
+      project scope; nothing else confers permissions
+
+    .. note::
+        **Obtaining OAuth credentials** — a service account's ``client_id`` and
+        ``client_secret`` can come from either of two places:
+
+        - :meth:`admin.service_accounts.create()
+          <pinecone.admin.service_accounts.ServiceAccounts.create>`, once you already hold
+          admin credentials. The ``client_secret`` is returned exactly once, at creation, and
+          :meth:`~pinecone.admin.service_accounts.ServiceAccounts.rotate_secret` is the only
+          way to obtain another.
+        - The `Pinecone console <https://console.pinecone.io>`_, under organization settings.
+          This is how the first pair is obtained, since there is nothing to authenticate an
+          :class:`Admin` with until one service account exists.
 
         These differ from the API keys used by :class:`~pinecone.Pinecone`; they are scoped to
         your organization and used exclusively for admin operations.
 
     .. note::
-        **Token lifetime** — the Bearer token is short-lived (currently 10 hours). The client
-        tracks the ``expires_in`` it was issued with and re-fetches transparently shortly
-        before expiry, and retries a request once against a freshly minted token if one still
-        comes back 401, so a long-lived :class:`Admin` keeps working indefinitely without any
-        caller action. Refresh is serialized, so threads sharing one :class:`Admin` cost a
-        single token exchange between them rather than one each. Supplying your own
-        ``Authorization`` entry in ``additional_headers`` opts out of refresh entirely — the
-        token is then yours to manage.
+        **Token lifetime** — the Bearer token is short-lived. The client tracks the
+        ``expires_in`` it was issued with and re-fetches transparently shortly before expiry,
+        and retries a request once against a freshly minted token if one still comes back 401,
+        so a long-lived :class:`Admin` keeps working indefinitely without any caller action.
+        Refresh is serialized, so threads sharing one :class:`Admin` cost a single token
+        exchange between them rather than one each. Supplying your own ``Authorization`` entry
+        in ``additional_headers`` opts out of refresh entirely — the token is then yours to
+        manage.
+
+    .. note::
+        :class:`Admin` is synchronous only. There is no async form of this client; admin
+        operations are infrequent control-plane calls, and
+        :class:`~pinecone.AsyncPinecone` is where the async lane lives.
 
     Args:
         client_id (str | None): OAuth2 client ID. Falls back to ``PINECONE_CLIENT_ID`` env var.

@@ -16,7 +16,7 @@ class OrganizationModel(StructDictMixin, Struct, kw_only=True):
     Attributes:
         id: Unique identifier for the organization.
         name: Name of the organization.
-        plan: Plan tier (e.g. Free, Standard, Enterprise, Dedicated).
+        plan: The organization's plan tier, as the server names it.
         payment_status: Current payment status.
         created_at: Timestamp when the organization was created.
         support_tier: Support tier for the organization.

@@ -77,12 +77,11 @@ class Invites:
 
         Args:
             limit (int | None): Number of invites the server returns **per
-                page**, between 1 and 100. This is the spec's ``limit`` query
-                parameter, not a cap on how many invites the paginator yields
-                in total; the paginator keeps following cursors until the pages
-                run out. Use :func:`itertools.islice` to cap the total. When
-                ``None`` the parameter is omitted and the server defaults
-                to 100.
+                page**, between 1 and 100. It caps each page, not how many
+                invites the paginator yields in total; the paginator keeps
+                following cursors until the pages run out. Use
+                :func:`itertools.islice` to cap the total. When ``None`` the
+                parameter is omitted and the server chooses the page size.
             pagination_token (str | None): Cursor from a prior response's
                 ``pagination.next``, to resume where a previous iteration
                 stopped. Reuse it with the same ``limit``.
@@ -134,7 +133,7 @@ class Invites:
         """Invite a user to the organization and grant their initial role bindings.
 
         On success the server has already sent the invite email; the returned
-        invite is ``pending`` and expires seven days out by default. The
+        invite is ``pending``, and its ``expires_at`` is when it lapses. The
         response does **not** echo the role bindings — read them back through
         the role-binding operations, filtering on ``principal_type=invite``.
 
@@ -142,7 +141,7 @@ class Invites:
             email (str): The email address to invite. Sent verbatim in the
                 request body — the SDK checks only that it is non-empty and
                 leaves address validity to the server, which rejects a
-                malformed or over-long address with ``400 INVALID_ARGUMENT``.
+                malformed or over-long address with a 400.
             role_bindings (Sequence[RoleBindingInput | Mapping[str, Any]]):
                 The roles to grant the invitee, as
                 :class:`~pinecone.models.admin.role_binding.RoleBindingInput`
@@ -281,29 +280,28 @@ class Invites:
         logger.debug("Deleted invite %r", invite_id)
 
     def resend(self, *, invite_id: str) -> InviteModel:
-        """Resend an invite's email and extend its expiration to seven days out.
+        """Resend an invite's email and push its expiration back out.
 
         Works on pending and expired invites alike: the returned invite is
         ``pending`` again with a fresh ``expires_at``.
 
         .. warning::
-            Invite emails are **rate limited to 100 per hour per
-            organization**. Over that ceiling this raises
+            Invite emails are **rate limited per organization**. Over that
+            ceiling this raises
             :exc:`~pinecone.errors.exceptions.RateLimitError` (429) — do not
             retry in a tight loop. Honor ``exc.retry_after`` when the server
-            supplies a ``Retry-After`` header, and back off well beyond a
-            second otherwise; the budget refills over an hour, not
-            milliseconds. A ``409`` is not a rate limit and never becomes
-            retryable: it means the invite was already accepted, so there is
-            nothing left to resend.
+            supplies a ``Retry-After`` header, and back off generously
+            otherwise; the budget refills slowly enough that a sub-second retry
+            will simply fail again. A ``409`` is not a rate limit and never
+            becomes retryable: it means the invite was already accepted, so
+            there is nothing left to resend.
 
         Args:
             invite_id (str): The identifier of the invite to resend.
 
         Returns:
             The updated :class:`~pinecone.models.admin.invite.InviteModel`,
-            with ``status`` back to ``pending`` and ``expires_at`` moved out
-            seven days.
+            with ``status`` back to ``pending`` and a later ``expires_at``.
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *invite_id* is empty.

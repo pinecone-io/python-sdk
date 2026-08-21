@@ -45,7 +45,8 @@ class InviteModel(StructDictMixin, Struct, kw_only=True):
         status (str): One of the :class:`InviteStatus` values.
         expires_at (str | None): RFC 3339 timestamp for when the invite expires
             if not accepted, or ``None`` if it does not expire. Resending an
-            invite extends this to seven days out.
+            invite pushes this further out; read the new value from the
+            resend response rather than computing it.
         processed_at (str | None): RFC 3339 timestamp for when the invite was
             accepted. ``None`` (or omitted by the server) while the invite is
             still pending or expired.

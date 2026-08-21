@@ -75,12 +75,11 @@ class ServiceAccounts:
 
         Args:
             limit (int | None): Number of service accounts the server returns
-                **per page**, between 1 and 100. This is the spec's ``limit``
-                query parameter, not a cap on how many accounts the paginator
-                yields in total; the paginator keeps following cursors until the
-                pages run out. Use :func:`itertools.islice` to cap the total.
-                When ``None`` the parameter is omitted and the server defaults
-                to 100.
+                **per page**, between 1 and 100. It caps each page, not how many
+                accounts the paginator yields in total; the paginator keeps
+                following cursors until the pages run out. Use
+                :func:`itertools.islice` to cap the total. When ``None`` the
+                parameter is omitted and the server chooses the page size.
             pagination_token (str | None): Cursor from a prior response's
                 ``pagination.next``, to resume where a previous iteration
                 stopped. Reuse it with the same ``limit``.
@@ -147,11 +146,10 @@ class ServiceAccounts:
         Args:
             name (str): Human-readable label for the account. Sent verbatim —
                 the SDK checks only that it is non-empty and leaves length and
-                content to the server, which rejects an over-long name with
-                ``400 INVALID_ARGUMENT``. The documented ceiling is 80, but the
-                server measures it in UTF-8 bytes rather than codepoints, so a
-                name of multi-byte characters can be rejected while looking
-                shorter than 80 to Python's ``len()``.
+                content to the server, which rejects an over-long name with a
+                400. The server measures length in UTF-8 bytes rather than
+                codepoints, so a name of multi-byte characters can be rejected
+                while looking short to Python's ``len()``.
             role_bindings (Sequence[RoleBindingInput | Mapping[str, Any]] | None):
                 Optional initial roles, as
                 :class:`~pinecone.models.admin.role_binding.RoleBindingInput`
@@ -176,10 +174,9 @@ class ServiceAccounts:
                 names a value this SDK release does not know. The message names
                 the index of the offending entry. Raised before any network call.
             :exc:`~pinecone.errors.exceptions.ForbiddenError`:
-                If the caller lacks ``admin::service_account::create``, or if
-                the organization's plan does not include service accounts
-                (403). The two cases are distinguishable only by the server's
-                message.
+                If the caller lacks permission to create service accounts, or
+                if the organization's plan does not include them (403). The two
+                cases are distinguishable only by the server's message.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -270,8 +267,8 @@ class ServiceAccounts:
         Args:
             service_account_id (str): The identifier of the service account.
             name (str | None): The new name. Sent verbatim; the server owns the
-                length and content rules, and measures the documented ceiling
-                of 80 in UTF-8 bytes rather than codepoints.
+                length and content rules, and measures length in UTF-8 bytes
+                rather than codepoints.
 
         Returns:
             The updated

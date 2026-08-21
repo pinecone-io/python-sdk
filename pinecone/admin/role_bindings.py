@@ -123,11 +123,11 @@ class RoleBindings:
                 :class:`~pinecone.models.admin.role_binding.RoleName` members are
                 accepted interchangeably. Omitted when ``None``.
             limit (int | None): Number of bindings the server returns **per
-                page**, between 1 and 100. This is the spec's ``limit`` query
-                parameter, not a cap on how many bindings the paginator yields in
-                total; the paginator keeps following cursors until the pages run
-                out. Use :func:`itertools.islice` to cap the total. When ``None``
-                the parameter is omitted and the server defaults to 100.
+                page**, between 1 and 100. It caps each page, not how many
+                bindings the paginator yields in total; the paginator keeps
+                following cursors until the pages run out. Use
+                :func:`itertools.islice` to cap the total. When ``None`` the
+                parameter is omitted and the server chooses the page size.
             pagination_token (str | None): Cursor from a prior response's
                 ``pagination.next``, to resume where a previous iteration
                 stopped. Reuse it with the same filters and ``limit``.
@@ -235,12 +235,10 @@ class RoleBindings:
         :meth:`delete` needs — the only way to revoke it, since bindings cannot
         be edited in place.
 
-        The scope half of the request is routed through
-        :class:`~pinecone.models.admin.role_binding.RoleBindingInput`, so this
-        body is byte-identical to the bindings
+        The same scope-and-role pair is accepted as an initial binding by
         :meth:`~pinecone.admin.invites.Invites.create` and
-        :meth:`~pinecone.admin.service_accounts.ServiceAccounts.create` embed for
-        the same grant.
+        :meth:`~pinecone.admin.service_accounts.ServiceAccounts.create`, so a
+        grant expressed once works in all three places.
 
         Whether the grant is *allowed* is entirely the server's call, and it
         refuses for several distinct reasons the SDK cannot tell apart in

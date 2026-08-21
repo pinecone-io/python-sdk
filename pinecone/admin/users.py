@@ -65,13 +65,13 @@ class Users:
             email (str | None): Case-insensitive filter on the user's email
                 address. Sent verbatim as a query parameter — the SDK does not
                 validate or normalize it, so a malformed address is rejected by
-                the server with ``400 INVALID_ARGUMENT``. Omitted when ``None``.
+                the server with a 400. Omitted when ``None``.
             limit (int | None): Number of users the server returns **per page**,
-                between 1 and 100. This is the spec's ``limit`` query parameter,
-                not a cap on how many users the paginator yields in total; the
-                paginator keeps following cursors until the pages run out. Use
-                :func:`itertools.islice` to cap the total. When ``None`` the
-                parameter is omitted and the server defaults to 100.
+                between 1 and 100. It caps each page, not how many users the
+                paginator yields in total; the paginator keeps following cursors
+                until the pages run out. Use :func:`itertools.islice` to cap the
+                total. When ``None`` the parameter is omitted and the server
+                chooses the page size.
             pagination_token (str | None): Cursor from a prior response's
                 ``pagination.next``, to resume where a previous iteration
                 stopped. Reuse it with the same ``email`` and ``limit``.

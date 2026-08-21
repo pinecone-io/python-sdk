@@ -80,7 +80,7 @@ class Projects:
         """Create a new project.
 
         Args:
-            name (str): Name for the new project.
+            name (str): Name for the new project (1-512 characters, no null bytes).
             max_pods (int | None): Maximum number of pods allowed. Omitted if None.
                 Pod-based capacity is legacy: unless the organization has
                 pre-existing pod access, only ``0`` — the default, meaning
@@ -96,7 +96,8 @@ class Projects:
             A :class:`ProjectModel` with the created project details.
 
         Raises:
-            :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *name* is empty.
+            :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *name* is empty,
+                exceeds 512 characters, or contains null bytes.
             :exc:`~pinecone.errors.exceptions.PaymentRequiredError`: If the organization's
                 billing state does not permit creating a project (402).
             :exc:`~pinecone.errors.exceptions.ForbiddenError`: (403) Either the organization

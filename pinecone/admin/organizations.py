@@ -123,14 +123,14 @@ class Organizations:
         Deletion has three preconditions, and each failure is a 412 whose message
         says which one blocked:
 
-        - The organization must be on the Free plan; any paid plan must be
+        - The organization must not be on a paid plan; a paid plan must be
           downgraded first.
         - Its payment status must be active, with no open invoices.
         - It must contain no projects (see
           :meth:`~pinecone.admin.projects.Projects.delete`).
 
-        Having no projects is necessary but not sufficient: a paid-plan organization
-        with no projects still cannot be deleted.
+        Having no projects is necessary but not sufficient: an organization on a paid
+        plan with no projects still cannot be deleted.
 
         Args:
             organization_id (str): The identifier of the organization to delete.

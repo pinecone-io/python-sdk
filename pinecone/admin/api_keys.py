@@ -101,11 +101,12 @@ class ApiKeys:
                 ``"DataPlaneEditor"``, and ``"DataPlaneViewer"``.
                 Defaults to ``["ProjectEditor"]`` if omitted.
 
-                Which of these a key may actually hold is plan-dependent: on the
-                Free and Builder plans the only accepted role is
-                ``"ProjectEditor"``, and any other value is refused with a
-                :exc:`~pinecone.errors.exceptions.ForbiddenError`. The error
-                names the role and the plan it needs.
+                Which of these a key may actually hold depends on the
+                organization's plan; the more restrictive plans accept
+                ``"ProjectEditor"`` only. A role the plan does not permit is
+                refused with a
+                :exc:`~pinecone.errors.exceptions.ForbiddenError` naming the
+                role and the plan it needs.
 
         Returns:
             An :class:`APIKeyWithSecret` containing the key metadata and secret value.

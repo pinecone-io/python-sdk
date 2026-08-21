@@ -4,7 +4,12 @@ Admin
 The ``Admin`` client manages organizations, projects, API keys, users, invites, service
 accounts, and role bindings.  It uses OAuth2
 client credentials (service account) rather than an API key, and is the right tool
-for control-plane operations such as creating projects and rotating keys.
+for control-plane operations such as creating projects and rotating keys.  It is
+synchronous only — there is no async form of this client.
+
+The users, invites, service-account, and role-binding namespaces are new in ``2026-07``.
+See :doc:`../migration/v10-2026-07-admin-oauth` for the per-operation release notes and an
+end-to-end RBAC walkthrough.
 
 .. autoclass:: pinecone.admin.Admin
    :members:
