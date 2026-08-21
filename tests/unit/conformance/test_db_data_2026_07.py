@@ -466,6 +466,11 @@ async def test_async_delete_namespace(
     _conforms_bodyless(claim, route, returned)
 
 
+# The four bulk-import operations below are annotated in
+# VACUOUS_VERSION_HEADER (scripts/api_coverage.py): pc-bulk-import's handlers
+# never read X-Pinecone-Api-Version, so the version leg of these claims passes
+# vacuously while method+path and round-trip still bite (#348). The assertion
+# stays — it starts meaning something the day those handlers are gated.
 @api_op("db_data:startBulkImport")
 def test_start_import(claim: Any, index: Index, respx_mock: respx.MockRouter) -> None:
     route = respx_mock.post(f"{BASE_URL}/bulk/imports").mock(

@@ -159,6 +159,11 @@ async def test_async_delete_assistant(
     claim.assert_no_response_body(returned)
 
 
+# The async half of assistant_evaluation's only operation, and the same empty
+# version claim as its sync twin: the evaluation router mounts no api_versioning
+# layer, so the version leg below passes vacuously (#348). Annotated in
+# VACUOUS_VERSION_HEADER (scripts/api_coverage.py); the assertion stays so it
+# starts meaning something the day the router gates.
 @api_op("assistant_evaluation:metrics_alignment")
 async def test_async_metrics_alignment(
     claim: Any, async_assistants: AsyncAssistants, respx_mock: respx.MockRouter

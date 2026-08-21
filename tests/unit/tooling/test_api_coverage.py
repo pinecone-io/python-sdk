@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import textwrap
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -898,6 +899,279 @@ def test_the_real_manifest_has_exactly_one_deliberate_omission() -> None:
     assert dropped.missing == [OTHER_OP]
 
 
+# Spelled out rather than read from cov.VACUOUS_VERSION_HEADER, so widening or
+# narrowing the annotation fails these tests instead of relabelling them.
+VACUOUS_OPS = (
+    "assistant_evaluation:metrics_alignment",
+    "db_data:cancelBulkImport",
+    "db_data:describeBulkImport",
+    "db_data:listBulkImports",
+    "db_data:startBulkImport",
+)
+VACUOUS_OP = "db_data:listBulkImports"
+
+
+def test_the_vacuous_version_header_annotation_names_exactly_the_five_known_operations() -> None:
+    assert set(cov.VACUOUS_VERSION_HEADER) == set(VACUOUS_OPS)
+    assert set(VACUOUS_OPS) <= set(manifest_operations())
+    assert set(cov.VACUOUS_VERSION_HEADER.values()) == {348}
+    assert "issuecomment-5365418366" in cov.VACUOUS_VERSION_HEADER_EVIDENCE
+
+
+def test_the_annotation_is_not_an_exemption_and_does_not_excuse_coverage() -> None:
+    """Annotated operations still have to be covered, and still count as covered.
+
+    The whole point of annotating rather than removing is that method+path and
+    schema round-trip remain real coverage. An annotation that quietly excused
+    an operation would be a coverage regression dressed up as a label.
+    """
+    assert not set(cov.VACUOUS_VERSION_HEADER) & set(cov.COVERAGE_EXEMPTIONS)
+    ops = manifest_operations()
+    required = set(ops) - set(cov.COVERAGE_EXEMPTIONS)
+
+    assert cov.coverage_status(ops, required).ok
+
+    for op_id in VACUOUS_OPS:
+        dropped = cov.coverage_status(ops, required - {op_id})
+        assert not dropped.ok, op_id
+        assert dropped.missing == [op_id]
+
+
+def test_the_real_manifest_has_no_stale_vacuous_annotation() -> None:
+    ops = manifest_operations()
+    assert cov.vacuous_version_header_problems(ops, set(ops)) == []
+    assert cov.vacuous_version_header_ops(ops) == cov.VACUOUS_VERSION_HEADER
+
+
+def test_a_vacuous_annotation_for_an_operation_off_the_specs_is_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(cov.VACUOUS_VERSION_HEADER, "gone:removed_operation", 348)
+    problems = cov.vacuous_version_header_problems(_ops(OTHER_OP), {OTHER_OP})
+    assert any("gone:removed_operation" in p and "not in the 2026-07 specs" in p for p in problems)
+    assert cov.vacuous_version_header_ops(_ops(OTHER_OP)) == {}
+
+
+def test_a_vacuous_annotation_whose_claim_stopped_passing_is_reported() -> None:
+    """The annotation qualifies a passing claim; with no claim it annotates nothing."""
+    ops = _ops(*VACUOUS_OPS, OTHER_OP)
+    problems = cov.vacuous_version_header_problems(ops, set(ops) - {VACUOUS_OP})
+    assert len(problems) == 1
+    assert VACUOUS_OP in problems[0]
+    assert "annotates nothing" in problems[0]
+    assert cov.vacuous_version_header_problems(ops, set(ops)) == []
+
+
+def test_the_coverage_line_records_the_vacuous_assertions_next_to_the_number() -> None:
+    """The number is where the claim is loudest, so the qualification goes there."""
+    ops = _ops(*VACUOUS_OPS, OTHER_OP, EXEMPT_OP)
+    status = cov.coverage_status(ops, set(ops) - {EXEMPT_OP})
+    assert status.ok
+    assert "6/7 operations verified" in status.detail
+    assert f"1 deliberate omission(s): {EXEMPT_OP}" in status.detail
+    assert "on 5 operation(s) the version-header assertion is vacuous" in status.detail
+
+    unannotated = cov.coverage_status(_ops(OTHER_OP, EXEMPT_OP), {OTHER_OP})
+    assert unannotated.ok
+    assert "vacuous" not in unannotated.detail
+
+
+def test_report_annotates_the_surfaces_and_lists_the_operations(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ops = manifest_operations()
+    cov.print_report(ops, set(ops), basis="test")
+    out = capsys.readouterr().out
+
+    assert "assistant_evaluation    1 / 1   (1 of 1 with a vacuous version assertion)" in out
+    db_data = next(line for line in out.splitlines() if line.startswith("  db_data  "))
+    assert "4 of 24 with a vacuous version assertion" in db_data
+    assert cov.VACUOUS_VERSION_HEADER_EVIDENCE in out
+    for op_id in VACUOUS_OPS:
+        assert f"vacuous version assertion: {op_id} — " in out
+    assert "issues/348" in out
+
+
+def test_report_says_nothing_about_vacuity_when_nothing_is_annotated(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cov, "VACUOUS_VERSION_HEADER", {})
+    cov.print_report(_ops(OTHER_OP), {OTHER_OP}, basis="test")
+    assert "vacuous" not in capsys.readouterr().out
+
+
+def test_every_annotated_registration_carries_the_note_at_the_claim_site() -> None:
+    """The vacuity is visible where the claim is made, not only in the tooling.
+
+    A reader of the conformance test must be able to see that its version
+    assertion is empty. A comment can rot silently, so this pins the reference
+    to the annotation list and to the issue that establishes the fact.
+    """
+    for op_id, issue in cov.VACUOUS_VERSION_HEADER.items():
+        claiming = [
+            path
+            for path in sorted(cov.CONFORMANCE_DIR.glob("test_*.py"))
+            if f'@api_op("{op_id}")' in path.read_text()
+        ]
+        assert claiming, f"no conformance test registers {op_id}"
+        for path in claiming:
+            text = path.read_text()
+            assert "VACUOUS_VERSION_HEADER" in text, path.name
+            assert f"#{issue}" in text, path.name
+
+
+def test_an_annotated_operation_still_has_to_assert_the_version_header() -> None:
+    """Annotating is not exempting: dropping the assertion still fails the claim.
+
+    If the endpoint is gated later this assertion becomes meaningful, so it has
+    to already be there — and the recorder has to keep refusing a claim that
+    skips it.
+    """
+    recorder = ClaimRecorder([VACUOUS_OP])
+    with pytest.raises(ConformanceError, match="x-pinecone-api-version"):
+        recorder.assert_api_version(_request("GET", "/bulk/imports", version="2025-10"))
+
+    recorder.assert_request(_request("GET", "/bulk/imports"))
+    with pytest.raises(ConformanceError, match=f"{VACUOUS_OP}: api_version"):
+        recorder.assert_satisfied()
+
+
+def _state(state: str, labels: list[str]) -> Callable[[int], tuple[str, set[str]]]:
+    def lookup(issue: int) -> tuple[str, set[str]]:
+        assert issue == 348
+        return state, set(labels)
+
+    return lookup
+
+
+def test_the_gate_passes_the_annotation_while_its_question_issue_is_open() -> None:
+    ops = _ops(*VACUOUS_OPS, OTHER_OP)
+    conditions = cov.version_header_conditions(
+        ops, set(ops), _state("OPEN", ["question", "lane:rest"])
+    )
+    assert [ok for ok, _ in conditions] == [True]
+    assert "5 operation(s) annotated" in conditions[0][1]
+    assert "open question issue #348" in conditions[0][1]
+    for op_id in VACUOUS_OPS:
+        assert op_id in conditions[0][1]
+
+
+def test_the_gate_fails_an_annotation_whose_question_issue_has_closed() -> None:
+    """A closed issue means the fact moved; the annotation must not outlive it."""
+    ops = _ops(*VACUOUS_OPS, OTHER_OP)
+    conditions = cov.version_header_conditions(ops, set(ops), _state("CLOSED", ["question"]))
+    assert [ok for ok, _ in conditions] == [False]
+    assert "which is CLOSED" in conditions[0][1]
+    assert "stale" in conditions[0][1]
+
+
+def test_the_gate_fails_an_annotation_pointed_at_a_non_question_issue() -> None:
+    ops = _ops(*VACUOUS_OPS, OTHER_OP)
+    conditions = cov.version_header_conditions(ops, set(ops), _state("OPEN", ["bug"]))
+    assert [ok for ok, _ in conditions] == [False]
+    assert "not a 'question' issue" in conditions[0][1]
+
+
+def test_the_gate_fails_when_the_issue_lookup_cannot_run() -> None:
+    def explode(issue: int) -> tuple[str, set[str]]:
+        raise FileNotFoundError("gh")
+
+    ops = _ops(*VACUOUS_OPS, OTHER_OP)
+    conditions = cov.version_header_conditions(ops, set(ops), explode)
+    assert [ok for ok, _ in conditions] == [False]
+    assert "could not check #348 via gh" in conditions[0][1]
+
+
+def test_the_gate_reports_a_stale_annotation_alongside_the_issue_check() -> None:
+    ops = _ops(*VACUOUS_OPS, OTHER_OP)
+    conditions = cov.version_header_conditions(
+        ops, set(ops) - {VACUOUS_OP}, _state("OPEN", ["question"])
+    )
+    failed = [message for ok, message in conditions if not ok]
+    assert len(failed) == 1
+    assert VACUOUS_OP in failed[0]
+    assert "annotates nothing" in failed[0]
+
+
+def test_the_gate_says_so_when_no_operation_is_annotated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cov, "VACUOUS_VERSION_HEADER", {})
+    conditions = cov.version_header_conditions(_ops(OTHER_OP), {OTHER_OP}, _state("OPEN", []))
+    assert conditions == [(True, "version header: no vacuous version assertions registered")]
+
+
+def test_a_wholly_stale_registry_never_reads_as_nothing_registered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale annotation must not coexist with a PASS on the same check.
+
+    Every entry naming an operation that has left the specs filters down to an
+    empty map. Keyed off that map rather than the registry, the gate would emit
+    the stale-annotation FAIL *and* a 'no vacuous version assertions registered'
+    PASS — a self-contradicting verdict, and the same read-it-as-reassuring
+    failure the annotation exists to prevent (Bugbot, #439).
+    """
+    monkeypatch.setattr(cov, "VACUOUS_VERSION_HEADER", {"gone:removed_operation": 348})
+    conditions = cov.version_header_conditions(_ops(OTHER_OP), {OTHER_OP}, _state("OPEN", []))
+    assert [ok for ok, _ in conditions] == [False]
+    assert "gone:removed_operation" in conditions[0][1]
+    assert not any(
+        "no vacuous version assertions registered" in message for _, message in conditions
+    )
+
+
+def _gate_with_stubbed_lookups(
+    monkeypatch: pytest.MonkeyPatch, issue_states: dict[int, tuple[str, set[str]]]
+) -> Callable[[], int]:
+    """A --gate run whose GitHub and pytest lookups are stubbed healthy."""
+    ops = manifest_operations()
+    monkeypatch.setattr(cov, "run_verify", lambda o: (True, set(o) - {EXEMPT_OP}, []))
+    monkeypatch.setattr(cov, "fetch_decision_comments", lambda issue: [])
+    monkeypatch.setattr(
+        cov, "fetch_issue_state", lambda issue: issue_states.get(issue, ("OPEN", {"question"}))
+    )
+    monkeypatch.setattr(cov, "fetch_milestones", lambda: _milestone_payload((0, 0, 0, 0)))
+    monkeypatch.setattr(cov, "fetch_open_release_issues", lambda: [])
+    return lambda: cov.mode_gate(ops, 87)
+
+
+def test_the_gate_prints_the_version_header_condition(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The condition has to be wired into the gate, not merely available to it."""
+    exit_code = _gate_with_stubbed_lookups(monkeypatch, {})()
+    out = capsys.readouterr().out
+    assert exit_code == 0, out
+    assert "[PASS] version header: 5 operation(s) annotated" in out
+    assert "open question issue #348" in out
+    assert "gate: PASS" in out
+
+
+def test_the_gate_fails_when_the_annotations_tracking_issue_closes(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    exit_code = _gate_with_stubbed_lookups(monkeypatch, {348: ("CLOSED", {"question"})})()
+    out = capsys.readouterr().out
+    assert exit_code == 1
+    assert "[FAIL] version header:" in out
+    assert "which is CLOSED" in out
+    assert "gate: FAIL" in out
+
+
+def test_fetch_issue_state_returns_the_state_and_label_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cov,
+        "_gh",
+        lambda args: json.dumps(
+            {"state": "OPEN", "labels": [{"name": "question"}, {"name": "lane:rest"}]}
+        ),
+    )
+    assert cov.fetch_issue_state(348) == ("OPEN", {"question", "lane:rest"})
+
+
 def _issue(number: int, labels: list[str], milestone: str | None) -> dict[str, object]:
     return {
         "number": number,
@@ -1213,6 +1487,11 @@ def test_report_mode_end_to_end() -> None:
     assert 0 <= grpc_covered <= grpc_total
     assert f"deliberate omission: {EXEMPT_OP} — " in proc.stdout
     assert "db_metrics" in proc.stdout
+    assert f"vacuous version assertion: {len(VACUOUS_OPS)} of {http_total + grpc_total} " in (
+        proc.stdout
+    )
+    for op_id in VACUOUS_OPS:
+        assert f"vacuous version assertion: {op_id} — " in proc.stdout
 
 
 # The #327 sweep for unit tests near the 5s ceiling turned this up as the only

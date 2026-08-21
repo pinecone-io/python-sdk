@@ -181,6 +181,11 @@ def test_delete_assistant(claim: Any, assistants: Assistants, respx_mock: respx.
     claim.assert_no_response_body(returned)
 
 
+# assistant_evaluation is one operation and this is it, so the surface's whole
+# version claim rests here — and it is empty: the knowledge-engine evaluation
+# router mounts no api_versioning layer, so the version leg below passes
+# vacuously (#348). Annotated in VACUOUS_VERSION_HEADER (scripts/api_coverage.py);
+# the assertion stays so it starts meaning something the day the router gates.
 @api_op("assistant_evaluation:metrics_alignment")
 def test_metrics_alignment(
     claim: Any, assistants: Assistants, respx_mock: respx.MockRouter

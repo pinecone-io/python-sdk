@@ -53,6 +53,17 @@ denominator, because an unexplained 101/102 is indistinguishable from a
 regression. An exemption that has become stale (the operation gained
 passing coverage after all) fails the gate too, so it gets deleted.
 
+Covered is not the same as covered *uniformly*. A few operations are served
+by transports that never read ``X-Pinecone-Api-Version``, so the version leg
+of their conformance claim is true and empty while its method+path and
+round-trip legs still carry full weight. Those are named in
+:data:`VACUOUS_VERSION_HEADER` and annotated wherever the coverage number is
+printed, so the number is not read as uniform. Nothing is removed or
+relaxed: the assertion stays, and starts meaning something the day the
+endpoint is gated. Each entry references the ``question`` issue that
+establishes the omission, which is what makes the annotation falsifiable —
+if that issue closes, the ground truth moved and the gate says so.
+
 ``--gate`` exits 0 only when all of the following hold:
 
 1. every OAS operation and proto rpc is covered by a passing conformance
@@ -68,6 +79,9 @@ passing coverage after all) fails the gate too, so it gets deleted.
    sum, so it fails the gate instead of passing quietly
 6. every divergence exception and base-path override references an open
    ``question`` issue
+7. every operation named in :data:`VACUOUS_VERSION_HEADER` is still in the
+   specs, still has passing coverage to qualify, and still references an open
+   ``question`` issue
 """
 
 from __future__ import annotations
@@ -80,6 +94,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple
 from urllib.parse import urlparse
@@ -108,6 +123,27 @@ _ISSUE_URL = "https://github.com/pinecone-io/python-sdk-internal/issues"
 COVERAGE_EXEMPTIONS: dict[str, str] = {
     "db_metrics:fetch_prometheus_targets": f"{_ISSUE_URL}/87#issuecomment-5365004482",
 }
+
+# Operations whose conformance claim asserts a version header the server never
+# reads. Measured live and traced to source by #348 (see
+# VACUOUS_VERSION_HEADER_EVIDENCE): the four pc-bulk-import handlers never call
+# api_version_requested_grpc, and the knowledge-engine evaluation router mounts
+# no api_versioning layer. Whether either omission is deliberate is
+# undetermined — none of the five is a health check or a discovery endpoint,
+# and the OAS marks the alignment op's version header required.
+#
+# The value is the question issue that establishes the vacuity. Delete an entry
+# when the endpoint gains real version gating — never the assertion, which
+# becomes meaningful at that moment, nor the test, whose method+path and
+# round-trip legs were never affected.
+VACUOUS_VERSION_HEADER: dict[str, int] = {
+    "assistant_evaluation:metrics_alignment": 348,
+    "db_data:cancelBulkImport": 348,
+    "db_data:describeBulkImport": 348,
+    "db_data:listBulkImports": 348,
+    "db_data:startBulkImport": 348,
+}
+VACUOUS_VERSION_HEADER_EVIDENCE = f"{_ISSUE_URL}/348#issuecomment-5365418366"
 
 RELEASE_MILESTONES_DECISION = f"{_ISSUE_URL}/87#issuecomment-5365004630"
 RELEASE_LABEL = f"release/{API_VERSION}"
@@ -742,6 +778,37 @@ def exemption_problems(ops: OperationMap, covered: set[str]) -> list[str]:
     return problems
 
 
+def vacuous_version_header_ops(ops: OperationMap) -> dict[str, int]:
+    return {op_id: issue for op_id, issue in VACUOUS_VERSION_HEADER.items() if op_id in ops}
+
+
+def vacuous_version_header_problems(ops: OperationMap, covered: set[str]) -> list[str]:
+    """Every reason an entry in :data:`VACUOUS_VERSION_HEADER` should be revisited.
+
+    A stale annotation is the same failure mode as a stale exemption: it makes
+    the coverage number describe a world that has moved on. Two ways it goes
+    stale locally — the operation leaves the specs, or the claim it qualifies
+    stops passing, leaving an annotation attached to nothing. The third way is
+    the one this repo cannot measure, the server starting to read the header,
+    which is why each entry also references a question issue the gate checks
+    separately.
+    """
+    problems: list[str] = []
+    for op_id, issue in sorted(VACUOUS_VERSION_HEADER.items()):
+        if op_id not in ops:
+            problems.append(
+                f"annotation names {op_id}, which is not in the {API_VERSION} specs — "
+                f"delete the annotation (#{issue})"
+            )
+        elif op_id not in covered:
+            problems.append(
+                f"annotation for {op_id} qualifies a conformance claim that no longer "
+                f"passes, so it now annotates nothing — delete it or restore the claim "
+                f"(#{issue})"
+            )
+    return problems
+
+
 class CoverageStatus(NamedTuple):
     ok: bool
     detail: str
@@ -762,6 +829,12 @@ def coverage_status(ops: OperationMap, verified: set[str]) -> CoverageStatus:
     detail = f"{len(verified)}/{len(ops)} operations verified by passing conformance tests"
     if exempt:
         detail += f"; {len(exempt)} deliberate omission(s): {', '.join(sorted(exempt))}"
+    vacuous = vacuous_version_header_ops(ops)
+    if vacuous:
+        detail += (
+            f"; on {len(vacuous)} operation(s) the version-header assertion is vacuous "
+            f"because the server does not read it (see --report)"
+        )
     if missing:
         detail += f"; {len(missing)} uncovered (run --gaps)"
     return CoverageStatus(not missing and not problems, detail, problems, missing)
@@ -864,6 +937,12 @@ def fetch_decision_comments(epoch_issue: int) -> list[str]:
     return [
         comment["body"] for comment in payload.get("comments", []) if "DECISION:" in comment["body"]
     ]
+
+
+def fetch_issue_state(issue: int) -> tuple[str, set[str]]:
+    """The state and label names of one issue, as the gate's exception checks need it."""
+    payload = json.loads(_gh(["issue", "view", str(issue), "--json", "state,labels"]))
+    return str(payload.get("state")), {label["name"] for label in payload.get("labels", [])}
 
 
 def fetch_milestones() -> list[dict[str, Any]]:
@@ -985,6 +1064,71 @@ def unclassified_release_issues(issues: list[dict[str, Any]], epoch_issue: int) 
     return sorted(unclassified)
 
 
+def version_header_conditions(
+    ops: OperationMap,
+    verified: set[str],
+    issue_state: Callable[[int], tuple[str, set[str]]],
+) -> list[tuple[bool, str]]:
+    """The gate conditions keeping :data:`VACUOUS_VERSION_HEADER` honest.
+
+    Locally detectable staleness comes from
+    :func:`vacuous_version_header_problems`. The condition this repo cannot
+    measure — an endpoint that started reading the header — is delegated to the
+    question issue each entry references, checked exactly as a divergence
+    exception is: closed, or no longer a question, means the ground truth moved
+    and the annotation needs revisiting rather than outliving the fact.
+
+    "Nothing is annotated" is keyed off the registry, not off the operations
+    that survive filtering against the specs. Keying it off the filtered map
+    would report both a stale-annotation FAIL and a nothing-registered PASS for
+    the same check — a verdict that reads as reassuring while contradicting
+    itself, which is the failure this whole annotation exists to prevent.
+    """
+    conditions: list[tuple[bool, str]] = [
+        (False, f"version header: {problem}")
+        for problem in vacuous_version_header_problems(ops, verified)
+    ]
+    if not VACUOUS_VERSION_HEADER:
+        conditions.append((True, "version header: no vacuous version assertions registered"))
+        return conditions
+    vacuous = vacuous_version_header_ops(ops)
+    for issue in sorted(set(vacuous.values())):
+        named = [op_id for op_id, ref in sorted(vacuous.items()) if ref == issue]
+        listed = ", ".join(named)
+        try:
+            state, labels = issue_state(issue)
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            conditions.append((False, f"version header: could not check #{issue} via gh: {exc}"))
+            continue
+        if state != "OPEN":
+            conditions.append(
+                (
+                    False,
+                    f"version header: the annotation on {listed} references issue #{issue}, "
+                    f"which is {state}; if those endpoints are version-gated now the "
+                    "annotation is stale and must be deleted",
+                )
+            )
+        elif "question" not in labels:
+            conditions.append(
+                (
+                    False,
+                    f"version header: the annotation on {listed} references #{issue}, "
+                    "not a 'question' issue",
+                )
+            )
+        else:
+            conditions.append(
+                (
+                    True,
+                    f"version header: {len(named)} operation(s) annotated as asserting a "
+                    f"version header the server does not read ({listed}), tracked by open "
+                    f"question issue #{issue}",
+                )
+            )
+    return conditions
+
+
 def rust_proto_wired() -> tuple[bool, str]:
     if not RUST_PROTO_PATH.exists():
         return False, f"{RUST_PROTO_PATH.relative_to(REPO_ROOT)} does not exist"
@@ -1028,13 +1172,20 @@ def print_report(ops: OperationMap, covered: set[str], basis: str) -> None:
     for op_id in ops:
         surfaces.setdefault(surface_of(op_id), []).append(op_id)
     exempt = exempt_operations(ops)
+    vacuous = vacuous_version_header_ops(ops)
     print(f"conformance coverage ({basis})")
     width = max(len(s) for s in surfaces)
     for surface in sorted(surfaces):
         total = len(surfaces[surface])
         done = sum(1 for op_id in surfaces[surface] if op_id in covered)
         omitted = sum(1 for op_id in surfaces[surface] if op_id in exempt)
-        suffix = f"   ({omitted} deliberate omission)" if omitted else ""
+        unread = sum(1 for op_id in surfaces[surface] if op_id in vacuous)
+        notes = []
+        if omitted:
+            notes.append(f"{omitted} deliberate omission")
+        if unread:
+            notes.append(f"{unread} of {total} with a vacuous version assertion")
+        suffix = f"   ({'; '.join(notes)})" if notes else ""
         print(f"  {surface:<{width}}  {done:>3} / {total}{suffix}")
     http_ops = [op for op, entry in ops.items() if entry["kind"] == "http"]
     grpc_ops = [op for op, entry in ops.items() if entry["kind"] == "grpc"]
@@ -1044,6 +1195,15 @@ def print_report(ops: OperationMap, covered: set[str], basis: str) -> None:
     print(f"overall grpc: {grpc_done}/{len(grpc_ops)}")
     for op_id, url in sorted(exempt.items()):
         print(f"deliberate omission: {op_id} — {url}")
+    if vacuous:
+        print(
+            f"vacuous version assertion: {len(vacuous)} of {len(ops)} operations claim "
+            f"{API_VERSION} conformance against a server that does not read "
+            f"X-Pinecone-Api-Version, so that leg of the claim is empty; method+path and "
+            f"schema round-trip are unaffected. Evidence: {VACUOUS_VERSION_HEADER_EVIDENCE}"
+        )
+        for op_id, issue in sorted(vacuous.items()):
+            print(f"  vacuous version assertion: {op_id} — {_ISSUE_URL}/{issue}")
 
 
 def mode_report(ops: OperationMap) -> int:
@@ -1130,14 +1290,13 @@ def mode_gate(ops: OperationMap, epoch_issue: int) -> int:
     for op_id, divergence in sorted(divergent.items()):
         issue = divergence["issue"]
         try:
-            payload = json.loads(_gh(["issue", "view", str(issue), "--json", "state,labels"]))
-            labels = {label["name"] for label in payload.get("labels", [])}
-            if payload.get("state") != "OPEN":
+            state, labels = fetch_issue_state(issue)
+            if state != "OPEN":
                 conditions.append(
                     (
                         False,
                         f"divergence: {op_id} references issue #{issue}, which is "
-                        f"{payload.get('state')}; resolve the divergence or reopen the question",
+                        f"{state}; resolve the divergence or reopen the question",
                     )
                 )
             elif "question" not in labels:
@@ -1152,6 +1311,8 @@ def mode_gate(ops: OperationMap, epoch_issue: int) -> int:
             conditions.append((False, f"divergence: could not check #{issue} via gh: {exc}"))
     if not divergent:
         conditions.append((True, "divergence: no divergence exceptions registered"))
+
+    conditions.extend(version_header_conditions(ops, verified, fetch_issue_state))
 
     try:
         ok, message = release_milestone_status(fetch_milestones())

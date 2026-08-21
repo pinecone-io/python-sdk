@@ -22,6 +22,49 @@ exactly the operation it names, the operation stays visible in `--report` and
 `--gaps`, and the gate fails if the operation later gains coverage while the
 entry is still there.
 
+## Vacuous version assertions
+
+Coverage is not uniform, and the coverage number does not say so on its own.
+Five operations are served by transports that never read
+`X-Pinecone-Api-Version`, so for them assertion category 2 below is true and
+empty — a 2026-07 client and a 2025-10 client are treated identically. They are
+named in `VACUOUS_VERSION_HEADER` in `scripts/api_coverage.py`, each pointing at
+the question issue that established it (#348, measured live and traced to
+source):
+
+- `assistant_evaluation:metrics_alignment` — **2 of 2 registrations, the whole
+  surface**: the knowledge-engine evaluation router mounts no `api_versioning`
+  layer, and it is a catch-all `/*path` proxy, so anything added under it
+  inherits the gap with no code change to review.
+- `db_data:startBulkImport`, `db_data:describeBulkImport`,
+  `db_data:listBulkImports`, `db_data:cancelBulkImport` — 4 of db_data's 48
+  registrations: none of the four `pc-bulk-import` handlers calls
+  `api_version_requested_grpc`, though a fifth handler in the same file does,
+  which is why "never added" reads likelier than "decided".
+
+Whether either omission is deliberate is **undetermined** — there is no design
+note, and none of the five is a health check or a discovery endpoint. The OAS
+even marks the alignment operation's version header `required: true`.
+
+Nothing is removed or relaxed. Method+path and schema round-trip are unaffected
+and remain real coverage, and the version assertion stays in place so it starts
+meaning something the day the endpoint is gated. What changes is only the
+labelling: `--report` annotates the affected surfaces and lists the operations,
+and `--gate`'s coverage line says how many of the verified operations carry the
+annotation. The claim sites in the test files carry the same note.
+
+`--gate` keeps the annotation honest the way it keeps a divergence honest: it
+fails if an annotated operation has left the specs, if the claim it qualifies
+stops passing, or if the referenced issue is closed or is no longer a
+`question` issue — because a closed issue means the ground truth moved, and an
+annotation nobody revisits is the stale-exemption failure wearing a different
+hat.
+
+The count is exact for `db_data` and `assistant_evaluation`, which #348
+resolved from the source. It is not a survey of every surface: whether any
+`svc-global-apis` router outside the two known `api_versioning` mounts serves a
+declared 2026-07 operation is unchecked, so this list can only grow.
+
 ## Operation ids
 
 `<surface>:<operationId>` for HTTP operations, where `<surface>` is the OAS
