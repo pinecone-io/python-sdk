@@ -258,6 +258,57 @@ def _prepare_params(kwargs: dict[str, Any]) -> dict[str, Any]:
     return kwargs
 
 
+_DOT_SEGMENT_WIRE_FORMS = {".": "%2E", "..": "%2E%2E"}
+
+
+def _split_off_query_and_fragment(url: str) -> tuple[str, str]:
+    """Split *url* into its path and the query/fragment suffix that follows it.
+
+    Dot-segment normalization applies only to the path, so the suffix must be
+    handed back unexamined.
+    """
+    end = len(url)
+    for delimiter in "?#":
+        found = url.find(delimiter)
+        if found != -1:
+            end = min(end, found)
+    return url[:end], url[end:]
+
+
+def _prepare_path(path: str) -> str:
+    """Percent-encode any ``.`` or ``..`` segment of *path* so it survives to the server.
+
+    ``quote(value, safe="")`` — the encoding the path parameters in this client
+    apply — deliberately leaves ``.`` alone, because ``.`` is an RFC 3986
+    unreserved character. But httpx normalizes a URL on construction, and that
+    normalization includes RFC 3986 ``remove_dot_segments``: a segment of ``.``
+    is dropped and a segment of ``..`` removes the segment before it. So a
+    caller-supplied value of ``.`` or ``..`` never reaches the server. It
+    silently rewrites the request to address a different endpoint, which for the
+    collapsing verbs is a defined route rather than a 404.
+
+    ``%2E`` is the wire form of a literal ``.`` segment: httpx does not decode
+    percent-escapes before removing dot segments, so an encoded segment survives
+    normalization and the server decodes it back to the caller's value.
+
+    Only a segment that is *entirely* ``.`` or ``..`` is rewritten, so a value
+    that merely contains dots (``a..b``, ``my.index``) is returned untouched and
+    an already-encoded segment is never double-encoded.
+
+    The path must arrive as a ``str``; anything else is returned unchanged. An
+    ``httpx.URL`` cannot be repaired here because it normalizes on construction,
+    so its dot segments are gone before this boundary sees it.
+    """
+    if not isinstance(path, str) or "." not in path:
+        return path
+    head, suffix = _split_off_query_and_fragment(path)
+    segments = head.split("/")
+    if not any(segment in _DOT_SEGMENT_WIRE_FORMS for segment in segments):
+        return path
+    encoded = "/".join(_DOT_SEGMENT_WIRE_FORMS.get(segment, segment) for segment in segments)
+    return encoded + suffix
+
+
 def _build_headers(config: PineconeConfig, api_version: str) -> dict[str, str]:
     headers: dict[str, str] = {
         API_VERSION_HEADER: api_version,
@@ -708,6 +759,7 @@ class HTTPClient:
     def get(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        path = _prepare_path(path)
         _log_curl("GET", self._build_url(path), dict(self._headers))
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
@@ -723,6 +775,7 @@ class HTTPClient:
     def post(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        path = _prepare_path(path)
         # Fast path: callers only pass json= (and rarely timeout=). When
         # nothing else is in kwargs we can construct the httpx.Request
         # directly and skip Client.build_request's _merge_url/_merge_headers/
@@ -809,6 +862,7 @@ class HTTPClient:
     def put(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        path = _prepare_path(path)
         kwargs = _prepare_json_kwargs(kwargs)
         body = kwargs.get("content") if isinstance(kwargs.get("content"), bytes) else None
         merged_headers = {**self._headers, **kwargs.get("headers", {})}
@@ -827,6 +881,7 @@ class HTTPClient:
     def patch(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        path = _prepare_path(path)
         kwargs = _prepare_json_kwargs(kwargs)
         body = kwargs.get("content") if isinstance(kwargs.get("content"), bytes) else None
         merged_headers = {**self._headers, **kwargs.get("headers", {})}
@@ -847,6 +902,7 @@ class HTTPClient:
     def delete(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        path = _prepare_path(path)
         _log_curl("DELETE", self._build_url(path), dict(self._headers))
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
@@ -880,6 +936,7 @@ class HTTPClient:
         connection time or during response iteration are caught and re-raised as
         :exc:`PineconeTimeoutError` or :exc:`PineconeConnectionError`.
         """
+        path = _prepare_path(path)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             with self._client.stream(
@@ -956,6 +1013,7 @@ class AsyncHTTPClient:
     async def get(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        path = _prepare_path(path)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = await self._ensure_client().get(
@@ -972,6 +1030,7 @@ class AsyncHTTPClient:
     async def post(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        path = _prepare_path(path)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = await self._ensure_client().post(
@@ -988,6 +1047,7 @@ class AsyncHTTPClient:
     async def put(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        path = _prepare_path(path)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = await self._ensure_client().put(
@@ -1004,6 +1064,7 @@ class AsyncHTTPClient:
     async def patch(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        path = _prepare_path(path)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = await self._ensure_client().patch(
@@ -1020,6 +1081,7 @@ class AsyncHTTPClient:
     async def delete(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        path = _prepare_path(path)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = await self._ensure_client().delete(
@@ -1052,6 +1114,7 @@ class AsyncHTTPClient:
         connection time or during response iteration are caught and re-raised as
         :exc:`PineconeTimeoutError` or :exc:`PineconeConnectionError`.
         """
+        path = _prepare_path(path)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             async with self._ensure_client().stream(
