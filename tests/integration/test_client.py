@@ -76,7 +76,7 @@ def test_create_index_from_backup_no_wait_returns_restore_job_id() -> None:
         ),
     )
 
-    pc = Pinecone(api_key="test-key")
+    pc = Pinecone(api_key="test-key", host=BASE_URL)
     result = pc.create_index_from_backup(
         name="test-restore-nowait",
         backup_id="bk-test",
@@ -116,7 +116,7 @@ def test_create_index_schema_parameter_forwarded() -> None:
         return_value=httpx.Response(201, json=response_body),
     )
 
-    pc = Pinecone(api_key="test-key")
+    pc = Pinecone(api_key="test-key", host=BASE_URL)
     result = pc.create_index(
         name="test-schema-shim",
         spec={"serverless": {"cloud": "aws", "region": "us-east-1"}},
@@ -138,7 +138,7 @@ def test_configure_index_serverless_read_capacity() -> None:
         return_value=httpx.Response(202, json=make_index_response(name="my-serverless-idx")),
     )
 
-    pc = Pinecone(api_key="test-key")
+    pc = Pinecone(api_key="test-key", host=BASE_URL)
     pc.configure_index("my-serverless-idx", serverless_read_capacity={"mode": "OnDemand"})
 
     sent_body = json.loads(route.calls[0].request.content)
@@ -160,7 +160,7 @@ def test_configure_index_tags_sparse_patch() -> None:
     # Ensure no GET /indexes/{name} is registered — if the client calls describe,
     # respx will raise an error (no matching route) rather than silently passing.
 
-    pc = Pinecone(api_key="test-key")
+    pc = Pinecone(api_key="test-key", host=BASE_URL)
 
     # Sparse add: send a new key; backend will preserve any pre-existing tags.
     pc.indexes.configure(index_name, tags={"new_key": "new_val"})
@@ -191,7 +191,7 @@ def test_create_index_serverless_read_capacity_spec() -> None:
         return_value=httpx.Response(201, json=response_body),
     )
 
-    pc = Pinecone(api_key="test-key")
+    pc = Pinecone(api_key="test-key", host=BASE_URL)
     result = pc.indexes.create(
         name="rc-index",
         spec=ServerlessSpec(cloud="aws", region="us-east-1", read_capacity={"mode": "OnDemand"}),
@@ -217,7 +217,7 @@ def test_create_byoc_index_spec_schema_forwarded() -> None:
         return_value=httpx.Response(201, json=response_body),
     )
 
-    pc = Pinecone(api_key="test-key")
+    pc = Pinecone(api_key="test-key", host=BASE_URL)
     pc.indexes.create(
         name="byoc-schema-index",
         spec=ByocSpec(environment="byoc-aws-abc123", schema={"genre": {"type": "str"}}),
@@ -240,7 +240,7 @@ def test_create_byoc_index_method_schema_forwarded() -> None:
         return_value=httpx.Response(201, json=response_body),
     )
 
-    pc = Pinecone(api_key="test-key")
+    pc = Pinecone(api_key="test-key", host=BASE_URL)
     pc.indexes.create(
         name="byoc-schema-index",
         spec=ByocSpec(environment="byoc-aws-abc123"),
