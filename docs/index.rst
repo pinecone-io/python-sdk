@@ -94,6 +94,7 @@ Pinecone Python SDK
    reference/pinecone
    reference/sync-index
    reference/models
+   reference/schema-builder
    reference/exceptions
 
 .. toctree::
