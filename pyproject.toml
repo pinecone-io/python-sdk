@@ -149,6 +149,16 @@ markers = [
     "preview_integration: real-API tests against 2026-01.alpha preview endpoints (not CI-gating)",
 ]
 
+[tool.coverage.run]
+source = ["pinecone"]
+# pytest-cov auto-combines per-worker data files when pytest-xdist is active,
+# so this config holds even if -n is later added to the unit-test CI command.
+branch = false
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+
 [dependency-groups]
 dev = [
     "anyio>=4.13.0",
@@ -165,6 +175,7 @@ dev = [
     "pytest-benchmark>=5.0.0",
     "pytest-xdist>=3.6",
     "pytest-timeout>=2.3",
+    "pytest-cov>=7.0",
     "respx>=0.22.0",
     "mypy>=1.20.0",
     "ruff>=0.15.9",

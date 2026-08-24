@@ -147,7 +147,14 @@ jobs:
         run: uv sync --group dev
 
       - name: pytest tests/unit
-        run: uv run pytest tests/unit -x -v
+        run: uv run pytest tests/unit -x -v --cov --cov-report=term-missing
+
+      # One matrix leg is enough to see the shape of coverage; posting it five
+      # times over would just be noise on the PR checks tab. See
+      # tests/unit/README.md for why there's no threshold yet.
+      - name: Post coverage to job summary
+        if: matrix.python-version == '3.12'
+        run: uv run --no-sync coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
   # Rust check / clippy / fmt
