@@ -54,6 +54,7 @@ from typing import Protocol
 import pytest
 
 from pinecone import AsyncPinecone, Pinecone
+from pinecone._internal.constants import DEFAULT_BASE_URL
 from tests.integration.legacy_index import (
     LegacyIndex,
     create_legacy_index,
@@ -354,7 +355,12 @@ def legacy_index_factory(api_key: str) -> Generator[LegacyIndexFactory, None, No
     Results are cached per shape for the whole session and deleted at the end,
     so callers sharing a shape share one index — isolate with a per-test
     namespace, as the rest of this package does.
+
+    Reads ``PINECONE_CONTROLLER_HOST`` so a run pointing the SDK at a
+    non-default host (e.g. a local simulator) also creates the legacy index
+    there instead of against production.
     """
+    base_url = os.environ.get("PINECONE_CONTROLLER_HOST", DEFAULT_BASE_URL)
     created: dict[tuple[int | None, str, str], LegacyIndex] = {}
 
     def factory(
@@ -366,7 +372,11 @@ def legacy_index_factory(api_key: str) -> Generator[LegacyIndexFactory, None, No
         key = (dimension, metric, vector_type)
         if key not in created:
             created[key] = create_legacy_index(
-                api_key, dimension=dimension, metric=metric, vector_type=vector_type
+                api_key,
+                dimension=dimension,
+                metric=metric,
+                vector_type=vector_type,
+                base_url=base_url,
             )
         return created[key]
 
@@ -374,7 +384,7 @@ def legacy_index_factory(api_key: str) -> Generator[LegacyIndexFactory, None, No
         yield factory
     finally:
         for index in created.values():
-            delete_legacy_index(api_key, index.name)
+            delete_legacy_index(api_key, index.name, base_url=base_url)
 
 
 @pytest.fixture(scope="session")
