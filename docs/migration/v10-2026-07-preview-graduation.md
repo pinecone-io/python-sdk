@@ -39,7 +39,7 @@ extra hop; delete it and the rest of the expression is almost unchanged.
 | --- | --- |
 | `pc.preview.indexes` | `pc.indexes` — the graduated `pinecone.client.indexes.Indexes` |
 | `pc.preview.index(name=...)` / `(host=...)` | `pc.index(name=...)` / `(host=...)`, or positionally `pc.index("my-index")` |
-| `pc.preview.index(...).documents.upsert(...)` | `pc.index(...).upsert_documents(...)` — the `.documents` proxy is gone, see §3 |
+| `pc.preview.index(...).documents.upsert(...)` | `pc.index(...).documents.upsert(...)` — same shape, see §3 |
 | `pc.preview.close()` | `pc.close()` — the client closes every namespace it opened |
 | `from pinecone.preview import SchemaBuilder` | `from pinecone import SchemaBuilder` (the direct path `from pinecone.schema_builder import SchemaBuilder` is unchanged) |
 | `pinecone.preview.Preview` / `AsyncPreview` | no replacement — the router classes have no successor; there is nothing left to route to |
@@ -47,8 +47,8 @@ extra hop; delete it and the rest of the expression is almost unchanged.
 | `pinecone.preview.async_indexes.AsyncPreviewIndexes` | `pinecone.async_client.indexes.AsyncIndexes` |
 | `pinecone.preview.index.PreviewIndex` | `pinecone.index.Index` |
 | `pinecone.preview.async_index.AsyncPreviewIndex` | `pinecone.async_client.async_index.AsyncIndex` |
-| `pinecone.preview.documents.PreviewDocuments` | no replacement — the document operations are methods on `Index` |
-| `pinecone.preview.async_documents.AsyncPreviewDocuments` | no replacement — methods on `AsyncIndex` |
+| `pinecone.preview.documents.PreviewDocuments` | `pinecone.client.documents.Documents`, via `index.documents` |
+| `pinecone.preview.async_documents.AsyncPreviewDocuments` | `pinecone.async_client.documents.AsyncDocuments`, via `index.documents` |
 
 ```python
 from pinecone import Pinecone
@@ -60,7 +60,7 @@ info = pc.indexes.describe("articles-en")
 
 # was: index = pc.preview.index(name="articles-en-preview")
 with pc.index(name="articles-en") as index:
-    result = index.fetch_documents(namespace="articles-en", ids=["doc-1"])
+    result = index.documents.fetch(namespace="articles-en", ids=["doc-1"])
 ```
 
 ### ⚠ `await pc.index(...)` is now a coroutine
@@ -80,7 +80,7 @@ async def main() -> None:
     # was: index = pc.preview.index(name="articles-en-preview")
     index = await pc.index(name="articles-en")
     async with index:
-        await index.fetch_documents(namespace="articles-en", ids=["doc-1"])
+        await index.documents.fetch(namespace="articles-en", ids=["doc-1"])
     await pc.close()
 
 
@@ -241,40 +241,52 @@ a top-level export), `DocumentRecord`, `UpdateDocumentRecord`,
 package; see [the backup-models guide](v10-2026-07-backup-models.md), which
 owns that mapping.
 
-## 3. Document operations move onto `Index`
+## 3. Document operations: the `.documents` namespace is back
 
 `pc.preview.index(...)` returned a `PreviewIndex` whose only job was to hold a
-`.documents` proxy. The graduated `Index` carries the document operations
-itself, so the proxy is gone and each method name absorbed the noun.
+`.documents` proxy. Graduating out of preview retired that wrapper — correctly,
+it existed only to host the proxy — but an earlier revision of this guide also
+retired the `.documents` **namespace** along with it, flattening every
+operation into a `*_documents`-suffixed method directly on `Index`
+(`index.upsert_documents(...)`, `index.search_documents(...)`, etc.). That was
+never a considered design decision; it was a side effect of deleting the
+wrapper, and it made `Index` harder to navigate for no benefit. The namespace
+is restored, and it is the *only* surface: `index.documents` is a
+lazily-instantiated property, exactly like every other resource namespace on
+this SDK (`pc.indexes`, `pc.inference`, and so on) — the implementation
+module isn't imported until you touch it.
 
-| Removed | Replacement |
+| Preview | Now |
 | --- | --- |
-| `index.documents.upsert(...)` | `index.upsert_documents(...)` |
-| `index.documents.batch_upsert(...)` | `index.batch_upsert_documents(...)` |
-| `index.documents.search(...)` | `index.search_documents(...)` |
-| `index.documents.fetch(...)` | `index.fetch_documents(...)` |
-| `index.documents.delete(...)` | `index.delete_documents(...)` |
-| — | `index.update_documents(...)` (new) |
-| — | `index.list_documents(...)` (new) |
+| `index.documents.upsert(...)` | `index.documents.upsert(...)` |
+| — | `index.documents.batch_upsert(...)` (new) |
+| `index.documents.search(...)` | `index.documents.search(...)` |
+| `index.documents.fetch(...)` | `index.documents.fetch(...)` |
+| `index.documents.delete(...)` | `index.documents.delete(...)` |
+| — | `index.documents.update(...)` (new) |
+| — | `index.documents.list(...)` (new) |
 
 Every keyword argument preview accepted is still accepted under the same
-name, so for most calls the rename is the whole change. `AsyncIndex` mirrors
-all seven; `list_documents` is not a coroutine on either lane — it returns a
-paginator.
+name, so for most calls only the access path changes. `AsyncIndex.documents`
+mirrors all seven; `documents.list(...)` is not a coroutine on either lane —
+it returns a paginator.
+
+The `*_documents`-suffixed methods directly on `Index`/`AsyncIndex` never
+shipped outside this flattening detour, so there is no deprecated alias to
+carry forward and no second call shape to migrate off of: `.documents` is the
+one way to reach these operations.
 
 ```python
 from pinecone import Pinecone
 
 pc = Pinecone(api_key="your-api-key")
 with pc.index(name="articles-en") as index:
-    # was: index.documents.upsert(namespace=..., documents=[...])
-    index.upsert_documents(
+    index.documents.upsert(
         namespace="articles-en",
         documents=[{"_id": "doc-1", "title": "Rome", "views": 12}],
     )
 
-    # was: index.documents.search(namespace=..., top_k=..., score_by=[...])
-    hits = index.search_documents(
+    hits = index.documents.search(
         namespace="articles-en",
         top_k=10,
         score_by=[{"type": "text", "query": "roman aqueducts", "field": "title"}],
@@ -292,11 +304,11 @@ async def main() -> None:
     pc = AsyncPinecone(api_key="your-api-key")
     index = await pc.index(name="articles-en")
     async with index:
-        await index.upsert_documents(
+        await index.documents.upsert(
             namespace="articles-en",
             documents=[{"_id": "doc-1", "title": "Rome", "views": 12}],
         )
-        hits = await index.search_documents(
+        hits = await index.documents.search(
             namespace="articles-en",
             top_k=10,
             score_by=[{"type": "text", "query": "roman aqueducts", "field": "title"}],
@@ -309,19 +321,19 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-### ⚠ `delete_documents` returns a response object
+### ⚠ `documents.delete` returns a response object
 
-`index.documents.delete(...)` returned `None`. `index.delete_documents(...)`
-returns a `DeleteDocumentsResponse` — and it accepts a `filter`, which is why
-there is now something to return.
+Preview's `index.documents.delete(...)` returned `None`. The graduated
+`index.documents.delete(...)` returns a `DeleteDocumentsResponse` — and it
+accepts a `filter`, which is why there is now something to return.
 
 ```python
-# was:
-#   index.documents.delete(namespace="articles-en", ids=["doc-1"])   # -> None
-response = index.delete_documents(namespace="articles-en", ids=["doc-1"])
+# preview returned None:
+#   index.documents.delete(namespace="articles-en", ids=["doc-1"])
+response = index.documents.delete(namespace="articles-en", ids=["doc-1"])
 
 # new: delete by filter, with a count of what matched
-response = index.delete_documents(
+response = index.documents.delete(
     namespace="articles-en",
     filter={"views": {"$lt": 5}},
 )
@@ -337,20 +349,20 @@ a promise about how many documents ultimately disappear. `matched_records` on
 Preview's `ids` / `delete_all` mutual exclusion still holds, widened to three
 options: exactly one of `ids`, `filter`, or `delete_all` must be given.
 
-### ⚠ `fetch_documents` gained a filter and pagination
+### ⚠ `documents.fetch` gained a filter and pagination
 
-Preview's `fetch` took `ids` only. `fetch_documents` takes exactly one of
+Preview's `fetch` took `ids` only. `documents.fetch` takes exactly one of
 `ids` or `filter`, and a filtered fetch is paginated — a page holds up to
 10000 documents and the page size is fixed.
 
 ```python
-page = index.fetch_documents(namespace="articles-en", filter={"views": {"$gt": 100}})
+page = index.documents.fetch(namespace="articles-en", filter={"views": {"$gt": 100}})
 while True:
     for doc_id, doc in page.documents.items():
         print(doc_id, doc.title)
     if page.pagination is None:
         break
-    page = index.fetch_documents(
+    page = index.documents.fetch(
         namespace="articles-en",
         filter={"views": {"$gt": 100}},
         pagination_token=page.pagination.next,
@@ -364,10 +376,10 @@ and existing `fetch` call sites need no loop.
 
 - **`timeout` on every document method.** New keyword, `None` by default,
   which is the previous behavior. Purely additive.
-- **`batch_upsert_documents(max_concurrency=...)` no longer accepts `None`.**
+- **`documents.batch_upsert(max_concurrency=...)` no longer accepts `None`.**
   It is `int = 4`; preview's `int | None = None` picked a default internally.
   Passing `None` now fails type checking — pass the number, or omit it.
-- **`batch_upsert_documents` dropped `**kwargs`.** Preview silently swallowed
+- **`documents.batch_upsert` dropped `**kwargs`.** Preview silently swallowed
   unknown keywords; a typo is now a `TypeError` at the call site.
 - **`documents=` accepts `Sequence[Mapping[...]]`**, not just `list[dict]`, and
   also accepts typed `DocumentRecord` / `UpdateDocumentRecord` objects. Lists
@@ -510,8 +522,8 @@ API; prefer asserting on the request header your transport actually sent.
   `-m "not preview_integration"`) now errors on an unknown marker under
   `--strict-markers`.
 - If you built fixtures against `PreviewIndexes` or `PreviewDocuments`, they
-  need the graduated classes from §1. `PreviewDocuments` in particular has no
-  successor class to substitute — the operations are methods on `Index`.
+  need the graduated classes from §1 — `Documents`/`AsyncDocuments` for
+  `PreviewDocuments`/`AsyncPreviewDocuments`, accessed via `index.documents`.
 
 ## Where the rest of the 2026-07 release is documented
 

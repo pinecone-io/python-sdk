@@ -121,7 +121,7 @@ def test_dimension_mismatch_raises_typed_error_rest(client: Pinecone) -> None:
         index = client.index(name=name)
 
         with pytest.raises(ApiError) as exc_info:
-            index.upsert_documents(
+            index.documents.upsert(
                 namespace="dim-ns",
                 documents=[{"_id": "dim-v1", DENSE_FIELD: [0.1, 0.2, 0.3]}],
             )
@@ -132,7 +132,7 @@ def test_dimension_mismatch_raises_typed_error_rest(client: Pinecone) -> None:
         assert "dimension" in msg.lower()
         assert not msg.strip().isdigit()
 
-        index.upsert_documents(
+        index.documents.upsert(
             namespace="dim-ns",
             documents=[{"_id": "dim-ok", DENSE_FIELD: [0.1, 0.2]}],
         )
@@ -667,7 +667,7 @@ def test_grpc_query_too_short_timeout_raises(client: Pinecone) -> None:
             deployment=MANAGED_AWS,
             timeout=300,
         )
-        client.index(name=name).upsert_documents(
+        client.index(name=name).documents.upsert(
             namespace=namespace,
             documents=[
                 {"_id": "t1", DENSE_FIELD: [0.1, 0.2, 0.3]},

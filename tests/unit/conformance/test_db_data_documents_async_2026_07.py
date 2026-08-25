@@ -76,7 +76,7 @@ async def test_async_upsert_documents(
     route = respx_mock.post(f"{BASE_URL}/namespaces/{NAMESPACE}/documents/upsert").mock(
         return_value=httpx.Response(202, json=DOC_UPSERT)
     )
-    result = await async_index.upsert_documents(namespace=NAMESPACE, documents=DOCUMENTS_INPUT)
+    result = await async_index.documents.upsert(namespace=NAMESPACE, documents=DOCUMENTS_INPUT)
     assert result.upserted_count == 2
     assert orjson.loads(route.calls.last.request.content) == {"documents": DOCUMENTS_INPUT}
     _conforms(claim, route, UpsertDocumentsResponse, DOC_UPSERT, [])
@@ -89,7 +89,7 @@ async def test_async_search_documents(
     route = respx_mock.post(f"{BASE_URL}/namespaces/{NAMESPACE}/documents/search").mock(
         return_value=httpx.Response(200, json=DOC_SEARCH)
     )
-    result = await async_index.search_documents(
+    result = await async_index.documents.search(
         namespace=NAMESPACE,
         top_k=10,
         score_by=[{"type": "text", "fields": ["content"], "query": "What is machine learning?"}],
@@ -112,7 +112,7 @@ async def test_async_fetch_documents(
     route = respx_mock.post(f"{BASE_URL}/namespaces/{NAMESPACE}/documents/fetch").mock(
         return_value=httpx.Response(200, json=DOC_FETCH)
     )
-    result = await async_index.fetch_documents(
+    result = await async_index.documents.fetch(
         namespace=NAMESPACE, filter={"category": {"$eq": "news"}}
     )
     assert result.documents["doc-1"]._id == "doc-1"
@@ -130,7 +130,7 @@ async def test_async_delete_documents(
     route = respx_mock.post(f"{BASE_URL}/namespaces/{NAMESPACE}/documents/delete").mock(
         return_value=httpx.Response(202, json=DOC_DELETE)
     )
-    result = await async_index.delete_documents(
+    result = await async_index.documents.delete(
         namespace=NAMESPACE, filter={"category": {"$eq": "news"}}
     )
     assert result.matched_records == 42
@@ -147,7 +147,7 @@ async def test_async_update_documents(
     route = respx_mock.post(f"{BASE_URL}/namespaces/{NAMESPACE}/documents/update").mock(
         return_value=httpx.Response(202, json=DOC_UPDATE)
     )
-    result = await async_index.update_documents(namespace=NAMESPACE, documents=DOC_UPDATE_INPUT)
+    result = await async_index.documents.update(namespace=NAMESPACE, documents=DOC_UPDATE_INPUT)
     assert result.matched_records == 42
     assert orjson.loads(route.calls.last.request.content) == {"documents": DOC_UPDATE_INPUT}
     _conforms(claim, route, UpdateDocumentsResponse, DOC_UPDATE, ["matched_records"])
@@ -160,7 +160,7 @@ async def test_async_list_documents(
     route = respx_mock.post(f"{BASE_URL}/namespaces/{NAMESPACE}/documents/list").mock(
         return_value=httpx.Response(200, json=DOC_LIST)
     )
-    paginator = async_index.list_documents(namespace=NAMESPACE, prefix="doc-", limit=20)
+    paginator = async_index.documents.list(namespace=NAMESPACE, prefix="doc-", limit=20)
     page = await anext(paginator.pages())
     assert [record.id for record in page.items] == ["doc-1", "doc-2"]
     assert page.pagination_token == "page-2"

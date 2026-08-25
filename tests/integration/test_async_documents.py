@@ -70,7 +70,7 @@ async def index() -> AsyncIterator[AsyncIndex]:
 async def namespace(index: AsyncIndex) -> AsyncIterator[str]:
     name = f"it async docs/{uuid.uuid4().hex[:8]}"
     yield name
-    await index.delete_documents(namespace=name, delete_all=True)
+    await index.documents.delete(namespace=name, delete_all=True)
 
 
 async def _wait_for_ids(
@@ -78,7 +78,7 @@ async def _wait_for_ids(
 ) -> FetchDocumentsResponse:
     deadline = time.time() + timeout
     while True:
-        response = await index.fetch_documents(namespace=namespace, ids=sorted(expected))
+        response = await index.documents.fetch(namespace=namespace, ids=sorted(expected))
         if set(response.documents) == expected:
             return response
         if time.time() > deadline:
@@ -87,19 +87,19 @@ async def _wait_for_ids(
 
 
 async def test_upsert_fetch_by_ids_and_filter(index: AsyncIndex, namespace: str) -> None:
-    result = await index.upsert_documents(namespace=namespace, documents=DOCS)
+    result = await index.documents.upsert(namespace=namespace, documents=DOCS)
     assert result.upserted_count == 3
 
     fetched = await _wait_for_ids(index, namespace, {"doc-1", "doc-2", "doc-3"})
     assert fetched.documents["doc-1"].category == "tech"
     assert fetched.usage is not None
 
-    missing_tolerated = await index.fetch_documents(
+    missing_tolerated = await index.documents.fetch(
         namespace=namespace, ids=["doc-1", "definitely-missing"]
     )
     assert set(missing_tolerated.documents) == {"doc-1"}
 
-    filtered = await index.fetch_documents(
+    filtered = await index.documents.fetch(
         namespace=namespace,
         filter={"category": {"$eq": "tech"}},
         include_fields=["category"],
@@ -108,10 +108,10 @@ async def test_upsert_fetch_by_ids_and_filter(index: AsyncIndex, namespace: str)
 
 
 async def test_search_documents_dense(index: AsyncIndex, namespace: str) -> None:
-    await index.upsert_documents(namespace=namespace, documents=DOCS)
+    await index.documents.upsert(namespace=namespace, documents=DOCS)
     await _wait_for_ids(index, namespace, {"doc-1", "doc-2", "doc-3"})
 
-    response = await index.search_documents(
+    response = await index.documents.search(
         namespace=namespace,
         top_k=2,
         score_by=[DenseVectorQuery(field="embedding", values=[0.0, 1.0, 0.0, 0.0])],
@@ -125,10 +125,10 @@ async def test_search_documents_dense(index: AsyncIndex, namespace: str) -> None
 
 
 async def test_search_documents_text(index: AsyncIndex, namespace: str) -> None:
-    await index.upsert_documents(namespace=namespace, documents=DOCS)
+    await index.documents.upsert(namespace=namespace, documents=DOCS)
     await _wait_for_ids(index, namespace, {"doc-1", "doc-2", "doc-3"})
 
-    response = await index.search_documents(
+    response = await index.documents.search(
         namespace=namespace,
         top_k=3,
         score_by=[TextQuery(query="machine learning", fields=["content"])],
@@ -138,20 +138,20 @@ async def test_search_documents_text(index: AsyncIndex, namespace: str) -> None:
 
 
 async def test_delete_documents_by_ids_filter_and_all(index: AsyncIndex, namespace: str) -> None:
-    await index.upsert_documents(namespace=namespace, documents=DOCS)
+    await index.documents.upsert(namespace=namespace, documents=DOCS)
     await _wait_for_ids(index, namespace, {"doc-1", "doc-2", "doc-3"})
 
-    by_ids = await index.delete_documents(namespace=namespace, ids=["doc-3"])
+    by_ids = await index.documents.delete(namespace=namespace, ids=["doc-3"])
     assert by_ids.matched_records is None
 
-    by_filter = await index.delete_documents(
+    by_filter = await index.documents.delete(
         namespace=namespace, filter={"category": {"$eq": "research"}}
     )
     assert by_filter.matched_records == 1
 
     deadline = time.time() + 60
     while True:
-        remaining = await index.fetch_documents(
+        remaining = await index.documents.fetch(
             namespace=namespace, ids=["doc-1", "doc-2", "doc-3"]
         )
         if set(remaining.documents) == {"doc-1"} or time.time() > deadline:
@@ -159,14 +159,14 @@ async def test_delete_documents_by_ids_filter_and_all(index: AsyncIndex, namespa
         await asyncio.sleep(1)
     assert set(remaining.documents) == {"doc-1"}
 
-    await index.delete_documents(namespace=namespace, delete_all=True)
+    await index.documents.delete(namespace=namespace, delete_all=True)
 
 
 async def test_update_documents_per_id_and_by_filter(index: AsyncIndex, namespace: str) -> None:
-    await index.upsert_documents(namespace=namespace, documents=DOCS)
+    await index.documents.upsert(namespace=namespace, documents=DOCS)
     await _wait_for_ids(index, namespace, {"doc-1", "doc-2", "doc-3"})
 
-    per_id = await index.update_documents(
+    per_id = await index.documents.update(
         namespace=namespace,
         documents=[
             {"_id": "doc-1", "category": "tech-updated"},
@@ -178,7 +178,7 @@ async def test_update_documents_per_id_and_by_filter(index: AsyncIndex, namespac
 
     deadline = time.time() + 60
     while True:
-        patched = await index.fetch_documents(namespace=namespace, ids=["doc-1", "doc-2"])
+        patched = await index.documents.fetch(namespace=namespace, ids=["doc-1", "doc-2"])
         settled = patched.documents["doc-1"].get("category") == "tech-updated" and (
             patched.documents["doc-2"].get("category") is None
         )
@@ -188,7 +188,7 @@ async def test_update_documents_per_id_and_by_filter(index: AsyncIndex, namespac
     assert patched.documents["doc-1"].get("category") == "tech-updated"
     assert patched.documents["doc-2"].get("category") is None
 
-    by_filter = await index.update_documents(
+    by_filter = await index.documents.update(
         namespace=namespace,
         filter={"category": {"$eq": "history"}},
         set_fields={"category": "archive"},
@@ -198,22 +198,22 @@ async def test_update_documents_per_id_and_by_filter(index: AsyncIndex, namespac
 
 async def test_list_documents_pages_and_prefix(index: AsyncIndex, namespace: str) -> None:
     docs = [{"_id": f"list-{i:03d}", "content": f"document {i}"} for i in range(25)]
-    await index.upsert_documents(namespace=namespace, documents=docs)
+    await index.documents.upsert(namespace=namespace, documents=docs)
     await _wait_for_ids(index, namespace, {"list-000", "list-012", "list-024"})
 
-    listed = await index.list_documents(namespace=namespace, prefix="list-").to_list()
+    listed = await index.documents.list(namespace=namespace, prefix="list-").to_list()
     assert [record.id for record in listed] == sorted(str(doc["_id"]) for doc in docs)
 
-    paginator = index.list_documents(namespace=namespace, prefix="list-", limit=10)
+    paginator = index.documents.list(namespace=namespace, prefix="list-", limit=10)
     pages = [page async for page in paginator.pages()]
     assert len(pages) >= 3
     assert len(pages[0].items) == 10
     assert paginator.pagination_token is None
 
-    narrowed = await index.list_documents(namespace=namespace, prefix="list-01").to_list()
+    narrowed = await index.documents.list(namespace=namespace, prefix="list-01").to_list()
     assert [record.id for record in narrowed] == [f"list-01{i}" for i in range(10)]
 
-    absent = await index.list_documents(namespace=namespace, prefix="no-such-prefix-").to_list()
+    absent = await index.documents.list(namespace=namespace, prefix="no-such-prefix-").to_list()
     assert absent == []
 
 
@@ -226,7 +226,7 @@ async def test_batch_upsert_documents(index: AsyncIndex, namespace: str) -> None
         }
         for i in range(120)
     ]
-    result = await index.batch_upsert_documents(
+    result = await index.documents.batch_upsert(
         namespace=namespace, documents=docs, batch_size=50, show_progress=False
     )
     assert result.total_item_count == 120

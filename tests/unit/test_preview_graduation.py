@@ -200,16 +200,8 @@ class TestGraduatedEntryPoints:
         pc = Pinecone(api_key="test-key-1234")
         index = pc.index(host=INDEX_HOST)
         assert type(index) is Index
-        for op in (
-            "upsert_documents",
-            "batch_upsert_documents",
-            "search_documents",
-            "fetch_documents",
-            "delete_documents",
-            "update_documents",
-            "list_documents",
-        ):
-            assert callable(getattr(index, op))
+        for op in ("upsert", "batch_upsert", "search", "fetch", "delete", "update", "list"):
+            assert callable(getattr(index.documents, op))
         index.close()
 
     @pytest.mark.asyncio
@@ -219,16 +211,8 @@ class TestGraduatedEntryPoints:
         pc = AsyncPinecone(api_key="test-key-1234")
         index = await pc.index(host=INDEX_HOST)
         assert type(index) is AsyncIndex
-        for op in (
-            "upsert_documents",
-            "batch_upsert_documents",
-            "search_documents",
-            "fetch_documents",
-            "delete_documents",
-            "update_documents",
-            "list_documents",
-        ):
-            assert callable(getattr(index, op))
+        for op in ("upsert", "batch_upsert", "search", "fetch", "delete", "update", "list"):
+            assert callable(getattr(index.documents, op))
         await index.close()
 
     @respx.mock
@@ -262,7 +246,7 @@ class TestApiVersionHeaderEndToEnd:
         )
         pc = Pinecone(api_key="test-key-1234")
         with pc.index(host=INDEX_HOST) as index:
-            result = index.fetch_documents(namespace="articles-en", ids=["doc-1"])
+            result = index.documents.fetch(namespace="articles-en", ids=["doc-1"])
         assert result.documents["doc-1"].title == "Rome"
         assert route.calls.last.request.headers["X-Pinecone-Api-Version"] == "2026-07"
 
@@ -285,7 +269,7 @@ class TestApiVersionHeaderEndToEnd:
         )
         pc = AsyncPinecone(api_key="test-key-1234")
         async with await pc.index(host=INDEX_HOST) as index:
-            result = await index.fetch_documents(namespace="articles-en", ids=["doc-1"])
+            result = await index.documents.fetch(namespace="articles-en", ids=["doc-1"])
         assert result.documents["doc-1"].title == "Rome"
         assert route.calls.last.request.headers["X-Pinecone-Api-Version"] == "2026-07"
 

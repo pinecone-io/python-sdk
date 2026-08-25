@@ -150,7 +150,7 @@ class BatchResponseInfo(StructDictMixin, Struct, kw_only=True, gc=False):
                 {"_id": f"article-{i:05d}", "content": f"Article {i}"}
                 for i in range(500)
             ]
-            result = index.batch_upsert_documents(
+            result = index.documents.batch_upsert(
                 namespace="articles-en",
                 documents=documents,
             )

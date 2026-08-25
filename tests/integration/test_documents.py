@@ -75,7 +75,7 @@ def index() -> Iterator[Index]:
 def namespace(index: Index) -> Iterator[str]:
     name = f"it docs/{uuid.uuid4().hex[:8]}"
     yield name
-    index.delete_documents(namespace=name, delete_all=True)
+    index.documents.delete(namespace=name, delete_all=True)
 
 
 def _wait_for_ids(
@@ -83,7 +83,7 @@ def _wait_for_ids(
 ) -> FetchDocumentsResponse:
     deadline = time.time() + timeout
     while True:
-        response = index.fetch_documents(namespace=namespace, ids=sorted(expected))
+        response = index.documents.fetch(namespace=namespace, ids=sorted(expected))
         if set(response.documents) == expected:
             return response
         if time.time() > deadline:
@@ -92,19 +92,19 @@ def _wait_for_ids(
 
 
 def test_upsert_fetch_by_ids_and_filter(index: Index, namespace: str) -> None:
-    result = index.upsert_documents(namespace=namespace, documents=DOCS)
+    result = index.documents.upsert(namespace=namespace, documents=DOCS)
     assert result.upserted_count == 3
 
     fetched = _wait_for_ids(index, namespace, {"doc-1", "doc-2", "doc-3"})
     assert fetched.documents["doc-1"].category == "tech"
     assert fetched.usage is not None
 
-    missing_tolerated = index.fetch_documents(
+    missing_tolerated = index.documents.fetch(
         namespace=namespace, ids=["doc-1", "definitely-missing"]
     )
     assert set(missing_tolerated.documents) == {"doc-1"}
 
-    filtered = index.fetch_documents(
+    filtered = index.documents.fetch(
         namespace=namespace,
         filter={"category": {"$eq": "tech"}},
         include_fields=["category"],
@@ -113,10 +113,10 @@ def test_upsert_fetch_by_ids_and_filter(index: Index, namespace: str) -> None:
 
 
 def test_search_documents_dense(index: Index, namespace: str) -> None:
-    index.upsert_documents(namespace=namespace, documents=DOCS)
+    index.documents.upsert(namespace=namespace, documents=DOCS)
     _wait_for_ids(index, namespace, {"doc-1", "doc-2", "doc-3"})
 
-    response = index.search_documents(
+    response = index.documents.search(
         namespace=namespace,
         top_k=2,
         score_by=[DenseVectorQuery(field="embedding", values=[0.0, 1.0, 0.0, 0.0])],
@@ -130,10 +130,10 @@ def test_search_documents_dense(index: Index, namespace: str) -> None:
 
 
 def test_search_documents_text(index: Index, namespace: str) -> None:
-    index.upsert_documents(namespace=namespace, documents=DOCS)
+    index.documents.upsert(namespace=namespace, documents=DOCS)
     _wait_for_ids(index, namespace, {"doc-1", "doc-2", "doc-3"})
 
-    response = index.search_documents(
+    response = index.documents.search(
         namespace=namespace,
         top_k=3,
         score_by=[TextQuery(query="machine learning", fields=["content"])],
@@ -143,33 +143,33 @@ def test_search_documents_text(index: Index, namespace: str) -> None:
 
 
 def test_delete_documents_by_ids_filter_and_all(index: Index, namespace: str) -> None:
-    index.upsert_documents(namespace=namespace, documents=DOCS)
+    index.documents.upsert(namespace=namespace, documents=DOCS)
     _wait_for_ids(index, namespace, {"doc-1", "doc-2", "doc-3"})
 
-    by_ids = index.delete_documents(namespace=namespace, ids=["doc-3"])
+    by_ids = index.documents.delete(namespace=namespace, ids=["doc-3"])
     assert by_ids.matched_records is None
 
-    by_filter = index.delete_documents(
+    by_filter = index.documents.delete(
         namespace=namespace, filter={"category": {"$eq": "research"}}
     )
     assert by_filter.matched_records == 1
 
     deadline = time.time() + 60
     while True:
-        remaining = index.fetch_documents(namespace=namespace, ids=["doc-1", "doc-2", "doc-3"])
+        remaining = index.documents.fetch(namespace=namespace, ids=["doc-1", "doc-2", "doc-3"])
         if set(remaining.documents) == {"doc-1"} or time.time() > deadline:
             break
         time.sleep(1)
     assert set(remaining.documents) == {"doc-1"}
 
-    index.delete_documents(namespace=namespace, delete_all=True)
+    index.documents.delete(namespace=namespace, delete_all=True)
 
 
 def test_update_documents_per_id_and_by_filter(index: Index, namespace: str) -> None:
-    index.upsert_documents(namespace=namespace, documents=DOCS)
+    index.documents.upsert(namespace=namespace, documents=DOCS)
     _wait_for_ids(index, namespace, {"doc-1", "doc-2", "doc-3"})
 
-    per_id = index.update_documents(
+    per_id = index.documents.update(
         namespace=namespace,
         documents=[
             {"_id": "doc-1", "category": "tech-updated"},
@@ -181,7 +181,7 @@ def test_update_documents_per_id_and_by_filter(index: Index, namespace: str) -> 
 
     deadline = time.time() + 60
     while True:
-        patched = index.fetch_documents(namespace=namespace, ids=["doc-1", "doc-2"])
+        patched = index.documents.fetch(namespace=namespace, ids=["doc-1", "doc-2"])
         settled = patched.documents["doc-1"].get("category") == "tech-updated" and (
             patched.documents["doc-2"].get("category") is None
         )
@@ -191,7 +191,7 @@ def test_update_documents_per_id_and_by_filter(index: Index, namespace: str) -> 
     assert patched.documents["doc-1"].get("category") == "tech-updated"
     assert patched.documents["doc-2"].get("category") is None
 
-    by_filter = index.update_documents(
+    by_filter = index.documents.update(
         namespace=namespace,
         filter={"category": {"$eq": "history"}},
         set_fields={"category": "archive"},
@@ -201,22 +201,22 @@ def test_update_documents_per_id_and_by_filter(index: Index, namespace: str) -> 
 
 def test_list_documents_pages_and_prefix(index: Index, namespace: str) -> None:
     docs = [{"_id": f"list-{i:03d}", "content": f"document {i}"} for i in range(25)]
-    index.upsert_documents(namespace=namespace, documents=docs)
+    index.documents.upsert(namespace=namespace, documents=docs)
     _wait_for_ids(index, namespace, {"list-000", "list-012", "list-024"})
 
-    listed = index.list_documents(namespace=namespace, prefix="list-").to_list()
+    listed = index.documents.list(namespace=namespace, prefix="list-").to_list()
     assert [record.id for record in listed] == sorted(doc["_id"] for doc in docs)
 
-    paginator = index.list_documents(namespace=namespace, prefix="list-", limit=10)
+    paginator = index.documents.list(namespace=namespace, prefix="list-", limit=10)
     pages = list(paginator.pages())
     assert len(pages) >= 3
     assert len(pages[0].items) == 10
     assert paginator.pagination_token is None
 
-    narrowed = index.list_documents(namespace=namespace, prefix="list-01").to_list()
+    narrowed = index.documents.list(namespace=namespace, prefix="list-01").to_list()
     assert [record.id for record in narrowed] == [f"list-01{i}" for i in range(10)]
 
-    absent = index.list_documents(namespace=namespace, prefix="no-such-prefix-").to_list()
+    absent = index.documents.list(namespace=namespace, prefix="no-such-prefix-").to_list()
     assert absent == []
 
 
@@ -229,7 +229,7 @@ def test_batch_upsert_documents(index: Index, namespace: str) -> None:
         }
         for i in range(120)
     ]
-    result = index.batch_upsert_documents(
+    result = index.documents.batch_upsert(
         namespace=namespace, documents=docs, batch_size=50, show_progress=False
     )
     assert result.total_item_count == 120

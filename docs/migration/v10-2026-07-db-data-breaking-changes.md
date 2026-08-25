@@ -35,15 +35,19 @@ newer:
 | The index you are addressing | The operations that serve it |
 | --- | --- |
 | Created under an API version earlier than `2026-07` | `upsert`, `query`, `fetch`, `fetch_by_metadata`, `update`, `delete`, `list`, `describe_index_stats` |
-| Created with `2026-07` (document schema) | `upsert_documents`, `search_documents`, `fetch_documents`, `update_documents`, `delete_documents`, `list_documents` |
+| Created with `2026-07` (document schema) | `documents.upsert`, `documents.batch_upsert`, `documents.search`, `documents.fetch`, `documents.update`, `documents.delete`, `documents.list` |
 
 A vector-API **write** aimed at a document-schema index is refused, and the
 server's message names the endpoint to use instead — it begins *"This index has
 a document schema, so writes must go through the documents API."* Read that as
 "wrong operation family for this index", not as a deprecation notice.
 
-The document operations are REST-only; `GrpcIndex` has no document methods. The
-full document-surface write-up, including the preview-to-GA renames, is
+The document operations are REST-only; `GrpcIndex` has no `documents`
+namespace. The six operations above live on `index.documents`
+(`index.documents.upsert(...)`, `index.documents.search(...)`, and so on),
+lazily instantiated the same way as every other resource namespace on this
+SDK. The full document-surface write-up, including the preview-to-GA history
+and the namespace's restoration, is
 [preview namespace removed](v10-2026-07-preview-graduation.md).
 
 ## The migration table

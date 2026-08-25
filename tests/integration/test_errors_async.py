@@ -124,7 +124,7 @@ async def test_dimension_mismatch_raises_typed_error_async(
         index = await async_client.index(name=name)
 
         with pytest.raises(ApiError) as exc_info:
-            await index.upsert_documents(
+            await index.documents.upsert(
                 namespace="dim-ns",
                 documents=[{"_id": "dim-v1", DENSE_FIELD: [0.1, 0.2, 0.3]}],
             )
@@ -135,7 +135,7 @@ async def test_dimension_mismatch_raises_typed_error_async(
         assert "dimension" in msg.lower()
         assert not msg.strip().isdigit()
 
-        await index.upsert_documents(
+        await index.documents.upsert(
             namespace="dim-ns",
             documents=[{"_id": "dim-ok", DENSE_FIELD: [0.1, 0.2]}],
         )

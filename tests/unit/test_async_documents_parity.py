@@ -1,27 +1,24 @@
-"""Sync/async parity for the graduated documents data plane (#132 ∥ #134).
+"""Sync/async parity for the documents data plane (#132 ∥ #134 ∥ #494).
 
-``Index`` and ``AsyncIndex`` build their document requests through the same
-``pinecone/_internal/documents_helpers.py`` builders and decode through the same
-``DocumentsAdapter`` envelopes, so the two transports should differ only in
-``await``. These tests hold them to that on the axes a transport port can quietly
-break: identical request snapshots on the wire (method, path — including the
-URL-encoded namespace segment — query, body, and the 2026-07 version header) for
-identical arguments, identical signatures and return annotations, and identical
-exception types and messages for the full client-side rejection matrix, which is
-where the mutual-exclusion rules live.
+``Documents`` and ``AsyncDocuments`` build their document requests through the
+same ``pinecone/_internal/documents_helpers.py`` builders and decode through
+the same ``DocumentsAdapter`` envelopes, so the two transports should differ
+only in ``await``. These tests hold them to that on the axes a transport port
+can quietly break: identical request snapshots on the wire (method, path —
+including the URL-encoded namespace segment — query, body, and the 2026-07
+version header) for identical arguments, identical signatures and return
+annotations, and identical exception types and messages for the full
+client-side rejection matrix, which is where the mutual-exclusion rules live.
 
 Follows the pattern of ``tests/unit/test_async_inference_parity.py``.
 
-Three divergences are asserted rather than papered over. The positional-misuse
-guard names the owning class (``Index.upsert_documents`` vs
-``AsyncIndex.upsert_documents``), so its message differs by design; that case is
-checked for a shared suffix instead of byte-equality. ``batch_upsert_documents``
-runs on a thread pool in sync and an ``asyncio.Semaphore`` in async, so only its
-signature is compared — the per-request body it emits is already covered by the
-single-request ``upsert_documents`` snapshot. And ``list_documents`` returns a
-``Paginator`` in sync and an ``AsyncPaginator`` in async, so its return
-annotation is checked for equality modulo that one type name, and its request
-snapshot is taken after draining the paginator rather than from a bare call.
+Two divergences are asserted rather than papered over. ``batch_upsert`` runs on
+a thread pool in sync and an ``asyncio.Semaphore`` in async, so only its
+signature is compared — the per-request body it emits is already covered by
+the single-request ``upsert`` snapshot. And ``list`` returns a ``Paginator``
+in sync and an ``AsyncPaginator`` in async, so its return annotation is
+checked for equality modulo that one type name, and its request snapshot is
+taken after draining the paginator rather than from a bare call.
 """
 
 from __future__ import annotations
@@ -37,6 +34,8 @@ import respx
 
 from pinecone._internal.constants import API_VERSION_HEADER
 from pinecone.async_client.async_index import AsyncIndex
+from pinecone.async_client.documents import AsyncDocuments
+from pinecone.client.documents import Documents
 from pinecone.index import Index
 from pinecone.models.documents.document import DocumentRecord, UpdateDocumentRecord
 from pinecone.models.documents.score_by import (
@@ -52,27 +51,19 @@ BASE_URL = f"https://{INDEX_HOST}"
 NS = "articles-en"
 ENCODED_NS = "live%20ns%2Fv1"
 
-_METHODS = [
-    "batch_upsert_documents",
-    "delete_documents",
-    "fetch_documents",
-    "list_documents",
-    "search_documents",
-    "update_documents",
-    "upsert_documents",
-]
+_METHODS = ["batch_upsert", "delete", "fetch", "list", "search", "update", "upsert"]
 
-_PAGINATED_METHODS = ["list_documents"]
+_PAGINATED_METHODS = ["list"]
 
 _CALLS: dict[str, dict[str, Any]] = {
-    "upsert_documents": {
+    "upsert": {
         "namespace": "live ns/v1",
         "documents": [
             {"_id": "doc-1", "title": "Rome", "year": 2026},
             DocumentRecord({"_id": "doc-2", "title": "Carthage"}),
         ],
     },
-    "search_documents": {
+    "search": {
         "namespace": "live ns/v1",
         "top_k": 7,
         "score_by": [
@@ -82,17 +73,17 @@ _CALLS: dict[str, dict[str, Any]] = {
         "include_fields": ["title"],
         "filter": {"category": {"$eq": "history"}},
     },
-    "fetch_documents": {
+    "fetch": {
         "namespace": "live ns/v1",
         "filter": {"category": {"$eq": "history"}},
         "include_fields": [],
         "pagination_token": "tok-1",
     },
-    "delete_documents": {
+    "delete": {
         "namespace": "live ns/v1",
         "filter": {"category": {"$eq": "history"}},
     },
-    "update_documents": {
+    "update": {
         "namespace": "live ns/v1",
         "documents": [
             {"_id": "doc-1", "title": "Rome", "year": 2026},
@@ -102,7 +93,7 @@ _CALLS: dict[str, dict[str, Any]] = {
 }
 
 _PAGINATED_CALLS: dict[str, dict[str, Any]] = {
-    "list_documents": {
+    "list": {
         "namespace": "live ns/v1",
         "prefix": "doc-",
         "limit": 20,
@@ -111,33 +102,33 @@ _PAGINATED_CALLS: dict[str, dict[str, Any]] = {
 }
 
 _ERROR_CASES: list[tuple[str, dict[str, Any]]] = [
-    ("upsert_documents", {"namespace": "", "documents": [{"_id": "a"}]}),
-    ("upsert_documents", {"namespace": "   ", "documents": [{"_id": "a"}]}),
-    ("upsert_documents", {"namespace": 7, "documents": [{"_id": "a"}]}),
-    ("upsert_documents", {"namespace": NS, "documents": []}),
-    ("upsert_documents", {"namespace": NS, "documents": [{"_id": f"d{i}"} for i in range(1001)]}),
-    ("upsert_documents", {"namespace": NS, "documents": [{"title": "no id"}]}),
-    ("upsert_documents", {"namespace": NS, "documents": [{"_id": ""}]}),
-    ("upsert_documents", {"namespace": NS, "documents": [{"_id": 42}]}),
-    ("upsert_documents", {"namespace": NS, "documents": [{"_id": "x" * 513}]}),
-    ("upsert_documents", {"namespace": NS, "documents": [{"_id": "ünïcode"}]}),
-    ("upsert_documents", {"namespace": NS, "documents": ["doc-1"]}),
-    ("upsert_documents", {"namespace": NS, "documents": [{"_id": "a"}, {"_id": "a"}]}),
-    ("batch_upsert_documents", {"namespace": NS, "documents": [{"_id": "a"}], "batch_size": 0}),
-    ("batch_upsert_documents", {"namespace": NS, "documents": [{"_id": "a"}], "batch_size": 1001}),
+    ("upsert", {"namespace": "", "documents": [{"_id": "a"}]}),
+    ("upsert", {"namespace": "   ", "documents": [{"_id": "a"}]}),
+    ("upsert", {"namespace": 7, "documents": [{"_id": "a"}]}),
+    ("upsert", {"namespace": NS, "documents": []}),
+    ("upsert", {"namespace": NS, "documents": [{"_id": f"d{i}"} for i in range(1001)]}),
+    ("upsert", {"namespace": NS, "documents": [{"title": "no id"}]}),
+    ("upsert", {"namespace": NS, "documents": [{"_id": ""}]}),
+    ("upsert", {"namespace": NS, "documents": [{"_id": 42}]}),
+    ("upsert", {"namespace": NS, "documents": [{"_id": "x" * 513}]}),
+    ("upsert", {"namespace": NS, "documents": [{"_id": "ünïcode"}]}),
+    ("upsert", {"namespace": NS, "documents": ["doc-1"]}),
+    ("upsert", {"namespace": NS, "documents": [{"_id": "a"}, {"_id": "a"}]}),
+    ("batch_upsert", {"namespace": NS, "documents": [{"_id": "a"}], "batch_size": 0}),
+    ("batch_upsert", {"namespace": NS, "documents": [{"_id": "a"}], "batch_size": 1001}),
     (
-        "batch_upsert_documents",
+        "batch_upsert",
         {"namespace": NS, "documents": [{"_id": "a"}], "max_concurrency": 0},
     ),
     (
-        "batch_upsert_documents",
+        "batch_upsert",
         {"namespace": NS, "documents": [{"_id": "a"}], "max_concurrency": 65},
     ),
-    ("batch_upsert_documents", {"namespace": "", "documents": [{"_id": "a"}]}),
-    ("batch_upsert_documents", {"namespace": NS, "documents": [{"_id": "a"}, {"_id": "a"}]}),
-    ("search_documents", {"namespace": NS, "top_k": 5, "score_by": []}),
+    ("batch_upsert", {"namespace": "", "documents": [{"_id": "a"}]}),
+    ("batch_upsert", {"namespace": NS, "documents": [{"_id": "a"}, {"_id": "a"}]}),
+    ("search", {"namespace": NS, "top_k": 5, "score_by": []}),
     (
-        "search_documents",
+        "search",
         {
             "namespace": NS,
             "top_k": 5,
@@ -145,7 +136,7 @@ _ERROR_CASES: list[tuple[str, dict[str, Any]]] = [
         },
     ),
     (
-        "search_documents",
+        "search",
         {
             "namespace": NS,
             "top_k": 5,
@@ -156,7 +147,7 @@ _ERROR_CASES: list[tuple[str, dict[str, Any]]] = [
         },
     ),
     (
-        "search_documents",
+        "search",
         {
             "namespace": NS,
             "top_k": 5,
@@ -168,62 +159,62 @@ _ERROR_CASES: list[tuple[str, dict[str, Any]]] = [
             ],
         },
     ),
-    ("search_documents", {"namespace": NS, "top_k": 0, "score_by": [QueryStringQuery(query="r")]}),
-    ("search_documents", {"namespace": NS, "top_k": -1, "score_by": [QueryStringQuery(query="r")]}),
+    ("search", {"namespace": NS, "top_k": 0, "score_by": [QueryStringQuery(query="r")]}),
+    ("search", {"namespace": NS, "top_k": -1, "score_by": [QueryStringQuery(query="r")]}),
     (
-        "search_documents",
+        "search",
         {"namespace": NS, "top_k": 10001, "score_by": [QueryStringQuery(query="r")]},
     ),
-    ("search_documents", {"namespace": NS, "top_k": 5, "score_by": [{"type": "bogus"}]}),
-    ("search_documents", {"namespace": "", "top_k": 5, "score_by": [QueryStringQuery(query="r")]}),
-    ("fetch_documents", {"namespace": NS}),
-    ("fetch_documents", {"namespace": NS, "ids": ["a"], "filter": {"x": {"$eq": 1}}}),
-    ("fetch_documents", {"namespace": NS, "filter": {}}),
-    ("fetch_documents", {"namespace": NS, "ids": ["a"], "pagination_token": "tok"}),
-    ("fetch_documents", {"namespace": NS, "ids": [f"d{i}" for i in range(1001)]}),
-    ("fetch_documents", {"namespace": "", "ids": ["a"]}),
-    ("delete_documents", {"namespace": NS}),
-    ("delete_documents", {"namespace": NS, "ids": ["a"], "filter": {"x": {"$eq": 1}}}),
-    ("delete_documents", {"namespace": NS, "ids": ["a"], "delete_all": True}),
-    ("delete_documents", {"namespace": NS, "filter": {"x": {"$eq": 1}}, "delete_all": True}),
+    ("search", {"namespace": NS, "top_k": 5, "score_by": [{"type": "bogus"}]}),
+    ("search", {"namespace": "", "top_k": 5, "score_by": [QueryStringQuery(query="r")]}),
+    ("fetch", {"namespace": NS}),
+    ("fetch", {"namespace": NS, "ids": ["a"], "filter": {"x": {"$eq": 1}}}),
+    ("fetch", {"namespace": NS, "filter": {}}),
+    ("fetch", {"namespace": NS, "ids": ["a"], "pagination_token": "tok"}),
+    ("fetch", {"namespace": NS, "ids": [f"d{i}" for i in range(1001)]}),
+    ("fetch", {"namespace": "", "ids": ["a"]}),
+    ("delete", {"namespace": NS}),
+    ("delete", {"namespace": NS, "ids": ["a"], "filter": {"x": {"$eq": 1}}}),
+    ("delete", {"namespace": NS, "ids": ["a"], "delete_all": True}),
+    ("delete", {"namespace": NS, "filter": {"x": {"$eq": 1}}, "delete_all": True}),
     (
-        "delete_documents",
+        "delete",
         {"namespace": NS, "ids": ["a"], "filter": {"x": {"$eq": 1}}, "delete_all": True},
     ),
-    ("delete_documents", {"namespace": NS, "filter": {}}),
-    ("delete_documents", {"namespace": NS, "ids": [f"d{i}" for i in range(1001)]}),
-    ("delete_documents", {"namespace": "", "delete_all": True}),
-    ("update_documents", {"namespace": NS}),
-    ("update_documents", {"namespace": NS, "documents": []}),
-    ("update_documents", {"namespace": NS, "documents": [{"_id": f"d{i}"} for i in range(1001)]}),
-    ("update_documents", {"namespace": NS, "documents": [{"title": "no id"}]}),
-    ("update_documents", {"namespace": NS, "documents": [{"_id": ""}]}),
-    ("update_documents", {"namespace": NS, "documents": [{"_id": "x" * 513}]}),
-    ("update_documents", {"namespace": NS, "documents": [{"_id": "ünïcode"}]}),
-    ("update_documents", {"namespace": NS, "documents": ["doc-1"]}),
-    ("update_documents", {"namespace": NS, "documents": [{"_id": "a"}, {"_id": "a"}]}),
+    ("delete", {"namespace": NS, "filter": {}}),
+    ("delete", {"namespace": NS, "ids": [f"d{i}" for i in range(1001)]}),
+    ("delete", {"namespace": "", "delete_all": True}),
+    ("update", {"namespace": NS}),
+    ("update", {"namespace": NS, "documents": []}),
+    ("update", {"namespace": NS, "documents": [{"_id": f"d{i}"} for i in range(1001)]}),
+    ("update", {"namespace": NS, "documents": [{"title": "no id"}]}),
+    ("update", {"namespace": NS, "documents": [{"_id": ""}]}),
+    ("update", {"namespace": NS, "documents": [{"_id": "x" * 513}]}),
+    ("update", {"namespace": NS, "documents": [{"_id": "ünïcode"}]}),
+    ("update", {"namespace": NS, "documents": ["doc-1"]}),
+    ("update", {"namespace": NS, "documents": [{"_id": "a"}, {"_id": "a"}]}),
     (
-        "update_documents",
+        "update",
         {"namespace": NS, "documents": [{"_id": "a", "t": 1, "_remove_fields": ["t"]}]},
     ),
-    ("update_documents", {"namespace": NS, "documents": [{"_id": "a", "_remove_fields": "t"}]}),
+    ("update", {"namespace": NS, "documents": [{"_id": "a", "_remove_fields": "t"}]}),
     (
-        "update_documents",
+        "update",
         {"namespace": NS, "documents": [{"_id": "a"}], "filter": {"x": {"$eq": 1}}},
     ),
-    ("update_documents", {"namespace": NS, "documents": [{"_id": "a"}], "set_fields": {"y": 1}}),
-    ("update_documents", {"namespace": NS, "documents": [{"_id": "a"}], "remove_fields": ["y"]}),
-    ("update_documents", {"namespace": NS, "set_fields": {"y": 1}}),
-    ("update_documents", {"namespace": NS, "remove_fields": ["y"]}),
-    ("update_documents", {"namespace": NS, "filter": {"x": {"$eq": 1}}}),
-    ("update_documents", {"namespace": NS, "filter": {}, "set_fields": {"y": 1}}),
-    ("update_documents", {"namespace": "", "documents": [{"_id": "a"}]}),
-    ("list_documents", {"namespace": ""}),
-    ("list_documents", {"namespace": 7}),
-    ("list_documents", {"namespace": NS, "limit": 0}),
-    ("list_documents", {"namespace": NS, "limit": 101}),
-    ("list_documents", {"namespace": NS, "prefix": "x" * 513}),
-    ("list_documents", {"namespace": NS, "prefix": "ünïcode"}),
+    ("update", {"namespace": NS, "documents": [{"_id": "a"}], "set_fields": {"y": 1}}),
+    ("update", {"namespace": NS, "documents": [{"_id": "a"}], "remove_fields": ["y"]}),
+    ("update", {"namespace": NS, "set_fields": {"y": 1}}),
+    ("update", {"namespace": NS, "remove_fields": ["y"]}),
+    ("update", {"namespace": NS, "filter": {"x": {"$eq": 1}}}),
+    ("update", {"namespace": NS, "filter": {}, "set_fields": {"y": 1}}),
+    ("update", {"namespace": "", "documents": [{"_id": "a"}]}),
+    ("list", {"namespace": ""}),
+    ("list", {"namespace": 7}),
+    ("list", {"namespace": NS, "limit": 0}),
+    ("list", {"namespace": NS, "limit": 101}),
+    ("list", {"namespace": NS, "prefix": "x" * 513}),
+    ("list", {"namespace": NS, "prefix": "ünïcode"}),
 ]
 
 
@@ -305,10 +296,10 @@ async def test_request_snapshot_parity(
     _register_routes()
     kwargs = _CALLS[method_name]
 
-    getattr(sync_index, method_name)(**kwargs)
+    getattr(sync_index.documents, method_name)(**kwargs)
     sync_snapshot = _snapshot(respx.calls.last.request)
 
-    await getattr(async_index, method_name)(**kwargs)
+    await getattr(async_index.documents, method_name)(**kwargs)
     async_snapshot = _snapshot(respx.calls.last.request)
 
     assert len(respx.calls) == 2, "each transport must have issued exactly one request"
@@ -325,10 +316,10 @@ async def test_paginated_request_snapshot_parity(
     _register_routes()
     kwargs = _PAGINATED_CALLS[method_name]
 
-    sync_items = getattr(sync_index, method_name)(**kwargs).to_list()
+    sync_items = getattr(sync_index.documents, method_name)(**kwargs).to_list()
     sync_snapshot = _snapshot(respx.calls.last.request)
 
-    async_items = await getattr(async_index, method_name)(**kwargs).to_list()
+    async_items = await getattr(async_index.documents, method_name)(**kwargs).to_list()
     async_snapshot = _snapshot(respx.calls.last.request)
 
     assert len(respx.calls) == 2, "each transport must have issued exactly one request"
@@ -340,8 +331,8 @@ async def test_paginated_request_snapshot_parity(
 
 @pytest.mark.parametrize("method_name", _METHODS)
 def test_parameter_parity(method_name: str) -> None:
-    sync_params = dict(inspect.signature(getattr(Index, method_name)).parameters)
-    async_params = dict(inspect.signature(getattr(AsyncIndex, method_name)).parameters)
+    sync_params = dict(inspect.signature(getattr(Documents, method_name)).parameters)
+    async_params = dict(inspect.signature(getattr(AsyncDocuments, method_name)).parameters)
 
     assert set(sync_params) == set(async_params), (
         f"{method_name}: parameter names differ — "
@@ -368,8 +359,8 @@ def test_parameter_parity(method_name: str) -> None:
     "method_name", [name for name in _METHODS if name not in _PAGINATED_METHODS]
 )
 def test_return_annotation_parity(method_name: str) -> None:
-    sync_return = inspect.signature(getattr(Index, method_name)).return_annotation
-    async_return = inspect.signature(getattr(AsyncIndex, method_name)).return_annotation
+    sync_return = inspect.signature(getattr(Documents, method_name)).return_annotation
+    async_return = inspect.signature(getattr(AsyncDocuments, method_name)).return_annotation
 
     assert str(sync_return) == str(async_return), (
         f"{method_name}: return annotation differs (sync={sync_return}, async={async_return})"
@@ -378,8 +369,8 @@ def test_return_annotation_parity(method_name: str) -> None:
 
 @pytest.mark.parametrize("method_name", _PAGINATED_METHODS)
 def test_paginated_return_annotation_differs_only_in_the_paginator_type(method_name: str) -> None:
-    sync_return = str(inspect.signature(getattr(Index, method_name)).return_annotation)
-    async_return = str(inspect.signature(getattr(AsyncIndex, method_name)).return_annotation)
+    sync_return = str(inspect.signature(getattr(Documents, method_name)).return_annotation)
+    async_return = str(inspect.signature(getattr(AsyncDocuments, method_name)).return_annotation)
 
     assert sync_return.startswith("Paginator[")
     assert async_return.startswith("AsyncPaginator[")
@@ -388,7 +379,7 @@ def test_paginated_return_annotation_differs_only_in_the_paginator_type(method_n
 
 @pytest.mark.parametrize("method_name", _METHODS)
 def test_keyword_only_parity(method_name: str) -> None:
-    sync_params = inspect.signature(getattr(Index, method_name)).parameters
+    sync_params = inspect.signature(getattr(Documents, method_name)).parameters
     positional = [
         name
         for name, param in sync_params.items()
@@ -408,24 +399,10 @@ async def test_validation_error_parity(
     sync_index: Index,
     async_index: AsyncIndex,
 ) -> None:
-    sync_type, sync_message = _raised(lambda: getattr(sync_index, method_name)(**kwargs))
+    sync_type, sync_message = _raised(lambda: getattr(sync_index.documents, method_name)(**kwargs))
     async_type, async_message = await _raised_async(
-        lambda: getattr(async_index, method_name)(**kwargs)
+        lambda: getattr(async_index.documents, method_name)(**kwargs)
     )
 
     assert async_type is sync_type
     assert async_message == sync_message
-
-
-@pytest.mark.parametrize("method_name", _METHODS)
-async def test_positional_misuse_message_parity_modulo_owner(
-    method_name: str, sync_index: Index, async_index: AsyncIndex
-) -> None:
-    sync_type, sync_message = _raised(lambda: getattr(sync_index, method_name)(NS))
-    async_type, async_message = await _raised_async(lambda: getattr(async_index, method_name)(NS))
-
-    assert async_type is sync_type
-    assert sync_message.startswith(f"Index.{method_name}()")
-    assert async_message.startswith(f"AsyncIndex.{method_name}()")
-    suffix = "() is a keyword-only method"
-    assert sync_message.split(suffix, 1)[1] == async_message.split(suffix, 1)[1]

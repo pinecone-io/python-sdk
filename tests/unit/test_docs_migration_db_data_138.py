@@ -109,7 +109,15 @@ def _normalized() -> str:
 
 def _table_row_methods(row_prefix: str) -> list[str]:
     line = next(line for line in TEXT.splitlines() if line.startswith(row_prefix))
-    return re.findall(r"`(\w+)`", line.split("|")[2])
+    return re.findall(r"`([\w.]+)`", line.split("|")[2])
+
+
+def _resolve_dotted(obj: object, name: str) -> object | None:
+    for part in name.split("."):
+        obj = getattr(obj, part, None)
+        if obj is None:
+            return None
+    return obj
 
 
 @respx.mock
@@ -277,10 +285,12 @@ def test_the_vector_family_row_names_methods_that_exist_on_every_lane() -> None:
 def test_the_document_family_row_names_rest_only_methods() -> None:
     names = _table_row_methods("| Created with `2026-07`")
     assert names, "the document-family row lists no methods"
+    sync_index = _index()
+    async_index = AsyncIndex(host=INDEX_HOST, api_key="test-key")
     for name in names:
-        assert callable(getattr(Index, name, None)), f"Index has no {name}"
-        assert callable(getattr(AsyncIndex, name, None)), f"AsyncIndex has no {name}"
-        assert not hasattr(GrpcIndex, name), f"the guide says gRPC serves no documents, but {name}"
+        assert callable(_resolve_dotted(sync_index, name)), f"Index has no {name}"
+        assert callable(_resolve_dotted(async_index, name)), f"AsyncIndex has no {name}"
+    assert not hasattr(GrpcIndex, "documents"), "the guide says gRPC serves no documents"
 
 
 def test_the_guide_states_the_vector_operations_are_kept_on_purpose() -> None:

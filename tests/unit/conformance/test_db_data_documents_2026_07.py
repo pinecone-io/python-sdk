@@ -117,7 +117,7 @@ def test_upsert_documents(claim: Any, index: Index, respx_mock: respx.MockRouter
     route = respx_mock.post(f"{BASE_URL}/namespaces/{NAMESPACE}/documents/upsert").mock(
         return_value=httpx.Response(202, json=DOC_UPSERT)
     )
-    result = index.upsert_documents(namespace=NAMESPACE, documents=DOCUMENTS_INPUT)
+    result = index.documents.upsert(namespace=NAMESPACE, documents=DOCUMENTS_INPUT)
     assert result.upserted_count == 2
     _conforms(claim, route, UpsertDocumentsResponse, DOC_UPSERT, [])
 
@@ -127,7 +127,7 @@ def test_search_documents(claim: Any, index: Index, respx_mock: respx.MockRouter
     route = respx_mock.post(f"{BASE_URL}/namespaces/{NAMESPACE}/documents/search").mock(
         return_value=httpx.Response(200, json=DOC_SEARCH)
     )
-    result = index.search_documents(
+    result = index.documents.search(
         namespace=NAMESPACE,
         top_k=10,
         score_by=[{"type": "text", "fields": ["content"], "query": "What is machine learning?"}],
@@ -143,7 +143,7 @@ def test_fetch_documents(claim: Any, index: Index, respx_mock: respx.MockRouter)
     route = respx_mock.post(f"{BASE_URL}/namespaces/{NAMESPACE}/documents/fetch").mock(
         return_value=httpx.Response(200, json=DOC_FETCH)
     )
-    result = index.fetch_documents(namespace=NAMESPACE, filter={"category": {"$eq": "news"}})
+    result = index.documents.fetch(namespace=NAMESPACE, filter={"category": {"$eq": "news"}})
     assert result.documents["doc-1"]._id == "doc-1"
     assert result.pagination is not None and result.pagination.next == "page-2"
     _conforms(claim, route, _FetchDocumentsEnvelope, DOC_FETCH, ["pagination"])
@@ -154,7 +154,7 @@ def test_delete_documents(claim: Any, index: Index, respx_mock: respx.MockRouter
     route = respx_mock.post(f"{BASE_URL}/namespaces/{NAMESPACE}/documents/delete").mock(
         return_value=httpx.Response(202, json=DOC_DELETE)
     )
-    result = index.delete_documents(namespace=NAMESPACE, filter={"category": {"$eq": "news"}})
+    result = index.documents.delete(namespace=NAMESPACE, filter={"category": {"$eq": "news"}})
     assert result.matched_records == 42
     _conforms(claim, route, DeleteDocumentsResponse, DOC_DELETE, ["matched_records"])
 
@@ -164,7 +164,7 @@ def test_update_documents(claim: Any, index: Index, respx_mock: respx.MockRouter
     route = respx_mock.post(f"{BASE_URL}/namespaces/{NAMESPACE}/documents/update").mock(
         return_value=httpx.Response(202, json=DOC_UPDATE)
     )
-    result = index.update_documents(namespace=NAMESPACE, documents=DOC_UPDATE_INPUT)
+    result = index.documents.update(namespace=NAMESPACE, documents=DOC_UPDATE_INPUT)
     assert result.matched_records == 42
     _conforms(claim, route, UpdateDocumentsResponse, DOC_UPDATE, ["matched_records"])
 
@@ -174,7 +174,7 @@ def test_list_documents(claim: Any, index: Index, respx_mock: respx.MockRouter) 
     route = respx_mock.post(f"{BASE_URL}/namespaces/{NAMESPACE}/documents/list").mock(
         return_value=httpx.Response(200, json=DOC_LIST)
     )
-    page = next(index.list_documents(namespace=NAMESPACE, prefix="doc-", limit=20).pages())
+    page = next(index.documents.list(namespace=NAMESPACE, prefix="doc-", limit=20).pages())
     assert [record.id for record in page.items] == ["doc-1", "doc-2"]
     assert page.pagination_token == "page-2"
     _conforms(claim, route, _ListDocumentsEnvelope, DOC_LIST, ["pagination"])

@@ -286,32 +286,32 @@ DATA_PLANE_OPS: list[tuple[str, Op, str]] = [
     ),
     (
         "documents_upsert",
-        lambda ix, v: ix.upsert_documents(namespace=v, documents=[{"_id": "1"}]),
+        lambda ix, v: ix.documents.upsert(namespace=v, documents=[{"_id": "1"}]),
         "/namespaces/{}/documents/upsert",
     ),
     (
         "documents_search",
-        lambda ix, v: ix.search_documents(namespace=v, score_by=["_score"], top_k=1),
+        lambda ix, v: ix.documents.search(namespace=v, score_by=["_score"], top_k=1),
         "/namespaces/{}/documents/search",
     ),
     (
         "documents_fetch",
-        lambda ix, v: ix.fetch_documents(namespace=v, ids=["1"]),
+        lambda ix, v: ix.documents.fetch(namespace=v, ids=["1"]),
         "/namespaces/{}/documents/fetch",
     ),
     (
         "documents_delete",
-        lambda ix, v: ix.delete_documents(namespace=v, ids=["1"]),
+        lambda ix, v: ix.documents.delete(namespace=v, ids=["1"]),
         "/namespaces/{}/documents/delete",
     ),
     (
         "documents_update",
-        lambda ix, v: ix.update_documents(namespace=v, documents=[{"_id": "1"}]),
+        lambda ix, v: ix.documents.update(namespace=v, documents=[{"_id": "1"}]),
         "/namespaces/{}/documents/update",
     ),
     (
         "documents_list",
-        lambda ix, v: list(ix.list_documents(namespace=v)),
+        lambda ix, v: list(ix.documents.list(namespace=v)),
         "/namespaces/{}/documents/list",
     ),
 ]
@@ -349,12 +349,12 @@ ASYNC_DATA_PLANE_OPS: list[tuple[str, AsyncOp, str]] = [
     ),
     (
         "documents_fetch",
-        lambda ix, v: ix.fetch_documents(namespace=v, ids=["1"]),
+        lambda ix, v: ix.documents.fetch(namespace=v, ids=["1"]),
         "/namespaces/{}/documents/fetch",
     ),
     (
         "documents_delete",
-        lambda ix, v: ix.delete_documents(namespace=v, ids=["1"]),
+        lambda ix, v: ix.documents.delete(namespace=v, ids=["1"]),
         "/namespaces/{}/documents/delete",
     ),
 ]

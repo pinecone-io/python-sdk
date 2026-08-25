@@ -95,7 +95,7 @@ class BatchResult(Struct, kw_only=True):
         ...     }
         ...     for i in range(1000)
         ... ]
-        >>> result = index.batch_upsert_documents(
+        >>> result = index.documents.batch_upsert(
         ...     namespace="articles-en",
         ...     documents=documents,
         ... )
