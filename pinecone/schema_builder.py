@@ -100,10 +100,6 @@ def _validate_field_name(name: str) -> None:
 
     if not name:
         raise PineconeValueError("Field name must be a non-empty string")
-    if name.startswith("$") or name.startswith("_"):
-        raise PineconeValueError(
-            f"Field name '{name}' is invalid: names cannot begin with '$' or '_'"
-        )
     try:
         byte_len = len(name.encode("utf-8"))
     except UnicodeEncodeError:

@@ -2,8 +2,9 @@
 
 Five properties are pinned here (#106, #374):
 
-* Arbitrary unicode field names are accepted iff they are 1-64 UTF-8 bytes
-  and do not start with ``$`` or ``_``.
+* Arbitrary unicode field names are accepted iff they are 1-64 UTF-8 bytes.
+  Which names are reserved (e.g. a leading ``_`` or ``$``) is the server's
+  call, not the SDK's.
 * Language normalization is idempotent, case-insensitive for known codes and
   long-form aliases, and a passthrough for unknown values.
 * ``build()`` output is always JSON-serializable, and ``add_*`` then
@@ -42,7 +43,7 @@ def _name_is_valid(name: str) -> bool:
         byte_len = len(name.encode("utf-8"))
     except UnicodeEncodeError:
         return False
-    return name != "" and not name.startswith("$") and not name.startswith("_") and byte_len <= 64
+    return name != "" and byte_len <= 64
 
 
 @given(name=st.text(max_size=80))

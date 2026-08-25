@@ -25,15 +25,16 @@ _MAX_FIELD_NAME_LENGTH = 64
 def validate_schema_field_name(name: str) -> None:
     """Validate a schema field name against the 2026-07 naming rules.
 
-    Field names must be 1-64 characters and must not begin with ``_``
-    (reserved for internal use, e.g. ``_id``, ``_values``,
-    ``_sparse_values``) or ``$`` (introduces a filter operator).  These
-    rules are stated in the API spec's prose and enforced server-side;
-    validating here fails fast before any HTTP request.
+    Field names must be 1-64 characters. Which names are reserved (e.g.
+    ``_id``, ``_values``, ``_sparse_values``) or otherwise special (e.g. a
+    leading ``$``) is the server's call, not the SDK's: the 2026-07 API
+    accepts such names for backward compatibility, and a client-side copy
+    of that list would drift the moment the server's rules change.
 
     Raises:
-        PineconeValueError: If the name violates any rule. The message names
-            the field, the rule violated, and the fix.
+        PineconeValueError: If the name is empty or exceeds the maximum
+            length. The message names the field, the rule violated, and the
+            fix.
     """
     if not name:
         raise PineconeValueError(
@@ -45,18 +46,6 @@ def validate_schema_field_name(name: str) -> None:
             f"Invalid schema field name {name!r}: {len(name)} characters exceeds "
             f"the maximum length of {_MAX_FIELD_NAME_LENGTH}. Shorten the field name."
         )
-    if name.startswith("_"):
-        raise PineconeValueError(
-            f"Invalid schema field name {name!r}: names beginning with '_' are "
-            "reserved for internal use (e.g. _id, _values, _sparse_values). "
-            "Rename the field without the leading underscore."
-        )
-    if name.startswith("$"):
-        raise PineconeValueError(
-            f"Invalid schema field name {name!r}: names beginning with '$' are "
-            "not allowed because '$' introduces a filter operator. "
-            "Rename the field without the leading '$'."
-        )
 
 
 def _validate_schema(schema: dict[str, Any] | IndexSchema) -> None:
@@ -64,8 +53,12 @@ def _validate_schema(schema: dict[str, Any] | IndexSchema) -> None:
     if not isinstance(fields, dict):
         return
     for field_name in fields:
-        if isinstance(field_name, str):
-            validate_schema_field_name(field_name)
+        if not isinstance(field_name, str):
+            raise PineconeValueError(
+                f"Invalid schema field name {field_name!r}: expected a str key, "
+                f"got {type(field_name).__name__}. Schema field names must be strings."
+            )
+        validate_schema_field_name(field_name)
 
 
 def _validate_deployment(deployment: dict[str, Any] | IndexDeployment | None) -> None:

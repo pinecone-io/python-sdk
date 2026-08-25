@@ -328,10 +328,12 @@ class AsyncIndexes:
                 Also accepts the dict produced by
                 :class:`~pinecone.schema_builder.SchemaBuilder` or an
                 :class:`~pinecone.models.indexes.schema.IndexSchema`. Field
-                names must be 1-64 characters and must not begin with ``_``
-                or ``$``. Field-type rules (at most one dense and one sparse
-                vector field; metadata types rejected) are enforced by the
-                server and surfaced verbatim.
+                names must be 1-64 characters (enforced client-side). Which
+                names are reserved (e.g. ``_values``, ``_sparse_values``) or
+                otherwise special is the server's call; field-type rules (at
+                most one dense and one sparse vector field; metadata types
+                rejected) are also enforced by the server and surfaced
+                verbatim.
                 A **hybrid** index must declare its ``sparse_vector`` field
                 explicitly. At 2026-07 a dense field with
                 ``metric="dotproduct"`` no longer accepts sparse values on its

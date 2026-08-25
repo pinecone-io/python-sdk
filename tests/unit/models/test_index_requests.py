@@ -122,14 +122,29 @@ class TestCreateRequestValidation:
             CreateIndexRequest(schema={"fields": {"": {"type": "dense_vector"}}})
         assert type(exc_info.value) is PineconeValueError
 
-    def test_leading_underscore_rejected(self) -> None:
-        with pytest.raises(PineconeValueError, match="reserved for internal use") as exc_info:
-            CreateIndexRequest(schema={"fields": {"_id": {"type": "dense_vector"}}})
-        assert type(exc_info.value) is PineconeValueError
+    def test_leading_underscore_accepted(self) -> None:
+        req = CreateIndexRequest(
+            schema={"fields": {"_values": {"type": "dense_vector", "dimension": 8}}}
+        )
+        assert "_values" in req.schema["fields"]  # type: ignore[union-attr, index, operator]
 
-    def test_leading_dollar_rejected(self) -> None:
-        with pytest.raises(PineconeValueError, match="filter operator") as exc_info:
-            CreateIndexRequest(schema={"fields": {"$and": {"type": "dense_vector"}}})
+    def test_leading_dollar_accepted(self) -> None:
+        req = CreateIndexRequest(schema={"fields": {"$and": {"type": "dense_vector"}}})
+        assert "$and" in req.schema["fields"]  # type: ignore[union-attr, index, operator]
+
+    def test_encoded_body_preserves_underscore_prefixed_name(self) -> None:
+        req = CreateIndexRequest(
+            schema={"fields": {"_values": {"type": "dense_vector", "dimension": 8}}}
+        )
+        result = msgspec.to_builtins(req)
+        assert result["schema"]["fields"] == {"_values": {"type": "dense_vector", "dimension": 8}}
+
+    def test_non_str_field_key_raises_pinecone_value_error(self) -> None:
+        with pytest.raises(PineconeValueError, match="expected a str key") as exc_info:
+            CreateIndexRequest(schema={"fields": {123: {"type": "dense_vector"}}})  # type: ignore[dict-item]
+        message = str(exc_info.value)
+        assert "123" in message
+        assert "int" in message
         assert type(exc_info.value) is PineconeValueError
 
     def test_over_64_chars_rejected(self) -> None:
@@ -147,15 +162,15 @@ class TestCreateRequestValidation:
 
     def test_error_message_names_field_and_value(self) -> None:
         with pytest.raises(PineconeValueError) as exc_info:
-            CreateIndexRequest(schema={"fields": {"_secret": {"type": "dense_vector"}}})
+            CreateIndexRequest(schema={"fields": {"f" * 65: {"type": "dense_vector"}}})
         message = str(exc_info.value)
-        assert "_secret" in message
-        assert "Rename" in message
+        assert "f" * 65 in message
+        assert "Shorten" in message
 
     @pytest.mark.parametrize(
         "field_name",
-        ["", "_id", "$and", "f" * 65],
-        ids=["empty", "leading-underscore", "leading-dollar", "over-64-chars"],
+        ["", "f" * 65],
+        ids=["empty", "over-64-chars"],
     )
     def test_schema_field_name_raises_pinecone_value_error(self, field_name: str) -> None:
         """A rejected schema field name must be catchable as the documented type.
@@ -173,8 +188,8 @@ class TestCreateRequestValidation:
 
     @pytest.mark.parametrize(
         "field_name",
-        ["", "_id", "$and", "f" * 65],
-        ids=["empty", "leading-underscore", "leading-dollar", "over-64-chars"],
+        ["", "f" * 65],
+        ids=["empty", "over-64-chars"],
     )
     def test_schema_field_name_caught_as_pinecone_error(self, field_name: str) -> None:
         with pytest.raises(PineconeError):

@@ -380,10 +380,18 @@ def test_create_invalid_name_raises_with_rule(indexes: Indexes, bad_name: str, m
         indexes.create(name=bad_name, schema=DENSE_SCHEMA)
 
 
-def test_create_invalid_schema_field_name_raises(indexes: Indexes) -> None:
-    with pytest.raises(PineconeValueError, match="_values") as exc_info:
-        indexes.create(schema={"fields": {"_values": {"type": "dense_vector", "dimension": 3}}})
-    assert type(exc_info.value) is PineconeValueError
+@respx.mock
+def test_create_underscore_prefixed_schema_field_name_reaches_server_unmodified(
+    indexes: Indexes,
+) -> None:
+    route = respx.post(f"{BASE_URL}/indexes").mock(return_value=_mock_created())
+
+    indexes.create(
+        schema={"fields": {"_values": {"type": "dense_vector", "dimension": 3}}}, timeout=-1
+    )
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["schema"]["fields"]["_values"] == {"type": "dense_vector", "dimension": 3}
 
 
 def test_create_empty_deployment_raises(indexes: Indexes) -> None:
@@ -431,8 +439,8 @@ def test_create_invalid_deployment_type_raises(indexes: Indexes, deployment_type
 
 @pytest.mark.parametrize(
     "field_name",
-    ["", "_id", "$and", "f" * 65],
-    ids=["empty", "leading-underscore", "leading-dollar", "over-64-chars"],
+    ["", "f" * 65],
+    ids=["empty", "over-64-chars"],
 )
 def test_create_schema_field_name_rule_raises_pinecone_value_error(
     indexes: Indexes, field_name: str

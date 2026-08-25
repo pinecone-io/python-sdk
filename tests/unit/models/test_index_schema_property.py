@@ -153,6 +153,9 @@ def test_create_schema_build_encode_decode_to_dict_lossless(schema: IndexSchema)
 _invalid_field_names = st.one_of(
     st.just(""),
     st.just("f" * 65),
+)
+
+_reserved_shaped_field_names = st.one_of(
     _valid_field_name.map(lambda s: f"_{s}"),
     _valid_field_name.map(lambda s: f"${s}"),
 )
@@ -165,3 +168,11 @@ def test_invalid_field_names_rejected_before_any_http(name: str) -> None:
     with pytest.raises(PineconeValueError, match="Invalid schema field name") as exc_info:
         CreateIndexRequest(schema={"fields": {name: {"type": "dense_vector", "dimension": 3}}})
     assert type(exc_info.value) is PineconeValueError
+
+
+@given(name=_reserved_shaped_field_names)
+def test_reserved_shaped_field_names_left_to_the_server(name: str) -> None:
+    request = CreateIndexRequest(
+        schema={"fields": {name: {"type": "dense_vector", "dimension": 3}}}
+    )
+    assert name in request.schema["fields"]  # type: ignore[union-attr, index, operator]

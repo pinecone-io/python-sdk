@@ -661,18 +661,18 @@ def test_field_name_empty_raises() -> None:
         SchemaBuilder().add_string_field("")
 
 
-def test_field_name_starts_with_dollar_raises() -> None:
-    from pinecone.errors.exceptions import PineconeValueError
+def test_dense_vector_field_underscore_prefixed_name_accepted() -> None:
+    schema = SchemaBuilder().add_dense_vector_field("_values", dimension=8, metric="cosine").build()
+    assert schema["fields"]["_values"] == {
+        "type": "dense_vector",
+        "dimension": 8,
+        "metric": "cosine",
+    }
 
-    with pytest.raises(PineconeValueError, match=r"'\$illegal'"):
-        SchemaBuilder().add_string_field("$illegal")
 
-
-def test_field_name_starts_with_underscore_raises() -> None:
-    from pinecone.errors.exceptions import PineconeValueError
-
-    with pytest.raises(PineconeValueError, match="'_illegal'"):
-        SchemaBuilder().add_string_field("_illegal")
+def test_field_name_starts_with_dollar_accepted() -> None:
+    schema = SchemaBuilder().add_string_field("$illegal").build()
+    assert "$illegal" in schema["fields"]
 
 
 def test_field_name_over_64_bytes_raises() -> None:
@@ -734,13 +734,13 @@ def test_validation_applies_to_every_add_method() -> None:
     from pinecone.errors.exceptions import PineconeValueError
 
     builders = [
-        lambda: SchemaBuilder().add_dense_vector_field("$bad", dimension=4, metric="cosine"),
-        lambda: SchemaBuilder().add_sparse_vector_field("$bad"),
-        lambda: SchemaBuilder().add_string_field("$bad"),
-        lambda: SchemaBuilder().add_string_list_field("$bad"),
-        lambda: SchemaBuilder().add_boolean_field("$bad"),
-        lambda: SchemaBuilder().add_float_field("$bad"),
-        lambda: SchemaBuilder().add_custom_field("$bad", {"type": "x"}),
+        lambda: SchemaBuilder().add_dense_vector_field("", dimension=4, metric="cosine"),
+        lambda: SchemaBuilder().add_sparse_vector_field(""),
+        lambda: SchemaBuilder().add_string_field(""),
+        lambda: SchemaBuilder().add_string_list_field(""),
+        lambda: SchemaBuilder().add_boolean_field(""),
+        lambda: SchemaBuilder().add_float_field(""),
+        lambda: SchemaBuilder().add_custom_field("", {"type": "x"}),
     ]
     for build in builders:
         with pytest.raises(PineconeValueError):
