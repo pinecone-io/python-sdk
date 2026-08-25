@@ -133,10 +133,25 @@ class TestSpecToDeployment:
     def test_translation_table(self, spec: Any, expected: dict[str, Any]) -> None:
         assert spec_to_deployment(spec) == expected
 
-    def test_pods_is_dropped_rather_than_rejected(self) -> None:
-        """Every PodSpec carries pods=1, so rejecting it would reject them all."""
-        deployment = spec_to_deployment(PodSpec(environment="us-east-1-aws", pods=4))
+    @pytest.mark.parametrize(
+        ("pods", "replicas", "shards"),
+        [
+            pytest.param(1, 1, 1, id="default"),
+            pytest.param(1, 2, 3, id="untouched-default-with-scaled-replicas-shards"),
+            pytest.param(6, 2, 3, id="explicit-consistent"),
+        ],
+    )
+    def test_consistent_pods_is_dropped_rather_than_rejected(
+        self, pods: int, replicas: int, shards: int
+    ) -> None:
+        deployment = spec_to_deployment(
+            PodSpec(environment="us-east-1-aws", pods=pods, replicas=replicas, shards=shards)
+        )
         assert "pods" not in deployment
+
+    def test_inconsistent_pods_is_rejected(self) -> None:
+        with pytest.raises(PineconeValueError, match=r"pods=4.*replicas=1.*shards=1"):
+            spec_to_deployment(PodSpec(environment="us-east-1-aws", pods=4))
 
     def test_read_capacity_does_not_leak_into_the_deployment(self) -> None:
         spec = ServerlessSpec(cloud="aws", region="us-east-1", read_capacity={"mode": "OnDemand"})

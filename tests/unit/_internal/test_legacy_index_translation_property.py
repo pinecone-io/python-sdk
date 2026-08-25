@@ -15,6 +15,8 @@ string:
   mangled elsewhere.
 * ``deployment`` never carries read capacity or ``pods``: read capacity is
   lifted to the top level of the request, and pod capacity is replicas x shards.
+* A ``pods`` that is neither 1 nor ``replicas x shards`` always raises,
+  regardless of the specific values involved.
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ from pinecone._internal.legacy_index_translation import (
     spec_to_deployment,
     spec_to_read_capacity,
 )
-from pinecone.errors.exceptions import PineconeError
+from pinecone.errors.exceptions import PineconeError, PineconeValueError
 from pinecone.models.enums import Metric, PodType, VectorType
 from pinecone.models.indexes.specs import ByocSpec, PodSpec, ServerlessSpec
 
@@ -88,11 +90,14 @@ def serverless_specs(draw: st.DrawFn) -> SpecPair:
 @st.composite
 def pod_specs(draw: st.DrawFn) -> SpecPair:
     environment = draw(st.sampled_from(["us-east-1-aws", "us-west1-gcp", "eastus-azure"]))
+    replicas = draw(st.one_of(st.none(), st.integers(min_value=1, max_value=10)))
+    shards = draw(st.one_of(st.none(), st.integers(min_value=1, max_value=10)))
+    consistent_pods = (replicas or 1) * (shards or 1)
     rest = _optional(
         pod_type=draw(st.one_of(st.none(), st.sampled_from([p.value for p in PodType]))),
-        replicas=draw(st.one_of(st.none(), st.integers(min_value=1, max_value=10))),
-        shards=draw(st.one_of(st.none(), st.integers(min_value=1, max_value=10))),
-        pods=draw(st.one_of(st.none(), st.integers(min_value=1, max_value=10))),
+        replicas=replicas,
+        shards=shards,
+        pods=draw(st.one_of(st.none(), st.just(consistent_pods))),
     )
     obj = PodSpec(environment=environment, **rest)
     return obj, {"pod": {"environment": environment, **rest}}
@@ -282,3 +287,20 @@ def test_read_capacity_is_lifted_verbatim(pair: SpecPair) -> None:
     obj, _ = pair
     expected = None if isinstance(obj, PodSpec) else obj.read_capacity
     assert spec_to_read_capacity(obj) == expected
+
+
+@given(
+    environment=st.sampled_from(["us-east-1-aws", "us-west1-gcp", "eastus-azure"]),
+    replicas=st.integers(min_value=1, max_value=10),
+    shards=st.integers(min_value=1, max_value=10),
+    pods=st.integers(min_value=1, max_value=100),
+)
+def test_inconsistent_pods_always_raises(
+    environment: str, replicas: int, shards: int, pods: int
+) -> None:
+    if pods in (1, replicas * shards):
+        return
+    with pytest.raises(PineconeValueError):
+        spec_to_deployment(
+            PodSpec(environment=environment, replicas=replicas, shards=shards, pods=pods)
+        )

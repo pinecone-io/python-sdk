@@ -118,7 +118,11 @@ def spec_to_deployment(spec: Any) -> dict[str, Any]:
         so lift it out separately with :func:`spec_to_read_capacity`.
 
     Raises:
-        PineconeValueError: *spec* is malformed or is not a spec at all.
+        PineconeValueError: *spec* is malformed or is not a spec at all, or
+            (for a ``PodSpec``) *pods* is neither 1 (``PodSpec``'s own default,
+            indistinguishable from "not set") nor *replicas x shards* — the
+            2026-07 API has no independent *pods* field, and such a value
+            can't be decomposed into the two fields it would replace.
 
     Example:
         >>> spec_to_deployment(ServerlessSpec(cloud="aws", region="us-east-1"))
@@ -134,9 +138,15 @@ def spec_to_deployment(spec: Any) -> dict[str, Any]:
         }
 
     if isinstance(resolved, PodSpec):
-        # PodSpec.pods is dropped: 2026-07 pod capacity is replicas x shards,
-        # and a PodSpec carries pods=1 by default, so rejecting it would fail
-        # every pod translation.
+        expected_pods = resolved.replicas * resolved.shards
+        if resolved.pods != 1 and resolved.pods != expected_pods:
+            raise PineconeValueError(
+                f"pods={resolved.pods} is inconsistent with replicas={resolved.replicas} "
+                f"and shards={resolved.shards} (replicas x shards = {expected_pods}). "
+                "The 2026-07 API has no pods= field — capacity is replicas x shards on "
+                "the pod deployment. Set replicas= and shards= so their product equals "
+                f"the pod count you want. See the migration guide: {MIGRATION_GUIDE}"
+            )
         return {
             "deployment_type": "pod",
             "environment": resolved.environment,
