@@ -1,14 +1,19 @@
 """Unit tests for Indexes.configure() — 2026-07 PATCH /indexes/{name}.
 
 Covers the six configure_index spec example bodies, the guided hard-break
-interception of 2025-10 kwargs (replicas/pod_type/embed/spec/
-serverless_read_capacity), validation quality, and the IndexModel return.
+interception of embed=/spec= (no 2026-07 translation exists), the deprecated
+replicas=/pod_type=/serverless_read_capacity= sugar (translated, not
+rejected), validation quality, and the IndexModel return.
 """
 
 from __future__ import annotations
 
+import ast
+import inspect
 import json
+import textwrap
 from typing import Any
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -167,30 +172,6 @@ def test_configure_sparse_body_only_carries_provided_fields(indexes: Indexes) ->
     assert body == {"tags": {"env": "prod"}}
 
 
-# ---------------------------------------------------------------------------
-# Guided hard break: 2025-10 kwargs raise with the equivalent 2026-07 call
-# ---------------------------------------------------------------------------
-
-
-def test_configure_legacy_replicas_raises_with_translation(indexes: Indexes) -> None:
-    with pytest.raises(PineconeTypeError) as exc_info:
-        indexes.configure("test-index", replicas=4)  # type: ignore[call-arg]
-
-    message = str(exc_info.value)
-    assert "deployment={'replicas': 4}" in message
-    assert "docs/migration/v10-2026-07-index-model.md" in message
-
-
-def test_configure_legacy_pod_type_raises_with_translation(indexes: Indexes) -> None:
-    with pytest.raises(PineconeTypeError, match=r"deployment=\{'pod_type': 'p1.x2'\}"):
-        indexes.configure("test-index", pod_type="p1.x2")  # type: ignore[call-arg]
-
-
-def test_configure_legacy_replicas_and_pod_type_combined(indexes: Indexes) -> None:
-    with pytest.raises(PineconeTypeError, match="'replicas': 2"):
-        indexes.configure("test-index", replicas=2, pod_type="p1.x2")  # type: ignore[call-arg]
-
-
 def test_configure_legacy_embed_raises_with_guidance(indexes: Indexes) -> None:
     with pytest.raises(PineconeTypeError, match="no longer accepts embed="):
         indexes.configure("test-index", embed={"model": "multilingual-e5-large"})  # type: ignore[call-arg]
@@ -201,26 +182,137 @@ def test_configure_legacy_spec_raises_with_guidance(indexes: Indexes) -> None:
         indexes.configure("test-index", spec={"pod": {"replicas": 2}})  # type: ignore[call-arg]
 
 
-def test_configure_legacy_serverless_read_capacity_raises_with_translation(
-    indexes: Indexes,
-) -> None:
-    with pytest.raises(PineconeTypeError, match="read_capacity=\\{'mode': 'OnDemand'\\}"):
-        indexes.configure(  # type: ignore[call-arg]
-            "test-index", serverless_read_capacity={"mode": "OnDemand"}
-        )
-
-
 def test_configure_unknown_kwarg_lists_accepted_arguments(indexes: Indexes) -> None:
     with pytest.raises(PineconeTypeError, match="unexpected keyword argument"):
         indexes.configure("test-index", replica_count=2)  # type: ignore[call-arg]
 
 
-def test_configure_legacy_kwargs_rejected_before_any_request(indexes: Indexes) -> None:
+def test_configure_legacy_hard_break_kwargs_rejected_before_any_request(indexes: Indexes) -> None:
     with respx.mock:
         route = respx.patch(f"{BASE_URL}/indexes/test-index")
         with pytest.raises(PineconeTypeError):
-            indexes.configure("test-index", replicas=4)  # type: ignore[call-arg]
+            indexes.configure("test-index", spec={"pod": {"replicas": 2}})  # type: ignore[call-arg]
         assert route.call_count == 0
+
+
+def test_configure_replicas_sends_deployment_body(indexes: Indexes) -> None:
+    with respx.mock:
+        route = _mock_patch()
+
+        indexes.configure("test-index", replicas=3)
+
+        assert json.loads(route.calls.last.request.content) == {"deployment": {"replicas": 3}}
+
+
+def test_configure_replicas_and_pod_type_send_one_deployment_object(indexes: Indexes) -> None:
+    with respx.mock:
+        route = _mock_patch()
+
+        indexes.configure("test-index", replicas=3, pod_type="p1.x2")
+
+        assert route.call_count == 1
+        assert json.loads(route.calls.last.request.content) == {
+            "deployment": {"replicas": 3, "pod_type": "p1.x2"}
+        }
+
+
+def test_configure_pod_type_alone_sends_only_pod_type_key(indexes: Indexes) -> None:
+    with respx.mock:
+        route = _mock_patch()
+
+        indexes.configure("test-index", pod_type="p1.x2")
+
+        assert json.loads(route.calls.last.request.content) == {"deployment": {"pod_type": "p1.x2"}}
+
+
+def test_configure_serverless_read_capacity_sends_top_level_read_capacity(
+    indexes: Indexes,
+) -> None:
+    with respx.mock:
+        route = _mock_patch()
+
+        indexes.configure("test-index", serverless_read_capacity={"mode": "OnDemand"})
+
+        assert json.loads(route.calls.last.request.content) == {
+            "read_capacity": {"mode": "OnDemand"}
+        }
+
+
+def test_configure_deployment_and_replicas_conflict_raises(indexes: Indexes) -> None:
+    with pytest.raises(PineconeValueError) as exc_info:
+        indexes.configure("test-index", deployment={"replicas": 2}, replicas=3)
+
+    message = str(exc_info.value)
+    assert "deployment=" in message
+    assert "replicas=" in message
+
+
+def test_configure_deployment_and_pod_type_conflict_raises(indexes: Indexes) -> None:
+    with pytest.raises(PineconeValueError) as exc_info:
+        indexes.configure("test-index", deployment={"pod_type": "p1.x2"}, pod_type="p1.x4")
+
+    message = str(exc_info.value)
+    assert "deployment=" in message
+    assert "pod_type=" in message
+
+
+def test_configure_read_capacity_and_serverless_read_capacity_conflict_raises(
+    indexes: Indexes,
+) -> None:
+    with pytest.raises(PineconeValueError) as exc_info:
+        indexes.configure(
+            "test-index",
+            read_capacity={"mode": "OnDemand"},
+            serverless_read_capacity={"mode": "OnDemand"},
+        )
+
+    message = str(exc_info.value)
+    assert "read_capacity=" in message
+    assert "serverless_read_capacity=" in message
+
+
+def test_configure_conflicts_raise_before_any_request(indexes: Indexes) -> None:
+    with respx.mock:
+        route = respx.patch(f"{BASE_URL}/indexes/test-index")
+        with pytest.raises(PineconeValueError):
+            indexes.configure("test-index", deployment={"replicas": 2}, replicas=3)
+        assert route.call_count == 0
+
+
+def test_configure_replicas_only_does_not_raise_no_parameters_error(indexes: Indexes) -> None:
+    with respx.mock:
+        _mock_patch()
+        indexes.configure("test-index", replicas=3)
+
+
+def test_configure_source_has_no_inline_pod_scaling_dict_building() -> None:
+    source = inspect.getsource(Indexes.configure)
+    assert "legacy_pod_scaling(" in source
+
+    tree = ast.parse(textwrap.dedent(source))
+    dict_keys = {
+        key.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Dict)
+        for key in node.keys
+        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+    }
+    assert not dict_keys & {"replicas", "pod_type"}
+
+
+def test_configure_delegates_replicas_translation_to_pod_scaling_helper(
+    indexes: Indexes,
+) -> None:
+    with respx.mock:
+        route = _mock_patch()
+
+        with patch(
+            "pinecone.client.indexes.legacy_pod_scaling", return_value={"replicas": 99}
+        ) as mock_translate:
+            indexes.configure("test-index", replicas=3, pod_type="p1.x2")
+
+        mock_translate.assert_called_once_with(replicas=3, pod_type="p1.x2")
+        assert json.loads(route.calls.last.request.content) == {"deployment": {"replicas": 99}}
 
 
 # ---------------------------------------------------------------------------

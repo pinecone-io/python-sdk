@@ -2,15 +2,20 @@
 
 Async mirror of tests/unit/client/test_indexes_configure.py: the six
 configure_index spec example bodies, the guided hard-break interception of
-2025-10 kwargs (replicas/pod_type/embed/spec/serverless_read_capacity),
-validation quality, and the IndexModel return.
+embed=/spec= (no 2026-07 translation exists), the deprecated
+replicas=/pod_type=/serverless_read_capacity= sugar (translated, not
+rejected), validation quality, and the IndexModel return.
 """
 
 from __future__ import annotations
 
+import ast
+import inspect
 import json
+import textwrap
 from collections.abc import AsyncGenerator
 from typing import Any
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -171,30 +176,6 @@ async def test_configure_sparse_body_only_carries_provided_fields(indexes: Async
     assert body == {"tags": {"env": "prod"}}
 
 
-# ---------------------------------------------------------------------------
-# Guided hard break: 2025-10 kwargs raise with the equivalent 2026-07 call
-# ---------------------------------------------------------------------------
-
-
-async def test_configure_legacy_replicas_raises_with_translation(indexes: AsyncIndexes) -> None:
-    with pytest.raises(PineconeTypeError) as exc_info:
-        await indexes.configure("test-index", replicas=4)  # type: ignore[call-arg]
-
-    message = str(exc_info.value)
-    assert "deployment={'replicas': 4}" in message
-    assert "docs/migration/v10-2026-07-index-model.md" in message
-
-
-async def test_configure_legacy_pod_type_raises_with_translation(indexes: AsyncIndexes) -> None:
-    with pytest.raises(PineconeTypeError, match=r"deployment=\{'pod_type': 'p1.x2'\}"):
-        await indexes.configure("test-index", pod_type="p1.x2")  # type: ignore[call-arg]
-
-
-async def test_configure_legacy_replicas_and_pod_type_combined(indexes: AsyncIndexes) -> None:
-    with pytest.raises(PineconeTypeError, match="'replicas': 2"):
-        await indexes.configure("test-index", replicas=2, pod_type="p1.x2")  # type: ignore[call-arg]
-
-
 async def test_configure_legacy_embed_raises_with_guidance(indexes: AsyncIndexes) -> None:
     with pytest.raises(PineconeTypeError, match="no longer accepts embed="):
         await indexes.configure("test-index", embed={"model": "multilingual-e5-large"})  # type: ignore[call-arg]
@@ -205,26 +186,143 @@ async def test_configure_legacy_spec_raises_with_guidance(indexes: AsyncIndexes)
         await indexes.configure("test-index", spec={"pod": {"replicas": 2}})  # type: ignore[call-arg]
 
 
-async def test_configure_legacy_serverless_read_capacity_raises_with_translation(
-    indexes: AsyncIndexes,
-) -> None:
-    with pytest.raises(PineconeTypeError, match="read_capacity=\\{'mode': 'OnDemand'\\}"):
-        await indexes.configure(  # type: ignore[call-arg]
-            "test-index", serverless_read_capacity={"mode": "OnDemand"}
-        )
-
-
 async def test_configure_unknown_kwarg_lists_accepted_arguments(indexes: AsyncIndexes) -> None:
     with pytest.raises(PineconeTypeError, match="unexpected keyword argument"):
         await indexes.configure("test-index", replica_count=2)  # type: ignore[call-arg]
 
 
-async def test_configure_legacy_kwargs_rejected_before_any_request(indexes: AsyncIndexes) -> None:
+async def test_configure_legacy_hard_break_kwargs_rejected_before_any_request(
+    indexes: AsyncIndexes,
+) -> None:
     with respx.mock:
         route = respx.patch(f"{BASE_URL}/indexes/test-index")
         with pytest.raises(PineconeTypeError):
-            await indexes.configure("test-index", replicas=4)  # type: ignore[call-arg]
+            await indexes.configure("test-index", spec={"pod": {"replicas": 2}})  # type: ignore[call-arg]
         assert route.call_count == 0
+
+
+async def test_configure_replicas_sends_deployment_body(indexes: AsyncIndexes) -> None:
+    with respx.mock:
+        route = _mock_patch()
+
+        await indexes.configure("test-index", replicas=3)
+
+        assert json.loads(route.calls.last.request.content) == {"deployment": {"replicas": 3}}
+
+
+async def test_configure_replicas_and_pod_type_send_one_deployment_object(
+    indexes: AsyncIndexes,
+) -> None:
+    with respx.mock:
+        route = _mock_patch()
+
+        await indexes.configure("test-index", replicas=3, pod_type="p1.x2")
+
+        assert route.call_count == 1
+        assert json.loads(route.calls.last.request.content) == {
+            "deployment": {"replicas": 3, "pod_type": "p1.x2"}
+        }
+
+
+async def test_configure_pod_type_alone_sends_only_pod_type_key(indexes: AsyncIndexes) -> None:
+    with respx.mock:
+        route = _mock_patch()
+
+        await indexes.configure("test-index", pod_type="p1.x2")
+
+        assert json.loads(route.calls.last.request.content) == {"deployment": {"pod_type": "p1.x2"}}
+
+
+async def test_configure_serverless_read_capacity_sends_top_level_read_capacity(
+    indexes: AsyncIndexes,
+) -> None:
+    with respx.mock:
+        route = _mock_patch()
+
+        await indexes.configure("test-index", serverless_read_capacity={"mode": "OnDemand"})
+
+        assert json.loads(route.calls.last.request.content) == {
+            "read_capacity": {"mode": "OnDemand"}
+        }
+
+
+async def test_configure_deployment_and_replicas_conflict_raises(indexes: AsyncIndexes) -> None:
+    with pytest.raises(PineconeValueError) as exc_info:
+        await indexes.configure("test-index", deployment={"replicas": 2}, replicas=3)
+
+    message = str(exc_info.value)
+    assert "deployment=" in message
+    assert "replicas=" in message
+
+
+async def test_configure_deployment_and_pod_type_conflict_raises(indexes: AsyncIndexes) -> None:
+    with pytest.raises(PineconeValueError) as exc_info:
+        await indexes.configure("test-index", deployment={"pod_type": "p1.x2"}, pod_type="p1.x4")
+
+    message = str(exc_info.value)
+    assert "deployment=" in message
+    assert "pod_type=" in message
+
+
+async def test_configure_read_capacity_and_serverless_read_capacity_conflict_raises(
+    indexes: AsyncIndexes,
+) -> None:
+    with pytest.raises(PineconeValueError) as exc_info:
+        await indexes.configure(
+            "test-index",
+            read_capacity={"mode": "OnDemand"},
+            serverless_read_capacity={"mode": "OnDemand"},
+        )
+
+    message = str(exc_info.value)
+    assert "read_capacity=" in message
+    assert "serverless_read_capacity=" in message
+
+
+async def test_configure_conflicts_raise_before_any_request(indexes: AsyncIndexes) -> None:
+    with respx.mock:
+        route = respx.patch(f"{BASE_URL}/indexes/test-index")
+        with pytest.raises(PineconeValueError):
+            await indexes.configure("test-index", deployment={"replicas": 2}, replicas=3)
+        assert route.call_count == 0
+
+
+async def test_configure_replicas_only_does_not_raise_no_parameters_error(
+    indexes: AsyncIndexes,
+) -> None:
+    with respx.mock:
+        _mock_patch()
+        await indexes.configure("test-index", replicas=3)
+
+
+def test_configure_source_has_no_inline_pod_scaling_dict_building() -> None:
+    source = inspect.getsource(AsyncIndexes.configure)
+    assert "legacy_pod_scaling(" in source
+
+    tree = ast.parse(textwrap.dedent(source))
+    dict_keys = {
+        key.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Dict)
+        for key in node.keys
+        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+    }
+    assert not dict_keys & {"replicas", "pod_type"}
+
+
+async def test_configure_delegates_replicas_translation_to_pod_scaling_helper(
+    indexes: AsyncIndexes,
+) -> None:
+    with respx.mock:
+        route = _mock_patch()
+
+        with patch(
+            "pinecone.async_client.indexes.legacy_pod_scaling", return_value={"replicas": 99}
+        ) as mock_translate:
+            await indexes.configure("test-index", replicas=3, pod_type="p1.x2")
+
+        mock_translate.assert_called_once_with(replicas=3, pod_type="p1.x2")
+        assert json.loads(route.calls.last.request.content) == {"deployment": {"replicas": 99}}
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ from pinecone._internal.index_migration import (
 )
 from pinecone._internal.indexes_helpers import async_poll_index_until_ready, resolve_enum_value
 from pinecone._internal.legacy_index_translation import (
+    legacy_pod_scaling,
     legacy_vector_schema,
     spec_to_deployment,
     spec_to_read_capacity,
@@ -45,7 +46,7 @@ from pinecone.errors.exceptions import (
     PineconeValueError,
 )
 from pinecone.models.backups.model import BackupModel
-from pinecone.models.enums import Metric, VectorType
+from pinecone.models.enums import Metric, PodType, VectorType
 from pinecone.models.indexes.index import IndexModel
 from pinecone.models.indexes.requests import ConfigureIndexRequest, CreateIndexRequest
 from pinecone.models.indexes.schema import IndexSchema
@@ -672,6 +673,9 @@ class AsyncIndexes:
         read_capacity: dict[str, Any] | None = None,
         deletion_protection: str | None = None,
         tags: Mapping[str, str] | None = None,
+        replicas: int | None = None,
+        pod_type: PodType | str | None = None,
+        serverless_read_capacity: dict[str, Any] | None = None,
         **legacy_kwargs: Any,
     ) -> IndexModel:
         """Configure an existing index (2026-07 API).
@@ -690,11 +694,19 @@ class AsyncIndexes:
                await pc.indexes.configure("my-index",
                                           deployment={"replicas": 4, "pod_type": "p1.x2"})
 
-           ``embed=`` was removed entirely (the 2025-10 convert-to-integrated
-           flow no longer exists), ``serverless_read_capacity=`` collapsed
-           into the single top-level ``read_capacity=`` (which now applies to
-           managed **and** BYOC indexes, not just BYOC), and the method
-           returns the updated :class:`IndexModel` instead of ``None``.
+           ``embed=`` is gone entirely (the 2025-10 convert-to-integrated
+           flow no longer exists); ``replicas=``/``pod_type=``/
+           ``serverless_read_capacity=`` remain available below as
+           deprecated keyword-only sugar for ``deployment=``/
+           ``read_capacity=``; and the method returns the updated
+           :class:`IndexModel` instead of ``None``.
+
+        .. deprecated:: 10.0
+           ``replicas=``, ``pod_type=``, and ``serverless_read_capacity=`` are
+           translated into ``deployment=``/``read_capacity=`` rather than sent
+           as-is, and cannot be combined with the 2026-07 argument they
+           translate to — passing both raises :exc:`PineconeValueError`. New
+           code should use ``deployment=``/``read_capacity=`` directly.
 
         .. note::
            *Schema updates:* the client no longer restricts ``schema=`` to
@@ -728,6 +740,15 @@ class AsyncIndexes:
                 request on its own is well within the cap. When the merge
                 leaves no tags the index stores no tag map at all rather than
                 an empty one. ``{}`` is rejected client-side.
+            replicas: **Deprecated.** Legacy pod-scaling replica count,
+                translated into ``deployment={"replicas": ...}``. Mutually
+                exclusive with *deployment*.
+            pod_type: **Deprecated.** Legacy pod type, translated into
+                ``deployment={"pod_type": ...}`` alongside *replicas*.
+                Mutually exclusive with *deployment*.
+            serverless_read_capacity: **Deprecated.** Legacy read-capacity
+                keyword for managed indexes, translated straight into
+                *read_capacity*. Mutually exclusive with *read_capacity*.
 
         Returns:
             :class:`IndexModel` reflecting the updated index state. Some
@@ -737,11 +758,12 @@ class AsyncIndexes:
         Raises:
             :exc:`PineconeValueError`: If *name* is empty, all kwargs are
                 ``None``, any dict kwarg is empty, *deployment* includes
-                ``deployment_type``, or tags/deletion_protection are invalid.
-            :exc:`PineconeTypeError`: If legacy 2025-10 keyword arguments
-                (``replicas``, ``pod_type``, ``embed``, ``spec``,
-                ``serverless_read_capacity``) are passed; the message shows
-                the equivalent 2026-07 call.
+                ``deployment_type``, tags/deletion_protection are invalid, or
+                *deployment*/*read_capacity* is combined with the deprecated
+                keyword argument it translates to.
+            :exc:`PineconeTypeError`: If ``embed=`` or ``spec=`` is passed;
+                neither has a 2026-07 translation and the message shows the
+                equivalent 2026-07 call where one exists.
             :exc:`NotFoundError`: If the index does not exist.
             :exc:`ApiError`: If the API returns another error response.
 
@@ -753,7 +775,26 @@ class AsyncIndexes:
                     await pc.indexes.configure("my-index", tags={"env": "prod"})
         """
         require_non_empty("name", name)
-        reject_legacy_configure_kwargs(legacy_kwargs, name)
+        reject_legacy_configure_kwargs(legacy_kwargs)
+
+        if deployment is not None and (replicas is not None or pod_type is not None):
+            raise PineconeValueError(
+                "configure() cannot accept deployment= together with the deprecated "
+                "replicas=/pod_type= pod-scaling keywords: pass pod scaling only one "
+                "way, either deployment={'replicas': ..., 'pod_type': ...} or "
+                "replicas=/pod_type=, not both."
+            )
+        if read_capacity is not None and serverless_read_capacity is not None:
+            raise PineconeValueError(
+                "configure() cannot accept read_capacity= together with the "
+                "deprecated serverless_read_capacity= keyword: pass read capacity "
+                "only one way, not both."
+            )
+
+        if replicas is not None or pod_type is not None:
+            deployment = legacy_pod_scaling(replicas=replicas, pod_type=pod_type)
+        if serverless_read_capacity is not None:
+            read_capacity = serverless_read_capacity
 
         if (
             deployment is None

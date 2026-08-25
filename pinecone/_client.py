@@ -735,11 +735,12 @@ class Pinecone:
 
         .. versionchanged:: 10.0
            Mirrors the 2026-07 signature of :meth:`Pinecone.indexes.configure`
-           (pod scaling nests under ``deployment=``; ``embed=`` and
-           ``serverless_read_capacity=`` were removed) and returns the updated
-           :class:`IndexModel` instead of ``None``. Legacy keyword arguments
-           raise a :exc:`~pinecone.errors.exceptions.PineconeTypeError` whose
-           message shows the equivalent 2026-07 call.
+           (pod scaling nests under ``deployment=``) and returns the updated
+           :class:`IndexModel` instead of ``None``. ``replicas=``/
+           ``pod_type=``/``serverless_read_capacity=`` still work as
+           deprecated sugar; ``embed=`` and ``spec=`` raise a
+           :exc:`~pinecone.errors.exceptions.PineconeTypeError` whose message
+           shows the equivalent 2026-07 call where one exists.
 
         :meta private:
         """

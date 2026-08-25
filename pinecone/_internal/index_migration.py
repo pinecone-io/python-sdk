@@ -14,6 +14,16 @@ The rest of the create() surface (``spec=`` for non-integrated specs,
 ``dimension=``, ``metric=``, ``vector_type=``) does have a faithful
 translation and is handled directly by ``Indexes.create()`` /
 ``AsyncIndexes.create()`` via ``pinecone._internal.legacy_index_translation``.
+
+``configure()`` is narrower: ``replicas=``, ``pod_type=``, and
+``serverless_read_capacity=`` are faithful 1:1 translations of a PATCH
+sub-object, so :meth:`~pinecone.client.indexes.Indexes.configure` and
+:meth:`~pinecone.async_client.indexes.AsyncIndexes.configure` accept them
+directly as deprecated keyword-only sugar and translate them via
+``pinecone/_internal/legacy_index_translation.py`` instead of routing them
+through here. Only ``embed=`` and ``spec=`` have no destination in the
+2026-07 PATCH body and still hard-break through
+:func:`reject_legacy_configure_kwargs`.
 """
 
 from __future__ import annotations
@@ -29,10 +39,8 @@ LEGACY_CREATE_KWARGS = frozenset(
     {"pods", "metadata_config", "source_collection", "source_backup_id"}
 )
 
-#: Legacy Indexes.configure() kwargs removed by the 2026-07 API.
-LEGACY_CONFIGURE_KWARGS = frozenset(
-    {"replicas", "pod_type", "embed", "spec", "serverless_read_capacity"}
-)
+#: Indexes.configure() kwargs with no 2026-07 PATCH-body equivalent.
+LEGACY_CONFIGURE_KWARGS = frozenset({"embed", "spec"})
 
 
 def _fmt(value: Any) -> str:
@@ -125,8 +133,8 @@ def reject_legacy_create_kwargs(legacy: dict[str, Any], name: Any = None) -> Non
     raise PineconeTypeError("\n".join(lines))
 
 
-def reject_legacy_configure_kwargs(legacy: dict[str, Any], name: str) -> None:
-    """Raise a guided error for any legacy 2025-10 ``configure()`` kwarg."""
+def reject_legacy_configure_kwargs(legacy: dict[str, Any]) -> None:
+    """Raise a guided error for a ``configure()`` kwarg with no PATCH-body destination."""
     if not legacy:
         return
 
@@ -135,7 +143,7 @@ def reject_legacy_configure_kwargs(legacy: dict[str, Any], name: str) -> None:
         raise PineconeTypeError(
             f"Indexes.configure() got unexpected keyword argument(s): {sorted(unknown)}. "
             "Accepted keyword arguments: deployment, schema, read_capacity, "
-            "deletion_protection, tags."
+            "deletion_protection, tags, replicas, pod_type, serverless_read_capacity."
         )
 
     if "embed" in legacy:
@@ -147,29 +155,10 @@ def reject_legacy_configure_kwargs(legacy: dict[str, Any], name: str) -> None:
             f"See the migration guide: {MIGRATION_GUIDE}"
         )
 
-    if "spec" in legacy:
-        raise PineconeTypeError(
-            "Indexes.configure() no longer accepts spec= — removed in the 2026-07 "
-            "Pinecone API (the server rejects unknown PATCH fields). Use "
-            "deployment={'replicas': ..., 'pod_type': ...} for pod scaling and a "
-            "top-level read_capacity={...} for read-capacity changes. "
-            f"See the migration guide: {MIGRATION_GUIDE}"
-        )
-
-    if "serverless_read_capacity" in legacy:
-        value = legacy["serverless_read_capacity"]
-        raise PineconeTypeError(
-            "Indexes.configure() no longer accepts serverless_read_capacity= — the "
-            "2026-07 API uses one top-level read_capacity for managed and BYOC "
-            f"indexes. Call pc.indexes.configure({name!r}, read_capacity={value!r}) "
-            f"instead. See the migration guide: {MIGRATION_GUIDE}"
-        )
-
-    pod_fields = {k: legacy[k] for k in ("replicas", "pod_type") if k in legacy}
-    inner = ", ".join(f"{_fmt(k)}: {_fmt(v)}" for k, v in pod_fields.items())
     raise PineconeTypeError(
-        f"Indexes.configure() no longer accepts {', '.join(sorted(pod_fields))}= — "
-        "the 2026-07 Pinecone API nests pod scaling parameters under deployment. "
-        f"Call pc.indexes.configure({name!r}, deployment={{{inner}}}) instead. "
+        "Indexes.configure() no longer accepts spec= — removed in the 2026-07 "
+        "Pinecone API (the server rejects unknown PATCH fields). Use "
+        "deployment={'replicas': ..., 'pod_type': ...} for pod scaling and a "
+        "top-level read_capacity={...} for read-capacity changes. "
         f"See the migration guide: {MIGRATION_GUIDE}"
     )

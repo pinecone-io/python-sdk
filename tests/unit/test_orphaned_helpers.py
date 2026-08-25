@@ -39,7 +39,7 @@ ACKNOWLEDGED_ORPHANS = frozenset(
 #: functions so #500 (create) and #501 (configure) could share one
 #: implementation across the sync and async surfaces; wiring it in is those
 #: tickets' work, and this set is what forces these names off it when they do.
-PENDING_CONSUMERS = frozenset({"legacy_pod_scaling"})
+PENDING_CONSUMERS = frozenset()
 
 EXPECTED_ORPHANS = ACKNOWLEDGED_ORPHANS | PENDING_CONSUMERS
 

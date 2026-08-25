@@ -185,8 +185,9 @@ def test_configure_allowlist_covers_the_whole_sendable_configure_surface() -> No
 
 
 def test_read_capacity_kwarg_is_deliberately_not_intercepted() -> None:
-    """The WARNING box's premise: read_capacity= survived, so it cannot raise."""
+    """The WARNING box's premise: none of these configure() kwargs raise."""
     from pinecone._internal.index_migration import LEGACY_CONFIGURE_KWARGS
 
-    assert "serverless_read_capacity" in LEGACY_CONFIGURE_KWARGS
-    assert "read_capacity" not in LEGACY_CONFIGURE_KWARGS
+    assert {"embed", "spec"} == LEGACY_CONFIGURE_KWARGS
+    for restored in ("replicas", "pod_type", "serverless_read_capacity", "read_capacity"):
+        assert restored not in LEGACY_CONFIGURE_KWARGS

@@ -66,8 +66,8 @@ PATCH field is rejected rather than ignored.
 
 | 2025-10 request field | 2026-07 replacement |
 | --- | --- |
-| `spec.pod.{replicas,pod_type}` | `deployment: {replicas, pod_type}` — **no** `deployment_type` key; type, cloud/region and environment cannot change |
-| `spec.serverless.read_capacity` | `read_capacity` (top level) |
+| `spec.pod.{replicas,pod_type}` | `deployment: {replicas, pod_type}` — **no** `deployment_type` key; type, cloud/region and environment cannot change. `replicas=`/`pod_type=` also still work directly, as deprecated sugar translated into `deployment=`. |
+| `spec.serverless.read_capacity` | `read_capacity` (top level). `serverless_read_capacity=` also still works, as deprecated sugar translated into `read_capacity=`. |
 | `spec.byoc.read_capacity` | `read_capacity` (top level — the same field) |
 | `embed` | **none** — the 2025-10 convert-to-integrated flow is gone; embedding is set at create time via `create_for_model` |
 | `tags` | `tags` (unchanged; still merge-patch, `""` deletes a key) |
@@ -78,16 +78,23 @@ PATCH field is rejected rather than ignored.
 returned `None`.
 
 ```{warning}
-**`read_capacity=` is the one legacy keyword that did not start raising.**
+**`replicas=`, `pod_type=`, `serverless_read_capacity=`, and `read_capacity=`
+are the legacy keywords that did not start raising.**
 
-2025-10 had two read-capacity keywords: `serverless_read_capacity=` for
-managed indexes and `read_capacity=` for BYOC only. In 2026-07 they collapse
-into a single top-level `read_capacity=` covering managed **and** BYOC.
+`embed=` and `spec=` have no 2026-07 PATCH-body destination and raise a
+`PineconeTypeError` naming the equivalent 2026-07 call. `replicas=`/
+`pod_type=` and `serverless_read_capacity=` do have one, so they remain
+available as deprecated keyword-only arguments that translate into
+`deployment=`/`read_capacity=` rather than being sent as-is. Passing both
+the deprecated keyword and the 2026-07 argument it translates to (e.g.
+`replicas=4` together with `deployment=...`) raises a `PineconeValueError`
+naming both.
 
-`serverless_read_capacity=` now raises a `PineconeTypeError` naming the
-replacement, so that half is loud. `read_capacity=` still exists and still
-type-checks — its *meaning widened*. Code that passed it intending "BYOC
-only" now also takes effect on managed indexes, with no error and no
+Separately, `read_capacity=` itself *widened its meaning*: 2025-10 had two
+read-capacity keywords, `serverless_read_capacity=` for managed indexes and
+`read_capacity=` for BYOC only. In 2026-07 a single top-level `read_capacity=`
+covers managed **and** BYOC. Code that passed `read_capacity=` intending
+"BYOC only" now also takes effect on managed indexes, with no error and no
 deprecation warning. Audit call sites that pass it before upgrading.
 ```
 
@@ -236,12 +243,14 @@ with either — each is a separate `400`. `cmek_id` is incompatible with any
 ## Flow 4 — configure replicas (pod-based)
 
 ```python
-# 9.x
+# still works, deprecated — nests automatically under deployment=
 pc.configure_index("movies", replicas=4, pod_type="p1.x2")
 ```
 
 Both keys nest under `deployment=`, which must **not** carry a
 `deployment_type` key — the SDK rejects one before the request is sent.
+`deployment=` and `replicas=`/`pod_type=` are mutually exclusive; passing both
+raises a `PineconeValueError`.
 
 ```python
 index = pc.indexes.configure("movies", deployment={"replicas": 4, "pod_type": "p1.x2"})
@@ -250,15 +259,17 @@ index = pc.indexes.configure("movies", deployment={"replicas": 4, "pod_type": "p
 ## Flow 5 — configure read capacity
 
 ```python
-# 9.x — managed index
+# still works, deprecated — managed index
 pc.configure_index("movies", serverless_read_capacity={"mode": "OnDemand"})
 ```
 
 One top-level `read_capacity=` now covers managed and BYOC indexes; read the
 warning above before upgrading code that already passes `read_capacity=`.
-Read capacity does not apply to pod-based indexes, and changes apply
-asynchronously — poll `index.read_capacity.status` rather than assuming the
-returned model is settled.
+`read_capacity=` and `serverless_read_capacity=` are mutually exclusive;
+passing both raises a `PineconeValueError`. Read capacity does not apply to
+pod-based indexes, and changes apply asynchronously — poll
+`index.read_capacity.status` rather than assuming the returned model is
+settled.
 
 :::::{tabs}
 ::::{tab} Sync
