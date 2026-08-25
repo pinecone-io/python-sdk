@@ -22,6 +22,29 @@ the path, and the exact request body. Each example also runs on
 Readiness polling is on by default; `timeout=-1` returns as soon as the
 create is accepted.
 
+## Deprecated arguments
+
+The 2025-10 arguments below are deprecated, keyword-only sugar rather than
+a hard break — each still works, translates into the 2026-07 call it's
+paired with below, and is expected to be removed in a later major version.
+Everything else that changed on the request side (the tables further down)
+has no faithful translation and still raises.
+
+| Argument | Surface | Translates into | Notes |
+| --- | --- | --- | --- |
+| `dimension=` | `create_index` | `schema.fields._values.dimension` | paired with `metric=` |
+| `metric=` | `create_index` | `schema.fields.<field>.metric` | dropped for `vector_type="sparse"` |
+| `vector_type=` | `create_index` | a `dense_vector` (`_values`) or `sparse_vector` (`_sparse_values`) field | addresses the reserved field name, not one you choose |
+| `spec=` (`ServerlessSpec`/`PodSpec`/`ByocSpec`) | `create_index` | `deployment={...}` (+ `read_capacity=` for `ServerlessSpec`/`ByocSpec`) | `spec=IntegratedSpec(...)` is **not** in this list — see below |
+| `replicas=` | `configure_index` | `deployment={"replicas": ...}` | mutually exclusive with `deployment=` |
+| `pod_type=` | `configure_index` | `deployment={"pod_type": ...}` | mutually exclusive with `deployment=` |
+| `serverless_read_capacity=` | `configure_index` | `read_capacity={...}` | now also covers BYOC — see the widened-meaning warning below |
+
+`spec=IntegratedSpec(...)`, `pods=`, `metadata_config=`, `source_collection=`,
+`source_backup_id=`, and `configure_index`'s `embed=`/`spec=` have no
+faithful translation and still raise a `PineconeTypeError` naming the
+equivalent `2026-07` call (`pinecone/_internal/index_migration.py`).
+
 ## create_index / `pc.indexes.create`
 
 `CreateIndexRequest` is now `{schema, deployment, ...}` with

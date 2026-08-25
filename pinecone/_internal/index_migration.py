@@ -1,29 +1,40 @@
-"""Guided hard-break interception for index kwargs with no faithful translation.
+"""Guided-error interception for index kwargs with no faithful 2026-07 translation.
 
-``spec=IntegratedSpec(...)`` has no translation: integrated indexes are
-created through ``create_for_model()``, so it is intercepted here. ``pods=``,
-``metadata_config=``, ``source_collection=``, and ``source_backup_id=`` also
-have no faithful translation — ``pods=`` has no 1:1 mapping onto
-``replicas x shards``, ``metadata_config=`` has nothing to declare (metadata
-is indexed automatically at upsert), and ``source_collection=``/
-``source_backup_id=`` are rejected by the backend with a 400. Each one raises
-a :class:`~pinecone.errors.exceptions.PineconeTypeError` before any HTTP
-request, explaining why no translation exists.
+``dimension=``, ``metric=``, ``vector_type=``, and ``spec=`` (for
+non-integrated specs) on ``create()``, and ``replicas=``, ``pod_type=``, and
+``serverless_read_capacity=`` on ``configure()``, are deprecated
+keyword-only sugar handled directly by ``Indexes.create()`` /
+``AsyncIndexes.create()`` and ``Indexes.configure()`` /
+``AsyncIndexes.configure()`` via
+``pinecone._internal.legacy_index_translation``; they never reach this
+module.
 
-The rest of the create() surface (``spec=`` for non-integrated specs,
-``dimension=``, ``metric=``, ``vector_type=``) does have a faithful
-translation and is handled directly by ``Indexes.create()`` /
-``AsyncIndexes.create()`` via ``pinecone._internal.legacy_index_translation``.
+What's left here is the kwargs that have no faithful translation and still
+raise a :class:`~pinecone.errors.exceptions.PineconeTypeError` before any
+HTTP request:
 
-``configure()`` is narrower: ``replicas=``, ``pod_type=``, and
-``serverless_read_capacity=`` are faithful 1:1 translations of a PATCH
-sub-object, so :meth:`~pinecone.client.indexes.Indexes.configure` and
-:meth:`~pinecone.async_client.indexes.AsyncIndexes.configure` accept them
-directly as deprecated keyword-only sugar and translate them via
-``pinecone/_internal/legacy_index_translation.py`` instead of routing them
-through here. Only ``embed=`` and ``spec=`` have no destination in the
-2026-07 PATCH body and still hard-break through
-:func:`reject_legacy_configure_kwargs`.
+- ``create()``: ``pods=`` (no 1:1 mapping onto ``replicas x shards``),
+  ``metadata_config=`` (metadata is indexed automatically at upsert, so
+  there's nothing to declare), ``source_collection=``/``source_backup_id=``
+  (rejected by the backend with a 400), and ``spec=IntegratedSpec(...)``
+  (integrated-embedding indexes are created through ``create_for_model()``
+  instead).
+- ``configure()``: ``embed=`` and ``spec=`` (neither has a destination in
+  the 2026-07 PATCH body; the 2025-10 convert-to-integrated flow is gone
+  and the server rejects unknown PATCH fields).
+
+:func:`reject_new_only_create_kwargs` and
+:func:`reject_new_only_configure_kwargs` cover a different case: they guard
+the flat ``Pinecone.create_index()``/``AsyncPinecone.create_index()`` and
+``Pinecone.configure_index()``/``AsyncPinecone.configure_index()`` shims
+against 2026-07-only arguments (``deployment=``, ``read_capacity=``,
+``cmek_id=``, ``schema=``) that the shims never accepted, so those fail
+before falling into the ``**legacy_kwargs`` bucket meant for the kwargs
+above.
+
+Each function's message interpolates the caller's own values into a
+copy-pasteable equivalent 2026-07 call and explains why no translation
+exists.
 """
 
 from __future__ import annotations

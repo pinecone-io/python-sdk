@@ -84,14 +84,24 @@ New fields on `IndexModel`: `schema` (typed field union), `deployment`
 ## Operations: create / configure / list (sync client)
 
 The sync index operations now speak the `2026-07` control-plane contract.
-Legacy keyword arguments are not silently translated — passing one raises a
+`dimension=`, `metric=`, `vector_type=`, and `spec=` are deprecated,
+keyword-only sugar on `create_index()`: they translate into the
+`schema=`/`deployment=` call below, addressing the vector by the reserved
+`_values` (dense) or `_sparse_values` (sparse) field name, since the SDK
+cannot invent the field name your own data-plane code will use. `replicas=`,
+`pod_type=`, and `serverless_read_capacity=` work the same way on
+`configure_index()`. Everything else with no faithful translation raises a
 `PineconeTypeError` whose message shows the equivalent `2026-07` call with
-your own values filled in wherever a faithful translation exists.
+your own values filled in. See
+[db_control create/configure](v10-2026-07-db-control.md) for the full
+kwarg-by-kwarg mapping and five executed before/after flows.
 
 ### create_index / indexes.create
 
 ```python
-# 9.x
+# Deprecated sugar — produces a classic vector index served by the vectors
+# API, addressing the vector by the reserved `_values` field rather than
+# one you choose.
 pc.create_index(
     name="movies",
     dimension=1536,
@@ -99,7 +109,7 @@ pc.create_index(
     spec=ServerlessSpec(cloud="aws", region="us-east-1"),
 )
 
-# 10.x
+# Schema form — what new code should use; pick your own field name.
 pc.indexes.create(
     name="movies",
     schema={"fields": {"embedding": {
@@ -108,11 +118,12 @@ pc.indexes.create(
 )
 ```
 
-- `spec=`, `dimension=`, `metric=`, `vector_type=`, `pods=`, and
-  `metadata_config=` are removed. Vector shape lives inside a **named**
-  schema field — pick the field name your upsert/query code will address;
-  there is no automatic translation because the `2026-07` data plane
-  addresses vectors by field name.
+- `spec=`, `dimension=`, `metric=`, and `vector_type=` are deprecated but
+  still work, addressing the reserved `_values`/`_sparse_values` field
+  rather than one you choose. New code should use the schema form above,
+  which lets you pick the field name. `pods=` and `metadata_config=` have
+  no faithful translation and raise a `PineconeTypeError` naming the
+  equivalent `2026-07` call.
 - `name` is now optional; the server assigns one if omitted.
 - The old metadata `schema=` kwarg changed meaning entirely: the new
   `schema=` declares **searched** fields (`dense_vector`, `sparse_vector`,
@@ -146,15 +157,16 @@ configuration surfaces as a `semantic_text` field in the returned
 ### configure_index / indexes.configure
 
 ```python
-# 9.x
+# Deprecated sugar — translates into deployment= below.
 pc.configure_index("movies", replicas=4, pod_type="p1.x2")
 
-# 10.x
+# What new code should use.
 pc.indexes.configure("movies", deployment={"replicas": 4, "pod_type": "p1.x2"})
 ```
 
-- `replicas=` / `pod_type=` nest under `deployment=` (no `deployment_type`
-  key — deployment type, cloud/region, and environment cannot change).
+- `replicas=` / `pod_type=` are deprecated but still work, translating into
+  `deployment=` (no `deployment_type` key — deployment type, cloud/region,
+  and environment cannot change).
 - `embed=` is removed entirely; the 2025-10 convert-to-integrated flow no
   longer exists, and the `2026-07` server rejects unknown PATCH fields.
 - `serverless_read_capacity=` and the BYOC-only `read_capacity=` collapsed
@@ -183,9 +195,12 @@ An empty index name now raises `PineconeValueError` instead of returning
 ## Operations: async client (AsyncPinecone.indexes)
 
 `AsyncPinecone.indexes` mirrors every change above one-for-one — same
-keyword arguments, same guided `PineconeTypeError` messages for legacy
-kwargs, same poll-until-ready default (`timeout=-1` opts out, polling awaits
-`asyncio.sleep` so the event loop is never blocked). Async-visible deltas:
+keyword arguments, same deprecated `dimension=`/`metric=`/`vector_type=`/
+`spec=`/`replicas=`/`pod_type=`/`serverless_read_capacity=` sugar, same
+guided `PineconeTypeError` messages for the kwargs with no faithful
+translation, same poll-until-ready default (`timeout=-1` opts out, polling
+awaits `asyncio.sleep` so the event loop is never blocked). Async-visible
+deltas:
 
 - `list()` (and the `pc.list_indexes()` shim) returns an
   `AsyncPaginator[IndexModel]` and is **no longer a coroutine**. Replace
@@ -207,6 +222,9 @@ kwargs, same poll-until-ready default (`timeout=-1` opts out, polling awaits
 
 ## Deprecated request-side spec classes
 
-`ServerlessSpec`, `PodSpec`, `ByocSpec`, `IntegratedSpec`, and `EmbedConfig`
-remain importable for one major release so the guided errors can translate
-real values, but no create/configure code path accepts them any more.
+`ServerlessSpec`, `PodSpec`, and `ByocSpec` remain importable and, passed as
+the deprecated `spec=` argument, are the sugar translated into
+`deployment=`/`schema=` above. `IntegratedSpec` and `EmbedConfig` remain
+importable for one major release so the guided error can translate real
+values, but no create/configure code path accepts them — integrated-embedding
+indexes are created through `create_for_model()` instead.
