@@ -56,9 +56,12 @@ wrong reason, and a green run looks identical. #305 lost
 
 :func:`assert_serves_vectors_api` is the guard. Describing a legacy index at
 2026-07 reports a schema holding only the reserved ``_values`` /
-``_sparse_values`` fields; those names cannot be reached from any create call,
-so their presence is the signature of a vectors-API index. Every module built
-on these helpers should assert it once.
+``_sparse_values`` fields; a schema-based ``pc.indexes.create()`` call can
+also reach those same names, through the deprecated ``dimension=``/
+``metric=``/``vector_type=`` keywords (#500), so their presence alone is not
+proof of how the index was made — but it is still the signature of a
+vectors-API index, which is what this guard checks. Every module built on
+these helpers should assert it once.
 """
 
 from __future__ import annotations
