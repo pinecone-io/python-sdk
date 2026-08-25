@@ -187,6 +187,21 @@ def test_configure_unknown_kwarg_lists_accepted_arguments(indexes: Indexes) -> N
         indexes.configure("test-index", replica_count=2)  # type: ignore[call-arg]
 
 
+def test_configure_unknown_kwarg_with_none_value_still_raises(indexes: Indexes) -> None:
+    with pytest.raises(PineconeTypeError, match="unexpected keyword argument"):
+        indexes.configure("test-index", replcias=None)  # type: ignore[call-arg]
+
+
+@respx.mock
+def test_configure_embed_none_alone_does_not_raise(indexes: Indexes) -> None:
+    route = _mock_patch()
+
+    indexes.configure("test-index", embed=None, tags={"env": "prod"})  # type: ignore[call-arg]
+
+    body = json.loads(route.calls.last.request.content)
+    assert body == {"tags": {"env": "prod"}}
+
+
 def test_configure_legacy_hard_break_kwargs_rejected_before_any_request(indexes: Indexes) -> None:
     with respx.mock:
         route = respx.patch(f"{BASE_URL}/indexes/test-index")

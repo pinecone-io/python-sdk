@@ -75,7 +75,9 @@ PATCH field is rejected rather than ignored.
 | — | `schema` (new — `semantic_text` read/write parameters only) |
 
 `configure()` also **returns the updated `IndexModel`**; the 9.x method
-returned `None`.
+returned `None`. The flat `pc.configure_index()` shim, which delegates to
+`configure()`, returns the same `IndexModel` — a deliberate, additive
+behavior change from 9.x, not a bug.
 
 ```{warning}
 **`replicas=`, `pod_type=`, `serverless_read_capacity=`, and `read_capacity=`

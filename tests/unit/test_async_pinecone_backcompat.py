@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from pinecone.async_client.pinecone import AsyncPinecone
+from pinecone.errors.exceptions import PineconeTypeError
 from pinecone.inference.models.index_embed import IndexEmbed
 from pinecone.models.enums import CloudProvider
+from pinecone.models.indexes.list import IndexList
 from pinecone.models.indexes.specs import EmbedConfig, ServerlessSpec
-
-SCHEMA = {"fields": {"embedding": {"type": "dense_vector", "dimension": 4, "metric": "cosine"}}}
 
 
 def _make_async_pc_with_mock_indexes() -> tuple[AsyncPinecone, MagicMock]:
@@ -18,7 +20,9 @@ def _make_async_pc_with_mock_indexes() -> tuple[AsyncPinecone, MagicMock]:
     mock_indexes.create = AsyncMock(return_value=MagicMock())
     mock_indexes.create_for_model = AsyncMock(return_value=MagicMock())
     mock_indexes.describe = AsyncMock(return_value=MagicMock())
-    mock_indexes.list = MagicMock(return_value=MagicMock())
+    mock_paginator = MagicMock()
+    mock_paginator.to_list = AsyncMock(return_value=[])
+    mock_indexes.list = MagicMock(return_value=mock_paginator)
     mock_indexes.exists = AsyncMock(return_value=True)
     mock_indexes.configure = AsyncMock(return_value=MagicMock())
     mock_indexes.delete = AsyncMock(return_value=None)
@@ -64,51 +68,52 @@ def _make_async_pc_with_mock_restore_jobs() -> tuple[AsyncPinecone, MagicMock]:
 
 async def test_async_create_index_delegate_forwards() -> None:
     pc, mock_indexes = _make_async_pc_with_mock_indexes()
+    spec = ServerlessSpec(cloud="aws", region="us-east-1")
     await pc.create_index(
         name="x",
-        schema=SCHEMA,
-        deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
-    )
-    mock_indexes.create.assert_called_once()
-    _, kwargs = mock_indexes.create.call_args
-    assert kwargs["name"] == "x"
-    assert kwargs["schema"] == SCHEMA
-    assert kwargs["deployment"] == {
-        "deployment_type": "managed",
-        "cloud": "aws",
-        "region": "us-east-1",
-    }
-    assert kwargs["deletion_protection"] is None
-
-
-async def test_async_create_index_delegate_forwards_all_new_kwargs() -> None:
-    pc, mock_indexes = _make_async_pc_with_mock_indexes()
-    await pc.create_index(
-        name="x",
-        schema=SCHEMA,
-        read_capacity={"mode": "OnDemand"},
+        spec=spec,
+        dimension=4,
+        metric="cosine",
+        vector_type="dense",
         deletion_protection="enabled",
         tags={"env": "prod"},
-        cmek_id="key-1",
         timeout=-1,
     )
-    _, kwargs = mock_indexes.create.call_args
-    assert kwargs["read_capacity"] == {"mode": "OnDemand"}
-    assert kwargs["cmek_id"] == "key-1"
-    assert kwargs["timeout"] == -1
-
-
-async def test_async_create_index_delegate_forwards_legacy_kwargs_for_interception() -> None:
-    """Legacy kwargs pass through so AsyncIndexes.create raises the guided error."""
-    pc, mock_indexes = _make_async_pc_with_mock_indexes()
-    await pc.create_index(
+    mock_indexes.create.assert_called_once_with(
         name="x",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+        spec=spec,
         dimension=4,
+        metric="cosine",
+        vector_type="dense",
+        deletion_protection="enabled",
+        tags={"env": "prod"},
+        timeout=-1,
     )
-    _, kwargs = mock_indexes.create.call_args
-    assert kwargs["dimension"] == 4
-    assert isinstance(kwargs["spec"], ServerlessSpec)
+
+
+async def test_async_create_index_delegate_defaults() -> None:
+    pc, mock_indexes = _make_async_pc_with_mock_indexes()
+    await pc.create_index(name="x")
+    mock_indexes.create.assert_called_once_with(
+        name="x",
+        spec=None,
+        dimension=None,
+        metric=None,
+        vector_type=None,
+        deletion_protection=None,
+        tags=None,
+        timeout=None,
+    )
+
+
+async def test_async_create_index_delegate_rejects_2026_07_only_kwargs() -> None:
+    pc, _ = _make_async_pc_with_mock_indexes()
+    with pytest.raises(TypeError):
+        await pc.create_index(name="x", schema={"fields": {}})
+    with pytest.raises(TypeError):
+        await pc.create_index(name="x", deployment={"deployment_type": "managed"})
+    with pytest.raises(TypeError):
+        await pc.create_index(name="x", cmek_id="key-1")
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +155,8 @@ async def test_async_create_index_for_model_delegate_forwards_embed_config() -> 
     assert kwargs["embed"] is embed_config
 
 
-async def test_async_create_index_for_model_delegate_drops_disabled_deletion_protection() -> None:
+async def test_async_create_index_for_model_delegate_forwards_explicit_disabled() -> None:
+    """An explicit deletion_protection='disabled' must not be dropped."""
     pc, mock_indexes = _make_async_pc_with_mock_indexes()
     await pc.create_index_for_model(
         name="my-index",
@@ -160,7 +166,21 @@ async def test_async_create_index_for_model_delegate_drops_disabled_deletion_pro
         deletion_protection="disabled",
     )
     _, kwargs = mock_indexes.create_for_model.call_args
-    assert kwargs["deletion_protection"] is None
+    assert kwargs["deletion_protection"] == "disabled"
+
+
+async def test_async_create_index_for_model_delegate_defaults_deletion_protection_to_disabled() -> (
+    None
+):
+    pc, mock_indexes = _make_async_pc_with_mock_indexes()
+    await pc.create_index_for_model(
+        name="my-index",
+        cloud=CloudProvider.AWS,
+        region="us-east-1",
+        embed={"model": "m", "field_map": {"text": "a"}},
+    )
+    _, kwargs = mock_indexes.create_for_model.call_args
+    assert kwargs["deletion_protection"] == "disabled"
 
 
 async def test_async_create_index_for_model_delegate_forwards_schema() -> None:
@@ -213,11 +233,15 @@ async def test_async_describe_index_delegate_forwards() -> None:
     mock_indexes.describe.assert_called_once_with("my-index")
 
 
-def test_async_list_indexes_delegate_forwards() -> None:
-    """list_indexes() is no longer a coroutine: it returns the paginator directly."""
+async def test_async_list_indexes_delegate_forwards_and_wraps_in_index_list() -> None:
     pc, mock_indexes = _make_async_pc_with_mock_indexes()
-    pc.list_indexes()
+    mock_indexes.list.return_value.to_list = AsyncMock(return_value=["index-a", "index-b"])
+
+    result = await pc.list_indexes()
+
     mock_indexes.list.assert_called_once()
+    assert isinstance(result, IndexList)
+    assert list(result) == ["index-a", "index-b"]
 
 
 # ---------------------------------------------------------------------------
@@ -228,31 +252,40 @@ def test_async_list_indexes_delegate_forwards() -> None:
 async def test_async_configure_index_delegate_forwards() -> None:
     pc, mock_indexes = _make_async_pc_with_mock_indexes()
     await pc.configure_index("my-index", deletion_protection="enabled")
-    mock_indexes.configure.assert_called_once()
-    _, kwargs = mock_indexes.configure.call_args
-    assert kwargs["deletion_protection"] == "enabled"
+    mock_indexes.configure.assert_called_once_with(
+        "my-index",
+        replicas=None,
+        pod_type=None,
+        deletion_protection="enabled",
+        tags=None,
+        embed=None,
+        read_capacity=None,
+        serverless_read_capacity=None,
+    )
 
 
 async def test_async_configure_index_delegate_forwards_all_kwargs() -> None:
     pc, mock_indexes = _make_async_pc_with_mock_indexes()
     await pc.configure_index(
         "my-index",
-        deployment={"replicas": 3, "pod_type": "p2.x2"},
+        replicas=3,
+        pod_type="p2.x2",
         deletion_protection="enabled",
         tags={"env": "prod"},
-        read_capacity={"mode": "OnDemand"},
     )
     mock_indexes.configure.assert_called_once_with(
         "my-index",
-        deployment={"replicas": 3, "pod_type": "p2.x2"},
-        schema=None,
-        read_capacity={"mode": "OnDemand"},
+        replicas=3,
+        pod_type="p2.x2",
         deletion_protection="enabled",
         tags={"env": "prod"},
+        embed=None,
+        read_capacity=None,
+        serverless_read_capacity=None,
     )
 
 
-async def test_async_configure_index_delegate_forwards_legacy_kwargs_for_interception() -> None:
+async def test_async_configure_index_delegate_forwards_serverless_read_capacity() -> None:
     pc, mock_indexes = _make_async_pc_with_mock_indexes()
     await pc.configure_index(
         "my-index",
@@ -260,13 +293,29 @@ async def test_async_configure_index_delegate_forwards_legacy_kwargs_for_interce
     )
     mock_indexes.configure.assert_called_once_with(
         "my-index",
-        deployment=None,
-        schema=None,
-        read_capacity=None,
+        replicas=None,
+        pod_type=None,
         deletion_protection=None,
         tags=None,
+        embed=None,
+        read_capacity=None,
         serverless_read_capacity={"mode": "OnDemand"},
     )
+
+
+async def test_async_configure_index_delegate_rejects_2026_07_only_kwargs() -> None:
+    pc, mock_indexes = _make_async_pc_with_mock_indexes()
+    with pytest.raises(TypeError, match=r"pc\.indexes\.configure"):
+        await pc.configure_index("my-index", deployment={"replicas": 3})
+    with pytest.raises(TypeError, match=r"pc\.indexes\.configure"):
+        await pc.configure_index("my-index", schema={"fields": {}})
+    mock_indexes.configure.assert_not_called()
+
+
+async def test_async_configure_index_delegate_embed_reaches_configure_for_guided_error() -> None:
+    pc = AsyncPinecone(api_key="test-key")
+    with pytest.raises(PineconeTypeError, match="no longer accepts embed="):
+        await pc.configure_index("my-index", embed={"model": "multilingual-e5-large"})
 
 
 # ---------------------------------------------------------------------------

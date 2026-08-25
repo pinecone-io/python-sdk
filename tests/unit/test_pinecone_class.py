@@ -43,34 +43,52 @@ def _make_pc_with_mock_indexes() -> tuple[Pinecone, MagicMock]:
 
 def test_pinecone_create_index_delegate_forwards() -> None:
     pc, mock_indexes = _make_pc_with_mock_indexes()
-    schema = {"fields": {"embedding": {"type": "dense_vector", "dimension": 4, "metric": "cosine"}}}
+    spec = ServerlessSpec(cloud="aws", region="us-east-1")
     pc.create_index(
         name="x",
-        schema=schema,
-        deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
-    )
-    mock_indexes.create.assert_called_once()
-    _, kwargs = mock_indexes.create.call_args
-    assert kwargs["name"] == "x"
-    assert kwargs["schema"] == schema
-    assert kwargs["deployment"] == {
-        "deployment_type": "managed",
-        "cloud": "aws",
-        "region": "us-east-1",
-    }
-    assert kwargs["deletion_protection"] is None
-
-
-def test_pinecone_create_index_delegate_forwards_legacy_kwargs_for_interception() -> None:
-    pc, mock_indexes = _make_pc_with_mock_indexes()
-    pc.create_index(
-        name="x",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+        spec=spec,
         dimension=4,
+        metric="cosine",
+        vector_type="dense",
+        deletion_protection="enabled",
+        tags={"env": "prod"},
+        timeout=-1,
     )
-    _, kwargs = mock_indexes.create.call_args
-    assert kwargs["dimension"] == 4
-    assert isinstance(kwargs["spec"], ServerlessSpec)
+    mock_indexes.create.assert_called_once_with(
+        name="x",
+        spec=spec,
+        dimension=4,
+        metric="cosine",
+        vector_type="dense",
+        deletion_protection="enabled",
+        tags={"env": "prod"},
+        timeout=-1,
+    )
+
+
+def test_pinecone_create_index_delegate_defaults() -> None:
+    pc, mock_indexes = _make_pc_with_mock_indexes()
+    pc.create_index(name="x")
+    mock_indexes.create.assert_called_once_with(
+        name="x",
+        spec=None,
+        dimension=None,
+        metric=None,
+        vector_type=None,
+        deletion_protection=None,
+        tags=None,
+        timeout=None,
+    )
+
+
+def test_pinecone_create_index_delegate_rejects_2026_07_only_kwargs() -> None:
+    pc, _ = _make_pc_with_mock_indexes()
+    with pytest.raises(TypeError):
+        pc.create_index(name="x", schema={"fields": {}})
+    with pytest.raises(TypeError):
+        pc.create_index(name="x", deployment={"deployment_type": "managed"})
+    with pytest.raises(TypeError):
+        pc.create_index(name="x", cmek_id="key-1")
 
 
 def test_pinecone_create_index_for_model_delegate_forwards_index_embed() -> None:
@@ -86,7 +104,7 @@ def test_pinecone_create_index_for_model_delegate_forwards_index_embed() -> None
         embed=index_embed,
     )
     _, kwargs = mock_indexes.create_for_model.call_args
-    assert kwargs["cloud"] == "aws"
+    assert kwargs["cloud"] is CloudProvider.AWS
     assert kwargs["region"] == "us-east-1"
     assert kwargs["embed"] is index_embed
 
@@ -107,7 +125,22 @@ def test_pinecone_create_index_for_model_delegate_forwards_embed_config() -> Non
     assert kwargs["embed"] is embed_config
 
 
-def test_pinecone_create_index_for_model_delegate_drops_disabled_deletion_protection() -> None:
+def test_pinecone_create_index_for_model_delegate_defaults_deletion_protection_to_disabled() -> (
+    None
+):
+    pc, mock_indexes = _make_pc_with_mock_indexes()
+    pc.create_index_for_model(
+        name="my-index",
+        cloud=CloudProvider.AWS,
+        region="us-east-1",
+        embed={"model": "m", "field_map": {"text": "a"}},
+    )
+    _, kwargs = mock_indexes.create_for_model.call_args
+    assert kwargs["deletion_protection"] == "disabled"
+
+
+def test_pinecone_create_index_for_model_delegate_forwards_explicit_disabled() -> None:
+    """An explicit deletion_protection='disabled' must not be dropped."""
     pc, mock_indexes = _make_pc_with_mock_indexes()
     pc.create_index_for_model(
         name="my-index",
@@ -117,7 +150,7 @@ def test_pinecone_create_index_for_model_delegate_drops_disabled_deletion_protec
         deletion_protection="disabled",
     )
     _, kwargs = mock_indexes.create_for_model.call_args
-    assert kwargs["deletion_protection"] is None
+    assert kwargs["deletion_protection"] == "disabled"
 
 
 # ---------------------------------------------------------------------------
@@ -171,10 +204,37 @@ class TestDescribeIndex:
 
 
 class TestListIndexes:
-    def test_forwards(self) -> None:
+    def test_forwards_and_wraps_in_index_list(self) -> None:
+        from pinecone.models.indexes.list import IndexList
+
         pc, mock_indexes = _make_pc_with_mock_indexes_delegates()
-        pc.list_indexes()
+        mock_paginator = MagicMock()
+        mock_paginator.to_list.return_value = ["index-a", "index-b"]
+        mock_indexes.list.return_value = mock_paginator
+
+        result = pc.list_indexes()
+
         mock_indexes.list.assert_called_once()
+        mock_paginator.to_list.assert_called_once()
+        assert isinstance(result, IndexList)
+        assert list(result) == ["index-a", "index-b"]
+
+    def test_names_returns_list_of_str(self) -> None:
+        from pinecone.models.indexes.index import IndexModel
+
+        pc, mock_indexes = _make_pc_with_mock_indexes_delegates()
+        idx_a = MagicMock(spec=IndexModel)
+        idx_a.name = "index-a"
+        idx_b = MagicMock(spec=IndexModel)
+        idx_b.name = "index-b"
+        mock_paginator = MagicMock()
+        mock_paginator.to_list.return_value = [idx_a, idx_b]
+        mock_indexes.list.return_value = mock_paginator
+
+        names = pc.list_indexes().names()
+
+        assert names == ["index-a", "index-b"]
+        assert all(isinstance(n, str) for n in names)
 
 
 # ---------------------------------------------------------------------------
@@ -200,29 +260,38 @@ class TestConfigureIndex:
     def test_minimal_forwards(self) -> None:
         pc, mock_indexes = _make_pc_with_mock_indexes_delegates()
         pc.configure_index("my-index", deletion_protection="enabled")
-        mock_indexes.configure.assert_called_once()
-        _, kwargs = mock_indexes.configure.call_args
-        assert kwargs["deletion_protection"] == "enabled"
+        mock_indexes.configure.assert_called_once_with(
+            "my-index",
+            replicas=None,
+            pod_type=None,
+            deletion_protection="enabled",
+            tags=None,
+            embed=None,
+            read_capacity=None,
+            serverless_read_capacity=None,
+        )
 
     def test_all_kwargs_forwarded(self) -> None:
         pc, mock_indexes = _make_pc_with_mock_indexes_delegates()
         pc.configure_index(
             "my-index",
-            deployment={"replicas": 3, "pod_type": "p2.x2"},
+            replicas=3,
+            pod_type="p2.x2",
             deletion_protection="enabled",
             tags={"env": "prod"},
-            read_capacity={"mode": "OnDemand"},
         )
         mock_indexes.configure.assert_called_once_with(
             "my-index",
-            deployment={"replicas": 3, "pod_type": "p2.x2"},
-            schema=None,
-            read_capacity={"mode": "OnDemand"},
+            replicas=3,
+            pod_type="p2.x2",
             deletion_protection="enabled",
             tags={"env": "prod"},
+            embed=None,
+            read_capacity=None,
+            serverless_read_capacity=None,
         )
 
-    def test_legacy_kwargs_forwarded_for_interception(self) -> None:
+    def test_serverless_read_capacity_forwarded(self) -> None:
         pc, mock_indexes = _make_pc_with_mock_indexes_delegates()
         pc.configure_index(
             "my-index",
@@ -230,13 +299,29 @@ class TestConfigureIndex:
         )
         mock_indexes.configure.assert_called_once_with(
             "my-index",
-            deployment=None,
-            schema=None,
-            read_capacity=None,
+            replicas=None,
+            pod_type=None,
             deletion_protection=None,
             tags=None,
+            embed=None,
+            read_capacity=None,
             serverless_read_capacity={"mode": "OnDemand"},
         )
+
+    def test_does_not_accept_2026_07_only_kwargs(self) -> None:
+        pc, mock_indexes = _make_pc_with_mock_indexes_delegates()
+        with pytest.raises(TypeError, match=r"pc\.indexes\.configure"):
+            pc.configure_index("my-index", deployment={"replicas": 3})
+        with pytest.raises(TypeError, match=r"pc\.indexes\.configure"):
+            pc.configure_index("my-index", schema={"fields": {}})
+        mock_indexes.configure.assert_not_called()
+
+    def test_embed_reaches_configure_for_guided_error(self) -> None:
+        from pinecone.errors.exceptions import PineconeTypeError
+
+        pc = Pinecone(api_key="test-key")
+        with pytest.raises(PineconeTypeError, match="no longer accepts embed="):
+            pc.configure_index("my-index", embed={"model": "multilingual-e5-large"})
 
 
 # ---------------------------------------------------------------------------

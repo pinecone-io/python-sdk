@@ -191,6 +191,23 @@ async def test_configure_unknown_kwarg_lists_accepted_arguments(indexes: AsyncIn
         await indexes.configure("test-index", replica_count=2)  # type: ignore[call-arg]
 
 
+async def test_configure_unknown_kwarg_with_none_value_still_raises(
+    indexes: AsyncIndexes,
+) -> None:
+    with pytest.raises(PineconeTypeError, match="unexpected keyword argument"):
+        await indexes.configure("test-index", replcias=None)  # type: ignore[call-arg]
+
+
+@respx.mock
+async def test_configure_embed_none_alone_does_not_raise(indexes: AsyncIndexes) -> None:
+    route = _mock_patch()
+
+    await indexes.configure("test-index", embed=None, tags={"env": "prod"})  # type: ignore[call-arg]
+
+    body = json.loads(route.calls.last.request.content)
+    assert body == {"tags": {"env": "prod"}}
+
+
 async def test_configure_legacy_hard_break_kwargs_rejected_before_any_request(
     indexes: AsyncIndexes,
 ) -> None:

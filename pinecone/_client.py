@@ -10,10 +10,15 @@ from urllib.parse import quote
 from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
 from pinecone._internal.config import PineconeConfig, RetryConfig
 from pinecone._internal.constants import CONTROL_PLANE_API_VERSION, DEFAULT_BASE_URL
+from pinecone._internal.index_migration import (
+    reject_new_only_configure_kwargs,
+    reject_new_only_create_kwargs,
+)
 from pinecone._internal.indexes_helpers import _LegacyIndexKwargs, poll_index_until_ready
 from pinecone._internal.keyword_only import keyword_only_methods
 from pinecone._internal.validation import require_non_empty
 from pinecone.errors.exceptions import ValidationError
+from pinecone.models.indexes.list import IndexList
 
 if TYPE_CHECKING:
     from pinecone.client._assistant_namespace_proxy import _AssistantNamespaceProxy
@@ -41,10 +46,12 @@ if TYPE_CHECKING:
         CloudProvider,
         DeletionProtection,
         GcpRegion,
+        Metric,
+        PodType,
+        VectorType,
     )
     from pinecone.models.indexes.index import IndexModel
     from pinecone.models.indexes.specs import EmbedConfig
-    from pinecone.models.pagination import Paginator
 
 
 @keyword_only_methods
@@ -606,38 +613,37 @@ class Pinecone:
     def create_index(
         self,
         *,
-        schema: dict[str, Any] | None = None,
-        name: str | None = None,
-        deployment: dict[str, Any] | None = None,
-        read_capacity: dict[str, Any] | None = None,
+        name: str,
+        spec: Any = None,
+        dimension: int | None = None,
+        metric: Metric | str | None = None,
+        vector_type: VectorType | str | None = None,
         deletion_protection: DeletionProtection | str | None = None,
         tags: Mapping[str, str] | None = None,
-        cmek_id: str | None = None,
         timeout: int | None = None,
         **legacy_kwargs: Any,
     ) -> IndexModel:
         """Backwards-compatibility shim for :meth:`Pinecone.indexes.create`.
 
-        Preserved to ease migration from the legacy Pinecone Python SDK. New code
-        should use ``pc.indexes.create()`` instead of ``pc.create_index()``.
-
-        .. versionchanged:: 10.0
-           Mirrors the 2026-07 schema-based signature of
-           :meth:`Pinecone.indexes.create`. Legacy 2025-10 keyword arguments
-           (``spec``, ``dimension``, ``metric``, ``vector_type``, ...) raise
-           a :exc:`~pinecone.errors.exceptions.PineconeTypeError` whose
-           message shows the equivalent 2026-07 call.
+        Preserved to ease migration from the legacy (9.x) Pinecone Python
+        SDK, with the same legacy parameter list. New code should use
+        ``pc.indexes.create()`` instead, which additionally accepts the
+        2026-07 ``schema=``/``deployment=``/``read_capacity=``/``cmek_id=``
+        surface not available here. ``pods=``/``metadata_config=``/
+        ``source_collection=``/``source_backup_id=`` reach
+        :meth:`Pinecone.indexes.create`, which raises for them.
 
         :meta private:
         """
+        reject_new_only_create_kwargs(legacy_kwargs)
         return self.indexes.create(
-            schema=schema,
             name=name,
-            deployment=deployment,
-            read_capacity=read_capacity,
+            spec=spec,
+            dimension=dimension,
+            metric=metric,
+            vector_type=vector_type,
             deletion_protection=deletion_protection,
             tags=tags,
-            cmek_id=cmek_id,
             timeout=timeout,
             **legacy_kwargs,
         )
@@ -649,7 +655,7 @@ class Pinecone:
         region: AwsRegion | GcpRegion | AzureRegion | str,
         embed: IndexEmbed | EmbedConfig | dict[str, Any],
         tags: Mapping[str, str] | None = None,
-        deletion_protection: DeletionProtection | str | None = None,
+        deletion_protection: DeletionProtection | str | None = "disabled",
         read_capacity: dict[str, Any] | None = None,
         schema: dict[str, Any] | None = None,
         timeout: int | None = None,
@@ -662,20 +668,12 @@ class Pinecone:
 
         :meta private:
         """
-        deletion_protection_str: str | None = None
-        if deletion_protection is not None:
-            resolved = (
-                deletion_protection.value
-                if hasattr(deletion_protection, "value")
-                else deletion_protection
-            )
-            deletion_protection_str = None if resolved == "disabled" else resolved
         return self.indexes.create_for_model(
             name=name,
-            cloud=cloud.value if hasattr(cloud, "value") else str(cloud),
-            region=region.value if hasattr(region, "value") else str(region),
+            cloud=cloud,
+            region=region,
             embed=embed,
-            deletion_protection=deletion_protection_str,
+            deletion_protection=deletion_protection,
             tags=tags,
             schema=schema,
             read_capacity=read_capacity,
@@ -692,20 +690,16 @@ class Pinecone:
         """
         return self.indexes.describe(name)
 
-    def list_indexes(self) -> Paginator[IndexModel]:
+    def list_indexes(self) -> IndexList:
         """Backwards-compatibility shim for :meth:`Pinecone.indexes.list`.
 
         Preserved to ease migration from the legacy Pinecone Python SDK. New
-        code should use ``pc.indexes.list()`` instead of ``pc.list_indexes()``.
-
-        .. versionchanged:: 10.0
-           Returns a :class:`~pinecone.models.pagination.Paginator` instead
-           of an ``IndexList``; replace ``pc.list_indexes().names()`` with
-           ``[idx.name for idx in pc.list_indexes()]``.
+        code should use ``pc.indexes.list()`` instead of ``pc.list_indexes()``,
+        which returns a :class:`~pinecone.models.pagination.Paginator`.
 
         :meta private:
         """
-        return self.indexes.list()
+        return IndexList(self.indexes.list().to_list())
 
     def has_index(self, name: str) -> bool:
         """Backwards-compatibility shim for :meth:`Pinecone.indexes.exists`.
@@ -721,36 +715,40 @@ class Pinecone:
         self,
         name: str,
         *,
-        deployment: dict[str, Any] | None = None,
-        schema: dict[str, Any] | None = None,
-        read_capacity: dict[str, Any] | None = None,
+        replicas: int | None = None,
+        pod_type: PodType | str | None = None,
         deletion_protection: DeletionProtection | str | None = None,
         tags: Mapping[str, str] | None = None,
+        embed: Any = None,
+        read_capacity: dict[str, Any] | None = None,
+        serverless_read_capacity: dict[str, Any] | None = None,
         **legacy_kwargs: Any,
     ) -> IndexModel:
         """Backwards-compatibility shim for :meth:`Pinecone.indexes.configure`.
 
-        Preserved to ease migration from the legacy Pinecone Python SDK. New code
-        should use ``pc.indexes.configure()`` instead of ``pc.configure_index()``.
+        Preserved to ease migration from the legacy Pinecone Python SDK. New
+        code should use ``pc.indexes.configure()`` instead of
+        ``pc.configure_index()``, which additionally accepts the 2026-07
+        ``deployment=``/``schema=`` surface not available here. ``embed=``
+        reaches :meth:`Pinecone.indexes.configure`, which raises for it: the
+        2025-10 convert-to-integrated flow has no 2026-07 equivalent.
 
         .. versionchanged:: 10.0
-           Mirrors the 2026-07 signature of :meth:`Pinecone.indexes.configure`
-           (pod scaling nests under ``deployment=``) and returns the updated
-           :class:`IndexModel` instead of ``None``. ``replicas=``/
-           ``pod_type=``/``serverless_read_capacity=`` still work as
-           deprecated sugar; ``embed=`` and ``spec=`` raise a
-           :exc:`~pinecone.errors.exceptions.PineconeTypeError` whose message
-           shows the equivalent 2026-07 call where one exists.
+           Returns the updated :class:`IndexModel` where the 9.x method
+           returned ``None``.
 
         :meta private:
         """
+        reject_new_only_configure_kwargs(legacy_kwargs)
         return self.indexes.configure(
             name,
-            deployment=deployment,
-            schema=schema,
-            read_capacity=read_capacity,
+            replicas=replicas,
+            pod_type=pod_type,
             deletion_protection=deletion_protection,
             tags=tags,
+            embed=embed,
+            read_capacity=read_capacity,
+            serverless_read_capacity=serverless_read_capacity,
             **legacy_kwargs,
         )
 

@@ -42,6 +42,12 @@ LEGACY_CREATE_KWARGS = frozenset(
 #: Indexes.configure() kwargs with no 2026-07 PATCH-body equivalent.
 LEGACY_CONFIGURE_KWARGS = frozenset({"embed", "spec"})
 
+#: create() kwargs valid only on Indexes.create(), not on Pinecone.create_index().
+NEW_ONLY_CREATE_KWARGS = frozenset({"deployment", "read_capacity", "cmek_id", "schema"})
+
+#: configure() kwargs valid only on Indexes.configure(), not on Pinecone.configure_index().
+NEW_ONLY_CONFIGURE_KWARGS = frozenset({"deployment", "schema"})
+
 
 def _fmt(value: Any) -> str:
     return repr(value)
@@ -133,8 +139,56 @@ def reject_legacy_create_kwargs(legacy: dict[str, Any], name: Any = None) -> Non
     raise PineconeTypeError("\n".join(lines))
 
 
+def reject_new_only_create_kwargs(legacy: dict[str, Any]) -> None:
+    """Raise for a ``create()`` kwarg the flat ``create_index()`` shim never accepted.
+
+    No-op when *legacy* carries none of :data:`NEW_ONLY_CREATE_KWARGS`. Called
+    by :meth:`Pinecone.create_index`/:meth:`AsyncPinecone.create_index` before
+    delegating, so ``deployment=``/``read_capacity=``/``cmek_id=``/``schema=``
+    cannot slip through the shim's own ``**legacy_kwargs`` (kept open for
+    ``pods=``/``metadata_config=``/``source_collection=``/``source_backup_id=``,
+    which still need to reach :func:`reject_legacy_create_kwargs`).
+    """
+    blocked = sorted(NEW_ONLY_CREATE_KWARGS & set(legacy))
+    if blocked:
+        raise PineconeTypeError(
+            f"create_index() got unexpected keyword argument(s): {blocked}. "
+            "create_index() is the legacy backwards-compatibility shim and only "
+            "accepts: name, spec, dimension, metric, vector_type, "
+            "deletion_protection, tags, timeout. Use pc.indexes.create() for the "
+            "2026-07 schema=/deployment=/read_capacity=/cmek_id= surface."
+        )
+
+
+def reject_new_only_configure_kwargs(legacy: dict[str, Any]) -> None:
+    """Raise for a ``configure()`` kwarg the flat ``configure_index()`` shim never accepted.
+
+    No-op when *legacy* carries none of :data:`NEW_ONLY_CONFIGURE_KWARGS`.
+    Called by :meth:`Pinecone.configure_index`/:meth:`AsyncPinecone.configure_index`
+    before delegating, so ``deployment=``/``schema=`` cannot slip through the
+    shim's own ``**legacy_kwargs`` (kept open for typo detection via
+    :func:`reject_legacy_configure_kwargs`, which the unrecognized-kwarg path
+    still reaches through :meth:`Indexes.configure`).
+    """
+    blocked = sorted(NEW_ONLY_CONFIGURE_KWARGS & set(legacy))
+    if blocked:
+        raise PineconeTypeError(
+            f"configure_index() got unexpected keyword argument(s): {blocked}. "
+            "configure_index() is the legacy backwards-compatibility shim and only "
+            "accepts: name, replicas, pod_type, deletion_protection, tags, embed, "
+            "read_capacity, serverless_read_capacity. Use pc.indexes.configure() "
+            "for the 2026-07 deployment=/schema= surface."
+        )
+
+
 def reject_legacy_configure_kwargs(legacy: dict[str, Any]) -> None:
-    """Raise a guided error for a ``configure()`` kwarg with no PATCH-body destination."""
+    """Raise a guided error for a ``configure()`` kwarg with no PATCH-body destination.
+
+    A ``None`` value is treated the same as the key being absent, so a caller
+    (or wrapper, such as :meth:`Pinecone.configure_index`) may pass
+    ``embed=None`` unconditionally to mean "not requested" without tripping
+    this check.
+    """
     if not legacy:
         return
 
@@ -146,7 +200,11 @@ def reject_legacy_configure_kwargs(legacy: dict[str, Any]) -> None:
             "deletion_protection, tags, replicas, pod_type, serverless_read_capacity."
         )
 
-    if "embed" in legacy:
+    given = {k: v for k, v in legacy.items() if v is not None}
+    if not given:
+        return
+
+    if "embed" in given:
         raise PineconeTypeError(
             "Indexes.configure() no longer accepts embed= — the 2025-10 "
             "convert-to-integrated flow was removed in the 2026-07 Pinecone API "
