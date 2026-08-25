@@ -8,10 +8,12 @@ that state; this test is the mechanism it built to keep finding the next
 one, rather than a one-time list of today's findings.
 
 `ACKNOWLEDGED_ORPHANS` is the known, already-filed backlog (issue #479) —
-not a growing allowlist. Equality (not subset) is asserted both ways: a
-name outside this set fails the test as a newly discovered orphan, and a
-name in this set that the detector no longer reports (because someone
-deleted or wired it up) also fails, so the set can't go stale silently.
+not a growing allowlist. `PENDING_CONSUMERS` is the opposite direction: a
+helper landed deliberately ahead of the ticket that calls it. Equality (not
+subset) is asserted both ways over the two sets together: a name outside
+them fails the test as a newly discovered orphan, and a name in either that
+the detector no longer reports (because someone deleted or wired it up) also
+fails, so neither set can go stale silently.
 """
 
 from __future__ import annotations
@@ -32,12 +34,29 @@ ACKNOWLEDGED_ORPHANS = frozenset(
     }
 )
 
+#: Helpers merged before their caller exists, each with the ticket that will
+#: consume them. #498 landed the legacy-to-2026-07 translation module as pure
+#: functions so #500 (create) and #501 (configure) could share one
+#: implementation across the sync and async surfaces; wiring it in is those
+#: tickets' work, and this set is what forces these names off it when they do.
+PENDING_CONSUMERS = frozenset(
+    {
+        "spec_to_deployment",
+        "spec_to_read_capacity",
+        "legacy_vector_schema",
+        "legacy_pod_scaling",
+        "_coerce_spec",
+    }
+)
+
+EXPECTED_ORPHANS = ACKNOWLEDGED_ORPHANS | PENDING_CONSUMERS
+
 
 def test_no_new_orphaned_helpers() -> None:
     report = find_orphaned_helpers()
     found = set(report.orphaned) | set(report.unreferenced)
 
-    new = found - ACKNOWLEDGED_ORPHANS
+    new = found - EXPECTED_ORPHANS
     assert not new, (
         f"new orphaned helper(s) with no production caller: {sorted(new)}. "
         "See ticket #337 and https://github.com/pinecone-io/python-sdk-internal/issues/479 "
@@ -45,10 +64,11 @@ def test_no_new_orphaned_helpers() -> None:
         "was meant to be, or add it to ACKNOWLEDGED_ORPHANS with a tracking issue."
     )
 
-    stale = ACKNOWLEDGED_ORPHANS - found
+    stale = EXPECTED_ORPHANS - found
     assert not stale, (
-        f"ACKNOWLEDGED_ORPHANS is stale: {sorted(stale)} no longer detected as orphaned "
-        "(fixed, deleted, or renamed) -- remove from the set."
+        f"the expected-orphan sets are stale: {sorted(stale)} no longer detected as "
+        "orphaned (fixed, deleted, or renamed) -- remove from ACKNOWLEDGED_ORPHANS "
+        "or PENDING_CONSUMERS."
     )
 
 
