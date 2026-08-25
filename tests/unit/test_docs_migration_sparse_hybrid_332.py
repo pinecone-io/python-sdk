@@ -6,7 +6,9 @@ transcription cannot drift from what a reader copies.
 
 The section makes four claims this file holds to:
 
-1. The 9.x hybrid create raises the guided ``PineconeTypeError``.
+1. The deprecated ``dimension=``/``metric=``/``spec=`` sugar still accepts the
+   9.x hybrid call (#500), but only declares the dense field — no
+   ``sparse_vector`` field appears on the wire.
 2. The 2026-07 replacement puts both vector fields on the wire, and the sparse
    one carries neither ``metric`` nor ``dimension``.
 3. The async twin is its sync neighbour word-for-word modulo ``await`` and puts
@@ -33,7 +35,6 @@ import pytest
 import respx
 
 from pinecone import AsyncPinecone, Pinecone, ServerlessSpec
-from pinecone.errors.exceptions import PineconeTypeError
 from pinecone.schema_builder import SchemaBuilder
 from tests.factories import make_index_response
 
@@ -58,8 +59,8 @@ def _blocks() -> list[tuple[str, str]]:
     assert sources, f"no python blocks found under {ANCHOR} in {GUIDE}"
 
     def kind(source: str) -> str:
-        if source.lstrip().startswith("# 9.x"):
-            return "9x"
+        if source.lstrip().startswith("# Deprecated sugar"):
+            return "deprecated"
         if "SchemaBuilder(" in source:
             return "builder"
         return "async" if "await " in source else "sync"
@@ -68,7 +69,7 @@ def _blocks() -> list[tuple[str, str]]:
 
 
 BLOCKS = _blocks()
-LEGACY = [(i, s) for i, (k, s) in enumerate(BLOCKS) if k == "9x"]
+LEGACY = [(i, s) for i, (k, s) in enumerate(BLOCKS) if k == "deprecated"]
 CREATES = [(i, s) for i, (k, s) in enumerate(BLOCKS) if k in ("sync", "async")]
 ASYNC = [(i, s) for i, (k, s) in enumerate(BLOCKS) if k == "async"]
 BUILDER = [(i, s) for i, (k, s) in enumerate(BLOCKS) if k == "builder"]
@@ -76,7 +77,7 @@ BUILDER = [(i, s) for i, (k, s) in enumerate(BLOCKS) if k == "builder"]
 
 def test_the_section_still_carries_every_kind_of_block_this_file_checks() -> None:
     """A block silently deleted from the guide must not silently drop its test."""
-    assert LEGACY, "the 9.x before-example is gone"
+    assert LEGACY, "the deprecated-sugar before-example is gone"
     assert ASYNC, "the async tab is gone"
     assert len(CREATES) == 2, f"expected one sync and one async create, got {len(CREATES)}"
     assert len(BUILDER) == 1, f"expected exactly one SchemaBuilder block, got {len(BUILDER)}"
@@ -111,28 +112,32 @@ def _run(source: str, namespace: dict[str, Any]) -> Any:
 
 def _sync_body(source: str) -> bytes:
     _stub()
-    _run(source, {"pc": Pinecone(api_key="key", host=BASE_URL)})
+    _run(source, {"pc": Pinecone(api_key="key", host=BASE_URL), "ServerlessSpec": ServerlessSpec})
     return _written_body()
 
 
 async def _async_body(source: str) -> bytes:
     _stub()
     async with AsyncPinecone(api_key="key", host=BASE_URL) as pc:
-        result = _run(source, {"pc": pc})
+        result = _run(source, {"pc": pc, "ServerlessSpec": ServerlessSpec})
         if inspect.isawaitable(result):
             await result
     return _written_body()
 
 
 @pytest.mark.parametrize(("index", "source"), LEGACY, ids=[str(i) for i, _ in LEGACY])
-def test_9x_hybrid_create_raises_the_guided_error(index: int, source: str) -> None:
-    namespace: dict[str, Any] = {
-        "pc": Pinecone(api_key="key", host=BASE_URL),
-        "ServerlessSpec": ServerlessSpec,
-    }
-    with pytest.raises(PineconeTypeError) as excinfo:
-        _run(source, namespace)
-    assert "docs/migration/" in str(excinfo.value)
+@respx.mock
+def test_deprecated_hybrid_create_still_works_but_declares_no_sparse_field(
+    index: int, source: str
+) -> None:
+    raw = _sync_body(source)
+    fields = json.loads(raw)["schema"]["fields"]
+
+    dense = [name for name, f in fields.items() if f["type"] == "dense_vector"]
+    sparse = [name for name, f in fields.items() if f["type"] == "sparse_vector"]
+    assert dense == ["_values"], f"block {index}: expected the reserved dense field, got {dense}"
+    assert not sparse, f"block {index}: expected no sparse_vector field, got {sparse}"
+    assert fields["_values"]["metric"] == "dotproduct"
 
 
 @pytest.mark.parametrize(("index", "source"), CREATES, ids=[str(i) for i, _ in CREATES])

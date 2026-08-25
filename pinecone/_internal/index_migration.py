@@ -1,19 +1,19 @@
-"""Guided hard-break interception for 2025-10 index kwargs (2026-07 migration).
+"""Guided hard-break interception for index kwargs with no faithful translation.
 
-The 2026-07 control plane replaced the spec-based ``create``/``configure``
-surface (``spec=``, ``dimension=``, ``metric=``, ``vector_type=``,
-``replicas=``, ``pod_type=``, ``embed=``) with a schema/deployment surface.
-Per the release decision (epoch #87), legacy keyword arguments are not
-silently aliased — translating ``dimension=1536`` would require inventing a
-schema field name the caller's data-plane code has never heard of, and the
-old metadata ``schema=`` kwarg collides with the new search ``schema=``
-kwarg with opposite semantics.
+``spec=IntegratedSpec(...)`` has no translation: integrated indexes are
+created through ``create_for_model()``, so it is intercepted here. ``pods=``,
+``metadata_config=``, ``source_collection=``, and ``source_backup_id=`` also
+have no faithful translation — ``pods=`` has no 1:1 mapping onto
+``replicas x shards``, ``metadata_config=`` has nothing to declare (metadata
+is indexed automatically at upsert), and ``source_collection=``/
+``source_backup_id=`` are rejected by the backend with a 400. Each one raises
+a :class:`~pinecone.errors.exceptions.PineconeTypeError` before any HTTP
+request, explaining why no translation exists.
 
-Instead, every legacy kwarg is intercepted before any HTTP request and
-raises a :class:`~pinecone.errors.exceptions.PineconeTypeError` whose
-message interpolates the caller's own values into a copy-pasteable
-equivalent 2026-07 call wherever a faithful translation exists, and
-explains why no translation exists where it does not.
+The rest of the create() surface (``spec=`` for non-integrated specs,
+``dimension=``, ``metric=``, ``vector_type=``) does have a faithful
+translation and is handled directly by ``Indexes.create()`` /
+``AsyncIndexes.create()`` via ``pinecone._internal.legacy_index_translation``.
 """
 
 from __future__ import annotations
@@ -24,18 +24,9 @@ from pinecone.errors.exceptions import PineconeTypeError
 
 MIGRATION_GUIDE = "docs/migration/v10-2026-07-index-model.md"
 
-#: Legacy Indexes.create() kwargs removed by the 2026-07 API.
+#: create() kwargs with no faithful translation.
 LEGACY_CREATE_KWARGS = frozenset(
-    {
-        "spec",
-        "dimension",
-        "metric",
-        "vector_type",
-        "pods",
-        "metadata_config",
-        "source_collection",
-        "source_backup_id",
-    }
+    {"pods", "metadata_config", "source_collection", "source_backup_id"}
 )
 
 #: Legacy Indexes.configure() kwargs removed by the 2026-07 API.
@@ -46,62 +37,6 @@ LEGACY_CONFIGURE_KWARGS = frozenset(
 
 def _fmt(value: Any) -> str:
     return repr(value)
-
-
-def _spec_to_deployment_snippet(spec: Any) -> str | None:
-    """Render the caller's legacy spec value as a 2026-07 ``deployment=`` dict."""
-    type_name = type(spec).__name__
-    if type_name == "ServerlessSpec":
-        return (
-            "deployment={'deployment_type': 'managed', "
-            f"'cloud': {_fmt(spec.cloud)}, 'region': {_fmt(spec.region)}}}"
-        )
-    if type_name == "PodSpec":
-        return (
-            "deployment={'deployment_type': 'pod', "
-            f"'environment': {_fmt(spec.environment)}, "
-            f"'pod_type': {_fmt(spec.pod_type)}, "
-            f"'replicas': {spec.replicas}, 'shards': {spec.shards}}}"
-        )
-    if type_name == "ByocSpec":
-        return f"deployment={{'deployment_type': 'byoc', 'environment': {_fmt(spec.environment)}}}"
-    if isinstance(spec, dict):
-        if "serverless" in spec:
-            inner = spec["serverless"]
-            return (
-                "deployment={'deployment_type': 'managed', "
-                f"'cloud': {_fmt(inner.get('cloud'))}, 'region': {_fmt(inner.get('region'))}}}"
-            )
-        if "pod" in spec:
-            inner = spec["pod"]
-            return (
-                "deployment={'deployment_type': 'pod', "
-                f"'environment': {_fmt(inner.get('environment'))}, "
-                f"'pod_type': {_fmt(inner.get('pod_type', 'p1.x1'))}, "
-                f"'replicas': {inner.get('replicas', 1)}, 'shards': {inner.get('shards', 1)}}}"
-            )
-        if "byoc" in spec:
-            inner = spec["byoc"]
-            return (
-                "deployment={'deployment_type': 'byoc', "
-                f"'environment': {_fmt(inner.get('environment'))}}}"
-            )
-    return None
-
-
-def _schema_field_snippet(legacy: dict[str, Any]) -> str:
-    """Render dimension/metric/vector_type as a 2026-07 schema field example."""
-    vector_type = legacy.get("vector_type", "dense")
-    vector_type = vector_type.value if hasattr(vector_type, "value") else vector_type
-    if vector_type == "sparse":
-        return "schema={'fields': {'<field-name>': {'type': 'sparse_vector'}}}"
-    dimension = legacy.get("dimension", "<dimension>")
-    metric = legacy.get("metric", "cosine")
-    metric = metric.value if hasattr(metric, "value") else metric
-    return (
-        "schema={'fields': {'<field-name>': "
-        f"{{'type': 'dense_vector', 'dimension': {dimension}, 'metric': {_fmt(metric)}}}}}}}"
-    )
 
 
 def _integrated_spec_error(spec: Any, name: Any) -> PineconeTypeError:
@@ -124,11 +59,23 @@ def _integrated_spec_error(spec: Any, name: Any) -> PineconeTypeError:
     return PineconeTypeError("\n".join(lines))
 
 
+def reject_integrated_spec_create(spec: Any, name: Any = None) -> None:
+    """Raise a guided error for ``create(spec=IntegratedSpec(...))``.
+
+    No-op when *spec* is not an ``IntegratedSpec``. Called directly by
+    ``Indexes.create()``/``AsyncIndexes.create()`` since ``spec=`` is a
+    named parameter there, not a captured ``**legacy_kwargs`` entry.
+    """
+    if spec is not None and type(spec).__name__ == "IntegratedSpec":
+        raise _integrated_spec_error(spec, name)
+
+
 def reject_legacy_create_kwargs(legacy: dict[str, Any], name: Any = None) -> None:
-    """Raise a guided error for any legacy 2025-10 ``create()`` kwarg.
+    """Raise a guided error for a ``create()`` kwarg with no translation.
 
     No-op when *legacy* is empty. Unknown (non-legacy) kwargs raise a plain
-    unexpected-keyword error so typos are still reported as such.
+    unexpected-keyword error so typos are still reported as such, rather
+    than being absorbed into the guided message below.
     """
     if not legacy:
         return
@@ -138,12 +85,9 @@ def reject_legacy_create_kwargs(legacy: dict[str, Any], name: Any = None) -> Non
         raise PineconeTypeError(
             f"Indexes.create() got unexpected keyword argument(s): {sorted(unknown)}. "
             "Accepted keyword arguments: schema, name, deployment, read_capacity, "
-            "deletion_protection, tags, cmek_id, timeout."
+            "deletion_protection, tags, cmek_id, timeout, spec, dimension, metric, "
+            "vector_type."
         )
-
-    spec = legacy.get("spec")
-    if spec is not None and type(spec).__name__ == "IntegratedSpec":
-        raise _integrated_spec_error(spec, name)
 
     sources = [k for k in ("source_collection", "source_backup_id") if k in legacy]
     if sources and set(legacy) <= {"source_collection", "source_backup_id"}:
@@ -156,39 +100,25 @@ def reject_legacy_create_kwargs(legacy: dict[str, Any], name: Any = None) -> Non
         )
 
     removed = sorted(set(legacy) & LEGACY_CREATE_KWARGS)
-    call_lines = ["    pc.indexes.create("]
-    if name:
-        call_lines.append(f"        name={_fmt(name)},")
-    call_lines.append(f"        {_schema_field_snippet(legacy)},")
-    deployment_snippet = _spec_to_deployment_snippet(spec) if spec is not None else None
-    if deployment_snippet:
-        call_lines.append(f"        {deployment_snippet},")
-    call_lines.append("    )")
-
     lines = [
-        "Indexes.create() no longer accepts legacy keyword argument(s) "
-        f"{', '.join(removed)} — removed in the 2026-07 Pinecone API.",
-        "Declare the index as a schema of named fields plus a deployment:",
-        "",
-        *call_lines,
-        "",
-        "Replace '<field-name>' with the field name your upsert/query code will "
-        "address — the SDK cannot invent it for you because the 2026-07 data plane "
-        "addresses vectors by field name.",
+        "Indexes.create() no longer accepts keyword argument(s) "
+        f"{', '.join(removed)} — none has a faithful 2026-07 equivalent:",
     ]
     if "pods" in legacy:
         lines.append(
-            "Note: pods= has no 2026-07 equivalent; capacity is replicas x shards "
-            "on the pod deployment."
+            "  pods=: capacity is replicas x shards on the pod deployment. Use "
+            "deployment={'deployment_type': 'pod', 'environment': ..., 'pod_type': ..., "
+            "'replicas': ..., 'shards': ...} instead."
         )
-    if "metadata_config" in legacy or "schema" in legacy:
+    if "metadata_config" in legacy:
         lines.append(
-            "Note: metadata fields are no longer declared at create time; they are "
-            "indexed automatically at upsert."
+            "  metadata_config=: metadata fields are indexed automatically at upsert; "
+            "there is nothing to declare at create time."
         )
     if sources:
         lines.append(
-            f"Note: {', '.join(sources)} is rejected by the 2026-07 API; use "
+            f"  {', '.join(sources)}: rejected with 400 'Creating an index from "
+            "collection or backup is not yet supported'; use "
             "pc.create_index_from_backup(...) to restore a backup."
         )
     lines.append(f"See the migration guide: {MIGRATION_GUIDE}")

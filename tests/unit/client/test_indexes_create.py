@@ -243,67 +243,151 @@ def test_create_source_collection_is_guided_away(indexes: Indexes) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Guided hard break: 2025-10 kwargs raise with the equivalent 2026-07 call
+# Deprecated sugar (#500): spec=/dimension=/metric=/vector_type= translate
+# into schema=/deployment=/read_capacity=.
 # ---------------------------------------------------------------------------
 
 
-def test_create_legacy_serverless_spec_raises_with_translation(indexes: Indexes) -> None:
-    with pytest.raises(PineconeTypeError) as exc_info:
-        indexes.create(  # type: ignore[call-arg]
-            name="movies",
-            dimension=1536,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        )
+@respx.mock
+def test_create_legacy_dimension_metric_spec_translates_to_dense_schema_and_deployment(
+    indexes: Indexes,
+) -> None:
+    route = respx.post(f"{BASE_URL}/indexes").mock(return_value=_mock_created(name="movies"))
 
-    message = str(exc_info.value)
-    assert "'type': 'dense_vector', 'dimension': 1536, 'metric': 'cosine'" in message
-    assert "'deployment_type': 'managed', 'cloud': 'aws', 'region': 'us-east-1'" in message
-    assert "docs/migration/v10-2026-07-index-model.md" in message
+    indexes.create(
+        name="movies",
+        dimension=1536,
+        metric="cosine",
+        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+        timeout=-1,
+    )
 
-
-def test_create_legacy_pod_spec_raises_with_translation(indexes: Indexes) -> None:
-    with pytest.raises(PineconeTypeError) as exc_info:
-        indexes.create(  # type: ignore[call-arg]
-            name="pods",
-            dimension=8,
-            spec=PodSpec(environment="us-east1-gcp", pod_type="p1.x2", replicas=2, shards=3),
-        )
-
-    message = str(exc_info.value)
-    assert "'deployment_type': 'pod'" in message
-    assert "'environment': 'us-east1-gcp'" in message
-    assert "'replicas': 2, 'shards': 3" in message
+    body = json.loads(route.calls.last.request.content)
+    assert body == {
+        "name": "movies",
+        "schema": {
+            "fields": {"_values": {"type": "dense_vector", "dimension": 1536, "metric": "cosine"}}
+        },
+        "deployment": {"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
+    }
 
 
-def test_create_legacy_byoc_spec_raises_with_translation(indexes: Indexes) -> None:
-    with pytest.raises(PineconeTypeError, match="'deployment_type': 'byoc'"):
-        indexes.create(  # type: ignore[call-arg]
-            name="byoc", dimension=8, spec=ByocSpec(environment="aws-us-east-1-b921")
-        )
+@respx.mock
+def test_create_legacy_metric_defaults_to_cosine_when_omitted(indexes: Indexes) -> None:
+    route = respx.post(f"{BASE_URL}/indexes").mock(return_value=_mock_created())
+
+    indexes.create(dimension=8, spec=ServerlessSpec(cloud="aws", region="us-east-1"), timeout=-1)
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["schema"]["fields"]["_values"]["metric"] == "cosine"
 
 
-def test_create_legacy_dict_spec_raises_with_translation(indexes: Indexes) -> None:
-    with pytest.raises(PineconeTypeError, match="'region': 'eu-west-1'"):
-        indexes.create(  # type: ignore[call-arg]
-            name="movies",
-            dimension=3,
-            spec={"serverless": {"cloud": "aws", "region": "eu-west-1"}},
-        )
+@respx.mock
+def test_create_legacy_sparse_vector_type_translates_to_sparse_schema(indexes: Indexes) -> None:
+    route = respx.post(f"{BASE_URL}/indexes").mock(return_value=_mock_created(name="sparse"))
+
+    indexes.create(
+        name="sparse",
+        vector_type="sparse",
+        metric="dotproduct",
+        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+        timeout=-1,
+    )
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["schema"] == {"fields": {"_sparse_values": {"type": "sparse_vector"}}}
 
 
-def test_create_legacy_sparse_vector_type_raises_with_sparse_snippet(indexes: Indexes) -> None:
-    with pytest.raises(PineconeTypeError, match="sparse_vector"):
-        indexes.create(  # type: ignore[call-arg]
-            name="sparse",
-            vector_type="sparse",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        )
+@respx.mock
+def test_create_legacy_pod_spec_translates_to_pod_deployment(indexes: Indexes) -> None:
+    route = respx.post(f"{BASE_URL}/indexes").mock(return_value=_mock_created(name="pods"))
+
+    indexes.create(
+        name="pods",
+        dimension=8,
+        spec=PodSpec(environment="us-east1-gcp", pod_type="p1.x2", replicas=2, shards=3),
+        timeout=-1,
+    )
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["deployment"] == {
+        "deployment_type": "pod",
+        "environment": "us-east1-gcp",
+        "pod_type": "p1.x2",
+        "replicas": 2,
+        "shards": 3,
+    }
+
+
+@respx.mock
+def test_create_legacy_byoc_spec_translates_to_byoc_deployment(indexes: Indexes) -> None:
+    route = respx.post(f"{BASE_URL}/indexes").mock(return_value=_mock_created(name="byoc"))
+
+    indexes.create(
+        name="byoc", dimension=8, spec=ByocSpec(environment="aws-us-east-1-b921"), timeout=-1
+    )
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["deployment"] == {"deployment_type": "byoc", "environment": "aws-us-east-1-b921"}
+
+
+@respx.mock
+def test_create_legacy_dict_spec_translates_to_deployment(indexes: Indexes) -> None:
+    route = respx.post(f"{BASE_URL}/indexes").mock(return_value=_mock_created(name="movies"))
+
+    indexes.create(
+        name="movies",
+        dimension=3,
+        spec={"serverless": {"cloud": "aws", "region": "eu-west-1"}},
+        timeout=-1,
+    )
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["deployment"] == {
+        "deployment_type": "managed",
+        "cloud": "aws",
+        "region": "eu-west-1",
+    }
+
+
+@respx.mock
+def test_create_legacy_spec_read_capacity_lands_at_top_level(indexes: Indexes) -> None:
+    route = respx.post(f"{BASE_URL}/indexes").mock(return_value=_mock_created())
+
+    indexes.create(
+        dimension=8,
+        spec=ServerlessSpec(cloud="aws", region="us-east-1", read_capacity={"mode": "OnDemand"}),
+        timeout=-1,
+    )
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["read_capacity"] == {"mode": "OnDemand"}
+    assert "read_capacity" not in body["deployment"]
+
+
+@respx.mock
+def test_create_legacy_read_capacity_kwarg_overrides_spec_read_capacity(indexes: Indexes) -> None:
+    route = respx.post(f"{BASE_URL}/indexes").mock(return_value=_mock_created())
+
+    indexes.create(
+        dimension=8,
+        spec=ServerlessSpec(cloud="aws", region="us-east-1", read_capacity={"mode": "OnDemand"}),
+        read_capacity={"mode": "Dedicated", "dedicated": {"node_type": "t1"}},
+        timeout=-1,
+    )
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["read_capacity"] == {"mode": "Dedicated", "dedicated": {"node_type": "t1"}}
+
+
+# ---------------------------------------------------------------------------
+# Guided hard break: kwargs with no faithful translation
+# ---------------------------------------------------------------------------
 
 
 def test_create_legacy_integrated_spec_redirects_to_create_for_model(indexes: Indexes) -> None:
     with pytest.raises(PineconeTypeError) as exc_info:
-        indexes.create(  # type: ignore[call-arg]
+        indexes.create(
             name="semantic",
             spec=IntegratedSpec(
                 cloud="aws",
@@ -319,10 +403,15 @@ def test_create_legacy_integrated_spec_redirects_to_create_for_model(indexes: In
 
 
 def test_create_legacy_pods_kwarg_notes_no_equivalent(indexes: Indexes) -> None:
-    with pytest.raises(PineconeTypeError, match="pods= has no 2026-07 equivalent"):
+    with pytest.raises(PineconeTypeError, match="pods=: capacity is replicas x shards"):
         indexes.create(  # type: ignore[call-arg]
             name="pods", dimension=3, spec=PodSpec(environment="us-east1-gcp"), pods=4
         )
+
+
+def test_create_legacy_metadata_config_kwarg_notes_no_equivalent(indexes: Indexes) -> None:
+    with pytest.raises(PineconeTypeError, match="metadata_config=: metadata fields"):
+        indexes.create(schema=DENSE_SCHEMA, metadata_config={"indexed": ["genre"]})  # type: ignore[call-arg]
 
 
 def test_create_unknown_kwarg_lists_accepted_arguments(indexes: Indexes) -> None:
@@ -330,13 +419,86 @@ def test_create_unknown_kwarg_lists_accepted_arguments(indexes: Indexes) -> None
         indexes.create(schema=DENSE_SCHEMA, shcema_typo=True)  # type: ignore[call-arg]
 
 
-def test_create_legacy_kwargs_rejected_before_any_request(indexes: Indexes) -> None:
-    """Interception happens client-side: no HTTP request is made."""
+def test_create_unknown_kwarg_not_absorbed_by_legacy_sugar(indexes: Indexes) -> None:
+    with pytest.raises(PineconeTypeError, match=r"\['dimenson'\]"):
+        indexes.create(name="x", dimenson=3)  # type: ignore[call-arg]
+
+
+def test_create_quarantined_kwargs_rejected_before_any_request(indexes: Indexes) -> None:
     with respx.mock:
         route = respx.post(f"{BASE_URL}/indexes")
         with pytest.raises(PineconeTypeError):
-            indexes.create(name="x", dimension=3, spec={"serverless": {}})  # type: ignore[call-arg]
+            indexes.create(name="x", dimension=3, pods=4)  # type: ignore[call-arg]
         assert route.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Conflicts and collisions between the deprecated sugar and the 2026-07 args
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "legacy_kwargs",
+    [
+        {"dimension": 3},
+        {"metric": "cosine"},
+        {"vector_type": "dense"},
+        {"dimension": 3, "metric": "cosine", "vector_type": "dense"},
+    ],
+)
+def test_create_schema_with_legacy_vector_kwarg_raises_naming_both(
+    indexes: Indexes, legacy_kwargs: dict[str, Any]
+) -> None:
+    with pytest.raises(PineconeValueError, match="schema=") as exc_info:
+        indexes.create(schema=DENSE_SCHEMA, **legacy_kwargs)
+    message = str(exc_info.value)
+    for kwarg in legacy_kwargs:
+        assert f"{kwarg}=" in message
+
+
+def test_create_deployment_with_spec_raises_naming_both(indexes: Indexes) -> None:
+    with pytest.raises(PineconeValueError, match="deployment=") as exc_info:
+        indexes.create(
+            deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
+            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+        )
+    assert "spec=" in str(exc_info.value)
+
+
+def test_create_neither_schema_nor_legacy_kwargs_extends_schema_required_message(
+    indexes: Indexes,
+) -> None:
+    with pytest.raises(PineconeValueError, match="schema is required") as exc_info:
+        indexes.create(name="x")
+    assert "dimension=" in str(exc_info.value)
+
+
+@respx.mock
+def test_create_metric_never_injected_into_schema_call(indexes: Indexes) -> None:
+    route = respx.post(f"{BASE_URL}/indexes").mock(return_value=_mock_created())
+
+    indexes.create(schema=DENSE_SCHEMA, timeout=-1)
+
+    body = json.loads(route.calls.last.request.content)
+    assert body == {"schema": DENSE_SCHEMA}
+
+
+def test_create_old_style_metadata_schema_raises_guided_message_not_a_400(
+    indexes: Indexes,
+) -> None:
+    with pytest.raises(PineconeValueError, match=r"9\.x metadata schema") as exc_info:
+        indexes.create(schema={"fields": {"genre": {"filterable": True}}})
+    message = str(exc_info.value)
+    assert "indexed automatically at upsert" in message
+    assert "docs/migration/v10-2026-07-index-model.md" in message
+
+
+@respx.mock
+def test_create_spec_alone_without_dimension_still_requires_schema(indexes: Indexes) -> None:
+    route = respx.post(f"{BASE_URL}/indexes")
+    with pytest.raises(PineconeValueError, match="schema is required"):
+        indexes.create(spec=ServerlessSpec(cloud="aws", region="us-east-1"))
+    assert route.call_count == 0
 
 
 # ---------------------------------------------------------------------------

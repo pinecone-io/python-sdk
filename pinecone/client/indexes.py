@@ -12,10 +12,16 @@ from pinecone._internal.adapters.backups_adapter import BackupsAdapter
 from pinecone._internal.adapters.indexes_adapter import IndexesAdapter
 from pinecone._internal.backups_helpers import backup_list_params
 from pinecone._internal.index_migration import (
+    reject_integrated_spec_create,
     reject_legacy_configure_kwargs,
     reject_legacy_create_kwargs,
 )
 from pinecone._internal.indexes_helpers import poll_index_until_ready, resolve_enum_value
+from pinecone._internal.legacy_index_translation import (
+    legacy_vector_schema,
+    spec_to_deployment,
+    spec_to_read_capacity,
+)
 from pinecone._internal.validation import (
     require_non_empty,
     require_one_of,
@@ -29,6 +35,7 @@ from pinecone.errors.exceptions import (
     PineconeValueError,
 )
 from pinecone.models.backups.model import BackupModel
+from pinecone.models.enums import Metric, VectorType
 from pinecone.models.indexes.index import IndexModel
 from pinecone.models.indexes.requests import ConfigureIndexRequest, CreateIndexRequest
 from pinecone.models.indexes.schema import IndexSchema
@@ -70,6 +77,32 @@ def _require_fields_dict(param: str, schema: dict[str, Any] | IndexSchema) -> No
 def _require_non_empty_dict(param: str, value: dict[str, Any] | None) -> None:
     if value is not None and not value:
         raise PineconeValueError(f"{param} cannot be an empty dict")
+
+
+def _reject_legacy_metadata_schema(schema: dict[str, Any] | IndexSchema) -> None:
+    """Raise a guided error for a 9.x metadata ``schema=`` value.
+
+    On 9.x, ``create(schema=...)`` declared filterable metadata fields shaped
+    ``{"fields": {"<name>": {"filterable": bool}}}`` — no ``"type"`` key. At
+    2026-07 the same keyword declares searched fields instead, so silently
+    reinterpreting one as the other would create a wrong index rather than
+    fail loudly.
+    """
+    if not isinstance(schema, dict):
+        return
+    fields = schema.get("fields")
+    if not isinstance(fields, dict) or not fields:
+        return
+    if all(isinstance(f, dict) and "type" not in f for f in fields.values()):
+        raise PineconeValueError(
+            f"schema={schema!r} looks like a 9.x metadata schema: none of its fields "
+            "carry a 'type' key. At 2026-07, schema= declares searched fields instead "
+            "(dense_vector, sparse_vector, or string with full_text_search) — metadata "
+            "fields are no longer declared at create time; they are indexed "
+            "automatically at upsert. If you meant to declare a searched field, add "
+            "'type': 'dense_vector' | 'sparse_vector' | 'string' to each field. See "
+            "the migration guide: docs/migration/v10-2026-07-index-model.md"
+        )
 
 
 class Indexes:
@@ -292,6 +325,10 @@ class Indexes:
         tags: Mapping[str, str] | None = None,
         cmek_id: str | None = None,
         timeout: int | None = None,
+        spec: Any = None,
+        dimension: int | None = None,
+        metric: Metric | str | None = None,
+        vector_type: VectorType | str | None = None,
         **legacy_kwargs: Any,
     ) -> IndexModel:
         """Create a new Pinecone index (2026-07 schema-based API).
@@ -303,31 +340,20 @@ class Indexes:
         The schema cannot be modified after creation.
 
         .. versionchanged:: 10.0
-           Replaces the 2025-10 signature. Before/after:
-
-           .. code-block:: python
-
-               # 9.x
-               pc.indexes.create(name="movies", dimension=1536,
-                                 spec=ServerlessSpec(cloud="aws", region="us-east-1"))
-               # 10.x
-               pc.indexes.create(
-                   name="movies",
-                   schema={"fields": {"embedding": {
-                       "type": "dense_vector", "dimension": 1536, "metric": "cosine"}}},
-                   deployment={"deployment_type": "managed",
-                               "cloud": "aws", "region": "us-east-1"},
-               )
-
-           Legacy keyword arguments (``spec``, ``dimension``, ``metric``,
-           ``vector_type``, ``pods``, ``metadata_config``,
-           ``source_collection``, ``source_backup_id``) raise a
-           :exc:`~pinecone.errors.exceptions.PineconeTypeError` showing the
-           equivalent 2026-07 call.
+           Replaces the 2025-10 signature. ``spec=``, ``dimension=``,
+           ``metric=``, and ``vector_type=`` are deprecated, keyword-only
+           sugar (see below); ``pods=``, ``metadata_config=``,
+           ``source_collection=``, ``source_backup_id=``, and
+           ``spec=IntegratedSpec(...)`` have no translation and raise a
+           :exc:`~pinecone.errors.exceptions.PineconeTypeError` explaining
+           why, or (for ``IntegratedSpec``) pointing at
+           :meth:`create_for_model`.
 
         Args:
-            schema: Required index schema. A dict with a ``"fields"`` key
-                mapping field names to typed configurations, e.g.::
+            schema: Index schema. Either this or the deprecated
+                ``dimension=``/``metric=``/``vector_type=`` combination is
+                required — not both. A dict with a ``"fields"`` key mapping
+                field names to typed configurations, e.g.::
 
                     {
                         "fields": {
@@ -369,16 +395,19 @@ class Indexes:
             name: Optional name for the index. 1-45 characters matching
                 ``^[a-z0-9]([a-z0-9-]*[a-z0-9])?$``. If omitted, the server
                 assigns one.
-            deployment: Optional deployment configuration dict discriminated
-                on ``"deployment_type"`` (``"managed"`` | ``"pod"`` |
-                ``"byoc"``). Omitted defaults server-side to managed on AWS
-                ``us-east-1``. Pod deployments must include all of
-                ``environment``, ``pod_type``, ``replicas``, and ``shards``
-                (the server rejects omissions with 422).
+            deployment: Deployment configuration dict discriminated on
+                ``"deployment_type"`` (``"managed"`` | ``"pod"`` | ``"byoc"``).
+                Omitted (and ``spec=`` not given) defaults server-side to
+                managed on AWS ``us-east-1``. Pod deployments must include
+                all of ``environment``, ``pod_type``, ``replicas``, and
+                ``shards`` (the server rejects omissions with 422). Cannot be
+                combined with the deprecated ``spec=``.
             read_capacity: Optional read capacity dict —
                 ``{"mode": "OnDemand"}`` or ``{"mode": "Dedicated",
                 "dedicated": {"node_type": ..., "scaling": ...,
-                "manual": {"replicas": ..., "shards": ...}}}``.
+                "manual": {"replicas": ..., "shards": ...}}}``. When ``spec=``
+                carries its own ``read_capacity``, that value is used unless
+                this argument is also given.
             deletion_protection: ``"enabled"`` or ``"disabled"`` (server
                 default ``"disabled"``).
             tags: Optional key-value tags. Keys: 1-80 ASCII alphanumerics,
@@ -399,6 +428,44 @@ class Indexes:
                 (default) polls indefinitely every 5 seconds. A positive int
                 polls with a deadline. ``-1`` returns immediately without
                 polling.
+            spec: **Deprecated.** A :class:`~pinecone.models.indexes.specs.ServerlessSpec`,
+                :class:`~pinecone.models.indexes.specs.PodSpec`,
+                :class:`~pinecone.models.indexes.specs.ByocSpec`, or the
+                equivalent legacy dict, translated into ``deployment=`` (and
+                ``read_capacity=`` when the spec carries one). Cannot be
+                combined with ``deployment=``.
+                ``spec=IntegratedSpec(...)`` is not supported here — use
+                :meth:`create_for_model`.
+
+                .. deprecated:: 10.0
+                   Provided for 9.x callers; new code should pass
+                   ``deployment=`` directly.
+            dimension: **Deprecated.** Dense vector width, translated into a
+                ``schema={"fields": {"_values": {...}}}`` field. Required
+                when using this legacy path for a dense index; rejected for
+                ``vector_type="sparse"``. Cannot be combined with ``schema=``.
+
+                .. deprecated:: 10.0
+                   Provided for 9.x callers; new code should declare a named
+                   field in ``schema=`` instead.
+            metric: **Deprecated.** Similarity metric for the legacy dense
+                path — ``"cosine"`` (the default when omitted),
+                ``"euclidean"``, or ``"dotproduct"``. Dropped for
+                ``vector_type="sparse"``, and never applied when ``schema=``
+                is given. Cannot be combined with ``schema=``.
+
+                .. deprecated:: 10.0
+                   Provided for 9.x callers; new code should set ``metric``
+                   inside the ``schema=`` field declaration instead.
+            vector_type: **Deprecated.** ``"dense"`` (the default when
+                omitted) or ``"sparse"``, selecting between the reserved
+                ``_values``/``_sparse_values`` legacy field names. Cannot be
+                combined with ``schema=``.
+
+                .. deprecated:: 10.0
+                   Provided for 9.x callers; new code should declare a named
+                   ``dense_vector``/``sparse_vector`` field in ``schema=``
+                   instead.
 
         Returns:
             :class:`IndexModel` describing the created index (ready, unless
@@ -407,9 +474,14 @@ class Indexes:
         Raises:
             :exc:`PineconeValueError`: If inputs fail client-side validation
                 (empty or invalid name, malformed or empty schema/deployment/
-                read_capacity dicts, invalid tags or deletion_protection).
-            :exc:`PineconeTypeError`: If legacy 2025-10 keyword arguments are
-                passed; the message shows the equivalent 2026-07 call.
+                read_capacity dicts, invalid tags or deletion_protection,
+                conflicting ``schema=``/legacy-vector-kwarg or
+                ``deployment=``/``spec=`` combinations, or a ``schema=`` value
+                that looks like a 9.x metadata schema).
+            :exc:`PineconeTypeError`: If ``pods=``, ``metadata_config=``,
+                ``source_collection=``, ``source_backup_id=``, or
+                ``spec=IntegratedSpec(...)`` are passed (no translation
+                exists), or an unrecognized keyword argument is passed.
             :exc:`IndexInitFailedError`: If the index fails to initialise.
             :exc:`PineconeTimeoutError`: If the index is not ready before the deadline.
             :exc:`ApiError`: If the API returns an error response; server
@@ -426,18 +498,67 @@ class Indexes:
             ... )
         """
         reject_legacy_create_kwargs(legacy_kwargs, name)
+        reject_integrated_spec_create(spec, name)
 
-        if schema is None:
+        legacy_vector_kwargs_given = (
+            dimension is not None or metric is not None or vector_type is not None
+        )
+
+        if schema is not None and legacy_vector_kwargs_given:
+            conflicting = [
+                kw
+                for kw, val in (
+                    ("dimension", dimension),
+                    ("metric", metric),
+                    ("vector_type", vector_type),
+                )
+                if val is not None
+            ]
+            raise PineconeValueError(
+                "create() got both schema= and "
+                f"{', '.join(f'{kw}=' for kw in conflicting)}: schema= is the 2026-07 "
+                "field declaration and cannot be combined with the deprecated "
+                "dimension=/metric=/vector_type= sugar. Pass one or the other."
+            )
+
+        if deployment is not None and spec is not None:
+            raise PineconeValueError(
+                "create() got both deployment= and spec=: deployment= is the 2026-07 "
+                "deployment configuration and cannot be combined with the deprecated "
+                "spec= sugar. Pass one or the other."
+            )
+
+        if schema is None and not legacy_vector_kwargs_given:
             raise PineconeValueError(
                 "schema is required: pass schema={'fields': {'<field-name>': {...}}} "
                 "declaring at least one searched field (dense_vector, sparse_vector, "
-                "or string with full_text_search)."
+                "or string with full_text_search), or, for backward compatibility, "
+                "the deprecated dimension= keyword argument (optionally with metric= "
+                "and vector_type=)."
             )
-        _require_fields_dict("schema", schema)
+
+        resolved_schema: dict[str, Any] | IndexSchema
+        if schema is None:
+            resolved_schema = legacy_vector_schema(
+                dimension=dimension, metric=metric, vector_type=vector_type
+            )
+        else:
+            _reject_legacy_metadata_schema(schema)
+            resolved_schema = schema
+        _require_fields_dict("schema", resolved_schema)
+
         if name is not None:
             require_valid_resource_name("name", name)
-        _require_non_empty_dict("deployment", deployment)
-        _require_non_empty_dict("read_capacity", read_capacity)
+
+        resolved_deployment = deployment
+        resolved_read_capacity = read_capacity
+        if spec is not None:
+            resolved_deployment = spec_to_deployment(spec)
+            if resolved_read_capacity is None:
+                resolved_read_capacity = spec_to_read_capacity(spec)
+
+        _require_non_empty_dict("deployment", resolved_deployment)
+        _require_non_empty_dict("read_capacity", resolved_read_capacity)
         if tags is not None and not tags:
             raise PineconeValueError("tags cannot be an empty dict")
         validate_index_tags(tags)
@@ -447,10 +568,10 @@ class Indexes:
             require_one_of("deletion_protection", resolved_dp, _DELETION_PROTECTION_VALUES)
 
         request = CreateIndexRequest(
-            schema=schema,
+            schema=resolved_schema,
             name=name,
-            deployment=deployment,
-            read_capacity=read_capacity,
+            deployment=resolved_deployment,
+            read_capacity=resolved_read_capacity,
             deletion_protection=resolved_dp,
             tags=dict(tags) if tags is not None else None,
             cmek_id=cmek_id,

@@ -293,6 +293,18 @@ class TestLegacyVectorSchema:
                 "dimension must be an integer, got 'str'",
                 id="non-integer-dimension",
             ),
+            pytest.param(
+                {"dimension": 8, "metric": "cosine", "vector_type": "SPARSE"},
+                PineconeValueError,
+                "vector_type must be one of ['dense', 'sparse'], got 'SPARSE'",
+                id="mis-cased-vector-type",
+            ),
+            pytest.param(
+                {"dimension": 8, "metric": "cosine", "vector_type": "sparce"},
+                PineconeValueError,
+                "vector_type must be one of ['dense', 'sparse'], got 'sparce'",
+                id="misspelled-vector-type",
+            ),
         ],
     )
     def test_9x_validation_messages_are_verbatim(

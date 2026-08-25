@@ -157,7 +157,10 @@ schemaless indexes.
 ### Before and after
 
 ```python
-# 9.x — one dense field, dotproduct, sparse values implied
+# Deprecated sugar (dimension=/metric=/spec=) still accepts this 9.x-style
+# call, and that is exactly the trap: it creates a dense-only schema (the
+# reserved `_values` field) with no sparse_vector field, so sparse writes
+# still fail — silently, with no error at create time.
 pc.create_index(
     name="hybrid",
     dimension=1536,
@@ -166,9 +169,10 @@ pc.create_index(
 )
 ```
 
-The `2026-07` equivalent names both vector fields. Pick names your upsert and
-query code will address — there is no default. `dotproduct` stays on the dense
-field; the sparse field takes neither `dimension` nor `metric`, both of which
+The `2026-07` equivalent names both vector fields explicitly. Pick names your
+upsert and query code will address — there is no default, and the deprecated
+form above cannot invent one for you. `dotproduct` stays on the dense field;
+the sparse field takes neither `dimension` nor `metric`, both of which
 `vector_type="sparse"` used to imply.
 
 :::::{tabs}

@@ -38,6 +38,7 @@ from pinecone._internal.adapters.indexes_adapter import _IndexListEnvelope
 from pinecone._internal.constants import DEFAULT_BASE_URL
 from pinecone.async_client.pinecone import AsyncPinecone
 from pinecone.models.indexes.index import IndexModel
+from pinecone.models.indexes.specs import ServerlessSpec
 from pinecone.schema_builder import SchemaBuilder
 from tests.unit.conformance import api_op
 
@@ -191,6 +192,121 @@ async def test_async_create_index(
     result = await async_pc.indexes.create(name=INDEX_NAME, schema=CREATE_SCHEMA, timeout=-1)
     assert result.name == INDEX_NAME
     _conforms(claim, route, IndexModel, INDEX, INDEX_OPTIONALS)
+
+
+# ---------------------------------------------------------------------------
+# #500: deprecated dimension=/metric=/vector_type=/spec= sugar pins the exact
+# reserved-field wire bodies named in the ticket's acceptance criteria.
+# ---------------------------------------------------------------------------
+
+LEGACY_SUGAR_DENSE_INDEX: dict[str, Any] = {
+    **INDEX,
+    "name": "conformance-legacy-dense-index",
+    "host": "https://conformance-legacy-dense-index-abc123.svc.aws-us-east-1.pinecone.io",
+    "schema": {
+        "fields": {"_values": {"type": "dense_vector", "dimension": 1536, "metric": "cosine"}}
+    },
+}
+
+LEGACY_SUGAR_SPARSE_INDEX: dict[str, Any] = {
+    **INDEX,
+    "name": "conformance-legacy-sparse-index",
+    "host": "https://conformance-legacy-sparse-index-abc123.svc.aws-us-east-1.pinecone.io",
+    "schema": {"fields": {"_sparse_values": {"type": "sparse_vector"}}},
+}
+
+
+def _assert_legacy_sugar_dense_body_on_the_wire(request: Any) -> None:
+    body = json.loads(request.content)
+    assert body["schema"] == {
+        "fields": {"_values": {"type": "dense_vector", "dimension": 1536, "metric": "cosine"}}
+    }
+    assert body["deployment"] == {
+        "deployment_type": "managed",
+        "cloud": "aws",
+        "region": "us-east-1",
+    }
+
+
+def _assert_legacy_sugar_sparse_body_on_the_wire(request: Any) -> None:
+    body = json.loads(request.content)
+    assert body["schema"] == {"fields": {"_sparse_values": {"type": "sparse_vector"}}}
+
+
+@api_op("db_control:create_index")
+def test_create_index_legacy_dense_sugar_pins_reserved_values_field(
+    claim: Any, pc: Pinecone, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.post(f"{BASE_URL}/indexes").mock(
+        return_value=httpx.Response(201, json=LEGACY_SUGAR_DENSE_INDEX)
+    )
+    result = pc.indexes.create(
+        name="conformance-legacy-dense-index",
+        dimension=1536,
+        metric="cosine",
+        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+        timeout=-1,
+    )
+    assert result.name == "conformance-legacy-dense-index"
+    _assert_legacy_sugar_dense_body_on_the_wire(route.calls.last.request)
+    _conforms(claim, route, IndexModel, LEGACY_SUGAR_DENSE_INDEX, INDEX_OPTIONALS)
+
+
+@api_op("db_control:create_index")
+async def test_async_create_index_legacy_dense_sugar_pins_reserved_values_field(
+    claim: Any, async_pc: AsyncPinecone, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.post(f"{BASE_URL}/indexes").mock(
+        return_value=httpx.Response(201, json=LEGACY_SUGAR_DENSE_INDEX)
+    )
+    result = await async_pc.indexes.create(
+        name="conformance-legacy-dense-index",
+        dimension=1536,
+        metric="cosine",
+        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+        timeout=-1,
+    )
+    assert result.name == "conformance-legacy-dense-index"
+    _assert_legacy_sugar_dense_body_on_the_wire(route.calls.last.request)
+    _conforms(claim, route, IndexModel, LEGACY_SUGAR_DENSE_INDEX, INDEX_OPTIONALS)
+
+
+@api_op("db_control:create_index")
+def test_create_index_legacy_sparse_sugar_pins_reserved_sparse_values_field(
+    claim: Any, pc: Pinecone, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.post(f"{BASE_URL}/indexes").mock(
+        return_value=httpx.Response(201, json=LEGACY_SUGAR_SPARSE_INDEX)
+    )
+    result = pc.indexes.create(
+        name="conformance-legacy-sparse-index",
+        vector_type="sparse",
+        metric="dotproduct",
+        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+        timeout=-1,
+    )
+    assert result.name == "conformance-legacy-sparse-index"
+    _assert_legacy_sugar_sparse_body_on_the_wire(route.calls.last.request)
+    _conforms(claim, route, IndexModel, LEGACY_SUGAR_SPARSE_INDEX, INDEX_OPTIONALS)
+
+
+@api_op("db_control:create_index")
+async def test_async_create_index_legacy_sparse_sugar_pins_reserved_sparse_values_field(
+    claim: Any, async_pc: AsyncPinecone, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.post(f"{BASE_URL}/indexes").mock(
+        return_value=httpx.Response(201, json=LEGACY_SUGAR_SPARSE_INDEX)
+    )
+    result = await async_pc.indexes.create(
+        name="conformance-legacy-sparse-index",
+        vector_type="sparse",
+        metric="dotproduct",
+        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+        timeout=-1,
+    )
+    assert result.name == "conformance-legacy-sparse-index"
+    _assert_legacy_sugar_sparse_body_on_the_wire(route.calls.last.request)
+    _conforms(claim, route, IndexModel, LEGACY_SUGAR_SPARSE_INDEX, INDEX_OPTIONALS)
 
 
 def _builder_hybrid_schema() -> dict[str, Any]:

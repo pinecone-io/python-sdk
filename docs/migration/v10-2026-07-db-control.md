@@ -44,12 +44,18 @@ addresses vectors by field name.
 | `name` (required) | `name` (optional — the server generates one when omitted) |
 | — | `cmek_id` (new) |
 
-Nothing is silently translated. Every removed keyword is intercepted before
-the request is built and raises a `PineconeTypeError` that interpolates your
-own values into the equivalent 2026-07 call
-(`pinecone/_internal/index_migration.py`). `source_collection` and
-`source_backup_id` are intercepted too rather than forwarded to a guaranteed
-`400` — see
+`spec=`, `dimension=`, `metric=`, and `vector_type=` are deprecated,
+keyword-only sugar: they still work, translating into the
+equivalent `schema=`/`deployment=`/`read_capacity=` shown above, addressing
+the vector field by the reserved name `_values` (dense) or `_sparse_values`
+(sparse) since the SDK cannot invent the field name your data-plane code
+will use. `pods=`, `metadata_config=`, `source_collection=`,
+`source_backup_id=`, and `spec=IntegratedSpec(...)` have no faithful
+translation and still raise a `PineconeTypeError` that interpolates your own
+values into the equivalent 2026-07 call
+(`pinecone/_internal/index_migration.py`); for `IntegratedSpec` that call is
+`create_for_model`. `source_collection` and `source_backup_id` are
+intercepted rather than forwarded to a guaranteed `400` — see
 [#144](https://github.com/pinecone-io/python-sdk-internal/issues/144). Use
 `pc.create_index_from_backup(...)` to restore a backup.
 
@@ -105,7 +111,8 @@ entry, instead of `index.embed`.
 ## Flow 1 — dense serverless create
 
 ```python
-# 9.x
+# Deprecated sugar — still works, and still sends the reserved `_values`
+# field name (see below), rather than one you choose.
 pc.create_index(
     name="movies",
     dimension=1536,
@@ -115,7 +122,7 @@ pc.create_index(
 ```
 
 Pick the field name your upsert and query code will address — there is no
-default and the SDK will not invent one.
+default and the deprecated form above cannot invent one for you.
 
 :::::{tabs}
 ::::{tab} Sync
@@ -153,7 +160,8 @@ await pc.indexes.create(
 ## Flow 2 — sparse create
 
 ```python
-# 9.x
+# Deprecated sugar — still works, and still sends the reserved
+# `_sparse_values` field name, rather than one you choose.
 pc.create_index(
     name="keywords",
     metric="dotproduct",
@@ -163,7 +171,8 @@ pc.create_index(
 ```
 
 A `sparse_vector` field takes no `dimension` and no `metric` — both were
-implied by `vector_type="sparse"` in 9.x and are not accepted here.
+implied by `vector_type="sparse"` in 9.x and are dropped rather than
+forwarded by the deprecated form above.
 
 ```python
 pc.indexes.create(

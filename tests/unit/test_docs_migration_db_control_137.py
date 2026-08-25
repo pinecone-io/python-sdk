@@ -93,14 +93,14 @@ def _run(source: str, namespace: dict[str, Any]) -> Any:
 
 def _sync_body(source: str) -> bytes:
     _stub()
-    _run(source, {"pc": Pinecone(api_key="key", host=BASE_URL)})
+    _run(source, {"pc": Pinecone(api_key="key", host=BASE_URL), "ServerlessSpec": ServerlessSpec})
     return _written_body()
 
 
 async def _async_body(source: str) -> bytes:
     _stub()
     async with AsyncPinecone(api_key="key", host=BASE_URL) as pc:
-        result = _run(source, {"pc": pc})
+        result = _run(source, {"pc": pc, "ServerlessSpec": ServerlessSpec})
         if inspect.isawaitable(result):
             await result
     return _written_body()

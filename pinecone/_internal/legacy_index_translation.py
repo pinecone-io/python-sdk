@@ -41,6 +41,8 @@ SPARSE_FIELD = "_sparse_values"
 
 _VALID_METRICS = frozenset({"cosine", "euclidean", "dotproduct"})
 
+_VALID_VECTOR_TYPES = frozenset({"dense", "sparse"})
+
 _DICT_SPEC_KEYS: tuple[tuple[str, type[ServerlessSpec | PodSpec | ByocSpec]], ...] = (
     ("serverless", ServerlessSpec),
     ("pod", PodSpec),
@@ -196,8 +198,9 @@ def legacy_vector_schema(
         ``{"fields": {"_sparse_values": {"type": "sparse_vector"}}}`` for sparse.
 
     Raises:
-        PineconeValueError: The metric is unknown, or ``dimension`` is missing
-            for a dense index or supplied for a sparse one.
+        PineconeValueError: The metric or vector_type is unknown, or
+            ``dimension`` is missing for a dense index or supplied for a
+            sparse one.
         PineconeTypeError: ``dimension`` is not an integer.
 
     The four messages raised here are the 9.x wording verbatim, because
@@ -212,7 +215,14 @@ def legacy_vector_schema(
     if dimension is not None and not isinstance(dimension, int):
         raise PineconeTypeError(f"dimension must be an integer, got {type(dimension).__name__!r}")
 
-    if resolve_enum_value(vector_type) == "sparse":
+    resolved_vector_type = resolve_enum_value(vector_type)
+    if resolved_vector_type is not None and resolved_vector_type not in _VALID_VECTOR_TYPES:
+        raise PineconeValueError(
+            f"vector_type must be one of {sorted(_VALID_VECTOR_TYPES)}, "
+            f"got {resolved_vector_type!r}"
+        )
+
+    if resolved_vector_type == "sparse":
         if dimension is not None:
             raise PineconeValueError("dimension must not be provided for sparse indexes")
         return {"fields": {SPARSE_FIELD: {"type": "sparse_vector"}}}
