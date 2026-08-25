@@ -22,19 +22,29 @@ silently ignored the parameter.
 
 ## What changed
 
-`IndexModel` no longer has `.dimension`, `.metric`, `.vector_type`, `.spec`,
-`.embed`, or `.created_at`. Accessing any of them raises an `AttributeError`
-that names the replacement. The model now carries:
+`IndexModel` no longer has `.spec`, `.embed`, or `.created_at`. Accessing any
+of them raises an `AttributeError` that names the replacement.
 
 | Removed | Replacement |
 | --- | --- |
-| `index.dimension` | `index.schema.fields["<field>"].dimension` on the `DenseVectorField` |
-| `index.metric` | `index.schema.fields["<field>"].metric` on the vector field |
-| `index.vector_type` | field types in `index.schema.fields` (`DenseVectorField` = dense, `SparseVectorField` = sparse) |
 | `index.spec.serverless` / `.pod` / `.byoc` | `index.deployment` — a `ManagedDeployment`, `PodDeployment`, or `ByocDeployment` discriminated on `deployment_type` |
 | `index.spec.serverless.read_capacity` | `index.read_capacity` (top level) |
 | `index.embed` | a `SemanticTextField` in `index.schema.fields` |
 | `index.created_at` | not returned by the `2026-07` API |
+
+`.dimension`, `.metric`, and `.vector_type` are deprecated but still work —
+they're computed read-only properties resolved from `schema.fields` at
+access time, so a `describe_index()` round-trip that used to hard-stop at
+the first read of one of these keeps working through the upgrade. They
+raise `AttributeError` when the schema doesn't have a resolvable field
+(e.g. no dense vector field for `.dimension`), or when it has more than one
+candidate field. They will be removed in a later major version.
+
+| Deprecated, still works | Replacement |
+| --- | --- |
+| `index.dimension` | `index.schema.fields["<field>"].dimension` on the `DenseVectorField` |
+| `index.metric` | `index.schema.fields["<field>"].metric` on the vector field |
+| `index.vector_type` | field types in `index.schema.fields` (`DenseVectorField` = dense, `SparseVectorField` = sparse) |
 
 New fields on `IndexModel`: `schema` (typed field union), `deployment`
 (tagged union), `read_capacity`, `source_collection`, `source_backup_id`,

@@ -12,7 +12,12 @@ from pinecone.models._display import render_table
 from pinecone.models._mixin import StructDictMixin
 from pinecone.models.indexes.deployment import IndexDeployment
 from pinecone.models.indexes.read_capacity import ReadCapacityResponse
-from pinecone.models.indexes.schema import IndexSchema, _strip_untyped_tags
+from pinecone.models.indexes.schema import (
+    DenseVectorField,
+    IndexSchema,
+    SparseVectorField,
+    _strip_untyped_tags,
+)
 
 __all__ = ["IndexModel", "IndexStatus", "IndexTags"]
 
@@ -123,12 +128,81 @@ class IndexModel(Struct, kw_only=True):
             self.tags = IndexTags(self.tags)
 
     def __getattr__(self, name: str) -> Any:
+        if name in ("dimension", "metric", "vector_type"):
+            raise self._legacy_vector_accessor_error(name)
         if name in _REMOVED_FIELD_HINTS:
             raise AttributeError(
                 f"IndexModel.{name} was removed in the 2026-07 Pinecone API: "
                 f"{_REMOVED_FIELD_HINTS[name]}. See docs/migration/v10-2026-07-index-model.md."
             )
         raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
+
+    def _dense_fields(self) -> list[DenseVectorField]:
+        return [f for f in self.schema.fields.values() if isinstance(f, DenseVectorField)]
+
+    def _sparse_fields(self) -> list[SparseVectorField]:
+        return [f for f in self.schema.fields.values() if isinstance(f, SparseVectorField)]
+
+    def _legacy_vector_accessor_error(self, name: str) -> AttributeError:
+        dense = self._dense_fields()
+        if len(dense) > 1:
+            names = ", ".join(
+                sorted(k for k, f in self.schema.fields.items() if isinstance(f, DenseVectorField))
+            )
+            return AttributeError(
+                f"IndexModel.{name} is ambiguous: the schema has {len(dense)} dense "
+                f"vector fields ({names}); there is no single field to resolve this "
+                "deprecated accessor to. Read the specific field directly, e.g. "
+                "index.schema.fields['<field-name>']."
+            )
+        if name == "vector_type":
+            sparse = self._sparse_fields()
+            if len(sparse) > 1:
+                names = ", ".join(
+                    sorted(
+                        k for k, f in self.schema.fields.items() if isinstance(f, SparseVectorField)
+                    )
+                )
+                return AttributeError(
+                    f"IndexModel.vector_type is ambiguous: the schema has {len(sparse)} "
+                    f"sparse vector fields ({names}) and no dense vector field; there "
+                    "is no single field to resolve this deprecated accessor to."
+                )
+        return AttributeError(
+            f"IndexModel.{name} was removed in the 2026-07 Pinecone API: "
+            f"{_REMOVED_FIELD_HINTS[name]}. See docs/migration/v10-2026-07-index-model.md."
+        )
+
+    @property
+    def dimension(self) -> int:
+        """**Deprecated.** Use ``index.schema.fields["<field-name>"].dimension`` instead."""
+        dense = self._dense_fields()
+        if len(dense) != 1:
+            raise AttributeError("dimension")
+        return dense[0].dimension
+
+    @property
+    def metric(self) -> str:
+        """**Deprecated.** Use ``index.schema.fields["<field-name>"].metric`` instead."""
+        dense = self._dense_fields()
+        if len(dense) != 1:
+            raise AttributeError("metric")
+        return dense[0].metric
+
+    @property
+    def vector_type(self) -> str:
+        """**Deprecated.** Inspect ``index.schema.fields`` field types instead."""
+        dense = self._dense_fields()
+        if len(dense) > 1:
+            raise AttributeError("vector_type")
+        if dense:
+            return "dense"
+        sparse = self._sparse_fields()
+        if len(sparse) > 1:
+            raise AttributeError("vector_type")
+        if sparse:
+            return "sparse"
+        raise AttributeError("vector_type")
 
     def __getitem__(self, key: str) -> Any:
         if key not in self.__struct_fields__:

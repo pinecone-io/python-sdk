@@ -173,16 +173,11 @@ class TestIndexModel:
         assert model.source_backup_id == "670e8400-e29b-41d4-a716-446655440000"
         assert model.cmek_id == "arn:aws:kms:us-east-1:123456789012:key/mrk-abc123"
 
-    @pytest.mark.parametrize("removed", ["dimension", "metric", "vector_type", "spec", "embed"])
+    @pytest.mark.parametrize("removed", ["spec", "embed", "created_at"])
     def test_removed_attribute_names_replacement(self, removed: str) -> None:
         model = msgspec.convert(make_index_response(), IndexModel)
         with pytest.raises(AttributeError, match="removed in the 2026-07"):
             getattr(model, removed)
-
-    def test_removed_dimension_hint_names_schema_path(self) -> None:
-        model = msgspec.convert(make_index_response(), IndexModel)
-        with pytest.raises(AttributeError, match="schema"):
-            model.dimension
 
     def test_removed_spec_hint_names_deployment(self) -> None:
         model = msgspec.convert(make_index_response(), IndexModel)
@@ -193,6 +188,91 @@ class TestIndexModel:
         model = msgspec.convert(make_index_response(), IndexModel)
         with pytest.raises(AttributeError, match="no attribute"):
             model.bogus_attribute
+
+    def test_dimension_metric_vector_type_resolved_from_dense_schema(self) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        assert model.dimension == 1536
+        assert model.metric == "cosine"
+        assert model.vector_type == "dense"
+
+    def test_dimension_raises_guided_error_with_no_dense_field(self) -> None:
+        data = make_index_response(schema={"fields": {}})
+        model = msgspec.convert(data, IndexModel)
+        with pytest.raises(AttributeError, match="removed in the 2026-07"):
+            model.dimension
+
+    def test_metric_raises_guided_error_with_no_dense_field(self) -> None:
+        data = make_index_response(schema={"fields": {}})
+        model = msgspec.convert(data, IndexModel)
+        with pytest.raises(AttributeError, match="removed in the 2026-07"):
+            model.metric
+
+    def test_vector_type_raises_guided_error_with_no_vector_field(self) -> None:
+        data = make_index_response(schema={"fields": {}})
+        model = msgspec.convert(data, IndexModel)
+        with pytest.raises(AttributeError, match="removed in the 2026-07"):
+            model.vector_type
+
+    def test_vector_type_sparse_only(self) -> None:
+        data = make_index_response(schema={"fields": {"sv": {"type": "sparse_vector"}}})
+        model = msgspec.convert(data, IndexModel)
+        assert model.vector_type == "sparse"
+        with pytest.raises(AttributeError, match="removed in the 2026-07"):
+            model.dimension
+
+    def test_vector_type_dense_with_reserved_field_name(self) -> None:
+        data = make_index_response(
+            schema={
+                "fields": {
+                    "_values": {"type": "dense_vector", "dimension": 8, "metric": "dotproduct"}
+                }
+            }
+        )
+        model = msgspec.convert(data, IndexModel)
+        assert model.dimension == 8
+        assert model.metric == "dotproduct"
+        assert model.vector_type == "dense"
+
+    def test_vector_type_dense_despite_synthesized_sparse_field(self) -> None:
+        data = make_index_response(
+            schema={
+                "fields": {
+                    "_values": {"type": "dense_vector", "dimension": 8, "metric": "euclidean"},
+                    "_sparse_values": {"type": "sparse_vector"},
+                }
+            }
+        )
+        model = msgspec.convert(data, IndexModel)
+        assert model.vector_type == "dense"
+        assert model.dimension == 8
+        assert model.metric == "euclidean"
+
+    def test_dimension_raises_when_multiple_dense_fields(self) -> None:
+        data = make_index_response(
+            schema={
+                "fields": {
+                    "a": {"type": "dense_vector", "dimension": 4, "metric": "cosine"},
+                    "b": {"type": "dense_vector", "dimension": 8, "metric": "cosine"},
+                }
+            }
+        )
+        model = msgspec.convert(data, IndexModel)
+        with pytest.raises(AttributeError, match="ambiguous"):
+            model.dimension
+        with pytest.raises(AttributeError, match="ambiguous"):
+            model.metric
+        with pytest.raises(AttributeError, match="ambiguous"):
+            model.vector_type
+
+    def test_index_model_dir_lists_deprecated_vector_accessors(self) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        listing = dir(model)
+        assert "dimension" in listing
+        assert "metric" in listing
+        assert "vector_type" in listing
+        assert hasattr(model, "dimension")
+        assert hasattr(model, "metric")
+        assert hasattr(model, "vector_type")
 
 
 class TestIndexList:
