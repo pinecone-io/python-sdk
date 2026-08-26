@@ -136,39 +136,41 @@ class _TokenRefreshingHTTPClient(HTTPClient):
     def get(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        """Like :meth:`HTTPClient.get`, refreshing the token first if needed."""
         bound = super().get
         return self._with_refresh(lambda: bound(path, timeout=timeout, **kwargs))
 
     def post(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        """Like :meth:`HTTPClient.post`, refreshing the token first if needed."""
         bound = super().post
         return self._with_refresh(lambda: bound(path, timeout=timeout, **kwargs))
 
     def put(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        """Like :meth:`HTTPClient.put`, refreshing the token first if needed."""
         bound = super().put
         return self._with_refresh(lambda: bound(path, timeout=timeout, **kwargs))
 
     def patch(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        """Like :meth:`HTTPClient.patch`, refreshing the token first if needed."""
         bound = super().patch
         return self._with_refresh(lambda: bound(path, timeout=timeout, **kwargs))
 
     def delete(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        """Like :meth:`HTTPClient.delete`, refreshing the token first if needed."""
         bound = super().delete
         return self._with_refresh(lambda: bound(path, timeout=timeout, **kwargs))
 
 
 class Admin:
     """Admin client for Pinecone organization and project management.
-
-    Authenticates via OAuth2 client credentials flow to obtain a Bearer
-    token used for all admin API calls.
 
     **Auth model:** :class:`Admin` uses OAuth2 client credentials (service account), while
     :class:`~pinecone.Pinecone` uses API keys.  These serve different purposes:
@@ -222,14 +224,10 @@ class Admin:
         your organization and used exclusively for admin operations.
 
     .. note::
-        **Token lifetime** — the Bearer token is short-lived. The client tracks the
-        ``expires_in`` it was issued with and re-fetches transparently shortly before expiry,
-        and retries a request once against a freshly minted token if one still comes back 401,
-        so a long-lived :class:`Admin` keeps working indefinitely without any caller action.
-        Refresh is serialized, so threads sharing one :class:`Admin` cost a single token
-        exchange between them rather than one each. Supplying your own ``Authorization`` entry
-        in ``additional_headers`` opts out of refresh entirely — the token is then yours to
-        manage.
+        **Token refresh** — :class:`Admin` renews its OAuth token automatically before it
+        expires, so a long-lived instance keeps working without any action on your part.
+        Supply your own ``Authorization`` entry in ``additional_headers`` to manage the token
+        yourself instead.
 
     .. note::
         :class:`Admin` is synchronous only. There is no async form of this client; admin
@@ -242,9 +240,9 @@ class Admin:
             env var.
         additional_headers (dict[str, str] | None): Extra headers included in every admin API
             request. Merged last, so an entry keyed exactly ``"Authorization"`` or
-            ``"X-Pinecone-Api-Version"`` replaces the Bearer token or the API version the SDK
-            would otherwise send. Matching is case-sensitive: any other spelling is sent
-            alongside the SDK's own header rather than replacing it.
+            ``"X-Pinecone-Api-Version"`` replaces the header the SDK would otherwise send for
+            that name. Matching is case-sensitive: any other spelling is sent alongside the
+            SDK's own header rather than replacing it.
         proxy_url (str | None): HTTP proxy URL for outgoing requests.
         ssl_verify (bool): Whether to verify SSL certificates. Defaults to ``True``.
         source_tag (str | None): Tag appended to the User-Agent string for request attribution.
@@ -466,10 +464,14 @@ class Admin:
     def organizations(self) -> Organizations:
         """Access the Organizations namespace for organization operations.
 
-        Lazily imported and instantiated on first access.
+        Organizations are the top-level container for projects, users, and billing in
+        Pinecone. Created on first access and cached for the life of this client.
 
         Returns:
-            :class:`Organizations` namespace instance.
+            The :class:`Organizations` namespace. Call
+            :meth:`~pinecone.admin.organizations.Organizations.list` or
+            :meth:`~pinecone.admin.organizations.Organizations.describe` to look up
+            organizations reachable with the current credentials.
 
         Examples:
 
@@ -488,10 +490,11 @@ class Admin:
     def projects(self) -> Projects:
         """Access the Projects namespace for project operations.
 
-        Lazily imported and instantiated on first access.
+        Created on first access and cached for the life of this client.
 
         Returns:
-            :class:`Projects` namespace instance.
+            The :class:`Projects` namespace. Call :meth:`~pinecone.admin.projects.Projects.create`
+            or :meth:`~pinecone.admin.projects.Projects.list` to create or look up projects.
 
         Examples:
 
@@ -510,10 +513,15 @@ class Admin:
     def api_keys(self) -> ApiKeys:
         """Access the ApiKeys namespace for API key operations.
 
-        Lazily imported and instantiated on first access.
+        API keys are project-scoped credentials that :class:`~pinecone.Pinecone` authenticates
+        with for data-plane operations. Created on first access and cached for the life of
+        this client.
 
         Returns:
-            :class:`ApiKeys` namespace instance.
+            The :class:`ApiKeys` namespace. Call
+            :meth:`~pinecone.admin.api_keys.ApiKeys.create` or
+            :meth:`~pinecone.admin.api_keys.ApiKeys.list` to create or look up keys for
+            a project.
 
         Examples:
 
@@ -533,10 +541,11 @@ class Admin:
     def users(self) -> Users:
         """Access the Users namespace for organization-member operations.
 
-        Lazily imported and instantiated on first access.
+        Created on first access and cached for the life of this client.
 
         Returns:
-            :class:`Users` namespace instance.
+            The :class:`Users` namespace. Call :meth:`~pinecone.admin.users.Users.list` to
+            look up the organization's members.
 
         Examples:
 
@@ -555,10 +564,12 @@ class Admin:
     def invites(self) -> Invites:
         """Access the Invites namespace for organization-invite operations.
 
-        Lazily imported and instantiated on first access.
+        Created on first access and cached for the life of this client.
 
         Returns:
-            :class:`Invites` namespace instance.
+            The :class:`Invites` namespace. Call :meth:`~pinecone.admin.invites.Invites.create`
+            or :meth:`~pinecone.admin.invites.Invites.list` to invite someone to the
+            organization or look up pending invites.
 
         Examples:
 
@@ -577,12 +588,16 @@ class Admin:
     def service_accounts(self) -> ServiceAccounts:
         """Access the ServiceAccounts namespace for service-account operations.
 
-        These are the same credentials this client authenticates with, so
-        rotating or deleting the account behind ``client_id``/``client_secret``
-        breaks this client. Lazily imported and instantiated on first access.
+        Service accounts are the OAuth principals :class:`Admin` clients authenticate as,
+        including the one behind this client's own ``client_id``/``client_secret`` — rotating
+        or deleting that account breaks this client. Created on first access and cached for
+        the life of this client.
 
         Returns:
-            :class:`ServiceAccounts` namespace instance.
+            The :class:`ServiceAccounts` namespace. Call
+            :meth:`~pinecone.admin.service_accounts.ServiceAccounts.create` or
+            :meth:`~pinecone.admin.service_accounts.ServiceAccounts.list` to create or look up
+            service accounts.
 
         Examples:
 
@@ -603,11 +618,14 @@ class Admin:
 
         Role bindings are the only thing that confers permissions in Pinecone, so
         this is where any principal's access — user, service account, API key, or
-        pending invite — is read and changed. Lazily imported and instantiated on
-        first access.
+        pending invite — is read and changed. Created on first access and cached
+        for the life of this client.
 
         Returns:
-            :class:`RoleBindings` namespace instance.
+            The :class:`RoleBindings` namespace. Call
+            :meth:`~pinecone.admin.role_bindings.RoleBindings.create` or
+            :meth:`~pinecone.admin.role_bindings.RoleBindings.list` to grant a role or
+            look up existing grants.
 
         Examples:
 
@@ -623,6 +641,17 @@ class Admin:
         return self._role_bindings
 
     def __repr__(self) -> str:
+        """Return a compact summary listing the available namespaces.
+
+        Credentials are never included.
+
+        Examples:
+
+            >>> from pinecone import Admin
+            >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
+            >>> admin  # doctest: +ELLIPSIS
+            Admin(organizations=<Organizations>, ...)
+        """
         return (
             "Admin(organizations=<Organizations>, projects=<Projects>, "
             "api_keys=<ApiKeys>, users=<Users>, invites=<Invites>, "
@@ -630,11 +659,37 @@ class Admin:
         )
 
     def close(self) -> None:
-        """Close the underlying HTTP client."""
+        """Close the underlying HTTP client, releasing its connections.
+
+        Call this when you're done with an :class:`Admin` instance that isn't used as a
+        context manager. Further calls through any of its namespaces will fail.
+
+        Examples:
+
+            >>> from pinecone import Admin
+            >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
+            >>> admin.close()
+        """
         self._http.close()
 
     def __enter__(self) -> Admin:
+        """Enter a ``with`` block, returning this client.
+
+        Returns:
+            This :class:`Admin` instance.
+
+        Examples:
+
+            >>> from pinecone import Admin
+            >>> with Admin(client_id="your-client-id", client_secret="your-client-secret") as admin:
+            ...     for org in admin.organizations.list():
+            ...         print(org.name)
+        """
         return self
 
     def __exit__(self, *args: Any) -> None:
+        """Exit the ``with`` block, closing the underlying HTTP client.
+
+        Equivalent to calling :meth:`close`.
+        """
         self.close()

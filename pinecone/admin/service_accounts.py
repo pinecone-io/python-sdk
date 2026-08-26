@@ -26,10 +26,12 @@ _LIMIT_MAX = 100
 class ServiceAccounts:
     """Control-plane operations for the organization's service accounts.
 
-    A service account is the OAuth principal that :class:`~pinecone.Admin`
-    itself authenticates as, so this namespace manages the same kind of
-    credential the client is holding. Two consequences are worth knowing before
-    calling anything here:
+    A service account is a non-human, machine identity for programmatic API
+    access — distinct from the human members that
+    :class:`~pinecone.admin.users.Users` manages. It is also the OAuth
+    principal that :class:`~pinecone.Admin` itself authenticates as, so this
+    namespace manages the same kind of credential the client is holding. Two
+    consequences are worth knowing before calling anything here:
 
     - :meth:`create` and :meth:`rotate_secret` are the only operations that ever
       return a ``client_secret``, and each returns it exactly once. Nothing can
@@ -146,10 +148,10 @@ class ServiceAccounts:
         Args:
             name (str): Human-readable label for the account. Sent verbatim —
                 the SDK checks only that it is non-empty and leaves length and
-                content to the server, which rejects an over-long name with a
-                400. The server measures length in UTF-8 bytes rather than
-                codepoints, so a name of multi-byte characters can be rejected
-                while looking short to Python's ``len()``.
+                content to the server to validate. The server measures length
+                in UTF-8 bytes rather than codepoints, so a name of multi-byte
+                characters can be rejected while looking short to Python's
+                ``len()``.
             role_bindings (Sequence[RoleBindingInput | Mapping[str, Any]] | None):
                 Optional initial roles, as
                 :class:`~pinecone.models.admin.role_binding.RoleBindingInput`
@@ -175,8 +177,8 @@ class ServiceAccounts:
                 the index of the offending entry. Raised before any network call.
             :exc:`~pinecone.errors.exceptions.ForbiddenError`:
                 If the caller lacks permission to create service accounts, or
-                if the organization's plan does not include them (403). The two
-                cases are distinguishable only by the server's message.
+                the organization's plan does not include them. The two cases
+                are distinguishable only by the server's message.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -234,7 +236,7 @@ class ServiceAccounts:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`:
                 If *service_account_id* is empty.
             :exc:`~pinecone.errors.exceptions.NotFoundError`:
-                If no such service account exists in the organization (404).
+                If no such service account exists in the organization.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -278,15 +280,15 @@ class ServiceAccounts:
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`:
                 If *service_account_id* is empty, or if no updatable field was
-                given. The server accepts a fieldless patch as a no-op ``200``
+                given. The server accepts a fieldless patch as a no-op success
                 that merely bumps ``updated_at``, which hides a caller bug —
                 usually a misspelled keyword — behind an apparent success, so
                 the SDK names it instead. Raised before any network call.
             :exc:`~pinecone.errors.exceptions.NotFoundError`:
-                If no such service account exists in the organization (404).
+                If no such service account exists in the organization.
             :exc:`~pinecone.errors.exceptions.ForbiddenError`:
                 If the caller lacks the update permission, or the
-                organization's plan does not include service accounts (403).
+                organization's plan does not include service accounts.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -317,9 +319,10 @@ class ServiceAccounts:
             the client authenticates with. Tokens it already minted stop
             working within seconds and no new one can be obtained.
 
-        The server answers ``202`` with no body; the account and its role
-        bindings are already gone, after which it reads back as ``404`` —
-        including for a repeat of this call.
+        The account and its role bindings are gone by the time this call
+        returns; a repeat of this call raises
+        :exc:`~pinecone.errors.exceptions.NotFoundError`, like any other
+        reference to a deleted account.
 
         Args:
             service_account_id (str): The identifier of the service account to
@@ -329,7 +332,7 @@ class ServiceAccounts:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`:
                 If *service_account_id* is empty.
             :exc:`~pinecone.errors.exceptions.NotFoundError`:
-                If no such service account exists in the organization (404).
+                If no such service account exists in the organization.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -357,7 +360,7 @@ class ServiceAccounts:
         .. warning::
             Rotating the secret of the service account whose credentials built
             this :class:`~pinecone.Admin` client invalidates the secret that
-            client holds. Its current Bearer token keeps working until it
+            client holds. Its current access token keeps working until it
             expires, but the next token exchange fails until the client is
             rebuilt with the new secret. The previous secret and the tokens it
             minted are revoked within seconds.
@@ -382,10 +385,10 @@ class ServiceAccounts:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`:
                 If *service_account_id* is empty.
             :exc:`~pinecone.errors.exceptions.NotFoundError`:
-                If no such service account exists in the organization (404).
+                If no such service account exists in the organization.
             :exc:`~pinecone.errors.exceptions.ForbiddenError`:
                 If the caller lacks the rotate permission, or the
-                organization's plan does not include service accounts (403).
+                organization's plan does not include service accounts.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:

@@ -42,14 +42,14 @@ class RoleBindings:
     Bindings are immutable: there is no update. Changing a principal's role means
     :meth:`create` for the new one and :meth:`delete` for the old one, in that
     order — deleting first can strip the principal's last organization-membership
-    binding, which the server refuses with ``409``.
+    binding, which the server refuses.
 
     The server owns which role may be bound to which scope and principal type,
     and which roles an organization's plan includes. Those rules vary by plan, so
     the SDK does not replicate them: it checks only that a value is one this
     release knows about and that the filter co-requirements hold, and lets the
-    server's own ``403``/``400`` messages — which name the role, the scope, and
-    the plan — explain the rest verbatim.
+    server's own error messages — which name the role, the scope, and the plan —
+    explain the rest.
 
     Args:
         http (HTTPClient): HTTP client for making API requests.
@@ -89,11 +89,11 @@ class RoleBindings:
         authorization state.
 
         No request is sent until the returned paginator is iterated. Iterating
-        past the first page reuses the cursor from the previous response's
-        ``pagination.next`` verbatim; iteration stops on the first page that
-        comes back without one. The filters and ``limit`` are carried onto every
-        later page, because the server requires a cursor to be replayed with the
-        query context that produced it.
+        past the first page automatically follows the cursor from the page
+        before it; iteration stops once a page comes back with no cursor to
+        follow. The filters and *limit* are carried onto every later page,
+        because the server requires a cursor to be replayed with the query
+        context that produced it.
 
         Args:
             principal_type (str | PrincipalType | None): Restrict to one kind of
@@ -103,8 +103,8 @@ class RoleBindings:
                 ``None``.
             principal_id (str | None): Restrict to one principal's bindings — a
                 UUID for every principal type. Requires *principal_type*. Sent
-                verbatim; the server owns the format and answers an unparseable
-                value with ``400``. Omitted when ``None``.
+                verbatim; an unparseable value is rejected by the server.
+                Omitted when ``None``.
             resource_type (str | ResourceType | None): Restrict to one scope kind
                 — ``"organization"`` or ``"project"``. Required whenever
                 *resource_id* is given. Omitted when ``None``.
@@ -120,9 +120,10 @@ class RoleBindings:
                 the pages run out. Use :func:`itertools.islice` to cap the
                 total. When ``None`` the parameter is omitted and the server
                 chooses the page size.
-            pagination_token (str | None): Cursor from a prior response's
-                ``pagination.next``, to resume where a previous iteration
-                stopped. Reuse it with the same filters and ``limit``.
+            pagination_token (str | None): Cursor from a previous call's
+                paginator (its ``pagination_token`` property), to resume where
+                that iteration stopped. Reuse it with the same filters and
+                *limit*.
 
         Returns:
             :class:`~pinecone.models.pagination.Paginator` over
@@ -239,11 +240,10 @@ class RoleBindings:
                 the role — ``"user"``, ``"service_account"``, ``"api_key"``, or
                 ``"invite"``. Binding to an ``invite`` grants the role to whoever
                 accepts it; once accepted the server refuses further bindings on
-                the invite (``409``) and the roles must be managed on the
-                resulting user instead.
-            principal_id (str): The principal's UUID. Sent verbatim — the server
-                owns the format and answers an unknown or unparseable principal
-                with ``404``.
+                the invite, and the roles must be managed on the resulting user
+                instead.
+            principal_id (str): The principal's UUID. Sent verbatim — an unknown
+                or unparseable principal is rejected by the server.
             resource_type (str | ResourceType): The scope — ``"organization"`` or
                 ``"project"``.
             role (str | RoleName): The role to grant, spelled as the wire name
@@ -254,7 +254,7 @@ class RoleBindings:
                 *resource_type* is ``"project"``. For ``"organization"`` scope
                 leave it unset — the organization is inferred from the
                 credentials, and passing any organization other than the caller's
-                own is a ``404``.
+                own is rejected.
 
         Returns:
             The created
@@ -271,14 +271,14 @@ class RoleBindings:
                 Raised before any network call.
             :exc:`~pinecone.errors.exceptions.NotFoundError`:
                 If the principal or the resource does not exist in the caller's
-                organization (404).
+                organization.
             :exc:`~pinecone.errors.exceptions.ConflictError`:
                 If an identical binding already exists, or the principal is an
-                invite that has already been accepted (409).
+                invite that has already been accepted.
             :exc:`~pinecone.errors.exceptions.ForbiddenError`:
                 If the role cannot be bound to that scope or principal type, the
                 organization's plan does not include it, or the caller would be
-                granting a permission it does not hold (403).
+                granting a permission it does not hold.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -340,9 +340,9 @@ class RoleBindings:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`:
                 If *role_binding_id* is empty.
             :exc:`~pinecone.errors.exceptions.NotFoundError`:
-                If no such role binding is visible to the caller (404). A binding
-                in another organization, and a project binding the caller cannot
-                see, both read as 404 rather than 403 — absence and
+                If no such role binding is visible to the caller. A binding in
+                another organization, and a project binding the caller cannot
+                see, both look the same as one that does not exist — absence and
                 inaccessibility are deliberately indistinguishable here.
             :exc:`ApiError`: If the API returns an error response.
 
@@ -368,17 +368,16 @@ class RoleBindings:
         first — usually with :meth:`list` filtered by ``principal_type`` and
         ``principal_id``, or from the :meth:`create` result.
 
-        The server answers ``202`` with no body; the permissions are already
-        revoked, after which the binding reads back as ``404`` — including for a
-        repeat of this call, so delete is not idempotent in the "second call also
-        succeeds" sense.
+        The permissions are revoked immediately, after which the binding reads
+        back as not found — including for a repeat of this call, so delete is
+        not idempotent in the "second call also succeeds" sense.
 
-        Some bindings cannot be deleted at all, and the refusal is a ``409``
-        rather than a ``403``: the organization's last ``OrgOwner``, a user's last
-        organization-membership binding while they still hold other roles, and a
-        pending invite's last organization-membership binding (delete the invite
-        instead). Organizations whose users are managed by an identity provider
-        refuse user and invite binding changes outright, also with ``409``.
+        Some bindings cannot be deleted at all: the organization's last
+        ``OrgOwner``, a user's last organization-membership binding while they
+        still hold other roles, and a pending invite's last
+        organization-membership binding (delete the invite instead).
+        Organizations whose users are managed by an identity provider refuse
+        user and invite binding changes outright.
 
         Args:
             role_binding_id (str): The identifier of the role binding to delete.
@@ -387,13 +386,13 @@ class RoleBindings:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`:
                 If *role_binding_id* is empty.
             :exc:`~pinecone.errors.exceptions.NotFoundError`:
-                If no such role binding is visible to the caller (404), including
-                a repeat of a successful delete.
+                If no such role binding is visible to the caller, including a
+                repeat of a successful delete.
             :exc:`~pinecone.errors.exceptions.ConflictError`:
                 If deleting the binding would strip the organization of its last
                 owner, remove a principal's last organization membership, or the
                 organization's user management is delegated to an identity
-                provider (409).
+                provider.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:

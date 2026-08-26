@@ -1,10 +1,6 @@
-"""Backwards-compatibility shim for :mod:`pinecone.admin.projects`.
-
-Re-exports :class:`pinecone.admin.projects.Projects` as
-``ProjectResource`` for pre-rewrite callers. Preserved to keep
-legacy ``from pinecone.admin.resources.project import ProjectResource``
-imports working. New code should use
-``from pinecone.admin.projects import Projects``.
+"""Legacy alias for :class:`~pinecone.admin.projects.Projects`, kept so
+``from pinecone.admin.resources.project import ProjectResource`` keeps
+working. Use :class:`~pinecone.admin.projects.Projects` in new code.
 
 :meta private:
 """

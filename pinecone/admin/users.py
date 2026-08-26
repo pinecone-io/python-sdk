@@ -57,24 +57,25 @@ class Users:
         """List the users in the organization, with transparent lazy pagination.
 
         No request is sent until the returned paginator is iterated. Iterating
-        past the first page reuses the cursor from the previous response's
-        ``pagination.next`` verbatim; iteration stops on the first page that
-        comes back without one.
+        past the first page automatically follows the cursor from the page
+        before it; iteration stops once a page comes back with no cursor to
+        follow.
 
         Args:
             email (str | None): Case-insensitive filter on the user's email
-                address. Sent verbatim as a query parameter — the SDK does not
-                validate or normalize it, so a malformed address is rejected by
-                the server with a 400. Omitted when ``None``.
+                address, e.g. ``"alice@example.com"``. The SDK does not validate
+                or normalize the value; a malformed address is rejected by the
+                server. Omit to list all users.
             limit (int | None): Number of users the server returns **per page**,
                 between 1 and 100. It caps each page, not how many users the
                 paginator yields in total; the paginator keeps following cursors
                 until the pages run out. Use :func:`itertools.islice` to cap the
                 total. When ``None`` the parameter is omitted and the server
                 chooses the page size.
-            pagination_token (str | None): Cursor from a prior response's
-                ``pagination.next``, to resume where a previous iteration
-                stopped. Reuse it with the same ``email`` and ``limit``.
+            pagination_token (str | None): Cursor from a previous call's
+                paginator (its ``pagination_token`` property), to resume where
+                that iteration stopped. Reuse it with the same ``email`` and
+                ``limit``.
 
         Returns:
             :class:`~pinecone.models.pagination.Paginator` over
@@ -130,7 +131,7 @@ class Users:
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *user_id* is empty.
             :exc:`~pinecone.errors.exceptions.NotFoundError`:
-                If no such user is a member of the organization (404).
+                If no such user is a member of the organization.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -151,9 +152,10 @@ class Users:
         """Remove a user from the organization.
 
         The user's role bindings are revoked immediately; their Pinecone
-        account itself is not deleted. The server answers ``202`` with no body,
-        after which the user reads back as ``404`` — including for a repeat of
-        this call.
+        account itself is not deleted. This call is not repeatable: once it
+        succeeds, a second call with the same *user_id* raises
+        :exc:`~pinecone.errors.exceptions.NotFoundError`, as does
+        :meth:`describe` for that user.
 
         Args:
             user_id (str): The identifier of the user to remove.
@@ -161,11 +163,10 @@ class Users:
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *user_id* is empty.
             :exc:`~pinecone.errors.exceptions.NotFoundError`:
-                If no such user is a member of the organization (404).
+                If no such user is a member of the organization.
             :exc:`~pinecone.errors.exceptions.ConflictError`:
                 If removal would violate an organization invariant, such as
-                dropping the last ``OrgOwner`` (409). The server's error code
-                and message are carried through verbatim.
+                dropping the last ``OrgOwner``.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:

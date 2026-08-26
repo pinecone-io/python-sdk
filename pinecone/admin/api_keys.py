@@ -64,7 +64,7 @@ class ApiKeys:
             project_id (str): The identifier of the project.
 
         Returns:
-            An :class:`APIKeyList` supporting iteration, len(), and index access.
+            An :class:`APIKeyList` supporting iteration, ``len()``, and index access.
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *project_id* is empty.
@@ -116,12 +116,12 @@ class ApiKeys:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`:
                 If *project_id* or *name* is empty, or if *name* exceeds 80 characters.
             :exc:`~pinecone.errors.exceptions.PaymentRequiredError`: If the organization's
-                billing state does not permit creating an API key (402).
+                billing state does not permit creating an API key.
             :exc:`~pinecone.errors.exceptions.ForbiddenError`: Either the project has
                 reached its API-key quota, or *roles* names a role the organization's plan
-                does not permit (see *roles* above). The error message distinguishes the
-                two. Note that quota exhaustion on the admin API is a **403, not a 429** —
-                :exc:`~pinecone.errors.exceptions.RateLimitError` will not catch it.
+                does not permit (see *roles* above) — the error message distinguishes the
+                two. Quota exhaustion raises this error rather than
+                :exc:`~pinecone.errors.exceptions.RateLimitError`.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -205,7 +205,7 @@ class ApiKeys:
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *api_key_id* is empty.
             :exc:`~pinecone.errors.exceptions.ForbiddenError`: If *roles* names a role
-                the organization's plan does not permit for API keys (403). Unlike
+                the organization's plan does not permit for API keys. Unlike
                 :meth:`create`, no API-key quota check applies here.
             :exc:`ApiError`: If the API returns an error response.
 

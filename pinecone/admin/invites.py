@@ -24,16 +24,18 @@ _LIMIT_MAX = 100
 
 
 class Invites:
-    """Control-plane operations for organization invites.
+    """Operations on organization invites.
 
-    Provides methods to list, create, describe, delete, and resend the invites
-    of the organization associated with the :class:`~pinecone.Admin` client's
-    OAuth credentials.
+    An invite is an offer, sent by email, for someone to join the
+    organization; accepting it turns the recipient into a member. This
+    namespace lists, creates, describes, deletes, and resends invites for the
+    organization associated with the :class:`~pinecone.Admin` client's OAuth
+    credentials.
 
-    An invite's role bindings are first-class objects rather than part of the
-    invite's representation: none of the methods here return them. Create sends
-    them, and the role-binding operations read or change them afterwards
-    (filtering on ``principal_type=invite``).
+    An invite's role bindings are not part of its representation: ``create``
+    sends them, but no method here returns them. Read or change them
+    afterwards through the role-binding operations, filtering on
+    ``principal_type=invite``.
 
     Args:
         http (HTTPClient): HTTP client for making API requests.
@@ -62,29 +64,26 @@ class Invites:
         """List the organization's pending and expired invites, with lazy pagination.
 
         .. warning::
-            This endpoint **omits processed invites** — the ones that have
-            already been accepted. An invite missing from this listing has not
-            necessarily vanished; it may have been accepted, in which case
-            :meth:`describe` still returns it with
-            ``status == InviteStatus.PROCESSED``, and the accepted invitee is
-            now a member reachable through ``admin.users``. Do not treat
-            absence here as proof an invite never existed.
+            This omits invites that have already been accepted. An invite
+            missing from this list has not necessarily vanished — it may have
+            been accepted, in which case :meth:`describe` still returns it
+            with ``status == InviteStatus.PROCESSED``, and the accepted
+            invitee is now a member reachable through ``admin.users``. Don't
+            treat absence here as proof an invite never existed.
 
         No request is sent until the returned paginator is iterated. Iterating
-        past the first page reuses the cursor from the previous response's
-        ``pagination.next`` verbatim; iteration stops on the first page that
-        comes back without one.
+        past the first page reuses the cursor returned with the previous page;
+        iteration stops once a page comes back without one.
 
         Args:
-            limit (int | None): Number of invites the server returns **per
-                page**, between 1 and 100. It caps each page, not how many
-                invites the paginator yields in total; the paginator keeps
-                following cursors until the pages run out. Use
-                :func:`itertools.islice` to cap the total. When ``None`` the
-                parameter is omitted and the server chooses the page size.
-            pagination_token (str | None): Cursor from a prior response's
-                ``pagination.next``, to resume where a previous iteration
-                stopped. Reuse it with the same ``limit``.
+            limit (int | None): Number of invites returned per page, between
+                1 and 100. It caps page size, not how many invites the
+                paginator yields in total — the paginator keeps following
+                cursors until the pages run out. Use :func:`itertools.islice`
+                to cap the total. ``None`` lets the server choose the page size.
+            pagination_token (str | None): Cursor to resume iteration from a
+                prior call's ``.pagination_token``. Reuse it with the same
+                ``limit``.
 
         Returns:
             :class:`~pinecone.models.pagination.Paginator` over
@@ -138,10 +137,9 @@ class Invites:
         the role-binding operations, filtering on ``principal_type=invite``.
 
         Args:
-            email (str): The email address to invite. Sent verbatim in the
-                request body — the SDK checks only that it is non-empty and
-                leaves address validity to the server, which rejects a
-                malformed or over-long address with a 400.
+            email (str): The address to invite, e.g. ``"newhire@acme.com"``.
+                The SDK checks only that it isn't empty; the server validates
+                the address itself and rejects a malformed or over-long one.
             role_bindings (Sequence[RoleBindingInput | Mapping[str, Any]]):
                 The roles to grant the invitee, as
                 :class:`~pinecone.models.admin.role_binding.RoleBindingInput`
@@ -165,7 +163,7 @@ class Invites:
                 Raised before any network call.
             :exc:`~pinecone.errors.exceptions.ConflictError`:
                 If a pending invite already exists for the address, or the
-                address already belongs to an organization member (409).
+                address already belongs to an organization member.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -228,8 +226,8 @@ class Invites:
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *invite_id* is empty.
             :exc:`~pinecone.errors.exceptions.NotFoundError`:
-                If no such invite exists in the organization (404). A deleted
-                invite reads back as 404, not as a status.
+                If no such invite exists in the organization. A deleted
+                invite reads back as not found rather than as a status value.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -249,10 +247,10 @@ class Invites:
     def delete(self, *, invite_id: str) -> None:
         """Delete a pending or expired invite, along with its role bindings.
 
-        The server answers ``202`` with no body; the invite and its role
-        bindings are already gone, after which the invite reads back as ``404``
-        — including for a repeat of this call. An invite that has already been
-        accepted cannot be deleted this way: remove the resulting member with
+        By the time this call returns, the invite and its role bindings are
+        gone — a repeat call, or fetching it by ID afterwards, gets a
+        not-found error. An invite that has already been accepted can't be
+        deleted this way: remove the resulting member with
         ``admin.users.delete`` instead.
 
         Args:
@@ -261,10 +259,9 @@ class Invites:
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *invite_id* is empty.
             :exc:`~pinecone.errors.exceptions.NotFoundError`:
-                If no such invite exists in the organization (404).
+                If no such invite exists in the organization.
             :exc:`~pinecone.errors.exceptions.ConflictError`:
-                If the invite has already been processed (409). The server's
-                error code and message are carried through verbatim.
+                If the invite has already been processed.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -286,15 +283,14 @@ class Invites:
         ``pending`` again with a fresh ``expires_at``.
 
         .. warning::
-            Invite emails are **rate limited per organization**. Over that
-            ceiling this raises
-            :exc:`~pinecone.errors.exceptions.RateLimitError` (429) — do not
-            retry in a tight loop. Honor ``exc.retry_after`` when the server
-            supplies a ``Retry-After`` header, and back off generously
-            otherwise; the budget refills slowly enough that a sub-second retry
-            will simply fail again. A ``409`` is not a rate limit and never
-            becomes retryable: it means the invite was already accepted, so
-            there is nothing left to resend.
+            Invite emails are rate limited per organization. Past that limit
+            this raises :exc:`~pinecone.errors.exceptions.RateLimitError` —
+            don't retry in a tight loop. Honor ``exc.retry_after`` when the
+            server supplies one, and back off generously otherwise; the
+            budget refills slowly enough that a sub-second retry will just
+            fail again. An already-accepted invite raises
+            :exc:`~pinecone.errors.exceptions.ConflictError` instead, which is
+            never a signal to retry: there is nothing left to resend.
 
         Args:
             invite_id (str): The identifier of the invite to resend.
@@ -306,14 +302,14 @@ class Invites:
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *invite_id* is empty.
             :exc:`~pinecone.errors.exceptions.NotFoundError`:
-                If no such invite exists in the organization (404).
+                If no such invite exists in the organization.
             :exc:`~pinecone.errors.exceptions.ConflictError`:
                 If the invite has already been accepted and so cannot be
-                resent (409).
+                resent.
             :exc:`~pinecone.errors.exceptions.RateLimitError`:
-                If the organization's invite-email budget is exhausted (429).
-                ``retry_after`` carries the server's ``Retry-After`` when it
-                sends a numeric one.
+                If the organization's invite-email budget is exhausted.
+                ``retry_after`` carries the server's cooldown period when
+                one is supplied.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
