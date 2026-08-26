@@ -160,10 +160,11 @@ class Indexes:
     ) -> Paginator[IndexModel]:
         """List all indexes in the project.
 
-        The 2026-07 server returns all indexes in a single page. The returned
-        :class:`~pinecone.models.pagination.Paginator` always yields exactly
-        one page and then terminates; the paginator interface is used for
-        consistency with other list methods and forward compatibility.
+        The server currently returns every index in one page, so the
+        returned :class:`~pinecone.models.pagination.Paginator` yields once
+        and stops. It still exposes the paginator interface for consistency
+        with other list methods, and so a future page size increase or
+        signature change isn't needed if the server starts paginating.
 
         .. versionchanged:: 10.0
            Returns a :class:`~pinecone.models.pagination.Paginator` instead of
@@ -204,8 +205,9 @@ class Indexes:
     def describe(self, name: str) -> IndexModel:
         """Get detailed information about a named index.
 
-        After a successful call the host URL is cached internally for
-        later data-plane client construction.
+        Caches the index's host internally, so a later
+        :meth:`Pinecone.index(name) <pinecone.Pinecone.index>` call for the
+        same name skips its own describe round trip.
 
         Args:
             name (str): The name of the index to describe.
@@ -236,8 +238,8 @@ class Indexes:
     def exists(self, name: str) -> bool:
         """Check whether a named index exists.
 
-        Uses describe internally; returns ``True`` on success and
-        ``False`` when a 404 is returned.
+        Calls :meth:`describe` internally and returns ``False`` instead of
+        raising when the index isn't found.
 
         .. versionchanged:: 10.0
            An empty *name* now raises :exc:`PineconeValueError` instead of
@@ -251,7 +253,7 @@ class Indexes:
 
         Raises:
             :exc:`PineconeValueError`: If *name* is empty.
-            :exc:`ApiError`: If the API returns an error other than 404.
+            :exc:`ApiError`: If the API returns an error response other than a not-found error.
 
         Examples:
             >>> pc.indexes.exists("my-index")  # doctest: +SKIP
@@ -332,29 +334,30 @@ class Indexes:
         vector_type: VectorType | str | None = None,
         **legacy_kwargs: Any,
     ) -> IndexModel:
-        """Create a new Pinecone index (2026-07 schema-based API).
+        """Create a new index (2026-07 schema-based API).
 
-        The index shape is declared as a ``schema`` of named, typed fields.
-        Every field must be searched — ``dense_vector``, ``sparse_vector``,
-        or ``string`` with ``full_text_search``. Metadata-only fields are not
-        declared at create time; they are indexed automatically at upsert.
-        The schema cannot be modified after creation.
+        An index's field layout is declared as a ``schema`` of named, typed
+        fields. Every field in the schema must be one that gets searched —
+        ``dense_vector``, ``sparse_vector``, or ``string`` with
+        ``full_text_search`` enabled. Metadata-only fields aren't declared
+        here; they're indexed automatically the first time they appear on an
+        upserted record. The schema can't change after the index is created.
 
         .. versionchanged:: 10.0
            Replaces the 2025-10 signature. ``spec=``, ``dimension=``,
            ``metric=``, and ``vector_type=`` are deprecated, keyword-only
-           sugar (see below); ``pods=``, ``metadata_config=``,
-           ``source_collection=``, ``source_backup_id=``, and
-           ``spec=IntegratedSpec(...)`` have no translation and raise a
-           :exc:`~pinecone.errors.exceptions.PineconeTypeError` explaining
-           why, or (for ``IntegratedSpec``) pointing at
-           :meth:`create_for_model`.
+           sugar for the current ``schema=``/``deployment=`` arguments (see
+           below). ``pods=``, ``metadata_config=``, ``source_collection=``,
+           ``source_backup_id=``, and ``spec=IntegratedSpec(...)`` have no
+           equivalent here; use :meth:`create_for_model` for integrated
+           embedding.
 
         Args:
-            schema: Index schema. Either this or the deprecated
-                ``dimension=``/``metric=``/``vector_type=`` combination is
-                required — not both. A dict with a ``"fields"`` key mapping
-                field names to typed configurations, e.g.::
+            schema: The index's field schema. Required unless the
+                deprecated ``dimension=`` (with optional ``metric=``/
+                ``vector_type=``) is used instead — the two are mutually
+                exclusive. A dict with a ``"fields"`` key mapping field
+                names to typed configurations::
 
                     {
                         "fields": {
@@ -367,13 +370,7 @@ class Indexes:
 
                 Also accepts the dict produced by
                 :class:`~pinecone.schema_builder.SchemaBuilder` or an
-                :class:`~pinecone.models.indexes.schema.IndexSchema`. Field
-                names must be 1-64 characters (enforced client-side). Which
-                names are reserved (e.g. ``_values``, ``_sparse_values``) or
-                otherwise special is the server's call; field-type rules (at
-                most one dense and one sparse vector field; metadata types
-                rejected) are also enforced by the server and surfaced
-                verbatim.
+                :class:`~pinecone.models.indexes.schema.IndexSchema`.
                 A **hybrid** index must declare its ``sparse_vector`` field
                 explicitly. At 2026-07 a dense field with
                 ``metric="dotproduct"`` no longer accepts sparse values on its
@@ -381,115 +378,82 @@ class Indexes:
                 refused later. The field cannot be added by ``configure()``, so
                 an index created without one has to be recreated. See
                 ``docs/migration/v10-2026-07-vector-models.md``.
-                A field ``description``'s length and the number of
-                ``full_text_search`` fields a schema may declare are both
-                capped server-side with no client-side check; the server's
-                400 names which one was exceeded.
                 ``full_text_search.language`` accepts a fixed set of language
                 codes (or their English names, default ``en``), but
                 ``stop_words=True`` is not supported for every language — the
                 server's 400 names the unsupported language, by its English
-                name rather than the code you sent. Setting ``ngram`` neither
-                rejects nor keeps a ``language``: the value is accepted and
-                replaced by the default ``en``. See
-                ``docs/migration/v10-2026-07-db-control.md``.
-            name: Optional name for the index. 1-45 characters matching
-                ``^[a-z0-9]([a-z0-9-]*[a-z0-9])?$``. If omitted, the server
-                assigns one.
-            deployment: Deployment configuration dict discriminated on
-                ``"deployment_type"`` (``"managed"`` | ``"pod"`` | ``"byoc"``).
-                Omitted (and ``spec=`` not given) defaults server-side to
-                managed on AWS ``us-east-1``. Pod deployments must include
-                all of ``environment``, ``pod_type``, ``replicas``, and
-                ``shards`` (the server rejects omissions with 422). Cannot be
-                combined with the deprecated ``spec=``.
-            read_capacity: Optional read capacity dict —
+                name rather than the code you sent.
+            name: Name for the index — 1-45 characters, lowercase
+                alphanumerics and hyphens (e.g. ``"movie-recommendations"``).
+                The server assigns a name when omitted.
+            deployment: Deployment configuration, discriminated on
+                ``"deployment_type"``. For a managed index:
+                ``{"deployment_type": "managed", "cloud": "aws", "region":
+                "us-east-1"}``. For a pod-based index, ``"deployment_type":
+                "pod"`` plus ``environment``, ``pod_type``, ``replicas``,
+                and ``shards``. Defaults to a managed index on AWS
+                ``us-east-1`` when omitted. Mutually exclusive with the
+                deprecated ``spec=``.
+            read_capacity: Read capacity for a managed or BYOC index —
                 ``{"mode": "OnDemand"}`` or ``{"mode": "Dedicated",
-                "dedicated": {"node_type": ..., "scaling": ...,
-                "manual": {"replicas": ..., "shards": ...}}}``. When ``spec=``
-                carries its own ``read_capacity``, that value is used unless
-                this argument is also given.
-            deletion_protection: ``"enabled"`` or ``"disabled"`` (server
-                default ``"disabled"``).
-            tags: Optional key-value tags. Keys: 1-80 ASCII alphanumerics,
-                ``_`` or ``-``; values: 0-120 printable ASCII characters;
-                at most 20 tags. ``{}`` is rejected client-side — pass ``None``
-                to send no tags. A ``""`` value means *delete this key*, and
-                the server runs that same merge on create, where there is
-                nothing to delete: ``tags={"a": ""}`` creates the index with no
-                tags rather than with an empty ``a``.
-            cmek_id: Optional customer-managed encryption key ID. Raises a 400
-                if combined with a pod deployment or a ``full_text_search``
-                field. Separately, a project that enforces CMEK encryption
-                raises 412 for a pod deployment or any ``full_text_search``
-                field regardless of whether this argument is set — so setting
-                or omitting ``cmek_id`` can change which of the two errors you
-                see without changing whether the request succeeds.
-            timeout: Seconds to wait for the index to become ready. ``None``
-                (default) polls indefinitely every 5 seconds. A positive int
-                polls with a deadline. ``-1`` returns immediately without
-                polling.
-            spec: **Deprecated.** A :class:`~pinecone.models.indexes.specs.ServerlessSpec`,
+                "dedicated": {"node_type": ..., "scaling": ..., "manual":
+                {"replicas": ..., "shards": ...}}}``.
+            deletion_protection: ``"enabled"`` to block :meth:`delete` on
+                this index until it's set back to ``"disabled"`` (the
+                default).
+            tags: Key-value tags to attach, e.g. ``{"env": "prod"}``, up to
+                20 pairs. Pass ``None`` (the default) to attach none.
+            cmek_id: ID of a customer-managed encryption key to encrypt the
+                index with.
+            timeout: How long to wait, in seconds, for the index to become
+                ready before returning. ``None`` (default) waits
+                indefinitely; ``-1`` returns immediately without waiting.
+            spec: **Deprecated.** A
+                :class:`~pinecone.models.indexes.specs.ServerlessSpec`,
                 :class:`~pinecone.models.indexes.specs.PodSpec`,
                 :class:`~pinecone.models.indexes.specs.ByocSpec`, or the
-                equivalent legacy dict, translated into ``deployment=`` (and
-                ``read_capacity=`` when the spec carries one). Cannot be
-                combined with ``deployment=``.
-                ``spec=IntegratedSpec(...)`` is not supported here — use
-                :meth:`create_for_model`.
+                equivalent dict, translated into ``deployment=`` (and
+                ``read_capacity=`` when the spec carries one). Mutually
+                exclusive with ``deployment=``. Use :meth:`create_for_model`
+                for ``IntegratedSpec``.
 
                 .. deprecated:: 10.0
-                   Provided for 9.x callers; new code should pass
-                   ``deployment=`` directly.
-            dimension: **Deprecated.** Dense vector width, translated into a
-                ``schema={"fields": {"_values": {...}}}`` field. Required
-                when using this legacy path for a dense index; rejected for
-                ``vector_type="sparse"``. Cannot be combined with ``schema=``.
+                   Pass ``deployment=`` directly instead.
+            dimension: **Deprecated.** Dense vector width for the legacy
+                path, translated into a single-field ``schema=``. Required
+                when creating a dense index this way.
 
                 .. deprecated:: 10.0
-                   Provided for 9.x callers; new code should declare a named
-                   field in ``schema=`` instead.
+                   Declare a named field in ``schema=`` instead.
             metric: **Deprecated.** Similarity metric for the legacy dense
-                path — ``"cosine"`` (the default when omitted),
-                ``"euclidean"``, or ``"dotproduct"``. Dropped for
-                ``vector_type="sparse"``, and never applied when ``schema=``
-                is given. Cannot be combined with ``schema=``.
+                path — ``"cosine"`` (default), ``"euclidean"``, or
+                ``"dotproduct"``.
 
                 .. deprecated:: 10.0
-                   Provided for 9.x callers; new code should set ``metric``
-                   inside the ``schema=`` field declaration instead.
-            vector_type: **Deprecated.** ``"dense"`` (the default when
-                omitted) or ``"sparse"``, selecting between the reserved
-                ``_values``/``_sparse_values`` legacy field names. Cannot be
-                combined with ``schema=``.
-
-                .. deprecated:: 10.0
-                   Provided for 9.x callers; new code should declare a named
-                   ``dense_vector``/``sparse_vector`` field in ``schema=``
+                   Set ``metric`` inside the ``schema=`` field declaration
                    instead.
+            vector_type: **Deprecated.** ``"dense"`` (default) or
+                ``"sparse"``, for the legacy path.
+
+                .. deprecated:: 10.0
+                   Declare a named ``dense_vector``/``sparse_vector`` field
+                   in ``schema=`` instead.
 
         Returns:
-            :class:`IndexModel` describing the created index (ready, unless
-            ``timeout=-1`` was passed).
+            :class:`IndexModel` describing the created index — ready,
+            unless ``timeout=-1`` was passed.
 
         Raises:
-            :exc:`PineconeValueError`: If inputs fail client-side validation
-                (empty or invalid name, malformed or empty schema/deployment/
-                read_capacity dicts, invalid tags or deletion_protection,
-                conflicting ``schema=``/legacy-vector-kwarg or
-                ``deployment=``/``spec=`` combinations, or a ``schema=`` value
-                that looks like a 9.x metadata schema).
-            :exc:`PineconeTypeError`: If ``pods=``, ``metadata_config=``,
-                ``source_collection=``, ``source_backup_id=``, or
-                ``spec=IntegratedSpec(...)`` are passed (no translation
-                exists), or an unrecognized keyword argument is passed.
-            :exc:`IndexInitFailedError`: If the index fails to initialise.
-            :exc:`PineconeTimeoutError`: If the index is not ready before the deadline.
-            :exc:`ApiError`: If the API returns an error response; server
-                validation messages are surfaced verbatim. Only the first
-                failing check is reported, so a request with more than one
-                problem may take a few round trips to fully validate. See
-                ``docs/migration/v10-2026-07-db-control.md``.
+            :exc:`PineconeValueError`: If neither ``schema=`` nor
+                ``dimension=`` is given, or mutually exclusive arguments
+                (``schema=`` with a legacy vector kwarg, or ``deployment=``
+                with ``spec=``) are combined.
+            :exc:`PineconeTypeError`: If an unsupported legacy keyword (e.g.
+                ``pods=``) or ``spec=IntegratedSpec(...)`` is passed.
+            :exc:`IndexInitFailedError`: If the index fails to initialize.
+            :exc:`PineconeTimeoutError`: If the index isn't ready before
+                *timeout* elapses.
+            :exc:`ApiError`: If the API returns another error response.
 
         Examples:
             >>> pc.indexes.create(  # doctest: +SKIP
@@ -611,12 +575,6 @@ class Indexes:
         the returned index, the embedding configuration surfaces as a
         ``semantic_text`` field in ``schema``, named after the ``field_map``
         text entry.
-
-        .. note::
-           The 2026-07 wire shape for this operation is the
-           ``cloud``/``region``/``embed`` form; the backend accepts only this
-           shape. See ``docs/migration/v10-2026-07-db-control.md`` for
-           background.
 
         Args:
             name: Required name for the index (1-45 characters,
@@ -741,14 +699,12 @@ class Indexes:
            code should use ``deployment=``/``read_capacity=`` directly.
 
         .. note::
-           *Schema updates:* the client no longer restricts ``schema=`` to
-           ``semantic_text`` fields (decision: shape validation stays local,
-           server policy stays on the server). The 2026-07 server accepts
-           only ``semantic_text`` parameter updates in a PATCH schema and
-           rejects anything else — and since ``semantic_text`` fields cannot
-           be created via ``create()`` in 2026-07, this path is effectively
-           unreachable except for indexes made by ``create_for_model``.
-           Server errors are surfaced verbatim.
+           Only ``semantic_text`` field parameters (``read_parameters``/
+           ``write_parameters``) can be updated through ``schema=``; other
+           field types can't be added, removed, or retyped after creation.
+           Since ``create()`` cannot declare a ``semantic_text`` field
+           directly, this only applies to indexes created with
+           :meth:`create_for_model`.
 
         Args:
             name: Name of the index to configure.
@@ -882,8 +838,8 @@ class Indexes:
     ) -> BackupModel:
         """Create a backup of an index.
 
-        Index-scoped convenience for :meth:`Pinecone.backups.create`, which
-        takes the same arguments as keywords and reaches the same endpoint.
+        Index-scoped shortcut for :meth:`Pinecone.backups.create` — pass the
+        same arguments either way.
 
         .. versionadded:: 10.0
            Graduated from ``pc.preview.indexes.create_backup``, now returning
@@ -941,12 +897,14 @@ class Indexes:
            :meth:`Pinecone.backups.list` with no ``index_name``.
 
         .. important::
-           A 404 here does not necessarily mean "no such index ever existed".
-           With *include_deleted* omitted or ``False``, *index_name* must
-           resolve to an **active** index: if every index that used the name
-           has been deleted, the API answers 404 rather than an empty list.
-           Retrying with ``include_deleted=True`` returns those backups; a
-           404 there means the name was never used in this project.
+           :exc:`NotFoundError` here does not necessarily mean *index_name*
+           was never used. With *include_deleted* omitted or ``False``,
+           *index_name* must resolve to an **active** index: if every index
+           that used the name has since been deleted, this raises
+           :exc:`NotFoundError` rather than returning an empty list. Retry
+           with ``include_deleted=True`` to get those backups back; a
+           :exc:`NotFoundError` there means the name was never used in this
+           project.
 
         Args:
             index_name: Name of the index whose backups to list.
@@ -973,8 +931,8 @@ class Indexes:
         Raises:
             :exc:`PineconeValueError`: If *index_name* is empty or *limit* is
                 zero or negative.
-            :exc:`NotFoundError`: If *index_name* does not resolve — see the
-                404 semantics above.
+            :exc:`NotFoundError`: If *index_name* does not resolve to an
+                active index — see above.
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
@@ -1010,8 +968,9 @@ class Indexes:
     def describe_backup(self, backup_id: str) -> BackupModel:
         """Describe a backup by its ID.
 
-        Index-scoped alias of :meth:`Pinecone.backups.describe`; the endpoint
-        is keyed by backup id, not by index.
+        Alias of :meth:`Pinecone.backups.describe`. Backups are identified
+        independently of any index, so despite living on ``indexes`` this
+        takes a backup ID rather than an index name.
 
         .. versionadded:: 10.0
            Graduated from ``pc.preview.indexes.describe_backup``.

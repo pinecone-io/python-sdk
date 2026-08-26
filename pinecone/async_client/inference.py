@@ -86,6 +86,9 @@ class AsyncModelResource:
         Raises:
             :exc:`PineconeValueError`: If *type* or *vector_type* is not a valid value.
             :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
 
@@ -113,6 +116,9 @@ class AsyncModelResource:
             :exc:`PineconeValueError`: If *model* is empty.
             :exc:`NotFoundError`: If the model does not exist.
             :exc:`ApiError`: If the API returns another error response.
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
 
@@ -401,23 +407,17 @@ class AsyncInference:
     ) -> ModelInfo:
         """Get detailed information about a specific model.
 
-        Pass the canonical model name. The lookup is an exact match against the
-        model's canonical name and does not resolve aliases, so an alias such as
-        ``nvidia/llama-text-embed-v2`` raises :exc:`NotFoundError` even though
-        ``embed`` accepts it. The name is percent-encoded into the path, so an
-        alias containing ``/`` reaches this route and 404s rather than 405s.
-
         Args:
-            model (str): The model identifier to look up. Use the canonical
-                model name, not an alias.
+            model (str): The model name to look up, e.g.
+                ``"multilingual-e5-large"``. Call :meth:`list_models` to see
+                the names currently available.
 
         Returns:
             A :class:`ModelInfo` with full model details.
 
         Raises:
             :exc:`PineconeValueError`: If *model* is empty.
-            :exc:`NotFoundError`: If the model does not exist, or if *model* is
-                an alias rather than a canonical model name.
+            :exc:`NotFoundError`: If no model with that name exists.
             :exc:`ApiError`: If the API returns another error response.
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
@@ -431,7 +431,7 @@ class AsyncInference:
                     model_info = await pc.inference.get_model(
                         model="multilingual-e5-large",
                     )
-                    model_info.type
+                    print(model_info.type)
         """
         model_name: str | None = kwargs.pop("model_name", None)
         if kwargs:

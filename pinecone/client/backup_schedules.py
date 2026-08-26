@@ -14,8 +14,7 @@ it, so
 :attr:`~pinecone.models.backups.schedules.BackupScheduleModel.schedule_type`
 reports whatever the schedule was created with -- always ``"time-based"`` for
 schedules created through this SDK, not guaranteed for one created by another
-client. ``frequency`` is the opposite: a real server-side enum, checked here as
-well.
+client. ``frequency`` is the opposite: a real server-side enum.
 
 Two shapes are offered for each of the two listings.
 :meth:`BackupSchedules.list` and :meth:`BackupSchedules.history` return one
@@ -64,11 +63,12 @@ class BackupSchedules:
         http (HTTPClient): HTTP client for making API requests.
 
     Note:
-        Backups are a plan entitlement. A project without it gets a 403 rather
-        than a 404 for a schedule that does not exist, and the SDK appends that
-        clarification to the 403 while keeping the server's own message as the
-        prefix. On-demand backups are gated on the same entitlement, so they
-        are not a fallback.
+        Backups are a plan entitlement. A project without it gets a
+        :exc:`ForbiddenError` rather than a :exc:`NotFoundError` for a
+        schedule that does not exist, and the SDK appends that clarification
+        to the error while keeping the server's own message as the prefix.
+        On-demand backups are gated on the same entitlement, so they are not
+        a fallback.
 
     Examples:
 
@@ -105,27 +105,23 @@ class BackupSchedules:
     ) -> BackupScheduleModel:
         """Create a time-based backup schedule for an index.
 
+        A backup schedule runs automatically at a fixed cadence, producing a
+        backup of the index on each run. There is no cron support here —
+        choose one of the three fixed cadences below.
+
         .. important::
-           **Keep the schedule name short.** Each run names its backup
-           ``"{name}-{run timestamp}"``, so a long schedule name pushes the
-           derived backup name past the length limit backup names are held to.
-           Nothing checks this at create time: the API declares no length limit
-           on a schedule name, and the SDK does not invent one, because that
-           would reject names the API accepts. An over-long name is therefore
-           accepted here and fails later, on the runs, rather than on this
-           call.
+           Keep the schedule name short. Each run names its backup
+           ``"{name}-{run timestamp}"``, and a long schedule name can push
+           that derived name past the length limit backup names allow.
 
         Args:
             index_name (str): Name of the index to attach the schedule to.
             name (str): Name for the schedule. Backups it produces are named
-                ``"{name}-{run timestamp}"`` — see the length caveat above.
-            frequency (str): Cadence, one of ``"daily"``, ``"weekly"``,
-                ``"monthly"``. Validated before any HTTP request; there is no
-                cron alternative.
-            retention_days (int): Days to retain each backup this schedule
-                produces. Must be at least 1, which is checked here. The upper
-                bound is a per-project setting the SDK does not know, so a
-                too-large value is rejected server-side rather than here.
+                ``"{name}-{run timestamp}"`` — see the length note above.
+            frequency (str): Cadence for the schedule: ``"daily"``,
+                ``"weekly"``, or ``"monthly"``.
+            retention_days (int): Number of days to retain each backup this
+                schedule produces. Must be at least 1.
 
         Returns:
             A :class:`~pinecone.models.backups.schedules.BackupScheduleModel`
@@ -135,16 +131,16 @@ class BackupSchedules:
         Raises:
             :exc:`PineconeValueError`: If *index_name* or *name* is empty, if
                 *frequency* is not a supported cadence, or if *retention_days*
-                is less than 1. All four are checked before any HTTP request.
+                is less than 1.
             :exc:`ForbiddenError`: If the project's plan does not include
-                scheduled backups. Checked before the index is looked up, so
-                this wins over a 404 for a missing index.
+                scheduled backups.
             :exc:`NotFoundError`: If the index does not exist.
             :exc:`ConflictError`: If the index already has an *enabled*
                 schedule — only one per index is allowed, so disable or delete
                 the existing one first.
             :exc:`ApiError`: If the API returns another error response, such
-                as a 400 for a pod-based index, which cannot be scheduled.
+                as when scheduling is requested for a pod-based index, which
+                does not support it.
 
         Examples:
             >>> from pinecone import Pinecone
@@ -157,17 +153,6 @@ class BackupSchedules:
             ... )
             >>> schedule.frequency  # doctest: +SKIP
             'daily'
-
-            An unsupported cadence is rejected before the request is sent:
-
-            >>> pc.backup_schedules.create(  # doctest: +SKIP
-            ...     index_name="product-search",
-            ...     name="hourly",
-            ...     frequency="0 * * * *",
-            ...     retention_days=7,
-            ... )
-            Traceback (most recent call last):
-            pinecone.errors.exceptions.PineconeValueError: Invalid frequency ...
         """
         require_non_empty("index_name", index_name)
         require_non_empty("name", name)
@@ -204,11 +189,10 @@ class BackupSchedules:
 
         Args:
             index_name (str): Name of the index whose schedules to list.
-            limit (int | None): Maximum results per page. When ``None``, the
-                parameter is omitted and the server applies its own default.
-                **Ignored when a pagination token is given**: the token
-                already carries the page size it was minted with, and sending
-                a different one alongside it would skip or repeat rows.
+            limit (int | None): Maximum results per page. Defaults to the
+                server's page size when ``None``. Ignored when a pagination
+                token is given, since the token already carries the page
+                size it was created with.
             pagination_token (str | None): Token naming the next page, taken
                 from the previous page's ``pagination.next``. Takes precedence
                 over *limit* — see above.
@@ -266,13 +250,9 @@ class BackupSchedules:
         Args:
             index_name (str): Name of the index whose schedules to iterate.
             limit (int | None): Maximum number of schedules to yield across
-                all pages. Must be positive. ``None`` yields all of them. It
-                also sets the requested page size, but only on a request that
-                carries no pagination token: every later page is sized by the
-                token, which already encodes it.
+                all pages. Must be positive. ``None`` yields all of them.
             pagination_token (str | None): Token to resume from a previous
-                call. *limit* still caps the total yield, but it is not sent
-                alongside a token — see above.
+                call. *limit* still caps the total yield.
 
         Returns:
             A :class:`~pinecone.models.pagination.Paginator` over
@@ -281,10 +261,11 @@ class BackupSchedules:
 
         Raises:
             :exc:`PineconeValueError`: If *index_name* is empty or *limit* is
-                zero or negative. Raised eagerly, before the first page is
-                fetched.
+                zero or negative. Raised as soon as you call this method,
+                before the first page is fetched.
             :exc:`ForbiddenError`: If the project's plan does not include
-                scheduled backups. Raised when a page is fetched.
+                scheduled backups. Raised while iterating, when a page is
+                fetched.
             :exc:`NotFoundError`: If the index does not exist.
             :exc:`ApiError`: If the API returns another error response.
 
@@ -390,13 +371,13 @@ class BackupSchedules:
         cannot be changed -- the API exposes no field for either.
 
         .. warning::
-           Passing ``enabled=True`` on a *disabled* schedule **immediately
-           enqueues a backup run**; it is not a free toggle. It also
-           recomputes ``next_scheduled_run`` from the moment of the update
-           rather than resuming the old slot, so a disable/re-enable cycle
-           shifts the cadence. And because only one schedule per index may be
-           enabled, re-enabling fails with a 409 when another one already is.
-           On an already-enabled schedule, ``enabled=True`` enqueues nothing.
+           Passing ``enabled=True`` on a *disabled* schedule immediately
+           enqueues a backup run and recomputes ``next_scheduled_run`` from
+           the moment of the update rather than resuming the old slot, so a
+           disable/re-enable cycle shifts the cadence rather than pausing it.
+           Only one schedule per index can be enabled, so re-enabling raises
+           :exc:`ConflictError` if another one already is. On an
+           already-enabled schedule, ``enabled=True`` enqueues nothing.
 
         Args:
             schedule_id (str): The identifier of the schedule to update.
@@ -418,20 +399,17 @@ class BackupSchedules:
         Raises:
             :exc:`PineconeValueError`: If *schedule_id* is empty, if
                 *frequency* is set to an unsupported cadence, or if
-                *retention_days* is set to less than 1. All checked before
-                any HTTP request.
+                *retention_days* is set to less than 1.
             :exc:`ForbiddenError`: If the project's plan does not include
-                scheduled backups. Re-enabling is gated on the same
-                entitlement as :meth:`create`.
+                scheduled backups.
             :exc:`NotFoundError`: If the schedule does not exist.
             :exc:`ConflictError`: If ``enabled=True`` and another schedule on
                 the same index is already enabled.
             :exc:`ApiError`: If the API returns another error response.
 
         Note:
-            Passing none of *frequency*, *retention_days*, or *enabled* sends
-            an empty body, which the API accepts as a no-op and answers with
-            the unchanged schedule.
+            Calling this with none of *frequency*, *retention_days*, or
+            *enabled* set is a no-op: it returns the schedule unchanged.
 
         Examples:
             >>> from pinecone import Pinecone
@@ -476,11 +454,12 @@ class BackupSchedules:
         future runs.
 
         .. important::
-           This is not safe to retry blindly. A successful delete answers 204
-           with no body, and a second attempt on the same ``schedule_id``
-           answers 404 -- so a retry after a dropped response is
+           This is not safe to retry blindly. A successful delete raises
+           nothing, and a second attempt on the same ``schedule_id`` raises
+           :exc:`NotFoundError` -- so a retry after a dropped response is
            indistinguishable from deleting something that was never there.
-           Treat a 404 following a delete attempt as success.
+           Treat a :exc:`NotFoundError` following a delete attempt as
+           success.
 
         Args:
             schedule_id (str): The identifier of the schedule to delete.
@@ -530,11 +509,10 @@ class BackupSchedules:
         Args:
             schedule_id (str): The identifier of the schedule whose history
                 to list.
-            limit (int | None): Maximum results per page. When ``None``, the
-                parameter is omitted and the server applies its own default.
-                **Ignored when a pagination token is given**: the token
-                already carries the page size it was minted with, and sending
-                a different one alongside it would skip or repeat rows.
+            limit (int | None): Maximum results per page. Defaults to the
+                server's page size when ``None``. Ignored when a pagination
+                token is given, since the token already carries the page
+                size it was created with.
             pagination_token (str | None): Token naming the next page, taken
                 from the previous page's ``pagination.next``. Takes precedence
                 over *limit* — see above.
@@ -594,13 +572,9 @@ class BackupSchedules:
             schedule_id (str): The identifier of the schedule whose history
                 to iterate.
             limit (int | None): Maximum number of rows to yield across all
-                pages. Must be positive. ``None`` yields all of them. It also
-                sets the requested page size, but only on a request that
-                carries no pagination token: every later page is sized by the
-                token, which already encodes it.
+                pages. Must be positive. ``None`` yields all of them.
             pagination_token (str | None): Token to resume from a previous
-                call. *limit* still caps the total yield, but it is not sent
-                alongside a token — see above.
+                call. *limit* still caps the total yield.
 
         Returns:
             A :class:`~pinecone.models.pagination.Paginator` over
@@ -609,10 +583,11 @@ class BackupSchedules:
 
         Raises:
             :exc:`PineconeValueError`: If *schedule_id* is empty or *limit*
-                is zero or negative. Raised eagerly, before the first page is
-                fetched.
+                is zero or negative. Raised as soon as you call this method,
+                before the first page is fetched.
             :exc:`ForbiddenError`: If the project's plan does not include
-                scheduled backups. Raised when a page is fetched.
+                scheduled backups. Raised while iterating, when a page is
+                fetched.
             :exc:`NotFoundError`: If the schedule does not exist.
             :exc:`ApiError`: If the API returns another error response.
 

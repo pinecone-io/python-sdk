@@ -57,40 +57,31 @@ class AsyncBackups:
     ) -> BackupModel:
         """Create a backup of an existing index.
 
+        A backup is a stored, point-in-time snapshot of an index's data and
+        schema. Restore one into a new index with
+        :meth:`AsyncPinecone.create_index_from_backup`. Only serverless and
+        BYOC indexes can be backed up.
+
         Args:
             index_name (str): Name of the index to back up.
-            name (str | None): Optional name for the backup.
-            description (str | None): Description for the backup. When ``None``
-                (the default), no description is sent and the backend stores ``None``.
+            name (str | None): Name for the backup, e.g. ``"daily-20240115"``.
+                When omitted, the backup has no name and is identified only
+                by its ``backup_id``.
+            description (str | None): Description for the backup.
 
         Returns:
-            A :class:`BackupModel` describing the created backup.
+            A :class:`BackupModel` describing the new backup. The call
+            returns once the backup is initiated; check its ``status`` via
+            :meth:`describe` to see when it's ready.
 
         Raises:
             :exc:`PineconeValueError`: If *index_name* is empty.
-            :exc:`ForbiddenError`: If the organization's plan does not include
-                backups. This is settled before the index name is, so it wins
-                over the ``404`` when both are wrong.
-            :exc:`NotFoundError`: If *index_name* does not resolve to an index
-                in this project.
-            :exc:`ApiError`: If the API returns another error response,
-                including the ``400``\\ s in the note below.
-
-        .. note::
-           Three things make an otherwise well-formed request a ``400``, none
-           of them checked client-side:
-
-           * A *name* that is not a valid resource name — lowercase
-             alphanumerics and ``-``, not starting or ending with ``-``. Its
-             length is capped in **bytes** rather than characters, so
-             multi-byte characters use the budget up faster than the string
-             looks.
-           * A **pod** source index. Only serverless and BYOC indexes can be
-             backed up.
-           * An **encrypted** source index. Backups of these are not
-             supported yet.
-
-           The server's message names which one it was.
+            :exc:`ForbiddenError`: If the organization's plan does not
+                include backups.
+            :exc:`NotFoundError`: If *index_name* does not resolve to an
+                index in this project.
+            :exc:`ApiError`: If the API returns another error response, for
+                example because *index_name* names a pod-based index.
 
         Examples:
 
@@ -138,39 +129,24 @@ class AsyncBackups:
     ) -> BackupList:
         """List backups.
 
-        When *index_name* is provided, lists backups for that index only
-        (``list_index_backups``). Otherwise lists every backup in the project
-        (``list_project_backups``).
+        When *index_name* is given, lists backups of that index only.
+        Otherwise lists every backup in the project.
 
         .. versionchanged:: 10.0
-           Added *include_deleted*. Backups now carry
+           Added *include_deleted*. :class:`BackupModel` now carries
            :attr:`~pinecone.models.backups.model.BackupModel.source_index_deleted_at`
-           instead of ``dimension``/``metric`` — see
-           ``docs/migration/v10-2026-07-backup-models.md``.
-
-        .. important::
-           A 404 from the index-scoped listing does not necessarily mean
-           "no such index ever existed". With *include_deleted* omitted or
-           ``False``, *index_name* must resolve to an **active** index: if
-           every index that used the name has been deleted, the API answers
-           404 rather than an empty list. Retrying with
-           ``include_deleted=True`` returns those backups; a 404 there means
-           the name was never used in this project.
+           instead of ``dimension``/``metric``.
 
         .. note::
-           **Pagination here is offset-based, not cursor-based**: the token
-           names a position in the result set rather than a stable cursor over
-           a snapshot. Two consequences worth planning for:
+           If every index that ever used *index_name* has since been
+           deleted, listing without *include_deleted* raises
+           :exc:`NotFoundError` rather than returning an empty list. Pass
+           ``include_deleted=True`` to see backups of deleted indexes too.
 
-           * Backups created or deleted between requests shift every later
-             offset, so a walk can miss rows and return others twice.
-             De-duplicate by ``backup_id`` rather than trusting the sequence.
-           * A malformed or truncated token is rejected with ``400``
-             (:exc:`ApiError`) rather than restarting the listing.
-
-           A final page that happens to be exactly as long as the page size
-           still carries a token, so following it costs one extra request that
-           returns nothing. Terminate on ``pagination is None``.
+           Because paging walks a live result set rather than a fixed
+           snapshot, backups created or deleted between requests can shift
+           later pages. De-duplicate by ``backup_id`` rather than relying on
+           page order, and stop once ``pagination`` is ``None``.
 
         Args:
             index_name (str | None): Index name to scope the listing to, or
@@ -196,8 +172,8 @@ class AsyncBackups:
         Raises:
             :exc:`PineconeValueError`: If *include_deleted* is given without
                 *index_name*.
-            :exc:`NotFoundError`: If *index_name* does not resolve — see the
-                404 semantics above.
+            :exc:`NotFoundError`: If *index_name* does not resolve to an
+                active index and *include_deleted* is not ``True``.
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:

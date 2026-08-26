@@ -45,39 +45,29 @@ class AsyncCollections:
         return "AsyncCollections()"
 
     async def create(self, *, name: str, source: str) -> CollectionModel:
-        """Create a collection from an existing index.
+        """Create a collection from an existing pod-based index.
 
-        Returns immediately after the API call without polling for
-        readiness.
-
-        Collections are a **pod-only** feature. The source index must be a pod
-        index and must already be ``Ready`` — see the note below.
+        A collection is a static copy of an index's vector data. Create one
+        to preserve an index's contents, then later pass its name as
+        ``source_collection`` when creating a new index to restore the data.
+        Only a pod-based index can be used as a source, and it must already
+        be ready. The call returns as soon as creation starts — it does not
+        wait for the collection to become ready.
 
         Args:
-            name (str): Name for the new collection.
-            source (str): Name of the source index.
+            name (str): Name for the new collection. 1-45 characters,
+                lowercase alphanumeric and hyphens only, and can't start or
+                end with a hyphen (e.g. ``"movie-embeddings-snapshot"``).
+            source (str): Name of the pod-based index to copy.
 
         Returns:
             A CollectionModel describing the created collection.
 
         Raises:
-            PineconeValueError: If *name* is empty, longer than 45 characters,
-                contains characters outside ``[a-z0-9-]``, or starts/ends with
-                a hyphen. Also raised if *source* is empty.
-            NotFoundError: If *source* does not name an index in this project.
-            ApiError: If the API returns another error response (e.g. the
-                ``400``\\ s in the note below, authentication failure, or a
-                server error).
-
-        .. note::
-           Readiness is settled before capacity mode, so a *serverless* source
-           that is still initialising is refused for not being ``Ready`` and
-           never told the real problem — that only pod indexes can be
-           collected at all. Once it is ready, a serverless *or* BYOC source is
-           refused with a ``400`` whose message names serverless in both cases,
-           so do not match on that text to tell them apart.
-
-           A per-project collection quota applies as well.
+            PineconeValueError: If *name* or *source* is empty, or *name*
+                doesn't meet the naming rules above.
+            NotFoundError: If *source* does not name an index in this
+                project.
 
         Examples:
 
@@ -95,18 +85,14 @@ class AsyncCollections:
         return result
 
     async def list(self) -> CollectionList:
-        """List all collections in the project.
+        """List every collection in the project.
 
-        Returns all collections in a single response without filtering,
-        sorting, or pagination.
+        There's no filtering, sorting, or pagination — all collections come
+        back at once.
 
         Returns:
             A CollectionList supporting iteration, len(), index access,
             and a names() convenience method.
-
-        Raises:
-            ApiError: If the API returns an error response (e.g. authentication
-                failure or server error).
 
         Examples:
 
@@ -124,19 +110,18 @@ class AsyncCollections:
         return result
 
     async def describe(self, name: str) -> CollectionModel:
-        """Get detailed information about a named collection.
+        """Get details about a collection.
 
         Args:
-            name (str): The name of the collection to describe.
+            name (str): Name of the collection to describe.
 
         Returns:
-            A CollectionModel with name, status, size, dimension,
-            vector_count, and environment.
+            A CollectionModel with the collection's name, status, size,
+            dimension, vector_count, and environment.
 
         Raises:
             PineconeValueError: If *name* is empty.
             NotFoundError: If the collection does not exist.
-            ApiError: If the API returns another error response.
 
         Examples:
 
@@ -153,15 +138,14 @@ class AsyncCollections:
         return result
 
     async def delete(self, name: str) -> None:
-        """Delete a collection by name.
+        """Delete a collection permanently.
 
         Args:
-            name (str): The name of the collection to delete.
+            name (str): Name of the collection to delete.
 
         Raises:
             PineconeValueError: If *name* is empty.
             NotFoundError: If the collection does not exist.
-            ApiError: If the API returns another error response.
 
         Examples:
 

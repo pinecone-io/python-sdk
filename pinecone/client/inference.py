@@ -56,7 +56,7 @@ class ModelResource:
         Get details about a specific model:
 
         >>> info = pc.inference.model.get("multilingual-e5-large")
-        >>> info.type
+        >>> info.type  # doctest: +SKIP
         'embed'
     """
 
@@ -84,6 +84,9 @@ class ModelResource:
         Raises:
             :exc:`PineconeValueError`: If *type* or *vector_type* is not a valid value.
             :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
             >>> from pinecone import Pinecone
@@ -108,12 +111,15 @@ class ModelResource:
             :exc:`PineconeValueError`: If *model* is empty.
             :exc:`NotFoundError`: If the model does not exist.
             :exc:`ApiError`: If the API returns another error response.
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
             >>> info = pc.inference.model.get("multilingual-e5-large")
-            >>> info.type
+            >>> info.type  # doctest: +SKIP
             'embed'
         """
         model_name: str | None = kwargs.pop("model_name", None)
@@ -221,7 +227,7 @@ class Inference:
             ...     inputs=["Hello, world!"],
             ...     parameters={"input_type": "passage"},
             ... )
-            >>> len(embeddings.data)
+            >>> len(embeddings.data)  # doctest: +SKIP
             1
 
         .. note::
@@ -368,11 +374,11 @@ class Inference:
         Examples:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
-            >>> models = pc.inference.list_models()  # doctest: +SKIP
+            >>> models = pc.inference.list_models()
             >>> models.names()  # doctest: +SKIP
             ['multilingual-e5-large', 'pinecone-sparse-english-v0']
 
-            >>> embed_models = pc.inference.list_models(type="embed")  # doctest: +SKIP
+            >>> embed_models = pc.inference.list_models(type="embed")
         """
         if type is not None:
             require_one_of("type", type, ("embed", "rerank"))
@@ -401,23 +407,17 @@ class Inference:
     ) -> ModelInfo:
         """Get detailed information about a specific model.
 
-        Pass the canonical model name. The lookup is an exact match against the
-        model's canonical name and does not resolve aliases, so an alias such as
-        ``nvidia/llama-text-embed-v2`` raises :exc:`NotFoundError` even though
-        ``embed`` accepts it. The name is percent-encoded into the path, so an
-        alias containing ``/`` reaches this route and 404s rather than 405s.
-
         Args:
-            model (str): The model identifier to look up. Use the canonical
-                model name, not an alias.
+            model (str): The model name to look up, e.g.
+                ``"multilingual-e5-large"``. Call :meth:`list_models` to see
+                the names currently available.
 
         Returns:
             A :class:`ModelInfo` with full model details.
 
         Raises:
             :exc:`PineconeValueError`: If *model* is empty.
-            :exc:`NotFoundError`: If the model does not exist, or if *model* is
-                an alias rather than a canonical model name.
+            :exc:`NotFoundError`: If no model with that name exists.
             :exc:`ApiError`: If the API returns another error response.
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
@@ -427,7 +427,7 @@ class Inference:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
             >>> model_info = pc.inference.get_model(model="multilingual-e5-large")
-            >>> model_info.type
+            >>> model_info.type  # doctest: +SKIP
             'embed'
         """
         model_name: str | None = kwargs.pop("model_name", None)

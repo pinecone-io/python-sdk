@@ -87,9 +87,8 @@ class Documents:
         the index schema or arbitrary metadata fields. If a document with the
         same ``_id`` already exists in the namespace, it is overwritten.
 
-        The server accepts the request with ``202 Accepted`` and applies the
-        upsert asynchronously — documents may not be immediately visible to
-        :meth:`search` or :meth:`fetch`.
+        Pinecone applies the upsert asynchronously, so documents may not be
+        immediately visible to :meth:`search` or :meth:`fetch`.
 
         Args:
             namespace (str): Target namespace (required, non-empty).
@@ -416,8 +415,7 @@ class Documents:
         Exactly one of ``ids``, ``filter``, or ``delete_all`` must be
         provided. Deleting IDs that do not exist does not raise an error.
 
-        The server accepts the request with ``202 Accepted`` and applies the
-        delete asynchronously — for a filtered delete,
+        Pinecone applies the delete asynchronously. For a filtered delete,
         ``response.matched_records`` is the point-in-time count of matching
         documents when the delete was accepted, not a guarantee of the number
         ultimately deleted.
@@ -429,9 +427,9 @@ class Documents:
             filter: Non-empty metadata filter expression selecting the
                 documents to delete. Text-match operators (``$match_phrase``,
                 ``$match_all``, ``$match_any``) are not supported here.
-                Mutually exclusive with ``ids`` and ``delete_all``. A filtered
-                delete reads before it writes, so a dedicated index scaled to
-                zero replicas refuses it; add replicas first.
+                Mutually exclusive with ``ids`` and ``delete_all``. Not
+                available on an index with dedicated read capacity scaled to
+                0 replicas — scale up replicas first.
             delete_all (bool): If ``True``, delete all documents in the
                 namespace. Mutually exclusive with ``ids`` and ``filter``.
             timeout (float | None): Per-request timeout in seconds. Overrides
@@ -493,8 +491,7 @@ class Documents:
         unchanged, and an update naming a document that does not exist is
         accepted as a no-op rather than raising.
 
-        The server accepts the request with ``202 Accepted`` and applies the
-        patch asynchronously — for a filtered update,
+        Pinecone applies the update asynchronously — for a filtered update,
         ``response.matched_records`` is the point-in-time count of matching
         documents when the update was accepted, not a guarantee of the number
         ultimately patched.
@@ -512,9 +509,9 @@ class Documents:
             filter: Non-empty metadata filter expression selecting the
                 documents to patch. Text-match operators (``$match_phrase``,
                 ``$match_all``, ``$match_any``) are not supported here.
-                Mutually exclusive with ``documents``. A filtered update reads
-                before it writes, so a dedicated index scaled to zero replicas
-                refuses it; add replicas first.
+                Mutually exclusive with ``documents``. Not available on an
+                index with dedicated read capacity scaled to 0 replicas —
+                scale up replicas first.
             set_fields: Fields to set on every document matching ``filter``,
                 and the values to set them to. Only valid with ``filter``.
             remove_fields: Names of the fields to remove from every document
