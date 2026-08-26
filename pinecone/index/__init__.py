@@ -192,9 +192,15 @@ class Index:
 
     @property
     def documents(self) -> Documents:
-        """Access the Documents namespace for document data-plane operations.
+        """Entry point for document operations on a schema-based index.
 
-        Lazily imported and instantiated on first access.
+        A schema-based index stores JSON records instead of raw vectors.
+        Use this namespace for document operations such as ``upsert``,
+        ``search``, and ``fetch``; use the vector methods on this class
+        (:meth:`upsert`, :meth:`query`, etc.) for a vector-based index
+        instead. See :class:`~pinecone.client.documents.Documents` for the
+        full set of document operations. The namespace instance is built
+        and cached on first access.
 
         Returns:
             :class:`~pinecone.client.documents.Documents` namespace instance.
@@ -248,10 +254,10 @@ class Index:
         If a vector with the same ID already exists in the namespace, it is
         overwritten.
 
-        One request is capped both on the number of vectors it carries and on
-        its encoded size, and with wide vectors or heavy metadata the size cap
-        is usually the one reached first. Pass ``batch_size`` to split a long
-        sequence into requests that stay under both.
+        Each request is capped on both vector count and encoded payload size;
+        wide vectors or large metadata tend to hit the size cap first. Pass
+        ``batch_size`` to split a long sequence of vectors into requests that
+        stay under both limits.
 
         Args:
             vectors: Sequence of vectors to upsert. Each element can be a
@@ -455,11 +461,11 @@ class Index:
                 ``None`` (default) uses the client-level default. Raise it to
                 accommodate large or slow batches.
             on_error: What to do when some batches fail. ``"collect"`` (the
-                default, and this transport's behavior since v9.0.0) returns an
-                :class:`UpsertResponse` carrying ``failed_item_count``, ``errors``
-                and ``failed_items``. ``"raise"`` re-raises the lowest-indexed
-                batch failure once every batch has settled, with the partial
-                result attached to the exception's ``response`` attribute.
+                default) returns an :class:`UpsertResponse` carrying
+                ``failed_item_count``, ``errors``, and ``failed_items``.
+                ``"raise"`` re-raises the lowest-indexed batch failure once
+                every batch has settled, with the partial result attached to
+                the exception's ``response`` attribute.
 
         Returns:
             :class:`UpsertResponse` with the total count of vectors upserted across
@@ -573,7 +579,8 @@ class Index:
         Raises:
             :exc:`PineconeValueError`: If namespace is not a string or is empty/whitespace,
                 records is empty, or a record is missing an identifier field.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -656,14 +663,11 @@ class Index:
         """Query a namespace for the nearest neighbors of a vector.
 
         .. note::
-           Use this method for indexes where you provide your own vectors.
-           For indexes with integrated inference (``IntegratedSpec``), use
-           :meth:`search` which handles embedding server-side.
-
-           Vector operations remain available for indexes created before 2026-07,
-           where you supply your own vectors. An index created at 2026-07 carries
-           a document schema instead, and its reads and writes go through the
-           document operations.
+           Use this method for vector-based indexes, where you supply your
+           own vectors. For indexes with integrated inference, use
+           :meth:`search`, which embeds text server-side. For schema-based
+           indexes, which store JSON records instead of raw vectors, use
+           :attr:`documents`.
 
         Args:
             top_k (int): Number of results to return, 1-10000.
@@ -674,7 +678,8 @@ class Index:
             include_values (bool): Whether to include vector values in results.
             include_metadata (bool): Whether to include metadata in results.
             sparse_vector (SparseValues | dict[str, Any] | None): Sparse query vector
-                with indices and values.
+                with indices and values. Can be combined with *vector* for a
+                hybrid query on indexes that support both.
             scan_factor (float | None): Recall/latency trade for dedicated read
                 node (DRN) indexes — a multiplier on how much of the index is
                 scanned. Above 1 scans more and favours recall; below 1 scans
@@ -711,6 +716,17 @@ class Index:
                 )
                 for match in response.matches:
                     print(match.id, match.score)
+
+            Query with a metadata filter:
+
+            .. code-block:: python
+
+                response = idx.query(
+                    top_k=10,
+                    vector=[0.012, -0.087, 0.153],
+                    filter={"genre": "comedy", "year": {"$gte": 2020}},
+                    namespace="movies-en",
+                )
         """
         require_in_range("top_k", top_k, 1, QUERY_TOP_K_MAX)
         require_query_selectors(vector=vector, id=id, sparse_vector=sparse_vector)
@@ -767,7 +783,7 @@ class Index:
     ) -> QueryNamespacesResults:
         """Query multiple namespaces in parallel and return merged top results.
 
-        Fans out individual ``query()`` calls across all given namespaces
+        Fans out individual :meth:`query` calls across all given namespaces
         using a thread pool, then merges results via a heap-based aggregator
         that returns the overall top-k matches ranked by the specified metric.
 
@@ -797,9 +813,9 @@ class Index:
             usage, and per-namespace usage.
 
         Raises:
-            :exc:`PineconeValueError`: If *namespaces* is empty, or if both
-                *vector* and *sparse_vector* are absent/empty.
-            :exc:`ValueError`: If *metric* is not a recognized value.
+            :exc:`PineconeValueError`: If *namespaces* is empty, if both
+                *vector* and *sparse_vector* are absent/empty, or if *metric*
+                is not one of ``"cosine"``, ``"euclidean"``, or ``"dotproduct"``.
             :exc:`ApiError`: If any individual namespace query fails.
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
@@ -879,6 +895,8 @@ class Index:
             ids (list[str]): List of vector IDs to fetch. Must be non-empty, and
                 every ID must be 1-512 ASCII characters without a NUL.
             namespace (str): Namespace to fetch from. Defaults to the default namespace.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             :class:`FetchResponse` with a map of vector IDs to Vector objects, namespace,
@@ -930,13 +948,16 @@ class Index:
         pagination support.
 
         Args:
-            filter: Metadata filter expression (required, at least one condition).
-            namespace: Namespace to fetch from. Defaults to the default
+            filter (dict[str, Any]): Metadata filter expression. Must carry at
+                least one condition.
+            namespace (str): Namespace to fetch from. Defaults to the default
                 namespace.
-            limit: Maximum number of vectors to return per page, 1-10000.
-                Omit to let the server choose the page size.
-            pagination_token: Token from a previous response to fetch the
-                next page. When ``None``, fetches the first page.
+            limit (int | None): Maximum number of vectors to return per page,
+                1-10000. Omit to let the server choose the page size.
+            pagination_token (str | None): Token from a previous response to
+                fetch the next page. When ``None``, fetches the first page.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             :class:`FetchByMetadataResponse` with matched vectors, namespace, usage,
@@ -947,14 +968,17 @@ class Index:
                 outside 1-10000.
             :exc:`ApiError`: If the API returns an error response (e.g. authentication
                 failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
 
             .. code-block:: python
 
                 response = idx.fetch_by_metadata(
-                    filter={"genre": {"$eq": "comedy"}},
-                    namespace="movies",
+                    filter={"genre": "comedy", "year": {"$gte": 2020}},
+                    namespace="movies-en",
                 )
                 for vid, vec in response.vectors.items():
                     print(vid, vec.values)
@@ -963,8 +987,8 @@ class Index:
                 token = response.pagination.next if response.pagination else None
                 while token:
                     response = idx.fetch_by_metadata(
-                        filter={"genre": {"$eq": "comedy"}},
-                        namespace="movies",
+                        filter={"genre": "comedy", "year": {"$gte": 2020}},
+                        namespace="movies-en",
                         pagination_token=token,
                     )
                     token = response.pagination.next if response.pagination else None
@@ -1024,6 +1048,8 @@ class Index:
             filter (dict[str, Any] | None): Metadata filter expression selecting vectors
                 to delete. Must carry at least one condition.
             namespace (str): Namespace to delete from. Defaults to the default namespace.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             None — a successful delete returns no payload.
@@ -1112,6 +1138,8 @@ class Index:
             dry_run (bool): If True, return the count of records that would be
                 affected without applying changes. Only applies to filter-based
                 updates.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             :class:`UpdateResponse` with matched_records count (when available).
@@ -1191,6 +1219,8 @@ class Index:
                 every index type, so the call fails instead of returning
                 filtered counts. Leave it unset: the statistics returned always
                 describe the whole index.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             :class:`DescribeIndexStatsResponse` with namespace summaries, dimension,
@@ -1241,8 +1271,9 @@ class Index:
         server-side), a raw vector, or an existing record ID as the query.
 
         .. note::
-           Use this method for indexes with integrated inference. For classic
-           indexes where you provide your own vectors, use :meth:`query`.
+           Use this method for indexes with integrated inference. For
+           vector-based indexes, where you supply your own vectors, use
+           :meth:`query`.
 
         Args:
             namespace (str): Namespace to search in (required).
@@ -1275,6 +1306,8 @@ class Index:
             query (dict[str, Any] | None): Legacy query body containing
                 ``top_k`` plus one of ``inputs``, ``vector``, or ``id``. Prefer
                 passing these fields directly.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             :class:`SearchRecordsResponse` with hits and usage statistics.
@@ -1282,7 +1315,8 @@ class Index:
         Raises:
             :exc:`PineconeValueError`: If ``namespace`` is not a string, ``top_k < 1``,
                 or ``rerank`` is missing required keys.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g. authentication
+                failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1405,10 +1439,11 @@ class Index:
             schema, indexed fields, and ``size_bytes``.
 
         Raises:
-            :exc:`ValidationError`: If *name* violates the rules above, or *schema*
+            :exc:`PineconeValueError`: If *name* violates the rules above, or *schema*
                 is malformed. Raised before any HTTP request is made.
-            :exc:`ConflictError`: 409 — a namespace of that name already exists.
-            :exc:`ApiError`: If the API returns any other error response.
+            :exc:`ConflictError`: a namespace of that name already exists.
+            :exc:`ApiError`: If the API returns any other error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1463,12 +1498,13 @@ class Index:
             value.
 
         Raises:
-            :exc:`ValidationError`: If *name* violates the rules above. Raised
+            :exc:`PineconeValueError`: If *name* violates the rules above. Raised
                 before any HTTP request is made.
-            :exc:`NotFoundError`: 404 — no namespace of that name exists on the index.
-            :exc:`RateLimitError`: 429 — this operation's per-index limit was
+            :exc:`NotFoundError`: no namespace of that name exists on the index.
+            :exc:`RateLimitError`: this operation's per-index limit was
                 exceeded. Use :meth:`list_namespaces` to describe many namespaces.
-            :exc:`ApiError`: If the API returns any other error response.
+            :exc:`ApiError`: If the API returns any other error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1509,15 +1545,18 @@ class Index:
         Args:
             name (str): Name of the namespace to delete. Must be ASCII, must not
                 contain the NUL character, and must be 1-512 characters long.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             None — a successful delete returns no payload.
 
         Raises:
-            :exc:`ValidationError`: If *name* violates the rules above. Raised
+            :exc:`PineconeValueError`: If *name* violates the rules above. Raised
                 before any HTTP request is made.
-            :exc:`NotFoundError`: 404 — no namespace of that name exists on the index.
-            :exc:`ApiError`: If the API returns any other error response.
+            :exc:`NotFoundError`: no namespace of that name exists on the index.
+            :exc:`ApiError`: If the API returns any other error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1562,9 +1601,13 @@ class Index:
             and total count. Each description carries ``size_bytes``.
 
         Raises:
-            :exc:`ValidationError`: If *prefix* or *limit* violates the rules above.
+            :exc:`PineconeValueError`: If *prefix* or *limit* violates the rules above.
                 Raised before any HTTP request is made.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
 
@@ -1615,9 +1658,13 @@ class Index:
             :class:`NamespaceDescription` carries ``size_bytes``.
 
         Raises:
-            :exc:`ValidationError`: If *prefix* or *limit* violates the rules above.
-                Raised on first iteration, before any HTTP request is made.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeValueError`: If *prefix* or *limit* violates the rules
+                above. Raised on first iteration, before any HTTP request is made.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
             .. code-block:: python
@@ -1657,6 +1704,8 @@ class Index:
             limit (int | None): Maximum number of IDs to return in this page, 1-100.
             pagination_token (str | None): Token from a previous response to fetch the next page.
             namespace (str): Namespace to list from. Defaults to the default namespace.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             :class:`ListResponse` with vector IDs, pagination info, namespace, and usage.
@@ -1666,6 +1715,9 @@ class Index:
                 falls outside 1-100.
             :exc:`ApiError`: If the API returns an error response (e.g. authentication
                 failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
 
@@ -1712,9 +1764,21 @@ class Index:
                 512 ASCII characters without a NUL; the empty prefix matches everything.
             limit (int | None): Maximum number of IDs to return per page, 1-100.
             namespace (str): Namespace to list from. Defaults to the default namespace.
+            timeout (float | None): Per-request timeout in seconds, applied to
+                each underlying page request. Overrides the client-level
+                default for this call only.
 
         Yields:
             :class:`ListResponse` for each page of results.
+
+        Raises:
+            :exc:`PineconeValueError`: If ``prefix`` is not legal or ``limit``
+                falls outside 1-100.
+            :exc:`ApiError`: If the API returns an error response (e.g. authentication
+                failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
             .. code-block:: python
@@ -1803,7 +1867,8 @@ class Index:
                 accepts, uses an unsupported scheme, is an ``s3://`` URI on an
                 index not hosted on AWS, or names an S3 directory bucket, which
                 imports do not support.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1865,7 +1930,8 @@ class Index:
 
         Raises:
             :exc:`PineconeValueError`: If the ID is empty or exceeds 1000 characters.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1892,7 +1958,8 @@ class Index:
 
         Raises:
             :exc:`PineconeValueError`: If the ID is empty or exceeds 1000 characters.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1927,7 +1994,11 @@ class Index:
             :class:`ImportModel` for each import operation.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
             .. code-block:: python
@@ -1970,7 +2041,11 @@ class Index:
             :class:`ImportList` with the import operations for the requested page.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
 
@@ -1990,7 +2065,20 @@ class Index:
         return self._imports_adapter.to_import_list(response.content)
 
     def close(self) -> None:
-        """Close the underlying HTTP client and release resources."""
+        """Close the underlying HTTP client and release its resources.
+
+        Call this when you are done making requests through this index, or
+        use the index as a context manager so it closes automatically.
+
+        Returns:
+            None.
+
+        Examples:
+            .. code-block:: python
+
+                with pc.index(name="articles-en") as idx:
+                    idx.upsert(namespace="articles-en", vectors=[...])
+        """
         self._http.close()
         if self._batch_executor is not None:
             self._batch_executor.shutdown(wait=False)
@@ -1999,9 +2087,25 @@ class Index:
             legacy_pool.close()
 
     def __enter__(self) -> Index:
+        """Enter the context manager, returning this index.
+
+        Returns:
+            This :class:`Index` instance.
+
+        Examples:
+            .. code-block:: python
+
+                with pc.index(name="articles-en") as idx:
+                    idx.upsert(namespace="articles-en", vectors=[...])
+        """
         return self
 
     def __exit__(self, *args: Any) -> None:
+        """Exit the context manager, calling :meth:`close`.
+
+        Returns:
+            None.
+        """
         self.close()
 
     def __repr__(self) -> str:

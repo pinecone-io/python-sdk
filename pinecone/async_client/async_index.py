@@ -172,9 +172,15 @@ class AsyncIndex:
 
     @property
     def documents(self) -> AsyncDocuments:
-        """Access the AsyncDocuments namespace for document data-plane operations.
+        """Entry point for document operations on a schema-based index.
 
-        Lazily imported and instantiated on first access.
+        A schema-based index stores JSON records instead of raw vectors.
+        Use this namespace for document operations such as ``upsert``,
+        ``search``, and ``fetch``; use the vector methods on this class
+        (:meth:`upsert`, :meth:`query`, etc.) for a vector-based index
+        instead. See :class:`~pinecone.async_client.documents.AsyncDocuments`
+        for the full set of document operations. The namespace instance is
+        built and cached on first access.
 
         Returns:
             :class:`~pinecone.async_client.documents.AsyncDocuments` namespace instance.
@@ -221,7 +227,8 @@ class AsyncIndex:
         Raises:
             :exc:`PineconeValueError`: If namespace is not a string or is empty/whitespace,
                 records is empty, or a record is missing an identifier field.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -307,10 +314,10 @@ class AsyncIndex:
         If a vector with the same ID already exists in the namespace, it is
         overwritten.
 
-        One request is capped both on the number of vectors it carries and on
-        its encoded size, and with wide vectors or heavy metadata the size cap
-        is usually the one reached first. Pass ``batch_size`` to split a long
-        sequence into requests that stay under both.
+        Each request is capped on both vector count and encoded payload size;
+        wide vectors or large metadata tend to hit the size cap first. Pass
+        ``batch_size`` to split a long sequence of vectors into requests that
+        stay under both limits.
 
         Args:
             vectors: Sequence of vectors to upsert. Each element can be a
@@ -347,10 +354,23 @@ class AsyncIndex:
             :exc:`ApiError`: If one request exceeds the server's cap on vectors
                 per request or on encoded request size. Lower ``batch_size``
                 and retry.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g. authentication
+                failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
+
+        Notes:
+            When ``batch_size`` is set, batches are submitted **concurrently** via
+            an ``asyncio.Semaphore`` of ``max_concurrency`` slots (default 4, range
+            1–64). Per-batch HTTP retries are handled by the client's configured
+            ``RetryConfig`` (connection errors and retryable status codes).
+
+            **Partial failures do not raise.** When ``batch_size`` is set, per-batch
+            errors are captured on the returned :class:`UpsertResponse` (see
+            ``response.has_errors``, ``response.errors``, ``response.failed_items``).
+            To retry only the failures, pass ``response.failed_items`` back to
+            ``upsert(...)``.
 
         Examples:
 
@@ -378,16 +398,6 @@ class AsyncIndex:
                     show_progress=True,
                 )
                 print(response.upserted_count)
-
-        .. note::
-           When ``batch_size`` is set, batches are submitted **concurrently** via an
-           ``asyncio.Semaphore`` of ``max_concurrency`` slots (default 4, range 1–64).
-           Per-batch HTTP retries are handled by the client's configured
-           ``RetryConfig``. **Partial failures do not raise** — per-batch errors are
-           captured on the returned :class:`UpsertResponse` (see
-           ``response.has_errors``, ``response.errors``, ``response.failed_items``).
-           To retry only the failures, pass ``response.failed_items`` back to
-           ``upsert(...)``.
 
         .. seealso::
            - :meth:`upsert_records` — for indexes with integrated inference
@@ -493,8 +503,8 @@ class AsyncIndex:
     ) -> UpsertResponse:
         """Not supported for async clients.
 
-        This method is a known limitation of the async client. Instead, batch your data
-        and call upsert() in a loop. For very large datasets, use start_import() for
+        ``AsyncIndex`` has no pandas integration. Batch your data yourself and
+        call :meth:`upsert` in a loop instead, or use :meth:`start_import` for
         bulk loading from cloud storage.
 
         The *timeout* and *on_error* parameters exist only for signature parity
@@ -532,10 +542,11 @@ class AsyncIndex:
         """Query a namespace for the nearest neighbors of a vector.
 
         .. note::
-           Vector operations remain available for indexes created before 2026-07,
-           where you supply your own vectors. An index created at 2026-07 carries
-           a document schema instead, and its reads and writes go through the
-           document operations.
+           Use this method for vector-based indexes, where you supply your
+           own vectors. For indexes with integrated inference, use
+           :meth:`search`, which embeds text server-side. For schema-based
+           indexes, which store JSON records instead of raw vectors, use
+           :attr:`documents`.
 
         Args:
             top_k (int): Number of results to return, 1-10000.
@@ -546,7 +557,8 @@ class AsyncIndex:
             include_values (bool): Whether to include vector values in results.
             include_metadata (bool): Whether to include metadata in results.
             sparse_vector (SparseValues | dict[str, Any] | None): Sparse query vector
-                with indices and values.
+                with indices and values. Can be combined with *vector* for a
+                hybrid query on indexes that support both.
             scan_factor (float | None): Recall/latency trade for dedicated read
                 node (DRN) indexes — a multiplier on how much of the index is
                 scanned. Above 1 scans more and favours recall; below 1 scans
@@ -567,7 +579,8 @@ class AsyncIndex:
             :exc:`ApiError`: If ``scan_factor`` or ``max_candidates`` is out of
                 range, or the index is not a dense DRN index — both knobs are
                 rejected on on-demand indexes and on sparse indexes.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g. authentication
+                failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -649,7 +662,7 @@ class AsyncIndex:
     ) -> QueryNamespacesResults:
         """Query multiple namespaces concurrently and return merged top results.
 
-        Fans out individual ``query()`` calls across all given namespaces
+        Fans out individual :meth:`query` calls across all given namespaces
         using ``asyncio.gather``, then merges results via a heap-based
         aggregator that returns the overall top-k matches ranked by the
         specified metric.
@@ -680,9 +693,9 @@ class AsyncIndex:
             usage, and per-namespace usage.
 
         Raises:
-            :exc:`PineconeValueError`: If *namespaces* is empty, or if both
-                *vector* and *sparse_vector* are absent/empty.
-            :exc:`ValueError`: If *metric* is not a recognized value.
+            :exc:`PineconeValueError`: If *namespaces* is empty, if both
+                *vector* and *sparse_vector* are absent/empty, or if *metric*
+                is not one of ``"cosine"``, ``"euclidean"``, or ``"dotproduct"``.
             :exc:`ApiError`: If any individual namespace query fails.
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
@@ -801,6 +814,8 @@ class AsyncIndex:
             ids (list[str]): List of vector IDs to fetch. Must be non-empty, and
                 every ID must be 1-512 ASCII characters without a NUL.
             namespace (str): Namespace to fetch from. Defaults to the default namespace.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             :class:`FetchResponse` with a map of vector IDs to Vector objects, namespace,
@@ -810,7 +825,8 @@ class AsyncIndex:
         Raises:
             :exc:`PineconeValueError`: If ids is empty or contains an ID that is
                 not 1-512 ASCII characters without a NUL.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g. authentication
+                failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -851,13 +867,16 @@ class AsyncIndex:
         pagination support.
 
         Args:
-            filter: Metadata filter expression (required, at least one condition).
-            namespace: Namespace to fetch from. Defaults to the default
+            filter (dict[str, Any]): Metadata filter expression. Must carry at
+                least one condition.
+            namespace (str): Namespace to fetch from. Defaults to the default
                 namespace.
-            limit: Maximum number of vectors to return per page, 1-10000.
-                Omit to let the server choose the page size.
-            pagination_token: Token from a previous response to fetch the
-                next page. When ``None``, fetches the first page.
+            limit (int | None): Maximum number of vectors to return per page,
+                1-10000. Omit to let the server choose the page size.
+            pagination_token (str | None): Token from a previous response to
+                fetch the next page. When ``None``, fetches the first page.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             :class:`FetchByMetadataResponse` with matched vectors, namespace, usage,
@@ -868,14 +887,17 @@ class AsyncIndex:
                 outside 1-10000.
             :exc:`ApiError`: If the API returns an error response (e.g. authentication
                 failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
 
             .. code-block:: python
 
                 response = await idx.fetch_by_metadata(
-                    filter={"genre": {"$eq": "comedy"}},
-                    namespace="movies",
+                    filter={"genre": "comedy", "year": {"$gte": 2020}},
+                    namespace="movies-en",
                 )
                 for vid, vec in response.vectors.items():
                     print(vid, vec.values)
@@ -884,8 +906,8 @@ class AsyncIndex:
                 token = response.pagination.next if response.pagination else None
                 while token:
                     response = await idx.fetch_by_metadata(
-                        filter={"genre": {"$eq": "comedy"}},
-                        namespace="movies",
+                        filter={"genre": "comedy", "year": {"$gte": 2020}},
+                        namespace="movies-en",
                         pagination_token=token,
                     )
                     token = response.pagination.next if response.pagination else None
@@ -945,6 +967,8 @@ class AsyncIndex:
             filter (dict[str, Any] | None): Metadata filter expression selecting vectors
                 to delete. Must carry at least one condition.
             namespace (str): Namespace to delete from. Defaults to the default namespace.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             None — a successful delete returns no payload.
@@ -954,7 +978,8 @@ class AsyncIndex:
                 specified, if ``filter`` is empty, or if an ID is not legal.
             :exc:`ApiError`: If a by-filter delete uses a text-match operator, or
                 the index is a dedicated index scaled to zero replicas.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g. authentication
+                failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1003,6 +1028,9 @@ class AsyncIndex:
     ) -> UpdateResponse:
         """Update vectors by ID or metadata filter.
 
+        Updates a single vector's dense values, sparse values, or metadata by
+        identifier, or bulk-updates metadata on all vectors matching a filter.
+
         Exactly one of ``id`` or ``filter`` must be specified. A by-filter update
         is metadata-only — it spans every record the filter matches, so it cannot
         carry ``values`` or ``sparse_values``, which belong to one record.
@@ -1021,14 +1049,17 @@ class AsyncIndex:
             id (str | None): ID of the vector to update. Must be 1-512 ASCII
                 characters without a NUL.
             values (list[float] | None): New dense vector values. Only with ``id``.
-            sparse_values (SparseValues | dict[str, Any] | None): New sparse vector.
-                Only with ``id``.
+            sparse_values (SparseValues | dict[str, Any] | None): New sparse vector with ``indices``
+                and ``values`` keys. Only with ``id``.
             set_metadata (dict[str, Any] | None): Metadata fields to set or overwrite.
             namespace (str): Namespace to target. Defaults to the default namespace.
             filter (dict[str, Any] | None): Metadata filter expression selecting vectors
                 to update. Must carry at least one condition.
             dry_run (bool): If True, return the count of records that would be
-                affected without applying changes.
+                affected without applying changes. Only applies to filter-based
+                updates.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             :class:`UpdateResponse` with matched_records count (when available).
@@ -1039,7 +1070,8 @@ class AsyncIndex:
                 ``sparse_values``, or if ``filter`` is empty.
             :exc:`ApiError`: If a by-filter update uses a text-match operator, or
                 the index is a dedicated index scaled to zero replicas.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g. authentication
+                failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1049,7 +1081,7 @@ class AsyncIndex:
             .. code-block:: python
 
                 # Update by ID
-                # truncated values; use your actual dimension
+                # truncated; use your actual dimension
                 await idx.update(id="article-101", values=[0.012, -0.087, 0.153])
 
                 # Bulk-update metadata by filter
@@ -1110,6 +1142,11 @@ class AsyncIndex:
         Searches a namespace using integrated inference (text inputs embedded
         server-side), a raw vector, or an existing record ID as the query.
 
+        .. note::
+           Use this method for indexes with integrated inference. For
+           vector-based indexes, where you supply your own vectors, use
+           :meth:`query`.
+
         Args:
             namespace (str): Namespace to search in (required).
             top_k (int): Number of results to return (must be >= 1).
@@ -1141,6 +1178,8 @@ class AsyncIndex:
             query (dict[str, Any] | None): Legacy query body containing
                 ``top_k`` plus one of ``inputs``, ``vector``, or ``id``. Prefer
                 passing these fields directly.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             :class:`SearchRecordsResponse` with hits and usage statistics.
@@ -1148,7 +1187,8 @@ class AsyncIndex:
         Raises:
             :exc:`PineconeValueError`: If ``namespace`` is not a string, ``top_k < 1``,
                 or ``rerank`` is missing required keys.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g. authentication
+                failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1164,6 +1204,24 @@ class AsyncIndex:
                 )
                 for hit in response.result.hits:
                     print(hit.id, hit.score)
+
+                response = await idx.search(
+                    namespace="articles-en",
+                    top_k=10,
+                    inputs={"text": "benefits of vector databases"},
+                    rerank={
+                        "model": "bge-reranker-v2-m3",
+                        "rank_fields": ["text"],
+                        "top_n": 5,
+                    },
+                )
+                for hit in response.result.hits:
+                    print(hit.id, hit.score)
+
+        .. note::
+           Use inline ``rerank`` when searching and reranking in a single call.
+           Use ``pc.inference.rerank()`` when reranking results from a different
+           source or when you need to rerank without searching.
         """
         if not isinstance(namespace, str):
             raise ValidationError("namespace must be a string")
@@ -1239,6 +1297,8 @@ class AsyncIndex:
             limit (int | None): Maximum number of IDs to return in this page, 1-100.
             pagination_token (str | None): Token from a previous response to fetch the next page.
             namespace (str): Namespace to list from. Defaults to the default namespace.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             :class:`ListResponse` with vector IDs, pagination info, namespace, and usage.
@@ -1246,7 +1306,11 @@ class AsyncIndex:
         Raises:
             :exc:`PineconeValueError`: If ``prefix`` is not legal or ``limit``
                 falls outside 1-100.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g. authentication
+                failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
 
@@ -1293,9 +1357,21 @@ class AsyncIndex:
                 512 ASCII characters without a NUL; the empty prefix matches everything.
             limit (int | None): Maximum number of IDs to return per page, 1-100.
             namespace (str): Namespace to list from. Defaults to the default namespace.
+            timeout (float | None): Per-request timeout in seconds, applied to
+                each underlying page request. Overrides the client-level
+                default for this call only.
 
         Yields:
             :class:`ListResponse` for each page of results.
+
+        Raises:
+            :exc:`PineconeValueError`: If ``prefix`` is not legal or ``limit``
+                falls outside 1-100.
+            :exc:`ApiError`: If the API returns an error response (e.g. authentication
+                failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
 
@@ -1338,13 +1414,16 @@ class AsyncIndex:
                 every index type, so the call fails instead of returning
                 filtered counts. Leave it unset: the statistics returned always
                 describe the whole index.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             :class:`DescribeIndexStatsResponse` with namespace summaries, dimension,
             total vector count, and fullness metrics.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g. authentication
+                failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1395,10 +1474,11 @@ class AsyncIndex:
             schema, indexed fields, and ``size_bytes``.
 
         Raises:
-            :exc:`ValidationError`: If *name* violates the rules above, or *schema*
+            :exc:`PineconeValueError`: If *name* violates the rules above, or *schema*
                 is malformed. Raised before any HTTP request is made.
-            :exc:`ConflictError`: 409 — a namespace of that name already exists.
-            :exc:`ApiError`: If the API returns any other error response.
+            :exc:`ConflictError`: a namespace of that name already exists.
+            :exc:`ApiError`: If the API returns any other error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1453,12 +1533,13 @@ class AsyncIndex:
             value.
 
         Raises:
-            :exc:`ValidationError`: If *name* violates the rules above. Raised
+            :exc:`PineconeValueError`: If *name* violates the rules above. Raised
                 before any HTTP request is made.
-            :exc:`NotFoundError`: 404 — no namespace of that name exists on the index.
-            :exc:`RateLimitError`: 429 — this operation's per-index limit was
+            :exc:`NotFoundError`: no namespace of that name exists on the index.
+            :exc:`RateLimitError`: this operation's per-index limit was
                 exceeded. Use :meth:`list_namespaces` to describe many namespaces.
-            :exc:`ApiError`: If the API returns any other error response.
+            :exc:`ApiError`: If the API returns any other error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1500,15 +1581,18 @@ class AsyncIndex:
         Args:
             name (str): Name of the namespace to delete. Must be ASCII, must not
                 contain the NUL character, and must be 1-512 characters long.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             None — a successful delete returns no payload.
 
         Raises:
-            :exc:`ValidationError`: If *name* violates the rules above. Raised
+            :exc:`PineconeValueError`: If *name* violates the rules above. Raised
                 before any HTTP request is made.
-            :exc:`NotFoundError`: 404 — no namespace of that name exists on the index.
-            :exc:`ApiError`: If the API returns any other error response.
+            :exc:`NotFoundError`: no namespace of that name exists on the index.
+            :exc:`ApiError`: If the API returns any other error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1517,7 +1601,7 @@ class AsyncIndex:
 
             .. code-block:: python
 
-                await idx.delete_namespace(name="old-data")
+                await idx.delete_namespace(name="movies-deprecated")
         """
         legacy_namespace: str | None = kwargs.pop("namespace", None)
         if kwargs:
@@ -1554,9 +1638,13 @@ class AsyncIndex:
             and total count. Each description carries ``size_bytes``.
 
         Raises:
-            :exc:`ValidationError`: If *prefix* or *limit* violates the rules above.
-                Raised before any HTTP request is made.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeValueError`: If *prefix* or *limit* violates the rules
+                above. Raised before any HTTP request is made.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
 
@@ -1607,9 +1695,13 @@ class AsyncIndex:
             :class:`NamespaceDescription` carries ``size_bytes``.
 
         Raises:
-            :exc:`ValidationError`: If *prefix* or *limit* violates the rules above.
-                Raised on first iteration, before any HTTP request is made.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeValueError`: If *prefix* or *limit* violates the rules
+                above. Raised on first iteration, before any HTTP request is made.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
 
@@ -1697,7 +1789,8 @@ class AsyncIndex:
                 accepts, uses an unsupported scheme, is an ``s3://`` URI on an
                 index not hosted on AWS, or names an S3 directory bucket, which
                 imports do not support.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1731,6 +1824,8 @@ class AsyncIndex:
              batches (single request per call).
            - :meth:`upsert_records` — for indexes with integrated inference
              (text in, server-side embedding).
+           - :meth:`upsert_from_dataframe` — for loading vectors from a
+             pandas DataFrame with automatic batching.
         """
         if error_mode is not None:
             error_mode = error_mode.lower()
@@ -1760,7 +1855,8 @@ class AsyncIndex:
 
         Raises:
             :exc:`PineconeValueError`: If the ID is empty or exceeds 1000 characters.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1788,7 +1884,8 @@ class AsyncIndex:
 
         Raises:
             :exc:`PineconeValueError`: If the ID is empty or exceeds 1000 characters.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1824,7 +1921,11 @@ class AsyncIndex:
             :class:`ImportModel` for each import operation.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
 
@@ -1869,7 +1970,11 @@ class AsyncIndex:
             :class:`ImportList` with the import operations for the requested page.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
 
@@ -1889,13 +1994,44 @@ class AsyncIndex:
         return self._imports_adapter.to_import_list(response.content)
 
     async def close(self) -> None:
-        """Close the underlying HTTP client and release resources."""
+        """Close the underlying HTTP client and release its resources.
+
+        Call this when you are done making requests through this index, or
+        use the index as an async context manager so it closes automatically.
+
+        Returns:
+            None.
+
+        Examples:
+            .. code-block:: python
+
+                idx = await pc.index(name="articles-en")
+                async with idx:
+                    await idx.upsert(namespace="articles-en", vectors=[...])
+        """
         await self._http.close()
 
     async def __aenter__(self) -> AsyncIndex:
+        """Enter the async context manager, returning this index.
+
+        Returns:
+            This :class:`AsyncIndex` instance.
+
+        Examples:
+            .. code-block:: python
+
+                idx = await pc.index(name="articles-en")
+                async with idx:
+                    await idx.upsert(namespace="articles-en", vectors=[...])
+        """
         return self
 
     async def __aexit__(self, *args: Any) -> None:
+        """Exit the async context manager, calling :meth:`close`.
+
+        Returns:
+            None.
+        """
         await self.close()
 
     def __repr__(self) -> str:

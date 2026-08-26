@@ -32,6 +32,38 @@ class PineconeGRPC(Pinecone):
     """
 
     def Index(self, name: str = "", host: str = "", **kwargs: Any) -> GrpcIndex:  # noqa: N802
+        """Return a :class:`GrpcIndex` for a data plane connection.
+
+        Legacy equivalent of ``pc.index(name=name, host=host, grpc=True)``,
+        kept for callers using the ``PineconeGRPC().Index(...)`` constructor
+        style.
+
+        Args:
+            name (str): Name of the index to connect to. The host is
+                resolved via the control plane. Omit if ``host`` is given.
+            host (str): Data plane host URL for the index, e.g. as returned
+                by ``describe_index``. Skips the control-plane lookup. Omit
+                if ``name`` is given.
+            **kwargs: Accepted for compatibility with the REST ``Index()``
+                signature. ``pool_threads`` is silently ignored; any other
+                keyword argument raises ``TypeError``.
+
+        Returns:
+            :class:`GrpcIndex` connected to the resolved host.
+
+        Raises:
+            :exc:`PineconeValueError`: If neither ``name`` nor ``host`` is given.
+            :exc:`TypeError`: If an unsupported keyword argument is passed.
+
+        Examples:
+
+            .. code-block:: python
+
+                from pinecone.grpc import PineconeGRPC
+
+                pc = PineconeGRPC(api_key="YOUR_API_KEY")
+                idx = pc.Index(host="article-search-abc123.svc.pinecone.io")
+        """
         if not name and not host:
             raise PineconeValueError("Either name or host must be specified")
         kwargs.pop("pool_threads", None)
