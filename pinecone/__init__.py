@@ -444,7 +444,7 @@ __all__ = [
     "PineconeApiKeyError",
     "PineconeApiTypeError",
     "PineconeApiValueError",
-    "PineconeAsyncio",
+    "PineconeAsyncio",  # legacy alias for AsyncPinecone
     "PineconeConfig",
     "PineconeConfigurationError",
     "PineconeConnectionError",
@@ -937,6 +937,14 @@ def _removed_function_message(name: str) -> str:
 
 
 def __getattr__(name: str) -> Any:
+    """Lazily resolve top-level names on first access.
+
+    Most names are imported from their defining submodule the first time
+    they're accessed; this is also how the legacy name ``PineconeAsyncio``
+    resolves to :class:`AsyncPinecone`. ``ValidationError`` is a legacy
+    alias for :class:`PineconeValueError`; accessing it emits a
+    :class:`DeprecationWarning`.
+    """
     if name == "ValidationError":
         import warnings
 

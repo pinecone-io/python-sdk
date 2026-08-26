@@ -1,9 +1,9 @@
-"""Backcompat shim that restores legacy ``async_req=True`` semantics on
-a per-instance opt-in basis.
+"""Backcompat shim providing the legacy ``async_req=True`` execution model
+as a per-instance opt-in on top of the canonical methods.
 
 Importing this module does **not** import ``multiprocessing``. The
 ``multiprocessing.pool.ThreadPool`` import is deferred to first use
-inside :meth:`_LegacyAsyncPool._ensure_pool`.
+inside :meth:`_LegacyAsyncPool.submit`.
 
 :meta private:
 """
