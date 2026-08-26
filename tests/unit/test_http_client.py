@@ -562,6 +562,23 @@ class TestHTTPClientTransportErrors:
             with pytest.raises(PineconeTimeoutError):
                 client.delete("/v")
 
+    def test_empty_timeout_message_falls_back_to_fault_name(self) -> None:
+        client = _make_sync_client()
+        with respx.mock:
+            respx.get(f"{BASE_URL}/indexes").mock(side_effect=httpx.ConnectTimeout(""))
+            with pytest.raises(PineconeTimeoutError) as exc_info:
+                client.get("/indexes")
+            assert str(exc_info.value) == "Request timed out (ConnectTimeout)"
+            assert isinstance(exc_info.value.__cause__, httpx.ConnectTimeout)
+
+    def test_empty_connect_error_message_falls_back_to_fault_name(self) -> None:
+        client = _make_sync_client()
+        with respx.mock:
+            respx.get(f"{BASE_URL}/indexes").mock(side_effect=httpx.ConnectError(""))
+            with pytest.raises(PineconeConnectionError) as exc_info:
+                client.get("/indexes")
+            assert str(exc_info.value) == "Connection failed (ConnectError)"
+
     def test_transport_error_during_stream_is_wrapped(self) -> None:
         client = _make_sync_client()
         with respx.mock:
@@ -686,6 +703,26 @@ class TestAsyncHTTPClientTransportErrors:
             respx.delete(f"{BASE_URL}/v").mock(side_effect=httpx.ConnectError("connection reset"))
             with pytest.raises(PineconeConnectionError):
                 await client.delete("/v")
+
+    @pytest.mark.asyncio
+    async def test_empty_timeout_message_falls_back_to_fault_name(self) -> None:
+        """The async transport reports timeouts with no message of their own."""
+        client = _make_async_client()
+        with respx.mock:
+            respx.get(f"{BASE_URL}/indexes").mock(side_effect=httpx.ReadTimeout(""))
+            with pytest.raises(PineconeTimeoutError) as exc_info:
+                await client.get("/indexes")
+            assert str(exc_info.value) == "Request timed out (ReadTimeout)"
+            assert isinstance(exc_info.value.__cause__, httpx.ReadTimeout)
+
+    @pytest.mark.asyncio
+    async def test_empty_connect_error_message_falls_back_to_fault_name(self) -> None:
+        client = _make_async_client()
+        with respx.mock:
+            respx.post(f"{BASE_URL}/v").mock(side_effect=httpx.ConnectError(""))
+            with pytest.raises(PineconeConnectionError) as exc_info:
+                await client.post("/v", json={"x": 1})
+            assert str(exc_info.value) == "Connection failed (ConnectError)"
 
     @pytest.mark.asyncio
     async def test_async_transport_error_during_stream_is_wrapped(self) -> None:

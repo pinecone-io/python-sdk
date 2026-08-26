@@ -13,7 +13,7 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Generator
-from typing import Any
+from typing import Any, NoReturn
 from urllib.parse import urlsplit
 
 import httpx
@@ -579,6 +579,21 @@ def _raise_for_status(response: httpx.Response) -> None:
     )
 
 
+def _raise_transport_error(exc: httpx.TransportError) -> NoReturn:
+    """Translate an httpx transport failure into the SDK's error type.
+
+    The async transport reports timeouts with an empty message
+    (``ReadTimeout('')``) where the sync transport says ``'timed out'``, so
+    fall back to naming the httpx fault rather than raising an error whose
+    ``str()`` is empty.
+    """
+    if isinstance(exc, httpx.TimeoutException):
+        message = str(exc) or f"Request timed out ({type(exc).__name__})"
+        raise PineconeTimeoutError(message) from exc
+    message = str(exc) or f"Connection failed ({type(exc).__name__})"
+    raise PineconeConnectionError(message) from exc
+
+
 class HTTPClient:
     """Synchronous HTTP client wrapping httpx."""
 
@@ -659,10 +674,8 @@ class HTTPClient:
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = self._client.get(path, timeout=effective_timeout, **kwargs)
-        except httpx.TimeoutException as exc:
-            raise PineconeTimeoutError(str(exc)) from exc
         except httpx.TransportError as exc:
-            raise PineconeConnectionError(str(exc)) from exc
+            _raise_transport_error(exc)
         _raise_for_status(response)
         _release_response_refs(response)
         return response
@@ -722,10 +735,8 @@ class HTTPClient:
                 except BaseException:
                     response.close()
                     raise
-            except httpx.TimeoutException as exc:
-                raise PineconeTimeoutError(str(exc)) from exc
             except httpx.TransportError as exc:
-                raise PineconeConnectionError(str(exc)) from exc
+                _raise_transport_error(exc)
             _raise_for_status(response)
             _release_response_refs(response)
             return response
@@ -745,10 +756,8 @@ class HTTPClient:
             except BaseException:
                 response.close()
                 raise
-        except httpx.TimeoutException as exc:
-            raise PineconeTimeoutError(str(exc)) from exc
         except httpx.TransportError as exc:
-            raise PineconeConnectionError(str(exc)) from exc
+            _raise_transport_error(exc)
         _raise_for_status(response)
         _release_response_refs(response)
         return response
@@ -763,10 +772,8 @@ class HTTPClient:
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = self._client.put(path, timeout=effective_timeout, **kwargs)
-        except httpx.TimeoutException as exc:
-            raise PineconeTimeoutError(str(exc)) from exc
         except httpx.TransportError as exc:
-            raise PineconeConnectionError(str(exc)) from exc
+            _raise_transport_error(exc)
         _raise_for_status(response)
         _release_response_refs(response)
         return response
@@ -781,10 +788,8 @@ class HTTPClient:
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = self._client.patch(path, timeout=effective_timeout, **kwargs)
-        except httpx.TimeoutException as exc:
-            raise PineconeTimeoutError(str(exc)) from exc
         except httpx.TransportError as exc:
-            raise PineconeConnectionError(str(exc)) from exc
+            _raise_transport_error(exc)
         _raise_for_status(response)
         _release_response_refs(response)
         return response
@@ -796,10 +801,8 @@ class HTTPClient:
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = self._client.delete(path, timeout=effective_timeout, **kwargs)
-        except httpx.TimeoutException as exc:
-            raise PineconeTimeoutError(str(exc)) from exc
         except httpx.TransportError as exc:
-            raise PineconeConnectionError(str(exc)) from exc
+            _raise_transport_error(exc)
         _raise_for_status(response)
         _release_response_refs(response)
         return response
@@ -836,10 +839,8 @@ class HTTPClient:
                     response.read()
                 _raise_for_status(response)
                 yield response
-        except httpx.TimeoutException as exc:
-            raise PineconeTimeoutError(str(exc)) from exc
         except httpx.TransportError as exc:
-            raise PineconeConnectionError(str(exc)) from exc
+            _raise_transport_error(exc)
 
     def close(self) -> None:
         self._client.close()
@@ -902,10 +903,8 @@ class AsyncHTTPClient:
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = await self._ensure_client().get(path, timeout=effective_timeout, **kwargs)
-        except httpx.TimeoutException as exc:
-            raise PineconeTimeoutError(str(exc)) from exc
         except httpx.TransportError as exc:
-            raise PineconeConnectionError(str(exc)) from exc
+            _raise_transport_error(exc)
         _raise_for_status(response)
         _release_response_refs(response)
         return response
@@ -918,10 +917,8 @@ class AsyncHTTPClient:
             response = await self._ensure_client().post(
                 path, timeout=effective_timeout, **_prepare_json_kwargs(kwargs)
             )
-        except httpx.TimeoutException as exc:
-            raise PineconeTimeoutError(str(exc)) from exc
         except httpx.TransportError as exc:
-            raise PineconeConnectionError(str(exc)) from exc
+            _raise_transport_error(exc)
         _raise_for_status(response)
         _release_response_refs(response)
         return response
@@ -934,10 +931,8 @@ class AsyncHTTPClient:
             response = await self._ensure_client().put(
                 path, timeout=effective_timeout, **_prepare_json_kwargs(kwargs)
             )
-        except httpx.TimeoutException as exc:
-            raise PineconeTimeoutError(str(exc)) from exc
         except httpx.TransportError as exc:
-            raise PineconeConnectionError(str(exc)) from exc
+            _raise_transport_error(exc)
         _raise_for_status(response)
         _release_response_refs(response)
         return response
@@ -950,10 +945,8 @@ class AsyncHTTPClient:
             response = await self._ensure_client().patch(
                 path, timeout=effective_timeout, **_prepare_json_kwargs(kwargs)
             )
-        except httpx.TimeoutException as exc:
-            raise PineconeTimeoutError(str(exc)) from exc
         except httpx.TransportError as exc:
-            raise PineconeConnectionError(str(exc)) from exc
+            _raise_transport_error(exc)
         _raise_for_status(response)
         _release_response_refs(response)
         return response
@@ -964,10 +957,8 @@ class AsyncHTTPClient:
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = await self._ensure_client().delete(path, timeout=effective_timeout, **kwargs)
-        except httpx.TimeoutException as exc:
-            raise PineconeTimeoutError(str(exc)) from exc
         except httpx.TransportError as exc:
-            raise PineconeConnectionError(str(exc)) from exc
+            _raise_transport_error(exc)
         _raise_for_status(response)
         _release_response_refs(response)
         return response
@@ -1004,10 +995,8 @@ class AsyncHTTPClient:
                     await response.aread()
                 _raise_for_status(response)
                 yield response
-        except httpx.TimeoutException as exc:
-            raise PineconeTimeoutError(str(exc)) from exc
         except httpx.TransportError as exc:
-            raise PineconeConnectionError(str(exc)) from exc
+            _raise_transport_error(exc)
 
     async def close(self) -> None:
         if self._client is not None:
