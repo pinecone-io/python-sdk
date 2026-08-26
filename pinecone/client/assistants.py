@@ -213,7 +213,11 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         return model
 
     def close(self) -> None:
-        """Close the underlying HTTP client and any cached data-plane clients."""
+        """Release the HTTP connections held by this namespace.
+
+        Call this when you're done using ``pc.assistants`` to free pooled
+        connections, including any opened for individual assistants.
+        """
         self._http.close()
         self._eval_http.close()
         for client in self._data_plane_clients.values():
@@ -308,13 +312,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         """Upload a file to a Pinecone assistant.
 
         Uploads a file from a local path or an in-memory byte stream, then
-        polls until server-side processing completes.
-
-        On ``2026-07`` both the upload (``POST /files/{name}``) and the
-        upsert (``PUT /files/{name}/{file_id}``) answer ``202`` with an
-        operation envelope rather than the file. The handshake — read the
-        operation, resolve the file id, poll the operation, then describe the
-        file — happens inside this method, so the return type is unchanged.
+        waits until processing finishes before returning.
 
         Args:
             assistant_name: Name of the target assistant.
@@ -323,24 +321,17 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             file_stream: An open byte stream to upload. Mutually exclusive
                 with *file_path*. Requires *file_name*.
             file_name: Filename to associate with *file_stream*. Required
-                when *file_stream* is used and must carry a file extension
-                (``.txt``, ``.pdf``, ``.json``, ``.md``, ``.docx``): the
-                server types an uploaded file by its extension alone and
-                never inspects the bytes. Ignored when *file_path* is
-                provided, since the basename supplies the extension.
-            metadata: Optional metadata dictionary, at most 16KB once
-                JSON-encoded. Sent as a ``metadata`` multipart form field —
-                on ``2026-07`` the metadata query parameter is rejected.
-                Values must be a string, number, boolean, or list of strings:
-                a nested object is rejected with a 400, as is any key starting
-                with ``$`` (reserved for filter operators). Not validated
-                client-side.
+                when *file_stream* is used, and must include a supported
+                extension (``.txt``, ``.pdf``, ``.json``, ``.md``, or
+                ``.docx``), since the extension determines how the file is
+                processed. Ignored when *file_path* is given, since its
+                basename already supplies the extension.
+            metadata: Optional metadata to attach to the file, e.g.
+                ``{"department": "research"}``. At most 16 KB once encoded.
             multimodal: Whether to enable multimodal processing for PDFs.
-                Sent as a ``multimodal`` query parameter.
-            file_id: Optional caller-specified file identifier. When given,
-                the file is upserted with ``PUT /files/{name}/{file_id}``,
-                replacing any existing file with that identifier. Must be
-                1-128 characters of ``[A-Za-z0-9_-]``.
+            file_id: Optional identifier for the uploaded file. When given,
+                any existing file with that id is replaced. Otherwise the
+                server assigns one.
             timeout: Seconds to wait for processing to complete. ``None``
                 (default) polls indefinitely. Use ``-1`` to return
                 immediately after upload with one describe call. Raises
@@ -348,7 +339,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
                 before the deadline.
 
         Returns:
-            :class:`AssistantFileModel` fetched fresh from the API after
+            :class:`AssistantFileModel` describing the uploaded file, once
             processing completes.
 
         Raises:
@@ -358,8 +349,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
                 carrying a file extension.
             :exc:`PineconeTimeoutError`: If processing does not complete
                 before *timeout*.
-            :exc:`PineconeError`: If server-side processing fails, or if the
-                accepted upload does not identify the file it created.
+            :exc:`PineconeError`: If processing fails.
 
         Examples:
             >>> file = pc.assistants.upload_file(
@@ -474,9 +464,9 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             :exc:`ApiError`: If the API returns an error response.
 
         Note:
-            This applies no age filter, unlike :meth:`list_files`: a
+            Unlike :meth:`list_files`, this applies no age filter: a
             ``"ProcessingFailed"`` file whose ``created_on`` is more than 7
-            days old is still returned here after it has dropped out of the
+            days old is still returned here after it has dropped out of that
             listing.
 
         Examples:
@@ -523,9 +513,8 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             :exc:`ApiError`: If the API returns an error response.
 
         Note:
-            Files that failed processing age out of this listing: the backend
-            excludes any ``"ProcessingFailed"`` file whose ``created_on`` is
-            more than 7 days old. Such a file is not gone — it stays
+            A ``"ProcessingFailed"`` file drops out of this listing once its
+            ``created_on`` is more than 7 days old. It is not gone — it stays
             retrievable by id through :meth:`describe_file`.
 
         Examples:
@@ -564,13 +553,11 @@ class Assistants(AssistantsLegacyNamespaceMixin):
 
         Args:
             assistant_name: Name of the assistant whose files to list.
-            page_size: Maximum number of files per page, sent as the
-                ``limit`` query parameter. The backend accepts 1-100 (the
-                ceiling is server config rather than a fixed constant) and
-                defaults to 50. ``0`` and an over-large value are rejected
-                with the *same* 400, whose message carries a stray double
-                space: ``"File limit exceeds maximum allowed for list files
-                request.  max: 100"``.
+            page_size: Maximum number of files in this page, sent as the
+                ``limit`` query parameter. Only sent when explicitly
+                provided; omitted, the API chooses the page size. A value
+                outside the range the API accepts comes back as an
+                :exc:`ApiError` naming the bound it broke.
             pagination_token: Token from a previous response to fetch the
                 next page.
             filter: Optional metadata filter expression. Serialized to a JSON
@@ -641,12 +628,9 @@ class Assistants(AssistantsLegacyNamespaceMixin):
     ) -> None:
         """Delete a file from a Pinecone assistant.
 
-        On ``2026-07`` deletion is genuinely asynchronous. The API answers
-        either ``202`` with an operation envelope — deletion is pending, and
-        this method polls that operation every 5 seconds until it finishes —
-        or ``204`` with no body, which the backend uses for a file it could
-        remove at once (one that previously failed processing, or was already
-        being deleted). Both are success; only the ``202`` case polls.
+        Deletion can finish immediately or run as a pending operation,
+        depending on the file's state. When it is pending, this method polls
+        until it finishes, unless you pass ``timeout=-1``.
 
         Args:
             assistant_name: Name of the assistant that owns the file.
@@ -663,8 +647,8 @@ class Assistants(AssistantsLegacyNamespaceMixin):
 
         Raises:
             :exc:`NotFoundError`: If *file_id* does not name a file on this
-                assistant. A delete is not idempotent in that sense: deleting
-                an id that is already gone raises rather than returning.
+                assistant. Deleting an id that is already gone raises rather
+                than returning silently.
             :exc:`PineconeError`: If the deletion operation reports failure.
             :exc:`PineconeTimeoutError`: If the deletion has not finished
                 after *timeout* seconds.
@@ -709,17 +693,16 @@ class Assistants(AssistantsLegacyNamespaceMixin):
     ) -> OperationModel:
         """Get the current status of a long-running assistant operation.
 
-        The file write endpoints — :meth:`upload_file` and :meth:`delete_file` —
-        answer ``202`` with an operation id and finish server-side. Those
-        methods poll for you, so reach for this one when you asked them *not*
-        to: ``timeout=-1`` returns as soon as the request is accepted, and this
-        is how you follow what it started. It is also how you find the file a
-        fire-and-forget upload created, via :attr:`OperationModel.file_id`.
+        :meth:`upload_file` and :meth:`delete_file` poll their own operation
+        for you by default. Reach for this method when you called one of
+        them with ``timeout=-1`` and want to check on it later — for
+        example, to find the file a fire-and-forget upload created, via
+        :attr:`OperationModel.file_id`.
 
         Args:
             assistant_name: Name of the assistant that owns the operation.
-            operation_id: Identifier of the operation to describe, as returned
-                in the ``operation_id`` of a 202 envelope or by
+            operation_id: Identifier of the operation to describe, as
+                returned by :meth:`upload_file`, :meth:`delete_file`, or
                 :meth:`list_operations`.
 
         Returns:
@@ -903,40 +886,28 @@ class Assistants(AssistantsLegacyNamespaceMixin):
     ) -> AssistantModel:
         """Create a new Pinecone assistant.
 
-        Creates an assistant and optionally polls until it reaches ``"Ready"``
-        status. The assistant starts in ``"Initializing"`` status.
+        A Pinecone assistant is a managed conversational AI service that
+        answers questions grounded in documents you upload to it. This method
+        creates the assistant and, by default, waits until it reaches
+        ``"Ready"`` status before returning.
 
         Args:
-            name (str): Name for the new assistant. The backend accepts 1-63
-                *bytes* drawn from ``[A-Za-z0-9-]``, starting and ending with
-                an alphanumeric character — uppercase is allowed, even though
-                the 2026-07 OAS documents lowercase only. A violation comes
-                back as 400 ``"Invalid assistant name"``. Not validated
-                client-side.
-            instructions (str | None): Optional directive for the assistant to
-                apply to all responses. Maximum 16 KB.
-            metadata (dict[str, Any] | None): Optional metadata dictionary.
-                When omitted or ``None``, no metadata is sent and the assistant
-                is created without metadata (``None``).
-            region (str): Region to deploy the assistant in. Must be ``"us"``
-                or ``"eu"`` (case-sensitive). Defaults to ``"us"``. ``"eu"`` is
-                gated twice, and each gate is a 400 rather than a 403: on a
-                Free plan (``"Cannot specify region as EU for free tier"``),
-                and on a deployment whose default environment is not a
-                production one (``"Cannot specify region as EU in this
-                environment"``).
-            environment (str | None): Optional environment override. Restricted
-                to Pinecone-internal org plans; passing this on a non-internal
-                plan raises a 403 error from the backend. Silently discarded
-                when the effective region is ``"eu"``: the backend derives the
-                environment from the region in that case and ignores the value
-                you passed.
+            name (str): Name for the new assistant, e.g. ``"docs-assistant"``.
+                Must be unique within the project.
+            instructions (str | None): Guidance the assistant applies to every
+                response, e.g. ``"Always cite the source document."``. Maximum
+                16 KB.
+            metadata (dict[str, Any] | None): Optional metadata to attach to
+                the assistant, e.g. ``{"team": "docs"}``.
+            region (str): Region to deploy the assistant in, ``"us"`` or
+                ``"eu"``. Defaults to ``"us"``. EU availability depends on your
+                plan.
+            environment (str | None): Advanced override for select internal
+                Pinecone deployments. Most users should leave this unset.
             timeout (float | None): Seconds to wait for the assistant to become
-                ready. Use ``None`` (default) to poll indefinitely. Use ``-1``
-                to return immediately without polling. Use ``0`` or a positive
-                value to poll with a deadline. Raises
-                :exc:`PineconeTimeoutError` if the assistant is not ready
-                before the deadline.
+                ready. Use ``None`` (default) to poll indefinitely, ``-1`` to
+                return immediately without polling, or a non-negative value to
+                poll with a deadline.
 
         Returns:
             :class:`AssistantModel` describing the created assistant.
@@ -945,10 +916,8 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             :exc:`PineconeValueError`: If *region* is not ``"us"`` or ``"eu"``.
             :exc:`PineconeTimeoutError`: If the assistant does not become ready
                 before the deadline.
-            :exc:`ApiError`: If the API returns an error response. Exhausting
-                the per-project assistant allowance is a 429, not a 403: the
-                backend answers ``RESOURCE_EXHAUSTED`` with a message naming
-                your plan's limit, your current count, and an upgrade link.
+            :exc:`ApiError`: If the API returns an error response, such as
+                reaching your project's assistant limit.
 
         Examples:
             >>> from pinecone import Pinecone
@@ -1019,8 +988,8 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             metadata, instructions, and host.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response (e.g. 404
-                when the assistant does not exist).
+            :exc:`NotFoundError`: If the assistant does not exist.
+            :exc:`ApiError`: If the API returns another error response.
 
         Examples:
             >>> assistant = pc.assistants.describe(name="my-assistant")
@@ -1062,7 +1031,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         limit: int | None = None,
         pagination_token: str | None = None,
     ) -> Paginator[AssistantModel]:
-        """List assistants in the project with transparent lazy pagination.
+        """List assistants in the project with lazy pagination.
 
         Args:
             limit (int | None): Maximum number of assistants to yield across
@@ -1197,8 +1166,8 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         Raises:
             :exc:`PineconeValueError`: If neither *instructions* nor
                 *metadata* is provided.
-            :exc:`ApiError`: If the API returns an error response (e.g. 404
-                when the assistant does not exist).
+            :exc:`NotFoundError`: If the assistant does not exist.
+            :exc:`ApiError`: If the API returns another error response.
 
         Examples:
             >>> assistant = pc.assistants.update(  # doctest: +SKIP
@@ -1262,16 +1231,12 @@ class Assistants(AssistantsLegacyNamespaceMixin):
     ) -> None:
         """Delete a Pinecone assistant by name.
 
-        Sends a DELETE request, then polls every 5 seconds until the
-        assistant is confirmed gone (404 from describe, or a reported status
-        of ``"Terminated"``). Other errors during polling propagate
-        immediately.
+        By default, waits until the assistant is confirmed gone before
+        returning.
 
-        A delete that fails server-side is not retried by the reconciler,
-        which only rescues create operations. If the assistant reports a
-        terminal failure status while being deleted, polling stops with
-        :exc:`PineconeError` rather than waiting for a 404 that will never
-        come — which, with ``timeout=None``, would never return.
+        If the assistant enters a terminal failure state while being
+        deleted, waiting stops with :exc:`PineconeError` instead of polling
+        indefinitely for a state that will never arrive.
 
         Args:
             name (str): The name of the assistant to delete.
@@ -1366,44 +1331,40 @@ class Assistants(AssistantsLegacyNamespaceMixin):
     ) -> ContextResponse:
         """Retrieve relevant context snippets from a Pinecone assistant.
 
-        Retrieves context snippets matching a text query or conversation
-        history. Exactly one of *query* or *messages* must be provided
-        and non-empty.
+        Retrieves context snippets matching a text query or a conversation
+        history, without generating a chat response. Provide exactly one of
+        *query* or *messages*.
 
         Args:
             assistant_name: Name of the assistant to retrieve context from.
             query: Text query to use for context retrieval. Mutually exclusive
-                with *messages*. Empty string is treated as not provided.
+                with *messages*. An empty string is treated as not provided.
             messages: Conversation messages to use for context retrieval.
-                Mutually exclusive with *query*. Empty list is treated as not
-                provided. Dicts are converted to :class:`Message` objects.
+                Mutually exclusive with *query*. An empty list is treated as
+                not provided. Dicts are converted to :class:`Message` objects.
                 Roles are case-sensitive ``"user"`` or ``"assistant"`` and
                 content must be non-blank — see :class:`Message`.
             filter: Metadata filter restricting which documents contribute
-                context. Omitted from request when ``None``.
-            top_k: Maximum number of context snippets to return. The
-                backend accepts 1-64; ``0`` and values above 64 are each
-                rejected with a 400 (the spec documents a default of 16).
-                Omitted from request when ``None``.
-            snippet_size: Maximum snippet size in tokens. The backend accepts
-                512-8192; anything outside that range is rejected with a 400
-                (the spec documents a default of 2048). Omitted from request
-                when ``None``.
+                context. Omitted from the request when ``None``.
+            top_k: Maximum number of context snippets to return. Omitted
+                from the request when ``None``, in which case the API
+                applies its own default.
+            snippet_size: Maximum snippet size in tokens. Omitted from the
+                request when ``None``, in which case the API applies its
+                own default.
             multimodal: Whether to include image-related context snippets.
-                Omitted from request when ``None``.
+                Omitted from the request when ``None``.
             include_binary_content: Whether image snippets include base64
                 image data. Only meaningful when *multimodal* is ``True``.
-                Omitted from request when ``None``.
+                Omitted from the request when ``None``.
 
         Returns:
             :class:`ContextResponse` containing the matching context snippets.
 
         Raises:
             :exc:`PineconeValueError`: If both or neither of *query* and
-                *messages* are provided (or if they are empty), or if *top_k*
-                or *snippet_size* is negative. Only the sign is checked
-                client-side, so ``top_k=0`` reaches the API and comes back a
-                400.
+                *messages* are provided, or if *top_k* or *snippet_size* is
+                negative.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -1479,17 +1440,15 @@ class Assistants(AssistantsLegacyNamespaceMixin):
                 to ``"user"`` when not present. Roles are case-sensitive
                 ``"user"`` or ``"assistant"`` and content must be non-blank —
                 see :class:`Message`. Neither is checked client-side.
-            model (str): Large language model to use. Defaults to ``"gpt-4o"``.
-                The models the ``2026-07`` API documents for this endpoint are
-                ``"gpt-4o"``, ``"gpt-4.1"``, ``"gpt-5"``, ``"o4-mini"``,
-                ``"claude-sonnet-4-5"``, and ``"gemini-2.5-pro"``. The removed
-                aliases ``"claude-3-5-sonnet"`` and ``"claude-3-7-sonnet"`` are
-                still accepted but deprecated — the backend silently remaps
-                them to ``"claude-sonnet-4-5"``, so migrate to that name.
-                The value is not validated client-side: the backend is
-                authoritative and gains models between SDK releases, and it
-                rejects an unknown name with a 422 whose message lists the
-                values it accepts.
+            model (str): Name of the large language model to use. Defaults
+                to ``"gpt-4o"``. The models the ``2026-07`` API documents for
+                this endpoint are ``"gpt-4o"``, ``"gpt-4.1"``, ``"gpt-5"``,
+                ``"o4-mini"``, ``"claude-sonnet-4-5"``, and
+                ``"gemini-2.5-pro"``. The removed aliases
+                ``"claude-3-5-sonnet"`` and ``"claude-3-7-sonnet"`` are still
+                accepted but deprecated — the backend silently remaps them to
+                ``"claude-sonnet-4-5"``, so migrate to that name. Not
+                validated client-side; the API rejects an unrecognized name.
             stream (bool): If ``True``, return a :class:`ChatStream`. Defaults
                 to ``False``.
             temperature (float | None): Controls randomness. Lower values produce
@@ -1503,9 +1462,8 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             context_options (ContextOptions | dict[str, Any] | None): Options
                 controlling context retrieval. Omitted from request when ``None``.
             timeout (float | None): Per-call HTTP timeout in seconds, overriding
-                the client-level default. On a streaming request the timeout is
-                a gap-between-tokens budget rather than a budget for the whole
-                answer, and the default is raised to at least 300s (see below).
+                the client-level default. On a streaming request this bounds the
+                gap between chunks rather than the whole response (see below).
 
         Returns:
             :class:`ChatResponse` for non-streaming requests, or a
@@ -1514,21 +1472,16 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         Raises:
             :exc:`PineconeValueError`: If both ``stream=True`` and
                 ``json_response=True`` are specified.
-            :exc:`ApiError`: If the API returns an error response. An assistant
-                with no processed files answers 400 ``"No files found. If files
-                were uploaded, they may still be processing"``, and that check
-                runs *before* message and role validation — so on a brand-new
-                assistant it masks a malformed ``messages`` payload.
+            :exc:`ApiError`: If the API returns an error response, for example
+                if the assistant has no processed files yet.
 
         Note:
-            An SSE read timeout measures the gap between tokens. This endpoint
-            heartbeats every 15s while the model thinks, so gaps stay short —
-            but ``chat_completions`` gets no such keepalive. Both raise the
-            default streaming timeout to at least 300s so a slow model does not
-            look like a dead connection; pass ``timeout`` to widen or narrow it.
-            A stream that outlives its budget raises
-            :exc:`PineconeTimeoutError` part-way through iteration, after
-            earlier chunks have already been yielded.
+            On a streaming request, the timeout applies to the gap between
+            chunks rather than the whole response, and the default is raised
+            so a model that thinks for a while isn't mistaken for a dead
+            connection. Pass *timeout* to change it. A stream that exceeds its
+            timeout raises :exc:`PineconeTimeoutError` partway through
+            iteration, after earlier chunks have already been yielded.
 
         Examples:
             .. code-block:: python
@@ -1618,19 +1571,17 @@ class Assistants(AssistantsLegacyNamespaceMixin):
                 to ``"user"`` when not present. Roles are case-sensitive
                 ``"user"`` or ``"assistant"`` and content must be non-blank —
                 see :class:`Message`. Neither is checked client-side.
-            model (str): Large language model to use. Defaults to ``"gpt-4o"``.
-                The models the ``2026-07`` API documents for this endpoint are
-                ``"gpt-4o"``, ``"gpt-4.1"``, ``"o4-mini"``,
+            model (str): Name of the large language model to use. Defaults
+                to ``"gpt-4o"``. The models the ``2026-07`` API documents for
+                this endpoint are ``"gpt-4o"``, ``"gpt-4.1"``, ``"o4-mini"``,
                 ``"claude-sonnet-4-5"``, and ``"gemini-2.5-pro"`` — the same
                 list :meth:`chat` accepts, minus ``"gpt-5"``, which the spec
                 documents only on the Pinecone-native chat endpoint. The
                 removed aliases ``"claude-3-5-sonnet"`` and
-                ``"claude-3-7-sonnet"`` are still accepted but deprecated — the
-                backend silently remaps them to ``"claude-sonnet-4-5"``, so
-                migrate to that name. The value is not validated client-side:
-                the backend is authoritative and gains models between SDK
-                releases, and it rejects an unknown name with a 422 whose
-                message lists the values it accepts.
+                ``"claude-3-7-sonnet"`` are still accepted but deprecated —
+                the backend silently remaps them to ``"claude-sonnet-4-5"``,
+                so migrate to that name. Not validated client-side; the API
+                rejects an unrecognized name.
             stream (bool): If ``True``, return a :class:`ChatCompletionStream`.
                 Defaults to ``False``.
             temperature (float | None): Controls randomness. Lower values produce
@@ -1638,30 +1589,24 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             filter (dict[str, Any] | None): Metadata filter restricting which
                 documents are used as context. Omitted from request when ``None``.
             timeout (float | None): Per-call HTTP timeout in seconds, overriding
-                the client-level default. On a streaming request the timeout is
-                a gap-between-tokens budget rather than a budget for the whole
-                answer, and the default is raised to at least 300s (see below).
+                the client-level default. On a streaming request this bounds the
+                gap between chunks rather than the whole response (see below).
 
         Returns:
             :class:`ChatCompletionResponse` for non-streaming requests, or a
             :class:`ChatCompletionStream` for streaming requests.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response. An assistant
-                with no processed files answers 400 ``"No files found. If files
-                were uploaded, they may still be processing"``, and that check
-                runs *before* message and role validation — so on a brand-new
-                assistant it masks a malformed ``messages`` payload.
+            :exc:`ApiError`: If the API returns an error response, for example
+                if the assistant has no processed files yet.
 
         Note:
-            An SSE read timeout measures the gap between tokens, and this
-            endpoint sends no keepalive while the model thinks — unlike
-            :meth:`chat`, which heartbeats every 15s. A reasoning model that
-            pauses for longer than the timeout is therefore indistinguishable
-            from a dead connection, so the default streaming timeout is raised
-            to at least 300s; pass ``timeout`` to widen it for models that pause
-            for longer still. A stream that outlives its budget raises
-            :exc:`PineconeTimeoutError` part-way through iteration, after
+            On a streaming request, the timeout applies to the gap between
+            chunks rather than the whole response, and the default is raised
+            so a model that pauses for longer while reasoning isn't mistaken
+            for a dead connection. Pass *timeout* to widen it further. A
+            stream that exceeds its timeout raises
+            :exc:`PineconeTimeoutError` partway through iteration, after
             earlier chunks have already been yielded.
 
         Examples:
@@ -1849,23 +1794,8 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             results, and token usage statistics.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response. This plane
-                answers unusually in three ways: the endpoint is gated by plan,
-                so Free and Builder answer 400 ``"Endpoint not supported for
-                your plan. Upgrade to standard plan for access."``; a body the
-                evaluation forwarder cannot parse surfaces as a 500 rather than
-                a 4xx; and an unrecognised path returns a bare ``text/plain``
-                ``"Invalid path"`` with no JSON error envelope, which leaves
-                :attr:`ApiError.body` as ``None`` instead of a parsed error.
-
-        Note:
-            Evaluation requests always go to the US host
-            (``https://prod-1-data.ke.pinecone.io/assistant``), including for an
-            assistant created with ``region="eu"``, unless
-            ``PINECONE_PLUGIN_ASSISTANT_DATA_HOST`` overrides it. The 2026-07
-            evaluation spec declares an EU server alongside the US one; the SDK
-            does not currently select it. Tracked in
-            https://github.com/pinecone-io/python-sdk-internal/issues/263.
+            :exc:`ApiError`: If the API returns an error response. This
+                endpoint requires a paid plan.
 
         Examples:
             >>> result = pc.assistants.evaluate_alignment(
