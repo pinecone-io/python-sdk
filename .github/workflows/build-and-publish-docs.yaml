@@ -1,8 +1,31 @@
 name: "Build and publish documentation to sdk-docs"
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag, or SHA to build the docs from (default: the ref this workflow runs on)"
+        required: false
+        type: string
+      channel:
+        description: "Which sdk-docs folder to publish into"
+        required: false
+        default: prod
+        type: choice
+        options:
+          - prod
+          - dev
   workflow_call:
+    inputs:
+      ref:
+        description: "Branch, tag, or SHA to build the docs from (default: the ref this workflow runs on)"
+        required: false
+        type: string
+      channel:
+        description: "Which sdk-docs folder to publish into: prod or dev"
+        required: false
+        default: prod
+        type: string
     secrets:
       SSH_DEPLOY_KEY:
         required: true
@@ -13,9 +36,41 @@ permissions:
 jobs:
   build-and-deploy-documentation:
     runs-on: ubuntu-latest
+    # sdk-docs is updated with a plain `git push`, so two publishes overlapping
+    # lose one to a non-fast-forward rejection. Queue rather than cancel: a
+    # docs build that had to wait is still worth publishing.
+    concurrency:
+      group: sdk-docs-publish
+      cancel-in-progress: false
     steps:
+      - name: Resolve publish target
+        id: target
+        env:
+          CHANNEL: ${{ inputs.channel }}
+        # The push action runs `rm -rf "$CLONE_DIR/$TARGET_DIRECTORY/"`, which
+        # deletes every SDK's docs when the directory is empty. Map a closed set
+        # of channel names so no free-text path can reach it.
+        run: |
+          set -euo pipefail
+          case "$CHANNEL" in
+            prod) directory=python ;;
+            dev)  directory=python-dev ;;
+            *)    echo "::error::Unknown docs channel '$CHANNEL' (expected 'prod' or 'dev')"; exit 1 ;;
+          esac
+          echo "directory=$directory" >> "$GITHUB_OUTPUT"
+
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # github.sha, not github.ref: checkout only pins to a commit when the
+          # ref is a bare SHA, so a branch name here would follow the branch tip
+          # and could publish a commit other than the one that triggered the run.
+          ref: ${{ inputs.ref != '' && inputs.ref || github.sha }}
+
+      - name: Resolve built commit
+        id: built
+        # `ref` may name a branch or tag, so report what was actually built.
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
@@ -33,7 +88,20 @@ jobs:
 
       - name: Build Sphinx documentation
         working-directory: docs
-        run: uv run --no-sync sphinx-build -M html . _build -W
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          BUILT_SHA: ${{ steps.built.outputs.sha }}
+        # The preview banner is injected with -D instead of living in conf.py
+        # because conf.py is checked out from `ref`, which may predate this
+        # workflow. Keeping it here means any ref can be built as a preview.
+        run: |
+          set -euo pipefail
+          opts=()
+          if [ "$CHANNEL" = "dev" ]; then
+            opts+=(-D "html_title=Python SDK documentation (development preview)")
+            opts+=(-D "html_theme_options.announcement=Development preview built from commit <code>${BUILT_SHA:0:12}</code>. This is not a released version and the APIs shown here may still change. Released documentation: <a href='https://sdk.pinecone.io/python/'>sdk.pinecone.io/python</a>.")
+          fi
+          uv run --no-sync sphinx-build -M html . _build -W "${opts[@]}"
 
       - name: Push documentation artifacts to sdk-docs
         uses: cpina/github-action-push-to-another-repository@main
@@ -45,5 +113,5 @@ jobs:
           destination-repository-name: sdk-docs
           user-email: clients@pinecone.io
           target-branch: main
-          target-directory: python
-          commit-message: "Python: automated documentation build - pinecone-python-client merge SHA: ${{ github.sha }}"
+          target-directory: ${{ steps.target.outputs.directory }}
+          commit-message: "Python (${{ inputs.channel }}): automated documentation build - ${{ github.repository }} SHA: ${{ steps.built.outputs.sha }}"

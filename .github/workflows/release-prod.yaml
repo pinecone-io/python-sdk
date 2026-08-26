@@ -616,6 +616,10 @@ jobs:
     if: ${{ !inputs.dryRun }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      # The release commit -- the bumped tree the tag points at, which is not
+      # `resolved_sha`. Consumed by publish-docs so the docs describe what shipped.
+      release_sha: ${{ steps.commit.outputs.release_sha }}
     permissions:
       contents: write   # required to push the tag ref + fast-forward main
     steps:
@@ -766,6 +770,12 @@ jobs:
     needs: [push-tag]
     if: ${{ !inputs.dryRun }}
     uses: ./.github/workflows/build-and-publish-docs.yaml
+    with:
+      # The release commit, not the triggering ref: bump_version.py rewrites
+      # `release` in docs/conf.py, so building anything earlier ships docs whose
+      # DOCUMENTATION_OPTIONS.VERSION names the previous release. This is also a
+      # pinned SHA, so it cannot drift when main advances mid-run.
+      ref: ${{ needs.push-tag.outputs.release_sha }}
     secrets: inherit
     permissions:
       contents: read
