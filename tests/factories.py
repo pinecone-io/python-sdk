@@ -375,7 +375,7 @@ def make_assistant_file_response(**overrides: Any) -> dict[str, Any]:
     ``rename={"content_hash": "crc32c_hash"}`` directive on ``AssistantFileModel``.
 
     ``percent_done`` and ``error_message`` are absent: ``2026-07`` does not
-    return them (see ``docs/migration/v10-2026-07-assistant-models.md``).
+    return them (see ``docs/migration/v10-migration.md``).
     """
     base: dict[str, Any] = {
         "name": "test-file.pdf",

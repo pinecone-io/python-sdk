@@ -43,7 +43,7 @@ from typing import Any
 
 from pinecone.errors.exceptions import PineconeTypeError
 
-MIGRATION_GUIDE = "docs/migration/v10-2026-07-index-model.md"
+MIGRATION_GUIDE = "docs/migration/v10-migration.md"
 
 #: create() kwargs with no faithful translation.
 LEGACY_CREATE_KWARGS = frozenset(

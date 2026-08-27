@@ -74,7 +74,7 @@ class AssistantFileModel(
             raise AttributeError(
                 f"AssistantFileModel.{name} was removed in the 2026-07 Pinecone API: "
                 f"{_REMOVED_FIELD_HINTS[name]}. "
-                "See docs/migration/v10-2026-07-assistant-models.md."
+                "See docs/migration/v10-migration.md."
             )
         raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
 

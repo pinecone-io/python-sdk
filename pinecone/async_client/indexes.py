@@ -340,7 +340,7 @@ class AsyncIndexes:
                 own: the create succeeds, and only the sparse upserts are
                 refused later. The field cannot be added by ``configure()``, so
                 an index created without one has to be recreated. See
-                ``docs/migration/v10-2026-07-vector-models.md``.
+                ``docs/migration/v10-migration.md``.
                 ``full_text_search.language`` accepts a fixed set of language
                 codes (or their English names, default ``en``), but
                 ``stop_words=True`` is not supported for every language — the

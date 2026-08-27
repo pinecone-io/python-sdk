@@ -3,7 +3,7 @@
 The 2026-01.alpha preview surface graduated to the default entry points in
 2026-07 and the ``pinecone/preview/`` package was deleted outright (fate
 option (a) from #140): a stale preview code sample must fail loudly, in the
-way documented by ``docs/migration/v10-2026-07-preview-graduation.md``.
+way documented by ``docs/migration/v10-migration.md``.
 
 Replaces ``tests/unit/preview/test_import_paths.py`` and
 ``tests/unit/preview/test_namespace.py`` as the post-graduation guards, and
@@ -102,7 +102,7 @@ def assert_module_is_really_gone(dotted_name: str) -> None:
         f"`import {dotted_name}` SUCCEEDED and resolved to a real module at "
         f"{origin!r}. The preview namespace was retired by #140 (PR #316) and "
         f"must not exist. Do not re-add it -- see "
-        f"docs/migration/v10-2026-07-preview-graduation.md."
+        f"docs/migration/v10-migration.md."
     )
 
 

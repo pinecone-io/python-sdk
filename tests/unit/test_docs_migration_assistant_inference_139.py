@@ -1,4 +1,4 @@
-"""Executes ``docs/migration/v10-2026-07-assistant-inference-release-notes.md``.
+"""Executes ``docs/migration/v10-migration.md``.
 
 The guide's code blocks are read out of the published file and run, never
 transcribed here, so a transcription cannot drift from what a reader copies.
@@ -52,10 +52,7 @@ from tests.factories import (
 
 BASE_URL = "https://api.test.pinecone.io"
 DATA_PLANE_URL = "https://test-assistant-abc123.svc.pinecone.io/assistant"
-GUIDE = (
-    Path(__file__).resolve().parents[2]
-    / "docs/migration/v10-2026-07-assistant-inference-release-notes.md"
-)
+GUIDE = Path(__file__).resolve().parents[2] / "docs/migration/v10-migration.md"
 NAMESPACES: dict[str, tuple[type, type]] = {
     "assistants": (Assistants, AsyncAssistants),
     "inference": (Inference, AsyncInference),
@@ -79,6 +76,8 @@ def _calls(source: str) -> list[tuple[str, str, list[str]]]:
         if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Attribute):
             continue
         if not isinstance(func.value.value, ast.Name) or func.value.value.id != "pc":
+            continue
+        if func.value.attr not in NAMESPACES:
             continue
         found.append((func.value.attr, func.attr, [kw.arg or "" for kw in node.keywords]))
     return found

@@ -1,4 +1,4 @@
-"""Executes the code blocks in ``docs/migration/v10-2026-07-backup-models.md``.
+"""Executes the code blocks in ``docs/migration/v10-migration.md``.
 
 The examples are read out of the published guide and run, rather than
 transcribed into Python literals here, so a transcription cannot drift from the
@@ -30,7 +30,15 @@ from pinecone.errors.exceptions import PineconeValueError
 from tests.factories import make_backup_response, make_index_response
 
 BASE_URL = "https://api.test.pinecone.io"
-GUIDE = Path(__file__).resolve().parents[2] / "docs/migration/v10-2026-07-backup-models.md"
+GUIDE = Path(__file__).resolve().parents[2] / "docs/migration/v10-migration.md"
+SECTION_START = "(backup-models)="
+SECTION_END = "(assistant-models)="
+
+
+def _section() -> str:
+    text = GUIDE.read_text()
+    return text.split(SECTION_START, 1)[1].split(SECTION_END, 1)[0]
+
 
 SCHEDULE_ID = "e88f7273-42aa-47e9-af73-593827136867"
 
@@ -53,10 +61,8 @@ Block = tuple[str, str]
 
 
 def _blocks() -> list[Block]:
-    sources = [
-        m.group(1) for m in re.finditer(r"```python\n(.*?)```", GUIDE.read_text(), re.DOTALL)
-    ]
-    assert sources, f"no python blocks found in {GUIDE}"
+    sources = [m.group(1) for m in re.finditer(r"```python\n(.*?)```", _section(), re.DOTALL)]
+    assert sources, f"no python blocks found in the backup-models section of {GUIDE}"
     return [
         ("9x" if s.lstrip().startswith("# 9.x") else "async" if "await " in s else "sync", s)
         for s in sources

@@ -102,7 +102,7 @@ def _reject_legacy_metadata_schema(schema: dict[str, Any] | IndexSchema) -> None
             "fields are no longer declared at create time; they are indexed "
             "automatically at upsert. If you meant to declare a searched field, add "
             "'type': 'dense_vector' | 'sparse_vector' | 'string' to each field. See "
-            "the migration guide: docs/migration/v10-2026-07-index-model.md"
+            "the migration guide: docs/migration/v10-migration.md"
         )
 
 
@@ -377,7 +377,7 @@ class Indexes:
                 own: the create succeeds, and only the sparse upserts are
                 refused later. The field cannot be added by ``configure()``, so
                 an index created without one has to be recreated. See
-                ``docs/migration/v10-2026-07-vector-models.md``.
+                ``docs/migration/v10-migration.md``.
                 ``full_text_search.language`` accepts a fixed set of language
                 codes (or their English names, default ``en``), but
                 ``stop_words=True`` is not supported for every language — the

@@ -253,7 +253,7 @@ class TestBackupModelRemovedFields:
         message = str(excinfo.value)
         assert f"BackupModel.{removed} was removed in the 2026-07 Pinecone API" in message
         assert "schema.fields" in message
-        assert "v10-2026-07-backup-models.md" in message
+        assert "v10-migration.md" in message
 
     @pytest.mark.parametrize("removed", ["dimension", "metric"])
     def test_removed_fields_are_not_struct_fields(self, removed: str) -> None:

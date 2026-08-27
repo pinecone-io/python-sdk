@@ -516,7 +516,7 @@ async def test_create_old_style_metadata_schema_raises_guided_message_not_a_400(
         await indexes.create(schema={"fields": {"genre": {"filterable": True}}})
     message = str(exc_info.value)
     assert "indexed automatically at upsert" in message
-    assert "docs/migration/v10-2026-07-index-model.md" in message
+    assert "docs/migration/v10-migration.md" in message
 
 
 @respx.mock

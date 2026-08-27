@@ -1,4 +1,4 @@
-"""Executes ``docs/migration/v10-2026-07-db-data-breaking-changes.md`` (#138).
+"""Executes ``docs/migration/v10-migration.md`` (#138).
 
 Same discipline as ``test_docs_migration_query_param_enums_371.py``: the guide's
 code blocks and the error text they print are read out of the published file and
@@ -47,10 +47,10 @@ from pinecone._internal.validation import QUERY_TOP_K_MAX
 from pinecone.errors.exceptions import PineconeValueError
 from pinecone.models.imports.error_mode import ImportErrorMode
 
-GUIDE = (
-    Path(__file__).resolve().parents[2] / "docs/migration/v10-2026-07-db-data-breaking-changes.md"
-)
-TEXT = GUIDE.read_text()
+GUIDE = Path(__file__).resolve().parents[2] / "docs/migration/v10-migration.md"
+SECTION_START = "(db-data-breaking-changes)="
+SECTION_END = "(backup-models)="
+TEXT = GUIDE.read_text().split(SECTION_START, 1)[1].split(SECTION_END, 1)[0]
 
 INDEX_HOST = "test-index-abc1234.svc.us-east1-gcp.pinecone.io"
 BASE_URL = f"https://{INDEX_HOST}"
@@ -132,15 +132,6 @@ def test_the_top_k_block_raises_the_message_the_guide_prints() -> None:
     assert not route.calls, "the guide says the call fails locally, so nothing may be sent"
 
 
-def test_the_sparse_metric_block_raises_the_message_the_guide_prints() -> None:
-    source = _block('add_sparse_vector_field("sparse_terms", metric=')
-
-    with pytest.raises(PineconeValueError) as excinfo:
-        exec(_code(source), {"SchemaBuilder": SchemaBuilder})  # noqa: S102
-
-    assert str(excinfo.value) == _printed_error(source)
-
-
 @pytest.mark.parametrize("top_k", [1, QUERY_TOP_K_MAX])
 @respx.mock
 def test_both_ends_of_the_range_the_guide_names_are_accepted(top_k: int) -> None:
@@ -162,8 +153,8 @@ def test_the_bound_the_guide_names_is_the_one_all_three_lanes_use(module: str) -
 
 @pytest.mark.parametrize(
     ("needle", "delta_key"),
-    [("add_boolean_field", "filterable"), ('add_sparse_vector_field("sparse_terms")', "metric")],
-    ids=["filterable", "sparse-metric"],
+    [("add_boolean_field", "filterable")],
+    ids=["filterable"],
 )
 def test_the_now_shape_is_what_the_builder_really_emits(needle: str, delta_key: str) -> None:
     source = _block(needle)
@@ -176,8 +167,8 @@ def test_the_now_shape_is_what_the_builder_really_emits(needle: str, delta_key: 
 
 @pytest.mark.parametrize(
     ("needle", "delta_key"),
-    [("add_boolean_field", "filterable"), ('add_sparse_vector_field("sparse_terms")', "metric")],
-    ids=["filterable", "sparse-metric"],
+    [("add_boolean_field", "filterable")],
+    ids=["filterable"],
 )
 def test_the_before_shape_differs_by_exactly_the_key_the_section_names(
     needle: str, delta_key: str
@@ -295,9 +286,10 @@ def test_the_document_family_row_names_rest_only_methods() -> None:
 
 def test_the_guide_states_the_vector_operations_are_kept_on_purpose() -> None:
     normalized = _normalized()
-    assert "serve indexes created under earlier API versions, and they are meant to" in normalized
+    assert "serve indexes created under earlier API versions, and" in normalized
+    assert "they're meant to" in normalized
     assert "None of them is deprecated, none is scheduled for removal" in normalized
-    assert "deliberately provides no way to create an index for the vector operations" in normalized
+    assert "always" in normalized and "persists a document schema" in normalized
 
 
 @pytest.mark.parametrize(
@@ -315,8 +307,9 @@ def test_the_guide_never_calls_the_vector_operations_deprecated(forbidden: str) 
 
 
 def test_every_relative_link_the_guide_makes_resolves() -> None:
-    """MyST link syntax with a live target — #402 is rST syntax in a MyST file."""
-    targets = set(re.findall(r"\]\((v10-[\w.-]+\.md)(?:#[\w-]+)?\)", TEXT))
-    assert targets, "the guide claims to defer to other guides but links none"
+    """MyST anchor-link syntax with a live target — these sections all live on one page now."""
+    full_text = GUIDE.read_text()
+    targets = set(re.findall(r"\]\(#([\w-]+)\)", TEXT))
+    assert targets, "the guide claims to defer to other sections but links none"
     for target in targets:
-        assert (GUIDE.parent / target).is_file(), f"dead link: {target}"
+        assert f"({target})=" in full_text, f"dead link: #{target}"

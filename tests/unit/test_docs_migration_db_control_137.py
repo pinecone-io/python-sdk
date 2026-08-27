@@ -1,4 +1,4 @@
-"""Executes the code blocks in ``docs/migration/v10-2026-07-db-control.md`` (#137).
+"""Executes the code blocks in ``docs/migration/v10-migration.md`` (#137).
 
 The examples are read out of the guide and run, rather than transcribed into
 Python literals here — a transcription can drift from the published text,
@@ -30,7 +30,15 @@ from pinecone.errors.exceptions import PineconeTypeError
 from tests.factories import make_index_response
 
 BASE_URL = "https://api.test.pinecone.io"
-GUIDE = Path(__file__).resolve().parents[2] / "docs/migration/v10-2026-07-db-control.md"
+GUIDE = Path(__file__).resolve().parents[2] / "docs/migration/v10-migration.md"
+SECTION_START = "(db-control)="
+SECTION_END = "(vector-data)="
+
+
+def _section() -> str:
+    text = GUIDE.read_text()
+    return text.split(SECTION_START, 1)[1].split(SECTION_END, 1)[0]
+
 
 CREATE_FIELDS = {
     "name",
@@ -52,10 +60,8 @@ Block = tuple[str, str]
 
 
 def _blocks() -> list[Block]:
-    sources = [
-        m.group(1) for m in re.finditer(r"```python\n(.*?)```", GUIDE.read_text(), re.DOTALL)
-    ]
-    assert sources, f"no python blocks found in {GUIDE}"
+    sources = [m.group(1) for m in re.finditer(r"```python\n(.*?)```", _section(), re.DOTALL)]
+    assert sources, f"no python blocks found in the db-control section of {GUIDE}"
     return [
         ("9x" if s.lstrip().startswith("# 9.x") else "async" if "await " in s else "sync", s)
         for s in sources

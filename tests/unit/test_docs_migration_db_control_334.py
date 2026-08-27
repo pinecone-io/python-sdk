@@ -1,4 +1,4 @@
-"""Executes the create-limits section of ``docs/migration/v10-2026-07-db-control.md`` (#334).
+"""Executes the create-limits section of ``docs/migration/v10-migration.md`` (#334).
 
 Same discipline as ``test_docs_migration_db_control_137.py`` and
 ``test_docs_migration_sparse_hybrid_332.py``: the examples are read out of the
@@ -40,15 +40,16 @@ from pinecone import AsyncPinecone, Pinecone
 from tests.factories import make_index_response
 
 BASE_URL = "https://api.test.pinecone.io"
-GUIDE = Path(__file__).resolve().parents[2] / "docs/migration/v10-2026-07-db-control.md"
+GUIDE = Path(__file__).resolve().parents[2] / "docs/migration/v10-migration.md"
 
 ANCHOR = "(create-limits)="
+SECTION_END = "(vector-data)="
 
 
 def _section() -> str:
     text = GUIDE.read_text()
     assert ANCHOR in text, f"{GUIDE} lost the {ANCHOR} target"
-    return text.split(ANCHOR, 1)[1]
+    return text.split(ANCHOR, 1)[1].split(SECTION_END, 1)[0]
 
 
 def _blocks() -> list[str]:
@@ -126,8 +127,8 @@ def test_the_documented_description_stays_inside_the_byte_cap() -> None:
     assert len(field["description"].encode("utf-8")) <= 256
 
     section = _section()
-    assert "**256 bytes of UTF-8**, not 256 characters" in section
-    assert "at most **100**" in section
+    assert "256 bytes of UTF-8, not 256 characters" in section
+    assert "at most 100" in section
 
 
 def test_a_stop_word_less_language_still_goes_out_unmolested() -> None:
@@ -161,11 +162,11 @@ async def test_the_configure_block_deletes_a_key_on_both_lanes() -> None:
 
 
 def test_the_section_keeps_the_two_cmek_status_codes_apart() -> None:
-    """#249 recorded the per-request rule as nonexistent; it exists, and so does the 412."""
-    section = _section()
-    assert "**`400`, per request.**" in section
-    assert "**`412`, per project.**" in section
-    assert "whether or not\n  the request carries a `cmek_id`" in section
+    """The per-request rule and the per-project rule are two different checks."""
+    section = re.sub(r"\s+", " ", _section())
+    assert "is a 400 per request" in section
+    assert "is a 412 per project" in section
+    assert "regardless of whether the request carries a `cmek_id`" in section
 
 
 def _flat(doc: str) -> str:

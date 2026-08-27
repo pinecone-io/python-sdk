@@ -8,8 +8,8 @@ for control-plane operations such as creating projects and rotating keys.  It is
 synchronous only — there is no async form of this client.
 
 The users, invites, service-account, and role-binding namespaces are new in ``2026-07``.
-See :doc:`../migration/v10-2026-07-admin-oauth` for the per-operation release notes and an
-end-to-end RBAC walkthrough.
+See the :ref:`admin-oauth` section of :doc:`../migration/v10-migration` for the
+per-operation release notes and an end-to-end RBAC walkthrough.
 
 .. autoclass:: pinecone.admin.Admin
    :members:

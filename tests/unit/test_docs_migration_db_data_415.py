@@ -1,4 +1,4 @@
-"""Executes rows 9-12 of ``docs/migration/v10-2026-07-db-data-breaking-changes.md`` (#415).
+"""Executes rows 9-12 of ``docs/migration/v10-migration.md`` (#415).
 
 Split out of #138: the vector-op selector algebra (mutual exclusion between
 ``query``'s ``id``/``vector``/``sparse_vector``, ``update``'s ``filter`` and
@@ -44,10 +44,10 @@ import respx
 from pinecone import Index
 from pinecone.errors.exceptions import PineconeValueError
 
-GUIDE = (
-    Path(__file__).resolve().parents[2] / "docs/migration/v10-2026-07-db-data-breaking-changes.md"
-)
-TEXT = GUIDE.read_text()
+GUIDE = Path(__file__).resolve().parents[2] / "docs/migration/v10-migration.md"
+SECTION_START = "(db-data-breaking-changes)="
+SECTION_END = "(backup-models)="
+TEXT = GUIDE.read_text().split(SECTION_START, 1)[1].split(SECTION_END, 1)[0]
 
 INDEX_HOST = "test-index-abc1234.svc.us-east1-gcp.pinecone.io"
 BASE_URL = f"https://{INDEX_HOST}"
@@ -168,10 +168,13 @@ def test_the_hybrid_query_the_guide_says_is_unaffected_still_works() -> None:
 
 
 def test_the_guide_still_says_id_and_filter_together_predate_this_release() -> None:
-    assert "id` and `filter` together were already rejected before this release" in TEXT
+    flat = re.sub(r"\s+", " ", TEXT)
+    assert "id` and `filter` together were already rejected before this release" in flat
 
 
 def test_the_row_9_to_12_table_entries_match_the_sections_below() -> None:
     for n in (9, 10, 11, 12):
-        assert re.search(rf"^## {n}\. ", TEXT, re.MULTILINE), f"no '## {n}. ' heading in {GUIDE}"
+        assert re.search(rf"^#### {n}\. ", TEXT, re.MULTILINE), (
+            f"no '#### {n}. ' heading in {GUIDE}"
+        )
         assert re.search(rf"^\| {n} \|", TEXT, re.MULTILINE), f"no '| {n} |' table row in {GUIDE}"

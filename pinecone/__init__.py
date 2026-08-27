@@ -27,7 +27,7 @@ The :class:`Pinecone` client manages indexes (control plane). Call
 ``pc.index(name)`` to get an :class:`Index` for vector operations (data plane).
 
 Upgrading from 9.x? ``create``/``configure`` moved from ``spec=``/``dimension=``
-to ``schema=``/``deployment=``; see ``docs/migration/v10-2026-07-db-control.md``
+to ``schema=``/``deployment=``; see ``docs/migration/v10-migration.md``
 for the field-by-field mapping and before/after code for each flow.
 
 Async Quick Start::

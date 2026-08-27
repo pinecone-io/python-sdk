@@ -1,7 +1,7 @@
 """Shared 2026-07 index-create shapes for the integration suite.
 
 2026-07 replaced ``dimension=`` / ``metric=`` / ``spec=`` on index create with
-``schema=`` + ``deployment=`` (see ``docs/migration/v10-2026-07-index-model.md``).
+``schema=`` + ``deployment=`` (see ``docs/migration/v10-migration.md``).
 Modules in this package create throwaway indexes; the shapes live here rather
 than being hand-rolled once per module.
 

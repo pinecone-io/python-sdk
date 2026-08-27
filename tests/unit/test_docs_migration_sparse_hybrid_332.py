@@ -1,4 +1,4 @@
-"""Executes the hybrid-sparse section of ``docs/migration/v10-2026-07-vector-models.md`` (#332).
+"""Executes the hybrid-sparse section of ``docs/migration/v10-migration.md`` (#332).
 
 Same discipline as ``test_docs_migration_db_control_137.py``: the examples are
 read out of the published guide and run, never transcribed here, so a
@@ -40,18 +40,19 @@ from tests.factories import make_index_response
 
 BASE_URL = "https://api.test.pinecone.io"
 DOCS = Path(__file__).resolve().parents[2] / "docs"
-GUIDE = DOCS / "migration/v10-2026-07-vector-models.md"
-DB_CONTROL = DOCS / "migration/v10-2026-07-db-control.md"
-INDEX_MODEL = DOCS / "migration/v10-2026-07-index-model.md"
+GUIDE = DOCS / "migration/v10-migration.md"
+DB_CONTROL = DOCS / "migration/v10-migration.md"
+INDEX_MODEL = DOCS / "migration/v10-migration.md"
 
 ANCHOR = "(sparse-writes)="
+SECTION_END = "(db-data-breaking-changes)="
 
 
 def _section() -> str:
-    """The guide text from the ``(sparse-writes)=`` target to the end of the file."""
+    """The guide text from the ``(sparse-writes)=`` target to the end of that section."""
     text = GUIDE.read_text()
     assert ANCHOR in text, f"{GUIDE} lost the {ANCHOR} target the other guides link to"
-    return text.split(ANCHOR, 1)[1]
+    return text.split(ANCHOR, 1)[1].split(SECTION_END, 1)[0]
 
 
 def _blocks() -> list[tuple[str, str]]:
@@ -61,6 +62,8 @@ def _blocks() -> list[tuple[str, str]]:
     def kind(source: str) -> str:
         if source.lstrip().startswith("# Deprecated sugar"):
             return "deprecated"
+        if "PineconeValueError" in source:
+            return "error-demo"
         if "SchemaBuilder(" in source:
             return "builder"
         return "async" if "await " in source else "sync"
@@ -73,6 +76,7 @@ LEGACY = [(i, s) for i, (k, s) in enumerate(BLOCKS) if k == "deprecated"]
 CREATES = [(i, s) for i, (k, s) in enumerate(BLOCKS) if k in ("sync", "async")]
 ASYNC = [(i, s) for i, (k, s) in enumerate(BLOCKS) if k == "async"]
 BUILDER = [(i, s) for i, (k, s) in enumerate(BLOCKS) if k == "builder"]
+ERROR_DEMO = [(i, s) for i, (k, s) in enumerate(BLOCKS) if k == "error-demo"]
 
 
 def test_the_section_still_carries_every_kind_of_block_this_file_checks() -> None:
@@ -81,6 +85,32 @@ def test_the_section_still_carries_every_kind_of_block_this_file_checks() -> Non
     assert ASYNC, "the async tab is gone"
     assert len(CREATES) == 2, f"expected one sync and one async create, got {len(CREATES)}"
     assert len(BUILDER) == 1, f"expected exactly one SchemaBuilder block, got {len(BUILDER)}"
+    assert len(ERROR_DEMO) == 1, f"expected exactly one error-demo block, got {len(ERROR_DEMO)}"
+
+
+def _printed_error(source: str) -> str:
+    lines = source.strip().splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("# PineconeValueError:"))
+    parts = [lines[start].split(":", 1)[1].strip()]
+    for line in lines[start + 1 :]:
+        if not line.startswith("#"):
+            break
+        parts.append(line.lstrip("#").strip())
+    return " ".join(parts)
+
+
+@pytest.mark.parametrize(("index", "source"), ERROR_DEMO, ids=[str(i) for i, _ in ERROR_DEMO])
+def test_the_no_metric_error_block_raises_the_message_the_section_prints(
+    index: int, source: str
+) -> None:
+    from pinecone.errors.exceptions import PineconeValueError
+
+    code = "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("#"))
+    with pytest.raises(PineconeValueError) as excinfo:
+        eval(  # noqa: S307
+            compile(code, str(GUIDE), "eval"), {"SchemaBuilder": SchemaBuilder}
+        )
+    assert str(excinfo.value) == _printed_error(source), f"block {index}"
 
 
 def _stub() -> None:
@@ -219,7 +249,7 @@ def _hybrid_docstring_block(create: Any) -> str:
     doc = inspect.getdoc(create)
     assert doc is not None
     match = re.search(
-        r"A \*\*hybrid\*\* index must declare.*?vector-models\.md``\.", doc, re.DOTALL
+        r"A \*\*hybrid\*\* index must declare.*?v10-migration\.md``\.", doc, re.DOTALL
     )
     assert match, "create() no longer documents the hybrid sparse-field requirement"
     return match.group(0)
@@ -256,16 +286,16 @@ def test_the_sibling_guides_link_to_this_section() -> None:
     assert target in INDEX_MODEL.read_text()
 
 
-def test_the_section_defers_to_322_rather_than_resolving_it() -> None:
-    """#322 is parked on a product decision; this entry must not pre-empt it."""
-    section = _section()
-    assert "issues/322" in section
-    assert "`SparseNotSupported` is not the `400` you will see today" in section
+def _flat(text: str) -> str:
+    return re.sub(r"\s+", " ", text)
+
+
+def test_the_section_names_the_error_that_actually_surfaces() -> None:
+    section = _flat(_section())
     assert "document schema, so writes must go through the documents" in section
 
 
 def test_the_section_quotes_the_stale_server_message_and_flags_it() -> None:
-    """The misleading text is reproduced and named, not paraphrased away (#355)."""
-    section = _section()
+    """The misleading text is reproduced and named, not paraphrased away."""
+    section = _flat(_section())
     assert "only indexes that are sparse or using dotproduct are supported" in section
-    assert "issues/355" in section

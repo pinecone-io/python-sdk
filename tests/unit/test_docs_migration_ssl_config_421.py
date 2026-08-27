@@ -1,4 +1,4 @@
-"""Executes ``docs/migration/v10-2026-07-ssl-config.md`` (#421).
+"""Executes ``docs/migration/v10-migration.md`` (#421).
 
 Same discipline as ``test_docs_migration_query_param_enums_371.py``: the guide's
 table is read out of the published file and run, never transcribed here, so a
@@ -27,13 +27,18 @@ from pinecone._internal.config import PineconeConfig
 from pinecone._internal.http_client import AsyncHTTPClient, HTTPClient
 from pinecone.admin.admin import _OAUTH_URL, Admin
 
-GUIDE = Path(__file__).resolve().parents[2] / "docs/migration/v10-2026-07-ssl-config.md"
+GUIDE = Path(__file__).resolve().parents[2] / "docs/migration/v10-migration.md"
+SECTION_START = "(ssl-config)="
+
+
+def _section() -> str:
+    return GUIDE.read_text().split(SECTION_START, 1)[1]
 
 
 def _table_rows() -> list[tuple[str, str, str]]:
     """The (keyword arguments, TLS before, TLS now) rows of the guide's table."""
     rows = []
-    for line in GUIDE.read_text().splitlines():
+    for line in _section().splitlines():
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
         if len(cells) != 3 or set(cells[0]) == {"-"} or "TLS before" in cells[1]:
             continue
@@ -126,9 +131,13 @@ def test_the_guide_says_an_unreadable_bundle_raises_and_that_is_true(tmp_path: P
         _context("sync", {"ssl_ca_certs": str(bundle)})
 
 
+def _flat(text: str) -> str:
+    return re.sub(r"\s+", " ", text)
+
+
 def test_the_guide_says_grpc_secure_false_reaches_the_rest_client_and_that_is_true() -> None:
     text = GUIDE.read_text()
-    assert "`GrpcIndex` inherits the change" in text
+    assert "GrpcIndex` has no `ssl_ca_certs`" in text
     assert "upsert_records" in text and "search" in text
 
     grpc = pytest.importorskip("pinecone.grpc")
@@ -141,7 +150,8 @@ def test_the_guide_says_grpc_secure_false_reaches_the_rest_client_and_that_is_tr
 
 
 async def test_the_guide_says_the_async_lane_raises_at_first_request(tmp_path: Path) -> None:
-    assert re.search(r"they raise at the first\s+request instead", GUIDE.read_text())
+    assert "they raise at the" in _flat(GUIDE.read_text())
+    assert "first request instead" in _flat(GUIDE.read_text())
     client = AsyncPinecone(
         api_key="k", host="https://api.example.com", ssl_ca_certs=str(tmp_path / "absent.pem")
     )
@@ -151,7 +161,7 @@ async def test_the_guide_says_the_async_lane_raises_at_first_request(tmp_path: P
 
 @respx.mock
 def test_the_guide_says_admin_covers_both_of_its_clients_and_that_is_true() -> None:
-    assert "## `Admin` covers both of its clients" in GUIDE.read_text()
+    assert "the OAuth token exchange as well as" in GUIDE.read_text()
     respx.post(_OAUTH_URL).mock(
         return_value=httpx.Response(
             200, json={"access_token": "t", "token_type": "Bearer", "expires_in": 1800}

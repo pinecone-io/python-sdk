@@ -24,20 +24,7 @@ Pinecone Python SDK
    :maxdepth: 1
    :caption: Migration & FAQ
 
-   migration/v10-2026-07-preview-graduation
-   migration/v10-2026-07-db-control
-   migration/v10-2026-07-index-model
-   migration/v10-2026-07-backup-models
-   migration/v10-2026-07-assistant-models
-   migration/v10-2026-07-assistant-chat
-   migration/v10-2026-07-assistant-files
-   migration/v10-2026-07-vector-models
-   migration/v10-2026-07-db-data-breaking-changes
-   migration/v10-2026-07-inference-model-enums
-   migration/v10-2026-07-assistant-inference-release-notes
-   migration/v10-2026-07-query-param-enums
-   migration/v10-2026-07-admin-oauth
-   migration/v10-2026-07-ssl-config
+   migration/v10-migration
    migration/v9-migration
    migration/v9.2-grpc-partial-failures
    faq

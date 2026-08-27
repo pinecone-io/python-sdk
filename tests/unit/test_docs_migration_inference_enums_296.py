@@ -1,4 +1,4 @@
-"""Executes ``docs/migration/v10-2026-07-inference-model-enums.md`` (#296).
+"""Executes ``docs/migration/v10-migration.md`` (#296).
 
 Same discipline as ``test_docs_migration_sparse_hybrid_332.py``: the guide's
 table and code blocks are read out of the published file and run, never
@@ -33,14 +33,21 @@ from pinecone.errors.exceptions import NotFoundError
 from tests.factories import make_embed_response, make_error_response, make_rerank_response
 
 BASE_URL = "https://api.test.pinecone.io"
-GUIDE = Path(__file__).resolve().parents[2] / "docs/migration/v10-2026-07-inference-model-enums.md"
+GUIDE = Path(__file__).resolve().parents[2] / "docs/migration/v10-migration.md"
+SECTION_START = "(inference-model-enums)="
+SECTION_END = "(query-param-enums)="
 NAMESPACE: dict[str, Any] = {"EmbedModel": EmbedModel, "RerankModel": RerankModel}
+
+
+def _section() -> str:
+    text = GUIDE.read_text()
+    return text.split(SECTION_START, 1)[1].split(SECTION_END, 1)[0]
 
 
 def _table_rows() -> list[tuple[str, str, str]]:
     """The (argument, sent-before, sent-now) rows of the guide's comparison table."""
     rows = []
-    for line in GUIDE.read_text().splitlines():
+    for line in _section().splitlines():
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
         if len(cells) != 3 or set(cells[0]) == {"-"} or "sent before" in cells[1]:
             continue
@@ -52,9 +59,7 @@ def _table_rows() -> list[tuple[str, str, str]]:
 
 
 def _blocks(language: str = "python") -> list[str]:
-    sources = [
-        m.group(1) for m in re.finditer(rf"```{language}\n(.*?)```", GUIDE.read_text(), re.DOTALL)
-    ]
+    sources = [m.group(1) for m in re.finditer(rf"```{language}\n(.*?)```", _section(), re.DOTALL)]
     assert sources, f"no {language} blocks found in {GUIDE}"
     return sources
 
@@ -130,7 +135,7 @@ def test_the_plain_string_example_reaches_the_wire_unchanged() -> None:
 
 @respx.mock
 def test_the_mangled_string_example_raises_the_error_the_guide_prints() -> None:
-    source = next(s for s in CALLS if "NotFoundError" in s)
+    source = next(s for s in CALLS if "# NotFoundError:" in s)
     expected = re.search(r"# NotFoundError: (.+)", source)
     assert expected, "the mangled-string block no longer shows its error message"
     message = expected.group(1).strip()

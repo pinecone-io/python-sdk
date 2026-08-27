@@ -1,4 +1,4 @@
-"""Executes ``docs/migration/v10-2026-07-query-param-enums.md`` (#371).
+"""Executes ``docs/migration/v10-migration.md`` (#371).
 
 Same discipline as ``test_docs_migration_inference_enums_296.py``: the guide's
 table and code blocks are read out of the published file and run, never
@@ -36,15 +36,22 @@ from pinecone.errors.exceptions import ApiError, PineconeValueError
 from tests.factories import make_error_response
 
 BASE_URL = "https://api.test.pinecone.io"
-GUIDE = Path(__file__).resolve().parents[2] / "docs/migration/v10-2026-07-query-param-enums.md"
+GUIDE = Path(__file__).resolve().parents[2] / "docs/migration/v10-migration.md"
+SECTION_START = "(query-param-enums)="
+SECTION_END = "(admin-oauth)="
 NAMESPACE: dict[str, Any] = {"VectorType": VectorType}
 MODEL_LIST: dict[str, Any] = {"models": []}
+
+
+def _section() -> str:
+    text = GUIDE.read_text()
+    return text.split(SECTION_START, 1)[1].split(SECTION_END, 1)[0]
 
 
 def _table_rows() -> list[tuple[str, str, str]]:
     """The (argument, sent-before, sent-now) rows of the guide's comparison table."""
     rows = []
-    for line in GUIDE.read_text().splitlines():
+    for line in _section().splitlines():
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
         if len(cells) != 3 or set(cells[0]) == {"-"} or "sent before" in cells[1]:
             continue
@@ -56,9 +63,7 @@ def _table_rows() -> list[tuple[str, str, str]]:
 
 
 def _blocks(language: str = "python") -> list[str]:
-    sources = [
-        m.group(1) for m in re.finditer(rf"```{language}\n(.*?)```", GUIDE.read_text(), re.DOTALL)
-    ]
+    sources = [m.group(1) for m in re.finditer(rf"```{language}\n(.*?)```", _section(), re.DOTALL)]
     assert sources, f"no {language} blocks found in {GUIDE}"
     return sources
 
