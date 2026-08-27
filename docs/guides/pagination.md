@@ -1,8 +1,8 @@
 # Pagination
 
 Some SDK operations return results in pages. The SDK provides `Paginator` (sync) and
-`AsyncPaginator` (async) to iterate over those pages lazily — only fetching the next
-page when you ask for it.
+`AsyncPaginator` (async) to iterate over those pages lazily, fetching the next page
+only when you ask for it.
 
 ## Paginator and AsyncPaginator
 
@@ -139,8 +139,7 @@ async with AsyncPinecone() as pc:
 
 ## Paginating Vector IDs
 
-`Index.list_paginated()` returns a `ListResponse` for a single page of vector IDs.
-Use it directly when you need fine-grained control over pagination tokens:
+`Index.list()` automatically follows pagination and yields a `ListResponse` per page:
 
 ```python
 from pinecone import Pinecone
@@ -149,12 +148,19 @@ pc = Pinecone()
 desc = pc.indexes.describe("product-search")
 index = pc.index(host=desc.host)
 
-# Fetch the first page
+for page in index.list(prefix="product#", limit=100):
+    for item in page.vectors:
+        print(item.id)
+```
+
+For manual control over individual pagination tokens, call `Index.list_paginated()`
+directly:
+
+```python
 page = index.list_paginated(prefix="product#", limit=100)
 for item in page.vectors:
     print(item.id)
 
-# Fetch subsequent pages
 while page.pagination is not None and page.pagination.next is not None:
     page = index.list_paginated(
         prefix="product#",

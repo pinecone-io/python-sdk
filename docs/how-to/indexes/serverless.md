@@ -1,22 +1,21 @@
 # Working with Serverless Indexes
 
-Serverless indexes scale automatically — you pay for storage and queries without managing
+Serverless indexes scale automatically: you pay for storage and queries without managing
 infrastructure. Pinecone handles capacity, replication, and availability.
 
 ## Create a serverless index
 
-Pass a {class}`~pinecone.ServerlessSpec` with a cloud provider and region:
+An index's fields are declared as a `schema`; `deployment` picks the cloud and region:
 
 ```python
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import Pinecone
 
 pc = Pinecone(api_key="your-api-key")
 
 pc.indexes.create(
     name="product-search",
-    dimension=1536,
-    metric="cosine",
-    spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+    schema={"fields": {"embedding": {"type": "dense_vector", "dimension": 1536, "metric": "cosine"}}},
+    deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
 )
 ```
 
@@ -30,43 +29,42 @@ Use the {class}`~pinecone.CloudProvider`, {class}`~pinecone.AwsRegion`,
 tab-completion and typo safety:
 
 ```python
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import Pinecone
 from pinecone.models.enums import AwsRegion, CloudProvider
 
 pc = Pinecone(api_key="your-api-key")
 
 pc.indexes.create(
     name="product-search",
-    dimension=1536,
-    metric="cosine",
-    spec=ServerlessSpec(
-        cloud=CloudProvider.AWS,
-        region=AwsRegion.US_EAST_1,
-    ),
+    schema={"fields": {"embedding": {"type": "dense_vector", "dimension": 1536, "metric": "cosine"}}},
+    deployment={
+        "deployment_type": "managed",
+        "cloud": CloudProvider.AWS,
+        "region": AwsRegion.US_EAST_1,
+    },
 )
 ```
 
-**AWS:** ``us-east-1``, ``us-west-2``, ``eu-west-1``
+**AWS:** ``us-east-1``, ``us-west-2``, ``eu-west-1``, ``eu-central-1``, ``ap-southeast-1``
 
 **GCP:** ``us-central1``, ``europe-west4``
 
-**Azure:** ``eastus2``
+**Azure:** ``eastus2``, ``germanywestcentral``
 
 ### Enable deletion protection
 
 Add `deletion_protection="enabled"` to prevent accidental deletes:
 
 ```python
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import Pinecone
 from pinecone.models.enums import DeletionProtection
 
 pc = Pinecone(api_key="your-api-key")
 
 pc.indexes.create(
     name="product-search",
-    dimension=1536,
-    metric="cosine",
-    spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+    schema={"fields": {"embedding": {"type": "dense_vector", "dimension": 1536, "metric": "cosine"}}},
+    deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
     deletion_protection=DeletionProtection.ENABLED,
 )
 ```
@@ -94,15 +92,14 @@ while not pc.indexes.describe("product-search").status.ready:
 
 ## List indexes
 
-`list` returns an {class}`~pinecone.models.IndexList` you can iterate, slice, or call
-`.names()` on:
+`list` returns a {class}`~pinecone.models.pagination.Paginator` you can iterate:
 
 ```python
 for idx in pc.indexes.list():
     print(idx.name, idx.status.state)
 
 # Just the names
-print(pc.indexes.list().names())
+names = [idx.name for idx in pc.indexes.list()]
 ```
 
 
@@ -111,10 +108,10 @@ print(pc.indexes.list().names())
 ```python
 idx = pc.indexes.describe("product-search")
 print(idx.name)
-print(idx.dimension)
-print(idx.metric)
-print(idx.spec.serverless.cloud)
-print(idx.spec.serverless.region)
+print(idx.schema.fields["embedding"].dimension)
+print(idx.schema.fields["embedding"].metric)
+print(idx.deployment.cloud)
+print(idx.deployment.region)
 ```
 
 
@@ -136,7 +133,7 @@ pc.indexes.delete("product-search")
 
 ## See also
 
-- {class}`~pinecone.models.IndexModel` — full index response model
-- {class}`~pinecone.models.IndexList` — list response model
-- {doc}`/how-to/indexes/pod` — pod-based index management
-- {doc}`/how-to/indexes/backups-and-restore` — create and restore backups
+- {class}`~pinecone.models.IndexModel`: full index response model
+- {class}`~pinecone.models.pagination.Paginator`: `list` response wrapper
+- {doc}`/how-to/indexes/pod`: pod-based index management
+- {doc}`/how-to/indexes/backups-and-restore`: create and restore backups

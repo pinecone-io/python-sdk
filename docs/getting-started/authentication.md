@@ -33,15 +33,15 @@ pc = Pinecone(api_key="your-key-here")
 
 ## Missing key error
 
-If no API key can be resolved — neither from the argument nor from the environment
-variable — the client raises `PineconeConfigurationError` on construction:
+If no API key can be resolved from either the argument or the environment variable,
+the client raises `PineconeValueError` on construction:
 
 ```python
-from pinecone import Pinecone, PineconeConfigurationError
+from pinecone import Pinecone, PineconeValueError
 
 try:
     pc = Pinecone()
-except PineconeConfigurationError as e:
+except PineconeValueError as e:
     print(e)  # "No API key provided. Pass api_key='...' or set the PINECONE_API_KEY environment variable."
 ```
 

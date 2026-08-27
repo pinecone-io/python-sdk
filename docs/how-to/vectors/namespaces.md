@@ -1,7 +1,7 @@
-# Working with Namespaces
+# Working with namespaces
 
 Namespaces are logical partitions within a Pinecone index. Vectors in different namespaces
-are completely isolated — a query in one namespace never returns results from another.
+are completely isolated. A query in one namespace never returns results from another.
 
 Common uses include separating data by customer, language, environment (staging vs.
 production), or data version.
@@ -76,9 +76,9 @@ for page in index.list_namespaces():
         print(ns.name, ns.record_count)
 ```
 
-Each {class}`~pinecone.models.NamespaceDescription` carries `name`, `record_count`,
-`size_bytes`, and — when the namespace restricts which metadata fields are indexed —
-`schema` and `indexed_fields`.
+Each {class}`~pinecone.models.NamespaceDescription` carries `name`, `record_count`, and
+`size_bytes`. When the namespace restricts which metadata fields are indexed, it also
+carries `schema` and `indexed_fields`.
 
 `size_bytes` is approximate: data written before size tracking reads as `0`, and recently
 deleted data may still be counted; compaction converges the value. `0` is also what the
@@ -145,10 +145,10 @@ ns = index.describe_namespace(name="__default__")
 ```
 
 This operation is rate limited per index, independently of the other namespace
-operations. To describe more than one namespace, use `list_namespaces()` instead — it
+operations. To describe more than one namespace, use `list_namespaces()` instead. It
 returns the same information for every namespace in a single request and is not subject
 to that limit. Fanning out `describe_namespace` calls will raise
-{exc}`~pinecone.errors.RateLimitError`.
+{exc}`~pinecone.errors.exceptions.RateLimitError`.
 
 
 ## Create a namespace
@@ -176,15 +176,15 @@ Supplying `schema` overrides the inherited configuration for that namespace alon
 ### Name rules
 
 Namespace names must be ASCII, must not contain the NUL character, and must be 1-512
-characters long. `__default__` is reserved — it names the namespace requests address when
-they omit a namespace, so it always exists and `create_namespace` rejects it. Names that
-break these rules raise {exc}`~pinecone.errors.ValidationError` before any request is
-sent, so the offending value is reported back to you rather than to the server.
+characters long. `__default__` is reserved, since it names the namespace requests address
+when they omit a namespace, so it always exists and `create_namespace` rejects it. Names that
+break these rules raise {exc}`~pinecone.errors.exceptions.PineconeValueError` before any
+request is sent, so the offending value is reported back to you rather than to the server.
 
 
 ## See also
 
-- {doc}`/how-to/vectors/upsert-and-query` — upsert and query operations
-- {class}`~pinecone.Index` — full data plane client reference
-- {class}`~pinecone.models.ListNamespacesResponse` — list namespaces response model
-- {class}`~pinecone.models.NamespaceDescription` — namespace metadata model
+- {doc}`/how-to/vectors/upsert-and-query`: upsert and query operations
+- {class}`~pinecone.Index`: full data plane client reference
+- {class}`~pinecone.models.ListNamespacesResponse`: list namespaces response model
+- {class}`~pinecone.models.NamespaceDescription`: namespace metadata model

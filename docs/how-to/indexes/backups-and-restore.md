@@ -1,4 +1,4 @@
-# Backups and Restore
+# Backups and restore
 
 Backups are point-in-time snapshots of an index. Use them to protect against data loss,
 create copies of an index, or restore a previous state.
@@ -39,7 +39,7 @@ backup = pc.indexes.create_backup("product-search", name="pre-reindex-snapshot")
 
 ## List backups
 
-`pc.backups.list` returns a {class}`~pinecone.models.backups.list.BackupList` —
+`pc.backups.list` returns a {class}`~pinecone.models.backups.list.BackupList`,
 **one page**, not every backup in the project. It carries a `pagination` token but
 does not follow it, so iterating the returned object directly sees at most one
 page. To list all backups, drive the token:
@@ -57,11 +57,11 @@ for backup in backups:
 
 When you omit `limit`, the server applies its own default.
 
-Pagination here is **offset-based, not cursor-based**: the token names a
+Pagination here is **offset-based, not cursor-based**. The token names a
 position in the result set, not a stable cursor over a snapshot. Three
-consequences:
+consequences follow:
 
-- `limit` is **omitted whenever a token is given** — the token already
+- `limit` is **omitted whenever a token is given**. The token already
   carries the page size it was minted with, and sending a different `limit`
   alongside it would skip or repeat rows.
 - Backups created or deleted between requests shift every later offset, so a
@@ -71,8 +71,8 @@ consequences:
   the listing.
 
 `pagination` is `None` only when a page comes back *shorter* than `limit`, so a
-final page that happens to be exactly `limit` long still carries a token —
-following it costs one extra request that returns nothing. Terminate on
+final page that happens to be exactly `limit` long still carries a token.
+Following it costs one extra request that returns nothing. Terminate on
 `pagination is None`, as the loop above does.
 
 Filtering by index is the same single-page contract, so the same loop applies:
@@ -98,7 +98,7 @@ for backup in pc.indexes.list_backups("product-search"):
 
 A backup outlives its source index, so an index-scoped listing has to say what
 it means by the index name. **By default it means the active index.** If every
-index that used the name has been deleted, the API answers **404 — not an empty
+index that used the name has been deleted, the API answers **404, not an empty
 list.**
 
 Pass `include_deleted=True` to widen the listing to every index that has ever
@@ -114,11 +114,11 @@ for backup in page:
         print(backup.backup_id, "orphaned at", backup.source_index_deleted_at)
 ```
 
-This is one page like every other `pc.backups.list` call — use the token loop
+This is one page like every other `pc.backups.list` call. Use the token loop
 above if the index has more backups than a page holds.
 
 So a 404 from `pc.backups.list(index_name=...)` is not proof the name was never
-used — retry with `include_deleted=True` before concluding that. A 404 *with*
+used. Retry with `include_deleted=True` before concluding that. A 404 *with*
 `include_deleted=True` does mean the name has never existed in this project.
 
 `include_deleted` applies only to index-scoped listings. The project-wide
@@ -171,11 +171,12 @@ print(index.status.state)
 return immediately:
 
 ```python
-index = pc.create_index_from_backup(
+result = pc.create_index_from_backup(
     name="product-search-restored",
     backup_id="bk-abc123",
     timeout=-1,
 )
+print(result.restore_job_id)
 ```
 
 Enable deletion protection or add tags to the restored index:
@@ -191,20 +192,20 @@ index = pc.create_index_from_backup(
 
 ### What a restore does and does not carry over
 
-`tags` behaves as documented: pass them and they win, omit them and the restored
+`tags` behaves as documented. Pass them and they win; omit them and the restored
 index inherits the backup's tags. `deletion_protection` is taken from the request
-only — it is never inherited from the source index.
+only. It is never inherited from the source index.
 
 ````{warning}
 **`read_capacity` is accepted on the request but has no effect today.** The
 `2026-07` OAS declares `read_capacity` on the restore body, and the SDK sends
-what you pass, but the backend's restore handler does not read the field: it
+what you pass, but the backend's restore handler does not read the field. It
 hardcodes on-demand capacity for a serverless restore and a fixed `B1`
 tier with one shard and one replica for a BYOC restore, whatever the source
 index or the request asked for.
 
 The SDK keeps the spec-shaped parameter rather than rejecting it client-side,
-so the call still succeeds — it just silently lands on defaults. Until the
+so the call still succeeds. It just silently lands on defaults. Until the
 backend honours the field, size a restored index with a `configure` call
 **after** the restore rather than expecting the restore to land on dedicated
 capacity:
@@ -233,12 +234,12 @@ Two more server-side gates are worth knowing before you call:
 - **The backup must be finished.** A backup that is not complete is refused
   with `412`. The message reads `Backup {backup_id} is not completed`, naming
   the store's raw `Completed` status rather than the `Ready` status the SDK
-  surfaces on `BackupModel` — so a `412` here means "`status` is not yet
+  surfaces on `BackupModel`, so a `412` here means "`status` is not yet
   `Ready`", not that you passed the wrong value anywhere.
 - **Pod backups cannot be restored.** A backup whose source index was a pod
   index is refused with `400` "Backups from pod indexes are not supported".
 
-`create_index_from_backup` is the only supported way to restore a backup —
+`create_index_from_backup` is the only supported way to restore a backup.
 `pc.create_index(source_backup_id=...)` raises a `PineconeTypeError` pointing
 here.
 
@@ -279,7 +280,7 @@ itself trigger the early stop.
 Treat the result as a best-effort sample rather than an exhaustive inventory,
 never conclude a restore job does not exist from its absence here, and
 de-duplicate by `restore_job_id` while walking pages. The SDK offers no
-workaround on purpose: the token stream itself ends early, so no client-side
+workaround on purpose. The token stream itself ends early, so no client-side
 code can recover pages the server never points at. Tracked upstream in
 [#250](https://github.com/pinecone-io/python-sdk-internal/issues/250).
 ```
@@ -299,10 +300,10 @@ print(job.completed_at)
 `describe` returns a {class}`~pinecone.models.backups.model.RestoreJobModel`.
 
 `status` has exactly four values: `Pending`, `Completed`, `Failed`, and
-`Cancelled`. **There is no in-progress state** — a restore that is actively
+`Cancelled`. **There is no in-progress state.** A restore that is actively
 running reports `Pending`, so polling for a `Running`-style value never
 terminates. `percent_complete` is `100` once `status` is `Completed` and `None`
-at every other point: it reports completion, not progress, and cannot drive a
+at every other point. It reports completion, not progress, and cannot drive a
 progress bar. `completed_at` is populated on the same condition. Poll `status`
 for a terminal value instead:
 
@@ -318,8 +319,8 @@ while True:
 
 ```{warning}
 **A 404 from `describe` cannot be trusted to mean "no such restore job".**
-Against today's backend every failure to read the restore-job store — a store
-outage included — is flattened into a 404, so the `NotFoundError` you catch here
+Against today's backend, every failure to read the restore-job store, a store
+outage included, is flattened into a 404, so the `NotFoundError` you catch here
 means "could not produce this job", not "this job does not exist". Any retry
 policy or control flow keyed on a 404 from `describe` is therefore unsafe:
 giving up, deleting local state, or reporting the job as gone can each be the
@@ -328,7 +329,7 @@ transient unless you have independent evidence the id is bad.
 
 The same flattening means a restore job whose target index has been deleted also
 answers 404, carrying a message about index metadata rather than "Restore job
-not found" — so do not match on the message text either. Such a job is dropped
+not found", so do not match on the message text either. Such a job is dropped
 from `list` entirely rather than reported. Tracked upstream in
 [#250](https://github.com/pinecone-io/python-sdk-internal/issues/250).
 ```
@@ -341,7 +342,7 @@ pc.backups.delete(backup_id="bk-abc123")
 ```
 
 Deleting a backup does not affect the source index or any indexes restored from it.
-The call returns `None` — the API answers `202 Accepted` with no body.
+The call returns `None`. The API answers `202 Accepted` with no body.
 
 A backup with a restore job still in flight cannot be deleted; the API returns
 `412` and the SDK raises a `FailedPreconditionError` naming the pending job ids. Wait for the
@@ -387,7 +388,7 @@ indexes cannot be scheduled at all and are rejected with `400`.
 **Keep the schedule name short.** Each run names its backup
 `"{name}-{run timestamp}"`, so a long schedule name pushes the derived backup
 name past the length limit backup names are held to. Nothing checks this at
-create time: the API declares no length limit on a schedule name, and the SDK
+create time. The API declares no length limit on a schedule name, and the SDK
 does not invent one, because that would reject names the API accepts. An
 over-long name is therefore accepted here and fails later, on the runs, rather
 than on `create`.
@@ -395,7 +396,7 @@ than on `create`.
 
 ### List the schedules on an index
 
-Schedules are always listed per index — there is no project-wide schedule
+Schedules are always listed per index. There is no project-wide schedule
 listing. Disabled schedules are included.
 
 ```python
@@ -419,7 +420,7 @@ print(page.pagination)   # None on the final page
 schedule = pc.backup_schedules.describe(schedule_id="sched-abc123")
 ```
 
-`update` is a sparse PATCH: only the arguments you pass are sent, so anything
+`update` is a sparse PATCH. Only the arguments you pass are sent, so anything
 you omit is left unchanged rather than reset.
 
 ```python
@@ -433,7 +434,7 @@ pc.backup_schedules.update(
 
 ```{warning}
 Re-enabling a disabled schedule with `enabled=True` **immediately enqueues a
-backup run** — it is not a free toggle. It also recomputes
+backup run.** It is not a free toggle. It also recomputes
 `next_scheduled_run` from the moment of the update rather than resuming the old
 slot, so a disable/re-enable cycle shifts the cadence. And because only one
 schedule per index may be enabled, re-enabling fails with `409` when another
@@ -449,7 +450,7 @@ deleted; they age out on their own retention window.
 
 ```{important}
 `delete` is not safe to retry blindly. Success answers `204` with no body, and
-a second attempt on the same `schedule_id` answers `404` — so a retry after a
+a second attempt on the same `schedule_id` answers `404`, so a retry after a
 dropped response looks identical to deleting something that was never there.
 Treat a `404` following a delete attempt as success.
 ```
@@ -465,7 +466,7 @@ History rows describe backup *snapshots*, not the schedule. A row appears as
 soon as a run is planned, so the listing mixes completed runs with ones that
 have not started; `run.is_scheduled` and `history.scheduled()` pick out the
 latter. As with the schedule listing, `history` returns one page and
-`iter_history` walks all of them — prefer the iterator here, because a daily
+`iter_history` walks all of them. Prefer the iterator here, because a daily
 schedule with a 90-day retention window has far more rows than one page holds.
 
 ```{note}
@@ -480,13 +481,13 @@ the backend graduates; until then `scheduled_execution_at` reads as `None` and
 
 ## See also
 
-- {class}`~pinecone.models.backups.model.BackupModel` — backup response model
-- {class}`~pinecone.models.backups.list.BackupList` — backup list response
-- {class}`~pinecone.models.backups.model.RestoreJobModel` — restore job model
-- {class}`~pinecone.models.backups.list.RestoreJobList` — restore job list response
-- {class}`~pinecone.models.backups.schedules.BackupScheduleModel` — schedule response model
-- {class}`~pinecone.models.backups.list.BackupScheduleList` — schedule list response
-- {class}`~pinecone.models.backups.schedules.BackupScheduleHistoryItem` — one run produced by a schedule
-- {class}`~pinecone.models.backups.list.BackupScheduleHistoryList` — schedule history response
-- {doc}`/how-to/indexes/serverless` — serverless index management
-- {doc}`/how-to/indexes/pod` — pod-based index management
+- {class}`~pinecone.models.backups.model.BackupModel`: backup response model
+- {class}`~pinecone.models.backups.list.BackupList`: backup list response
+- {class}`~pinecone.models.backups.model.RestoreJobModel`: restore job model
+- {class}`~pinecone.models.backups.list.RestoreJobList`: restore job list response
+- {class}`~pinecone.models.backups.schedules.BackupScheduleModel`: schedule response model
+- {class}`~pinecone.models.backups.list.BackupScheduleList`: schedule list response
+- {class}`~pinecone.models.backups.schedules.BackupScheduleHistoryItem`: one run produced by a schedule
+- {class}`~pinecone.models.backups.list.BackupScheduleHistoryList`: schedule history response
+- {doc}`/how-to/indexes/serverless`: serverless index management
+- {doc}`/how-to/indexes/pod`: pod-based index management

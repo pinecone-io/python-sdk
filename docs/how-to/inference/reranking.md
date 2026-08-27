@@ -1,4 +1,4 @@
-# Reranking Results
+# Reranking results
 
 Reranking reorders a set of candidate documents by relevance to a query. Use it after
 an initial retrieval step (vector search, keyword search, or a combined approach) to
@@ -41,16 +41,16 @@ result = pc.inference.rerank(
 
 ``rerank`` returns a {class}`~pinecone.models.inference.rerank.RerankResult` containing:
 
-- ``.data`` — list of {class}`~pinecone.models.inference.rerank.RankedDocument`, ordered
+- ``.data``: list of {class}`~pinecone.models.inference.rerank.RankedDocument`, ordered
   by descending score.
-- ``.model`` — model name used.
-- ``.usage.rerank_units`` — rerank units consumed.
+- ``.model``: model name used.
+- ``.usage.rerank_units``: rerank units consumed.
 
 Each {class}`~pinecone.models.inference.rerank.RankedDocument` has:
 
-- ``.index`` — the original position of the document in the input list.
-- ``.score`` — relevance score (higher is more relevant).
-- ``.document`` — the original document dict (``None`` when ``return_documents=False``).
+- ``.index``: the original position of the document in the input list.
+- ``.score``: relevance score (higher is more relevant).
+- ``.document``: the original document dict (``None`` when ``return_documents=False``).
 
 ## top_n: return only the best results
 
@@ -135,8 +135,8 @@ for doc in result.data:
     print(doc.score, doc.document)
 ```
 
-For integrated indexes, pass ``rerank`` directly inside
-{meth}`~pinecone.Index.search` — see {doc}`/how-to/integrated-records`.
+For integrated indexes, pass ``rerank`` directly inside {meth}`~pinecone.Index.search`.
+See {doc}`/how-to/integrated-records`.
 
 ## List available reranking models
 

@@ -1,8 +1,10 @@
-# Working with Collections
+# Working with collections
 
-Collections are read-only snapshots of pod indexes. Use them to back up index data,
-duplicate an index, or restore a known-good state. Collections are only supported for
-pod-based indexes — serverless indexes use backups instead.
+Collections are read-only snapshots of pod indexes. Create one to preserve a pod index's
+data before deleting or reconfiguring it. Restoring a collection into a new index is not
+currently supported by the API (see [below](#create-an-index-from-a-collection)).
+Collections are only supported for pod-based indexes; serverless indexes use backups
+instead.
 
 ## Create a collection
 
@@ -73,25 +75,9 @@ exist.
 
 ## Create an index from a collection
 
-Pass ``source_collection`` inside a {class}`~pinecone.PodSpec` to restore collection
-data into a new pod index:
-
-```python
-from pinecone import Pinecone
-from pinecone.models.indexes.specs import PodSpec
-
-pc = Pinecone(api_key="your-api-key")
-
-pc.indexes.create(
-    name="restored-index",
-    dimension=1536,
-    metric="cosine",
-    spec=PodSpec(
-        environment="us-east-1-aws",
-        pod_type="p1.x1",
-        source_collection="snap-2025-01",
-    ),
-)
-```
-
-The new index is pre-populated with all vectors from the collection snapshot.
+Restoring a collection into a new index is not currently supported by the API.
+``pc.indexes.create(source_collection=...)`` raises {exc}`~pinecone.errors.exceptions.PineconeTypeError`,
+and passing ``source_collection`` inside a {class}`~pinecone.PodSpec` (via the deprecated
+``spec=`` argument) is silently dropped instead of restoring data, so the index comes back
+empty. See {doc}`/how-to/indexes/backups-and-restore` for the supported restore path;
+it covers serverless and BYOC indexes only, since pod indexes can't be backed up either.

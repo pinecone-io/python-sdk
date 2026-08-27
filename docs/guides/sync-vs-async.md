@@ -40,7 +40,7 @@ with Pinecone() as pc:
 
 ## Async Client
 
-`AsyncPinecone` and `AsyncIndex` are non-blocking. Every method is a coroutine — you
+`AsyncPinecone` and `AsyncIndex` are non-blocking. Every method is a coroutine, and you
 must `await` it inside an `async` function.
 
 `AsyncPinecone` is an async context manager. Always use it with `async with` so the
@@ -61,7 +61,7 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-`pc.index()` on `AsyncPinecone` is itself a coroutine — `await` it to get back an
+`pc.index()` on `AsyncPinecone` is itself a coroutine. `await` it to get back an
 `AsyncIndex`. The returned `AsyncIndex` manages its own HTTP session; close it
 with `async with index:` or `await index.close()`.
 
@@ -74,7 +74,7 @@ async with AsyncPinecone() as pc:
 ```
 
 
-## Same Operation — Two Styles
+## Same Operation, Two Styles
 
 The example below shows the same upsert-and-query flow in both styles.
 
@@ -134,7 +134,7 @@ asyncio.run(main())
 
 Pass `grpc=True` to `pc.index()` to use a `GrpcIndex` instead of the default HTTP
 `Index`. gRPC uses HTTP/2 multiplexing and binary serialization, which can improve
-throughput significantly for bulk upsert workloads.
+throughput for bulk upsert workloads.
 
 ```python
 from pinecone import Pinecone

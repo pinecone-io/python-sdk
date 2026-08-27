@@ -1,28 +1,26 @@
-# Integrated Records (Server-Side Embedding)
+# Integrated records (server-side embedding)
 
 Integrated indexes store text records and embed them server-side using a hosted model.
 You write text; Pinecone handles the embedding. No separate ``embed`` step required.
 
 ## Create an integrated index
 
-Use {class}`~pinecone.IntegratedSpec` and provide an {class}`~pinecone.EmbedConfig`
-that maps a document field to the embedding input:
+Call ``pc.indexes.create_for_model()`` with an {class}`~pinecone.EmbedConfig` that maps
+a document field to the embedding input:
 
 ```python
 from pinecone import Pinecone
-from pinecone.models.indexes.specs import EmbedConfig, IntegratedSpec
+from pinecone.models.indexes.specs import EmbedConfig
 
 pc = Pinecone(api_key="your-api-key")
 
-pc.indexes.create(
+pc.indexes.create_for_model(
     name="articles",
-    spec=IntegratedSpec(
-        cloud="aws",
-        region="us-east-1",
-        embed=EmbedConfig(
-            model="multilingual-e5-large",
-            field_map={"text": "body"},   # embed the "body" field of each record
-        ),
+    cloud="aws",
+    region="us-east-1",
+    embed=EmbedConfig(
+        model="multilingual-e5-large",
+        field_map={"text": "body"},   # embed the "body" field of each record
     ),
 )
 ```
@@ -77,16 +75,16 @@ for hit in results.result.hits:
 
 ``search`` returns a {class}`~pinecone.models.vectors.search.SearchRecordsResponse`:
 
-- ``.result.hits`` — list of {class}`~pinecone.models.vectors.search.Hit` objects, ordered
+- ``.result.hits``: list of {class}`~pinecone.models.vectors.search.Hit` objects, ordered
   by descending score.
-- ``.usage.read_units`` — read units consumed.
-- ``.usage.embed_total_tokens`` — tokens used for embedding the query.
+- ``.usage.read_units``: read units consumed.
+- ``.usage.embed_total_tokens``: tokens used for embedding the query.
 
 Each {class}`~pinecone.models.vectors.search.Hit` exposes:
 
-- ``.id`` — the record identifier.
-- ``.score`` — similarity score (higher is more relevant).
-- ``.fields`` — dict of record fields returned in the result.
+- ``.id``: the record identifier.
+- ``.score``: similarity score, higher is more relevant.
+- ``.fields``: dict of record fields returned in the result.
 
 ### Use SearchInputs for IDE support
 
@@ -164,5 +162,5 @@ results = index.search(
 
 ## See also
 
-- {doc}`/how-to/inference/embeddings` — generate embeddings manually for non-integrated indexes.
-- {doc}`/how-to/inference/reranking` — rerank results from any source.
+- {doc}`/how-to/inference/embeddings`: generate embeddings manually for non-integrated indexes.
+- {doc}`/how-to/inference/reranking`: rerank results from any source.

@@ -1,18 +1,19 @@
 # How Pinecone Works
 
-A vector database stores numerical representations of data — called vectors or embeddings
-— and retrieves the entries most similar to a query vector. Unlike a relational database
+A vector database stores numerical representations of data, called vectors or embeddings,
+and retrieves the entries most similar to a query vector. Unlike a relational database
 that matches rows by exact field values, a vector database uses approximate nearest-neighbor
 algorithms to rank results by geometric closeness in high-dimensional space.
 
 
 ## Indexes
 
-An index holds the vectors you store and query. Every index has two required properties:
+An index holds the vectors you store and query. Its schema declares the fields it
+searches on, most commonly a single dense vector field with two required properties:
 
-- **Dimension** — the length of vectors stored in the index. Every vector you upsert must
+- **Dimension**: the length of vectors stored in that field. Every vector you upsert must
   have exactly this many values.
-- **Metric** — the similarity function used when ranking query results: `cosine`,
+- **Metric**: the similarity function used when ranking query results: `cosine`,
   `euclidean`, or `dotproduct`.
 
 Pinecone offers two index types:
@@ -26,14 +27,18 @@ Pinecone offers two index types:
 Create a serverless index:
 
 ```python
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import Pinecone, SchemaBuilder
 
 pc = Pinecone()
+schema = (
+    SchemaBuilder()
+    .add_dense_vector_field("embedding", dimension=1536, metric="cosine")
+    .build()
+)
 pc.indexes.create(
     name="movie-recommendations",
-    dimension=1536,
-    metric="cosine",
-    spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+    schema=schema,
+    deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
 )
 ```
 
@@ -110,19 +115,17 @@ the embeddings server-side using a hosted model. You upsert text records; the in
 handles embedding automatically.
 
 ```python
-from pinecone import Pinecone, IntegratedSpec, EmbedConfig
+from pinecone import Pinecone
 
 pc = Pinecone()
-pc.indexes.create(
+pc.indexes.create_for_model(
     name="article-search",
-    spec=IntegratedSpec(
-        cloud="aws",
-        region="us-east-1",
-        embed=EmbedConfig(
-            model="multilingual-e5-large",
-            field_map={"text": "text"},
-        ),
-    ),
+    cloud="aws",
+    region="us-east-1",
+    embed={
+        "model": "multilingual-e5-large",
+        "field_map": {"text": "text"},
+    },
 )
 
 index = pc.index(name="article-search")
@@ -134,7 +137,7 @@ index.upsert_records(
     ],
 )
 
-results = index.search_records(
+results = index.search(
     namespace="articles-en",
     inputs={"text": "latest physics research"},
     top_k=5,
@@ -146,13 +149,13 @@ results = index.search_records(
 
 Operations fall into two categories:
 
-**Control plane** — index lifecycle management: create, list, describe, configure, and
-delete indexes; manage collections and backups. Control-plane calls are routed through
-`api.pinecone.io`. You access them via the `Pinecone` client.
+The **control plane** handles index lifecycle management: create, list, describe,
+configure, and delete indexes, plus collections and backups. Control-plane calls go
+through `api.pinecone.io`, accessed via the `Pinecone` client.
 
-**Data plane** — vector operations: upsert, query, fetch, update, delete, and list
-vectors. Data-plane calls go directly to an index's host URL. You access them via
-the `Index` (or `AsyncIndex`) client.
+The **data plane** handles vector operations: upsert, query, fetch, update, delete, and
+list vectors. Data-plane calls go directly to an index's host URL, accessed via the
+`Index` (or `AsyncIndex`) client.
 
 ```python
 from pinecone import Pinecone
@@ -171,8 +174,8 @@ index.upsert(vectors=[("movie-42", [0.1, 0.2, ...])])
 ## Namespace Pattern in the SDK
 
 The `Pinecone` client exposes related operations as namespace objects rather than a flat
-list of methods. This keeps the top-level surface small and groups related functionality
-together:
+list of methods. This keeps the client's top-level API small and groups related
+functionality together:
 
 | Namespace | Operations |
 |---|---|

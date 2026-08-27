@@ -1,4 +1,4 @@
-# Bulk Importing Vectors
+# Bulk importing vectors
 
 Bulk import loads vectors from cloud storage (Amazon S3, Google Cloud Storage, or Azure Blob
 Storage) into a Pinecone index. The import runs server-side, so it handles millions of vectors
@@ -10,7 +10,7 @@ The source must be a directory of Parquet files formatted to the
 The `uri` names that directory prefix, never an individual file, and takes one of three
 forms: `s3://` for Amazon S3, `gs://` for Google Cloud Storage, or an `https://` URL
 naming an Azure Blob Storage container. An `s3://` source additionally requires that the
-index itself be hosted on AWS — the same bucket is rejected for an index on another
+index itself be hosted on AWS. The same bucket is rejected for an index on another
 cloud. Anything else fails the call, as does an S3 directory bucket, which imports do
 not support.
 
@@ -121,6 +121,6 @@ index.cancel_import(import_id)
 
 ## See also
 
-- {doc}`/how-to/vectors/upsert-and-query` — upsert vectors directly in batches
-- {class}`~pinecone.Index` — full data plane client reference
-- {class}`~pinecone.models.ImportModel` — import operation model
+- {doc}`/how-to/vectors/upsert-and-query`: upsert vectors directly in batches
+- {class}`~pinecone.Index`: full data plane client reference
+- {class}`~pinecone.models.ImportModel`: import operation model

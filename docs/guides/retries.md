@@ -11,14 +11,14 @@ For the exceptions the SDK raises when retries are exhausted, see {doc}`/guides/
 
 ## Defaults at a Glance
 
-Out of the box — no configuration needed:
+Out of the box, no configuration needed:
 
 | What | Default behavior |
 |------|------------------|
 | Max retries (after initial attempt) | 3 for REST (4 total), 5 for gRPC (6 total) |
 | Retryable HTTP status codes | 408, 429, 500, 502, 503, 504 |
 | Retryable gRPC status codes | UNAVAILABLE, RESOURCE\_EXHAUSTED, ABORTED |
-| Backoff algorithm | Decorrelated jitter — random walk bounded by `backoff_factor` floor and `max_wait` cap |
+| Backoff algorithm | Decorrelated jitter: random walk bounded by `backoff_factor` floor and `max_wait` cap |
 | Adaptive concurrency (bulk paths) | Self-tunes downward on throttling; `max_concurrency` is a ceiling, not a constant |
 
 ---
@@ -50,8 +50,10 @@ pc = Pinecone(
 | `max_wait` | `float` | `60.0` | Maximum delay cap in seconds. The jitter algorithm never waits longer than this between retries. |
 | `retryable_status_codes` | `frozenset[int]` | `{408, 429, 500, 502, 503, 504}` | HTTP status codes that trigger a retry. The SDK retries on these codes and raises on all others. |
 
-**`RetryConfig` applies to REST only.** The gRPC transport (Rust-backed) uses its own fixed retry
-policy with 5 retries by default. See [Transport differences](#transport-differences).
+**A `retry_config` passed to `Pinecone()` also governs gRPC.** Any `GrpcIndex` created via
+`pc.index(grpc=True)` inherits it. Leave `retry_config` unset and gRPC keeps its own
+defaults (`max_retries=5`, `backoff_factor=0.1`) instead of REST's. `retryable_status_codes`
+is ignored on gRPC either way. See [Transport differences](#transport-differences).
 
 ### Disabling retries
 
@@ -88,12 +90,13 @@ except RateLimitError:
 
 ### Migration note: `backoff_factor` semantic change (v8 → v9)
 
-In v8 and earlier, `backoff_factor` was an exponential multiplier. In v9, it became the
-**minimum delay floor in seconds** — the lower bound of the decorrelated jitter window. The
-default also changed from `2.0` to `0.25`. If you pinned `backoff_factor=2.0` in v8, the
-new equivalent that produces a similar mean first-retry delay is `backoff_factor=0.5`; if
-you want to restore the old default behavior (which caused ~4× longer delays than v9), pass
-`backoff_factor=2.0` explicitly. Most users should use the v9 default or leave it unset.
+In v8, `backoff_factor` fed urllib3's exponential-backoff `Retry` as a multiplier
+(`backoff_factor * 2 ** (retry_count - 1)`, plus jitter) and defaulted to `0.25`, the
+same default v9 uses. What changed is the semantic, not the number: v9's `backoff_factor`
+is the floor of a decorrelated-jitter window, not an exponential base, so no single
+substitute value reproduces v8's curve exactly. If your v8 code depended on that specific
+timing, benchmark against the formula in [Jitter strategy](#jitter-strategy) rather than
+assuming a 1:1 mapping. Most users should use the v9 default or leave it unset.
 
 ---
 
@@ -114,7 +117,7 @@ delay = min(delay, max_wait)
 Starting from `prev_delay = backoff_factor`, each retry delay is drawn uniformly from
 `[backoff_factor, prev_delay × 3]`, capped at `max_wait`. Because the next window's upper
 bound grows with the previous delay, the sequence performs a random walk that diverges
-naturally without a hard exponential schedule — neighboring clients are unlikely to pick
+naturally without a hard exponential schedule; neighboring clients are unlikely to pick
 the same delay even when they start at the same time.
 
 **Concrete example with defaults** (`backoff_factor=0.25`, `max_wait=60.0`):
@@ -123,7 +126,7 @@ the same delay even when they start at the same time.
 |---------|-----------------|---------------|
 | 1st retry | [0.25, 0.75] | ~0.5 s |
 | 2nd retry | [0.25, ~1.5] | ~0.9 s |
-| 3rd retry | [0.25, ~4.5] | ~2.4 s |
+| 3rd retry | [0.25, ~2.6] | ~1.4 s |
 
 ---
 
@@ -138,11 +141,11 @@ throttling subsides, concurrency recovers.
 Each `Pinecone` client maintains a per-host concurrency limiter. On every retryable
 response (429, 503, or equivalent gRPC code), the limiter halves the effective
 concurrency floor for that host. After a streak of consecutive successful requests, it
-recovers by one slot. The algorithm is AIMD (Additive Increase, Multiplicative Decrease)
-— the same control loop used by TCP congestion control.
+recovers by one slot. The algorithm is AIMD (Additive Increase, Multiplicative Decrease),
+the same control loop used by TCP congestion control.
 
 **You don't configure this directly.** The `max_concurrency` parameter you pass to
-`upsert()` is a *ceiling* — the SDK self-tunes between 1 and that ceiling based on what
+`upsert()` is a *ceiling*: the SDK self-tunes between 1 and that ceiling based on what
 the server can absorb.
 
 ### Example
@@ -168,27 +171,30 @@ print(response.upserted_count)
 ### Limiter scope
 
 One limiter per index host per `Pinecone` client. If you create two `Pinecone` clients and
-both target the same index, they each maintain an independent limiter — there is no
+both target the same index, they each maintain an independent limiter; there is no
 cross-client coordination (see [Multi-process and serverless workloads](#multi-process-and-serverless-workloads)).
 
 ---
 
 ## Transport Differences
 
-The retry plan goal is parity across REST and gRPC. The remaining differences are small:
+REST and gRPC share the same retry mechanics; the differences are in the defaults and in
+what `retryable_status_codes` means:
 
 | Aspect | REST (`Index`, `AsyncIndex`) | gRPC (`GrpcIndex`) |
 |--------|------------------------------|---------------------|
 | Default `max_retries` | 3 (4 total attempts) | 5 (6 total attempts) |
-| Configured via | `RetryConfig` passed to `Pinecone()` | Fixed in transport (not user-configurable) |
-| Retryable codes | `{408, 429, 500, 502, 503, 504}` | UNAVAILABLE, RESOURCE\_EXHAUSTED, ABORTED |
+| Default `backoff_factor` | 0.25 | 0.1 |
+| Configured via | `retry_config` passed to `Pinecone()`, inherited by `pc.index()` | Same `retry_config`, inherited by `pc.index(grpc=True)`; or pass `retry_config` directly to `GrpcIndex()` |
+| Retryable codes | `{408, 429, 500, 502, 503, 504}` (`retryable_status_codes`) | UNAVAILABLE, RESOURCE\_EXHAUSTED, ABORTED (fixed); `retryable_status_codes` is ignored |
 | Jitter algorithm | Decorrelated jitter (Python) | Decorrelated jitter (Rust) |
-| Async support | Yes (`AsyncIndex`) | No — gRPC transport is sync-only |
+| Async support | Yes (`AsyncIndex`) | No (gRPC transport is sync-only) |
 | Adaptive concurrency | Yes (REST + gRPC share the same per-host limiter registry) | Yes |
 
-**gRPC retry is not configurable via `RetryConfig`.** If you need to tune gRPC retry
-behavior, construct `GrpcIndex` directly (rather than through `Pinecone.index(grpc=True)`)
-and pass `max_retries` explicitly.
+**A `retry_config` you pass to `Pinecone()` is only forwarded to gRPC if you set it
+explicitly.** Leave it unset and a `GrpcIndex` from `pc.index(grpc=True)` uses gRPC's own
+defaults above rather than REST's. To configure gRPC independently of the REST client,
+construct `GrpcIndex` directly and pass `retry_config` to it.
 
 ---
 
@@ -240,18 +246,18 @@ except RateLimitError as exc:
 
 Even without coordination, the SDK's decorrelated jitter provides statistical relief. If N
 independent Lambda invocations are all throttled at once, they don't all retry at the same
-instant — each draws its own delay, spreading the retries across a window. The larger N is,
+instant; each draws its own delay, spreading the retries across a window. The larger N is,
 the more this matters.
 
 ### Summary: when to trust the SDK vs. the orchestrator
 
 | Scenario | Recommended approach |
 |----------|----------------------|
-| Single-process bulk upsert | Use defaults — SDK handles everything |
-| Long-running worker (persistent process) | Use defaults — adaptive limiter learns and recovers |
+| Single-process bulk upsert | Use defaults; SDK handles everything |
+| Long-running worker (persistent process) | Use defaults; adaptive limiter learns and recovers |
 | Lambda / Cloud Functions / Cloud Run (stateless) | `max_retries=1`, catch `RateLimitError`, re-raise for orchestrator retry |
-| Fan-out across many pods (e.g. Kubernetes Job) | Same as stateless — set low `max_retries`, rely on orchestrator |
-| Strict per-invocation SLA (must not block) | `max_retries=0`, `retryable_status_codes=frozenset()` — raise immediately |
+| Fan-out across many pods (e.g. Kubernetes Job) | Same as stateless; set low `max_retries`, rely on orchestrator |
+| Strict per-invocation SLA (must not block) | `max_retries=0`, `retryable_status_codes=frozenset()`; raise immediately |
 
 ---
 
@@ -294,11 +300,12 @@ logging.getLogger("pinecone._internal.adaptive").setLevel(logging.DEBUG)
 **Throttle record** (emitted once per retry attempt that receives a retryable response):
 
 ```
-Throttled response: status=429 host=my-index.svc.pinecone.io attempt=1/4 delay=0.531s
+Throttled response: status=429 host=my-index.svc.pinecone.io attempt=1/4 delay=0.531s retry_after=absent
 ```
 
 Fields: `status` (HTTP status code), `host`, `attempt` (N of total attempts),
-`delay` (computed wait in seconds).
+`delay` (computed wait in seconds), `retry_after` (the response's `Retry-After` header
+value, or `absent`).
 
 **AIMD limit decrease** (emitted when the adaptive limiter reduces concurrency):
 
@@ -312,13 +319,13 @@ AIMD limiter decreased: before=8 after=4 ceiling=8
 AIMD limiter increased: now=5 ceiling=8
 ```
 
-Increase records only fire on actual transitions — not on every successful request —
+Increase records only fire on actual transitions, not on every successful request,
 so the volume is proportional to recovery events, not request throughput.
 
 ---
 
 ## See Also
 
-- {doc}`/guides/error-handling` — Exception hierarchy and how to catch specific errors
-- {doc}`/guides/performance` — Bulk upsert patterns, `max_concurrency` tuning, and transport selection
-- {doc}`/guides/sync-vs-async` — When to use the async client and how to manage concurrency with `asyncio`
+- {doc}`/guides/error-handling`: Exception hierarchy and how to catch specific errors
+- {doc}`/guides/performance`: Bulk upsert patterns, `max_concurrency` tuning, and transport selection
+- {doc}`/guides/sync-vs-async`: When to use the async client and how to manage concurrency with `asyncio`

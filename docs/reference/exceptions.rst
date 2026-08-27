@@ -157,6 +157,9 @@ major release.  New code should use the canonical names listed above.
    * - ``ServiceException``
      - :class:`~pinecone.errors.exceptions.ServiceError`
      - Legacy 5xx error
+   * - ``RateLimitException``
+     - :class:`~pinecone.errors.exceptions.RateLimitError`
+     - Legacy 429 error
    * - ``ListConversionException``
      - :class:`~pinecone.errors.exceptions.PineconeError`
      - Legacy list conversion error

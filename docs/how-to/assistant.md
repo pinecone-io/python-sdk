@@ -1,4 +1,4 @@
-# Working with the Assistant
+# Working with the assistant
 
 The assistant client lets you create and manage AI assistants that can answer questions
 over your uploaded documents.
@@ -20,8 +20,8 @@ print(assistant.status)  # "Ready"
 
 By default, ``create()`` polls until the assistant reaches ``"Ready"`` status before
 returning. To return immediately without waiting (for example to kick off creation
-asynchronously), pass ``timeout=-1`` — the returned assistant will be in
-``"Initializing"`` status and you can check readiness later via ``describe()``.
+asynchronously), pass ``timeout=-1``. The returned assistant will be in
+``"Initializing"`` status, and you can check readiness later via ``describe()``.
 
 ## List and describe assistants
 
@@ -55,7 +55,7 @@ print(file.name)   # "data.pdf"
 print(file.status) # "Processing" → "Available"
 ```
 
-To upload bytes you already hold, pass `file_stream` — plus a `file_name` that
+To upload bytes you already hold, pass `file_stream` and a `file_name` that
 carries the extension. The server types an uploaded file by its extension alone
 (`.txt`, `.pdf`, `.json`, `.md`, `.docx`) and never inspects the bytes, so a
 stream without a usable filename raises
@@ -75,7 +75,7 @@ file = pc.assistants.upload_file(
 
 File writes are asynchronous server-side. `upload_file` and `delete_file` poll for
 you and only return once the work is done, so most callers never need this. But
-`timeout=-1` makes them return as soon as the request is accepted — and these two
+`timeout=-1` makes them return as soon as the request is accepted, and these two
 methods are how you follow what was started.
 
 `describe_operation` reports one operation:
@@ -92,7 +92,7 @@ print(operation.error)            # the reason, when status is "Failed"
 ```
 
 `list_operations` returns a lazy paginator over everything in flight and
-everything that recently finished — both successes and failures are kept for 30
+everything that recently finished. Both successes and failures are kept for 30
 days:
 
 ```python
@@ -102,7 +102,7 @@ for op in pc.assistants.list_operations(assistant_name="my-assistant"):
 
 Filter with `operation_type` (`"upload_file"`, `"upsert_file"`,
 `"update_file_metadata"`, `"delete_file"`) and `status` (`"Processing"`,
-`"Completed"`, `"Failed"` — case-sensitive). An unrecognized value raises
+`"Completed"`, `"Failed"`, case-sensitive). An unrecognized value raises
 {exc}`~pinecone.errors.exceptions.PineconeValueError` listing the ones that work,
 before anything is sent:
 
@@ -134,9 +134,9 @@ print(response.message.content)
 
 ## Streaming chat
 
-Pass ``stream=True`` to receive tokens incrementally as text fragments.  Use
-``stream.text()`` — the idiomatic text-only accessor — to iterate over plain
-strings.  Iterating ``stream`` directly instead yields typed chunk objects
+Pass ``stream=True`` to receive tokens incrementally as text fragments. Use
+``stream.text()``, the idiomatic text-only accessor, to iterate over plain
+strings. Iterating ``stream`` directly instead yields typed chunk objects
 (``StreamMessageStart``, ``StreamContentChunk``, ``StreamCitationChunk``,
 ``StreamMessageEnd``), which is useful when you need full metadata but would
 print their ``repr`` rather than the assistant's text.

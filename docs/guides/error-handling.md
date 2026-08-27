@@ -63,7 +63,7 @@ except RateLimitError:
 except ServiceError as exc:
     print(f"Server error {exc.status_code}: {exc.message}")
 except PineconeConnectionError:
-    print("Network error — check your connection")
+    print("Network error; check your connection")
 except PineconeTimeoutError:
     print("Request timed out")
 ```
@@ -79,6 +79,8 @@ except PineconeTimeoutError:
 | `body` | `dict \| None` | Parsed response body, if available |
 | `reason` | `str \| None` | HTTP reason phrase |
 | `headers` | `dict \| None` | Response headers |
+| `error_code` | `str \| None` | Server-provided error code, if present |
+| `request_id` | `str \| None` | Request ID for correlating with support, if present |
 
 ```python
 from pinecone.errors import ApiError
@@ -95,7 +97,7 @@ except ApiError as exc:
 ## ConflictError when creating an index
 
 If you call `pc.indexes.create()` and an index with that name already exists, the server
-returns a 409 and the SDK raises `ConflictError`.  The idiomatic fix is to guard the
+returns a 409 and the SDK raises `ConflictError`. The idiomatic fix is to guard the
 create call with `pc.indexes.exists()`:
 
 ```python
@@ -106,9 +108,8 @@ pc = Pinecone()
 if not pc.indexes.exists("my-index"):
     pc.indexes.create(
         name="my-index",
-        spec={"serverless": {"cloud": "aws", "region": "us-east-1"}},
-        dimension=1536,
-        metric="cosine",
+        schema={"fields": {"embedding": {"type": "dense_vector", "dimension": 1536, "metric": "cosine"}}},
+        deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
     )
 ```
 
@@ -126,9 +127,8 @@ pc = Pinecone()
 try:
     pc.indexes.create(
         name="my-index",
-        spec={"serverless": {"cloud": "aws", "region": "us-east-1"}},
-        dimension=1536,
-        metric="cosine",
+        schema={"fields": {"embedding": {"type": "dense_vector", "dimension": 1536, "metric": "cosine"}}},
+        deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
     )
 except ConflictError:
     pass  # index already exists, nothing to do
