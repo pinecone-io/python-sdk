@@ -195,30 +195,95 @@ class TestIndexModel:
         assert model.metric == "cosine"
         assert model.vector_type == "dense"
 
-    def test_dimension_raises_guided_error_with_no_dense_field(self) -> None:
+    def test_dimension_raises_guided_error_with_no_vector_field(self) -> None:
         data = make_index_response(schema={"fields": {}})
         model = msgspec.convert(data, IndexModel)
-        with pytest.raises(AttributeError, match="removed in the 2026-07"):
+        with pytest.raises(AttributeError, match="no dense or sparse vector fields"):
             model.dimension
 
-    def test_metric_raises_guided_error_with_no_dense_field(self) -> None:
+    def test_metric_raises_guided_error_with_no_vector_field(self) -> None:
         data = make_index_response(schema={"fields": {}})
         model = msgspec.convert(data, IndexModel)
-        with pytest.raises(AttributeError, match="removed in the 2026-07"):
+        with pytest.raises(AttributeError, match="no dense or sparse vector fields"):
             model.metric
 
     def test_vector_type_raises_guided_error_with_no_vector_field(self) -> None:
         data = make_index_response(schema={"fields": {}})
         model = msgspec.convert(data, IndexModel)
-        with pytest.raises(AttributeError, match="removed in the 2026-07"):
+        with pytest.raises(AttributeError, match="no dense or sparse vector fields"):
+            model.vector_type
+
+    def test_dimension_metric_vector_type_ignore_non_vector_fields(self) -> None:
+        """A schema with only metadata/text fields is treated the same as an empty one."""
+        data = make_index_response(
+            schema={"fields": {"category": {"type": "string", "filterable": True}}}
+        )
+        model = msgspec.convert(data, IndexModel)
+        with pytest.raises(AttributeError, match="no dense or sparse vector fields"):
+            model.dimension
+        with pytest.raises(AttributeError, match="no dense or sparse vector fields"):
+            model.metric
+        with pytest.raises(AttributeError, match="no dense or sparse vector fields"):
             model.vector_type
 
     def test_vector_type_sparse_only(self) -> None:
         data = make_index_response(schema={"fields": {"sv": {"type": "sparse_vector"}}})
         model = msgspec.convert(data, IndexModel)
         assert model.vector_type == "sparse"
-        with pytest.raises(AttributeError, match="removed in the 2026-07"):
-            model.dimension
+
+    def test_dimension_sparse_only_resolves_to_none(self) -> None:
+        """Sparse vectors have no fixed dimension, so this is None rather than an error."""
+        data = make_index_response(schema={"fields": {"sv": {"type": "sparse_vector"}}})
+        model = msgspec.convert(data, IndexModel)
+        assert model.dimension is None
+
+    def test_dimension_multiple_sparse_fields_still_resolves_to_none(self) -> None:
+        """Unlike metric/vector_type, multiple sparse fields aren't ambiguous for dimension —
+        none of them have one, regardless of count."""
+        data = make_index_response(
+            schema={
+                "fields": {
+                    "a": {"type": "sparse_vector"},
+                    "b": {"type": "sparse_vector"},
+                }
+            }
+        )
+        model = msgspec.convert(data, IndexModel)
+        assert model.dimension is None
+
+    def test_metric_sparse_only_resolves_to_dotproduct(self) -> None:
+        data = make_index_response(schema={"fields": {"sv": {"type": "sparse_vector"}}})
+        model = msgspec.convert(data, IndexModel)
+        assert model.metric == "dotproduct"
+
+    def test_metric_and_vector_type_raise_when_multiple_sparse_fields_and_no_dense(self) -> None:
+        data = make_index_response(
+            schema={
+                "fields": {
+                    "a": {"type": "sparse_vector"},
+                    "b": {"type": "sparse_vector"},
+                }
+            }
+        )
+        model = msgspec.convert(data, IndexModel)
+        with pytest.raises(AttributeError, match="ambiguous"):
+            model.metric
+        with pytest.raises(AttributeError, match="ambiguous"):
+            model.vector_type
+
+    def test_dense_field_takes_precedence_over_sparse_for_all_three_accessors(self) -> None:
+        data = make_index_response(
+            schema={
+                "fields": {
+                    "dv": {"type": "dense_vector", "dimension": 8, "metric": "euclidean"},
+                    "sv": {"type": "sparse_vector"},
+                }
+            }
+        )
+        model = msgspec.convert(data, IndexModel)
+        assert model.dimension == 8
+        assert model.metric == "euclidean"
+        assert model.vector_type == "dense"
 
     def test_vector_type_dense_with_reserved_field_name(self) -> None:
         data = make_index_response(
@@ -263,6 +328,38 @@ class TestIndexModel:
             model.metric
         with pytest.raises(AttributeError, match="ambiguous"):
             model.vector_type
+
+    def test_dense_field_takes_precedence_regardless_of_sparse_field_count(self) -> None:
+        data = make_index_response(
+            schema={
+                "fields": {
+                    "dv": {"type": "dense_vector", "dimension": 8, "metric": "euclidean"},
+                    "a": {"type": "sparse_vector"},
+                    "b": {"type": "sparse_vector"},
+                }
+            }
+        )
+        model = msgspec.convert(data, IndexModel)
+        assert model.dimension == 8
+        assert model.metric == "euclidean"
+        assert model.vector_type == "dense"
+
+    def test_multiple_dense_fields_ambiguous_even_with_sparse_fields_present(self) -> None:
+        """The dense-ambiguity check runs before any sparse check, so the error names the
+        dense fields regardless of how many sparse fields also exist."""
+        data = make_index_response(
+            schema={
+                "fields": {
+                    "a": {"type": "dense_vector", "dimension": 4, "metric": "cosine"},
+                    "b": {"type": "dense_vector", "dimension": 8, "metric": "cosine"},
+                    "sv": {"type": "sparse_vector"},
+                }
+            }
+        )
+        model = msgspec.convert(data, IndexModel)
+        for accessor in ("dimension", "metric", "vector_type"):
+            with pytest.raises(AttributeError, match=r"ambiguous.*dense vector fields \(a, b\)"):
+                getattr(model, accessor)
 
     def test_index_model_dir_lists_deprecated_vector_accessors(self) -> None:
         model = msgspec.convert(make_index_response(), IndexModel)

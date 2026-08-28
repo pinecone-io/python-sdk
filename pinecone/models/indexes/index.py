@@ -45,19 +45,6 @@ class IndexTags(dict):  # type: ignore[type-arg]
 
 
 _REMOVED_FIELD_HINTS: dict[str, str] = {
-    "dimension": (
-        "read it from the schema's dense_vector field instead, e.g. "
-        "next(f.dimension for f in index.schema.fields.values() "
-        "if type(f).__name__ == 'DenseVectorField')"
-    ),
-    "metric": (
-        "read it from the schema's vector field instead, e.g. "
-        "index.schema.fields['<field-name>'].metric"
-    ),
-    "vector_type": (
-        "inspect the schema's field types instead: a DenseVectorField in "
-        "index.schema.fields means dense, a SparseVectorField means sparse"
-    ),
     "spec": (
         "use index.deployment instead — a ManagedDeployment, PodDeployment, "
         "or ByocDeployment tagged on deployment_type; read_capacity is now "
@@ -155,7 +142,7 @@ class IndexModel(Struct, kw_only=True):
                 "deprecated accessor to. Read the specific field directly, e.g. "
                 "index.schema.fields['<field-name>']."
             )
-        if name == "vector_type":
+        if name in ("vector_type", "metric"):
             sparse = self._sparse_fields()
             if len(sparse) > 1:
                 names = ", ".join(
@@ -164,30 +151,46 @@ class IndexModel(Struct, kw_only=True):
                     )
                 )
                 return AttributeError(
-                    f"IndexModel.vector_type is ambiguous: the schema has {len(sparse)} "
+                    f"IndexModel.{name} is ambiguous: the schema has {len(sparse)} "
                     f"sparse vector fields ({names}) and no dense vector field; there "
                     "is no single field to resolve this deprecated accessor to."
                 )
         return AttributeError(
-            f"IndexModel.{name} was removed in the 2026-07 Pinecone API: "
-            f"{_REMOVED_FIELD_HINTS[name]}. See docs/migration/v10-migration.md."
+            f"IndexModel.{name} could not be determined: the schema has no "
+            "dense or sparse vector fields to infer it from. Inspect "
+            "index.schema.fields directly to see what fields are defined."
         )
 
     @property
-    def dimension(self) -> int:
-        """**Deprecated.** Use ``index.schema.fields["<field-name>"].dimension`` instead."""
+    def dimension(self) -> int | None:
+        """**Deprecated.** Use ``index.schema.fields["<field-name>"].dimension`` instead.
+
+        Returns ``None`` for a sparse-only schema, since sparse vectors have
+        no fixed dimension.
+        """
         dense = self._dense_fields()
-        if len(dense) != 1:
-            raise AttributeError("dimension")
-        return dense[0].dimension
+        if len(dense) == 1:
+            return dense[0].dimension
+        if not dense and self._sparse_fields():
+            return None
+        raise AttributeError("dimension")
 
     @property
     def metric(self) -> str:
-        """**Deprecated.** Use ``index.schema.fields["<field-name>"].metric`` instead."""
+        """**Deprecated.** Use ``index.schema.fields["<field-name>"].metric`` instead.
+
+        Resolves to the sole dense field's metric, or ``"dotproduct"`` if the
+        schema has a sole sparse field and no dense field — sparse indexes
+        always use dot product.
+        """
         dense = self._dense_fields()
-        if len(dense) != 1:
-            raise AttributeError("metric")
-        return dense[0].metric
+        if len(dense) == 1:
+            return dense[0].metric
+        if not dense:
+            sparse = self._sparse_fields()
+            if len(sparse) == 1:
+                return "dotproduct"
+        raise AttributeError("metric")
 
     @property
     def vector_type(self) -> str:

@@ -480,6 +480,21 @@ will be removed in a later major version.
 | `index.metric` | `index.schema.fields["<field>"].metric` on the vector field |
 | `index.vector_type` | field types in `index.schema.fields` (`DenseVectorField` = dense, `SparseVectorField` = sparse) |
 
+These accessors are resolved from whatever `DenseVectorField`/`SparseVectorField`
+entries are in `schema.fields`, so the result depends on the schema shape. A
+`9.x` index only ever had one vector configuration, so schemas with more than
+one dense or sparse field are a `2026-07`-only possibility with no `9.x`
+equivalent:
+
+| `schema.fields` shape | `9.x` `dimension` / `metric` / `vector_type` | Current accessors |
+| --- | --- | --- |
+| 1 dense field | `<int>` / `<str>` / `"dense"` | same — resolved from the dense field |
+| 1 dense field + any number of sparse fields | not representable (sparse values needed no schema field) | same as above — the dense field wins, sparse fields are ignored entirely |
+| 0 dense, 1 sparse field | `None` / `"dotproduct"` / `"sparse"` | same |
+| 0 dense, 2+ sparse fields | not representable | `dimension` is still `None`; `metric` and `vector_type` raise `AttributeError` ("ambiguous") |
+| 2+ dense fields (any sparse count) | not representable | all three raise `AttributeError` ("ambiguous"), naming the dense fields |
+| 0 dense, 0 sparse fields | not representable (every real index has one) | all three raise `AttributeError` ("no dense or sparse vector fields") |
+
 New fields on `IndexModel`: `schema`, `deployment`, `read_capacity`,
 `source_collection`, `source_backup_id`, `cmek_id`. Removed exports:
 `ServerlessSpecInfo`, `PodSpecInfo`, `ByocSpecInfo`, `IndexSpec`,
