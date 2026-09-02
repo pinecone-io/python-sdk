@@ -17,8 +17,12 @@ variable is unset. Works against the minicone simulator too::
 
 Known simulator gaps (tests fail against minicone, pass against production):
 text scoring with ``fields:[...]`` (pinecone-io/minicone#47 — production
-accepts ``fields``, tracked upstream as #147) and ``query_string`` scoring
-(explicitly unimplemented in the simulator).
+accepts ``fields``, tracked upstream as #147), ``query_string`` scoring
+(explicitly unimplemented in the simulator), and the ``include_fields``
+semantics pinned by
+``test_include_fields_semantics_differ_between_search_and_fetch``
+(pinecone-io/minicone#325 and #327 — the simulator returns every field when
+search omits ``include_fields``, and treats ``["*"]`` as a literal field name).
 """
 
 from __future__ import annotations
@@ -127,6 +131,43 @@ def test_search_documents_dense(index: Index, namespace: str) -> None:
     assert response.matches[0]._id == "doc-2"
     assert response.matches[0].category == "research"
     assert response.usage is not None
+
+
+def test_include_fields_semantics_differ_between_search_and_fetch(
+    index: Index, namespace: str
+) -> None:
+    """Pins the search/fetch asymmetry that pinecone-io/python-sdk-internal#544 hit.
+
+    The server resolves an empty field list per-operation rather than globally
+    (``EmptySemantics`` in ``query-router``): search drops every field, fetch
+    keeps every field. ``["*"]`` means all fields on both. Omitting the key and
+    sending ``[]`` are indistinguishable server-side, so both are asserted.
+    """
+    index.documents.upsert(namespace=namespace, documents=DOCS)
+    _wait_for_ids(index, namespace, {"doc-1", "doc-2", "doc-3"})
+
+    score_by = [DenseVectorQuery(field="embedding", values=[1.0, 0.0, 0.0, 0.0])]
+
+    omitted = index.documents.search(namespace=namespace, top_k=1, score_by=score_by)
+    assert set(omitted.matches[0].to_dict()) == {"_id", "_score"}
+
+    empty = index.documents.search(
+        namespace=namespace, top_k=1, score_by=score_by, include_fields=[]
+    )
+    assert set(empty.matches[0].to_dict()) == {"_id", "_score"}
+
+    wildcard = index.documents.search(
+        namespace=namespace, top_k=1, score_by=score_by, include_fields=["*"]
+    )
+    assert {"content", "category"} <= set(wildcard.matches[0].to_dict())
+
+    for include_fields in (None, [], ["*"]):
+        fetched = index.documents.fetch(
+            namespace=namespace, ids=["doc-1"], include_fields=include_fields
+        )
+        assert {"content", "category"} <= set(fetched.documents["doc-1"].to_dict()), (
+            f"fetch with include_fields={include_fields!r} should return every field"
+        )
 
 
 def test_search_documents_text(index: Index, namespace: str) -> None:

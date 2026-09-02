@@ -53,10 +53,10 @@ class AsyncDocuments:
             from pinecone import AsyncPinecone
 
             pc = AsyncPinecone(api_key="your-api-key")
-            index = await pc.index(name="articles-en")
-            async with index:
-                await index.documents.upsert(
-                    namespace="articles-en",
+            idx = await pc.index(name="articles-en")
+            async with idx:
+                await idx.documents.upsert(
+                    namespace="published",
                     documents=[{"_id": "article-101", "title": "Intro to vectors"}],
                 )
     """
@@ -116,7 +116,7 @@ class AsyncDocuments:
             .. code-block:: python
 
                 response = await idx.documents.upsert(
-                    namespace="articles-en",
+                    namespace="published",
                     documents=[
                         {"_id": "article-101", "title": "Intro to vectors"},
                         {"_id": "article-102", "title": "Advanced retrieval"},
@@ -192,7 +192,7 @@ class AsyncDocuments:
                     for i in range(5000)
                 ]
                 result = await idx.documents.batch_upsert(
-                    namespace="articles-en",
+                    namespace="published",
                     documents=documents,
                     batch_size=100,
                     max_concurrency=8,
@@ -253,9 +253,11 @@ class AsyncDocuments:
                 ``query_string`` clauses may be combined; a ``dense_vector``
                 or ``sparse_vector`` clause must appear alone.
             top_k (int): Number of top-ranked documents to return (1-10000).
-            include_fields: Document fields to include in the results.
-                ``None`` (default) returns all fields; ``[]`` returns only
-                ``_id`` and score.
+            include_fields: Document fields to include in each match.
+                Omitting it (the default) or passing ``[]`` returns only
+                ``_id`` and ``_score``; ``["*"]`` returns every field, even
+                alongside other names. Note this differs from :meth:`fetch`,
+                where omitting the argument returns every field.
             filter: Metadata filter expression restricting the documents
                 searched, or ``None``.
             timeout (float | None): Per-request timeout in seconds. Overrides
@@ -281,14 +283,14 @@ class AsyncDocuments:
                 from pinecone import TextQuery
 
                 response = await idx.documents.search(
-                    namespace="articles-en",
+                    namespace="published",
                     top_k=5,
                     score_by=[TextQuery(query="machine learning", fields=["content"])],
-                    include_fields=["title", "category"],
+                    include_fields=["title", "content"],
                     filter={"category": {"$eq": "tech"}},
                 )
                 for doc in response.matches:
-                    print(doc._id, doc._score)
+                    print(doc.id, doc.score)
 
         .. seealso::
            - :meth:`~pinecone.async_client.async_index.AsyncIndex.search` —
@@ -335,8 +337,11 @@ class AsyncDocuments:
                 exclusive with ``filter``.
             filter: Non-empty metadata filter expression selecting the
                 documents to fetch. Mutually exclusive with ``ids``.
-            include_fields: Document fields to include in the response.
-                ``None`` (default) returns all fields.
+            include_fields: Document fields to include in each document.
+                Omitting it (the default), ``[]``, or ``["*"]`` each return
+                every field; a list of names returns just those. Note this
+                differs from :meth:`search`, where omitting the argument
+                returns only ``_id`` and ``_score``.
             pagination_token: Token from a previous filtered fetch response
                 to retrieve the next page. Only valid together with
                 ``filter``.
@@ -360,25 +365,36 @@ class AsyncDocuments:
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
+            Fetch specific documents by ID. IDs that do not exist are absent
+            from ``response.documents`` rather than raising:
+
             .. code-block:: python
 
                 response = await idx.documents.fetch(
-                    namespace="articles-en",
+                    namespace="published",
                     ids=["article-101", "article-102"],
                 )
                 for doc_id, doc in response.documents.items():
                     print(doc_id, doc.title)
 
-                response = await idx.documents.fetch(
-                    namespace="articles-en",
-                    filter={"category": {"$eq": "tech"}},
-                )
-                while response.pagination is not None:
+            Fetch by filter instead. A filtered fetch is paginated, so read
+            each page's documents before asking for the next one — the loop
+            below is the whole retrieval, not just the token bookkeeping:
+
+            .. code-block:: python
+
+                pagination_token = None
+                while True:
                     response = await idx.documents.fetch(
-                        namespace="articles-en",
+                        namespace="published",
                         filter={"category": {"$eq": "tech"}},
-                        pagination_token=response.pagination.next,
+                        pagination_token=pagination_token,
                     )
+                    for doc_id, doc in response.documents.items():
+                        print(doc_id, doc.title)
+                    if response.pagination is None:
+                        break
+                    pagination_token = response.pagination.next
         """
         segment = _encode_document_namespace(namespace)
         body = _build_fetch_documents_body(
@@ -445,17 +461,29 @@ class AsyncDocuments:
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
+            Delete specific documents by ID:
+
             .. code-block:: python
 
-                await idx.documents.delete(namespace="articles-en", ids=["article-101"])
+                await idx.documents.delete(namespace="published", ids=["article-101"])
+
+            Delete every document matching a filter:
+
+            .. code-block:: python
 
                 response = await idx.documents.delete(
-                    namespace="articles-en",
+                    namespace="published",
                     filter={"category": {"$eq": "obsolete"}},
                 )
                 print(response.matched_records)
 
-                await idx.documents.delete(namespace="articles-old", delete_all=True)
+            Or empty a namespace outright. ``delete_all`` removes every
+            document in the namespace named — it takes no ``ids`` or
+            ``filter`` to narrow it:
+
+            .. code-block:: python
+
+                await idx.documents.delete(namespace="drafts", delete_all=True)
         """
         segment = _encode_document_namespace(namespace)
         body = _build_delete_documents_body(ids=ids, filter=filter, delete_all=delete_all)
@@ -535,21 +563,35 @@ class AsyncDocuments:
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
+            Patch documents by ID. Each key other than the reserved ``_id`` and
+            ``_remove_fields`` sets that field's value; fields the patch does
+            not name keep the values they already have, so ``article-101`` here
+            gets a new ``title`` and is otherwise untouched:
+
             .. code-block:: python
 
                 await idx.documents.update(
-                    namespace="articles-en",
+                    namespace="published",
                     documents=[
-                        {"_id": "article-101", "title": "Updated title"},
-                        {"_id": "article-102", "_remove_fields": ["content"]},
+                        {"_id": "article-101", "title": "An introduction to vector search"},
+                        {"_id": "article-102", "_remove_fields": ["draft_notes"]},
                     ],
                 )
 
+            ``article-102`` keeps every field it has except ``draft_notes``:
+            ``_remove_fields`` names fields to delete rather than setting a
+            field called ``_remove_fields``.
+
+            Patch every document matching a filter instead, setting one field
+            and removing another across all of them:
+
+            .. code-block:: python
+
                 response = await idx.documents.update(
-                    namespace="articles-en",
+                    namespace="published",
                     filter={"category": {"$eq": "news"}},
-                    set_fields={"category": "archive"},
-                    remove_fields=["content"],
+                    set_fields={"review_status": "archived"},
+                    remove_fields=["draft_notes"],
                 )
                 print(response.matched_records)
         """
@@ -617,10 +659,10 @@ class AsyncDocuments:
         Examples:
             .. code-block:: python
 
-                async for doc in idx.documents.list(namespace="articles-en", prefix="article-1"):
+                async for doc in idx.documents.list(namespace="published", prefix="article-1"):
                     print(doc.id)
 
-                paginator = idx.documents.list(namespace="articles-en", limit=20)
+                paginator = idx.documents.list(namespace="published", limit=20)
                 async for page in paginator.pages():
                     print(len(page.items), page.pagination_token)
         """

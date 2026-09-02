@@ -96,8 +96,10 @@ class SearchDocumentsRequest(Struct, kw_only=True, omit_defaults=True):
             ``sparse_vector`` clause must appear alone; ``text`` and
             ``query_string`` clauses may be combined.
         top_k: The number of top-ranked documents to return (1-10000).
-        include_fields: The document fields to include in the results, or
-            ``None`` for the server default.
+        include_fields: The document fields to include in the results.
+            ``None`` omits the key, which the server treats the same as
+            ``[]``: only ``_id`` and ``_score`` come back. ``["*"]`` returns
+            every field.
         filter: A metadata filter expression to restrict the documents
             searched, or ``None``.
     """
@@ -144,8 +146,9 @@ class FetchDocumentsRequest(Struct, kw_only=True, omit_defaults=True):
             ``filter``.
         filter: A non-empty metadata filter expression selecting the
             documents to fetch. Mutually exclusive with ``ids``.
-        include_fields: The document fields to include in the response, or
-            ``None`` to return all fields.
+        include_fields: The document fields to include in the response.
+            ``None`` omits the key, which the server treats the same as
+            ``[]`` or ``["*"]``: every field is returned.
         pagination_token: Token from a previous fetch response to retrieve
             the next page of matching documents. A page holds up to 10000
             documents; the page size is fixed and cannot be set per
