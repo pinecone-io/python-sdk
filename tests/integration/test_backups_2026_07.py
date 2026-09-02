@@ -54,15 +54,14 @@ def _ready_backup(client: Pinecone, backup_id: str) -> BackupModel:
 
 
 def test_index_scoped_backup_lifecycle(client: Pinecone, index_name: str) -> None:
-    """``BackupModel.schema`` is ``None`` for a 2026-07 index, by design.
+    """A Ready backup carries the source index's 2026-07 field schema.
 
-    The wire field carries the source index's legacy ``metadata_config``, not
-    its 2026-07 field schema, and a schema-based index has no metadata_config —
-    metadata is indexed automatically at upsert. The server therefore answers
-    ``"schema": null`` even for a Ready backup of an index created with
-    ``schema=``. Asserting ``is None`` rather than tolerating either value
-    keeps this a real claim: if the backend ever starts populating it, this
-    line fires and someone re-reads the contract.
+    ``BackupModel.schema`` is typed as ``IndexSchema`` in the 2026-07 contract
+    (``db_control_2026-07.oas.yaml``, ``components.schemas.BackupModel``:
+    ``schema: $ref: '#/components/schemas/IndexSchema'``), not as the legacy
+    ``metadata_config``. So a backup of an index created with ``schema=``
+    answers with that same schema, and asserting the round-trip is what keeps
+    this a real claim about the contract.
     """
     client.indexes.create(name=index_name, schema=_DENSE_SCHEMA, timeout=300)
 
@@ -73,7 +72,11 @@ def test_index_scoped_backup_lifecycle(client: Pinecone, index_name: str) -> Non
     backup_id = created.backup_id
     try:
         ready = _ready_backup(client, backup_id)
-        assert ready.schema is None
+        assert ready.schema is not None
+        assert set(ready.schema.fields) == set(_DENSE_SCHEMA["fields"])
+        embedding = ready.schema.fields["embedding"]
+        assert embedding.dimension == 4
+        assert embedding.metric == "cosine"
         assert ready.dense_dimension in (4, None)
         assert ready.source_index_deleted_at is None
 
