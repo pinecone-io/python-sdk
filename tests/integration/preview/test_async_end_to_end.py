@@ -1196,7 +1196,7 @@ async def test_async_filter_remaining_operators_accepted(
 
 
 @pytest.mark.integration
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(600)
 async def test_async_delete_timeout_negative_one_returns_immediately(
     async_client: AsyncPinecone,
     preview_index_name: str,

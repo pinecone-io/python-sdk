@@ -881,7 +881,7 @@ async def test_upload_file_input_validation_and_delete_returns_none_async(
 
 @pytest.mark.integration
 @pytest.mark.anyio
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(600)
 async def test_describe_file_signed_url_async(async_client: AsyncPinecone) -> None:
     """describe_file(include_url=True) returns a non-None signed_url string;
     describe_file() without include_url returns signed_url=None.
@@ -1415,7 +1415,7 @@ async def test_chat_completions_streaming_async(
 
 @pytest.mark.integration
 @pytest.mark.anyio
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(600)
 async def test_list_files_page_with_page_size_and_pagination_token_async(
     async_client: AsyncPinecone,
 ) -> None:
@@ -2902,7 +2902,7 @@ async def test_chat_rejects_out_of_range_temperature(
 
 @pytest.mark.integration
 @pytest.mark.anyio
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(600)
 async def test_context_filter_metadata_excludes_matching_files(
     async_client: AsyncPinecone,
 ) -> None:

@@ -31,6 +31,31 @@ _env_path = Path(__file__).resolve().parent.parent.parent / ".env"
 load_dotenv(_env_path)
 
 
+# The global `timeout = 60` in pyproject.toml is sized for the unit suite, but
+# also applies here and silently overrides each test's own poll budget — nearly
+# every test in this directory asks poll_until() to wait longer than 60s, so
+# they only pass when the control plane happens to be fast. poll_until() already
+# bounds itself with a descriptive TimeoutError, leaving pytest-timeout as a
+# backstop for hangs *outside* polling; size it above the largest declared
+# budget (currently 1020s) rather than below the smallest.
+_DEFAULT_TIMEOUT = int(os.environ.get("PINECONE_TEST_TIMEOUT", "1800"))
+
+_HERE = Path(__file__).resolve().parent
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    for item in items:
+        path = getattr(item, "path", None)
+        if path is None:
+            continue
+        try:
+            Path(path).resolve().relative_to(_HERE)
+        except ValueError:
+            continue
+        if item.get_closest_marker("timeout") is None:
+            item.add_marker(pytest.mark.timeout(_DEFAULT_TIMEOUT))
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
