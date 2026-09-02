@@ -64,6 +64,18 @@ class TestFieldSetOperators:
         result = Field("tag").not_in(["spam"]).to_dict()
         assert result == {"tag": {"$nin": ["spam"]}}
 
+    def test_field_is_in_accepts_tuple(self) -> None:
+        result = Field("color").is_in(("red", "blue")).to_dict()
+        assert result == {"color": {"$in": ("red", "blue")}}
+
+    def test_is_in_requires_list(self) -> None:
+        with pytest.raises(TypeError, match="list"):
+            Field("genre").is_in("drama")  # type: ignore[arg-type]
+
+    def test_not_in_requires_list(self) -> None:
+        with pytest.raises(TypeError, match="list"):
+            Field("genre").not_in("drama")  # type: ignore[arg-type]
+
 
 class TestFieldExists:
     def test_field_exists(self) -> None:

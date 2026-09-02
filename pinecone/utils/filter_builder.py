@@ -117,12 +117,20 @@ class Field:
 
     # -- set operators --------------------------------------------------------
 
+    def _require_list(self, op: str, values: Any) -> None:
+        if not isinstance(values, (list, tuple)):
+            raise TypeError(
+                f"{op} requires a list of values, got {type(values).__name__}"
+            )
+
     def is_in(self, values: list[str | int | float | bool]) -> Condition:
         """``$in`` — value is in the given list."""
+        self._require_list("is_in", values)
         return Condition({self._name: {"$in": values}})
 
     def not_in(self, values: list[str | int | float | bool]) -> Condition:
         """``$nin`` — value is not in the given list."""
+        self._require_list("not_in", values)
         return Condition({self._name: {"$nin": values}})
 
     # -- exists operator ------------------------------------------------------
