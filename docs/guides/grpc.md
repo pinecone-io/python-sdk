@@ -38,6 +38,27 @@ with GrpcIndex(host="product-search-abc123.svc.pinecone.io") as index:
     index.upsert(vectors=[("product-42", [0.1, 0.2, ...])])
 ```
 
+## Endpoint scheme
+
+The channel dials `https`. A data plane reached over something else — a plaintext
+gateway, an egress proxy fronting a private endpoint, or a local simulator — needs
+`grpc_scheme` set, on the client or on the index:
+
+```python
+pc = Pinecone(grpc_scheme="http")
+index = pc.index(name="product-search", grpc=True)
+
+index = GrpcIndex(host="http://10.0.0.7:50051", grpc_scheme="http")
+```
+
+`PINECONE_GRPC_SCHEME` sets the same thing through the environment; the keyword
+argument wins over it.
+
+The scheme decides whether the wire carries TLS, and `secure` supplies the material
+for the handshake, so `grpc_scheme="http"` is plaintext whatever `secure` says.
+`grpc_scheme="https"` with `secure=False` cannot connect and is refused when the
+index is built. Leaving `grpc_scheme` unset takes the scheme from `secure`.
+
 ## Basic Operations
 
 `GrpcIndex` exposes the same interface as the HTTP `Index`:

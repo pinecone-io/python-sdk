@@ -24,6 +24,7 @@ that section and start with [Index creation and configuration](#index-model).
 - [Inference](#inference-model-enums)
 - [Admin and OAuth](#admin-oauth)
 - [TLS/SSL configuration](#ssl-config)
+  - [The gRPC endpoint scheme](#grpc-scheme)
 
 (documents-api)=
 ## Documents API
@@ -2188,5 +2189,48 @@ client, so before this release the setting was ignored on both.
 `secure=False` is forwarded to the REST client that backs `upsert_records`
 and `search`, where it means the same as `ssl_verify=False` above. Those two
 operations are unverified under `secure=False` where before they were
-verified. The gRPC channel itself is unaffected, `secure` has always chosen
-its own scheme.
+verified. The gRPC channel itself is unaffected by that change; which scheme
+it dials is a separate setting, below.
+
+(grpc-scheme)=
+### The gRPC endpoint scheme
+
+`GrpcIndex` dials `https`. A data plane reached over something else — a
+plaintext gateway, an egress proxy fronting a private endpoint, or a local
+simulator — has to say so, with `grpc_scheme`:
+
+```python
+from pinecone import Pinecone
+
+pc = Pinecone(api_key="your-api-key", grpc_scheme="http")
+idx = pc.index(host="10.0.0.7:50051", grpc=True)
+```
+
+`GrpcIndex` takes the same keyword argument when you construct one yourself:
+
+```python
+from pinecone.grpc import GrpcIndex
+
+idx = GrpcIndex(
+    host="http://10.0.0.7:50051",
+    api_key="your-api-key",
+    grpc_scheme="http",
+)
+```
+
+`PINECONE_GRPC_SCHEME` sets it for a process that configures its hosts
+through the environment; an explicit keyword argument wins over the variable.
+
+The scheme is what decides whether the wire carries TLS. `secure` supplies
+the material for the handshake — system root certificates for the channel,
+certificate verification for the REST calls made alongside it — so
+`grpc_scheme="http"` is a plaintext channel whatever `secure` says. The one
+combination that cannot connect, `grpc_scheme="https"` with `secure=False`,
+raises `PineconeValueError` when the index is constructed rather than
+failing on the first call.
+
+Leaving `grpc_scheme` unset keeps the scheme following `secure`: `https`
+when it is `True`, `http` when it is `False`. Code that reaches a plaintext
+data plane today by passing `secure=False` therefore keeps working
+unchanged. Naming the scheme is the narrower way to do it, since it leaves
+`upsert_records` and `search` verifying certificates.

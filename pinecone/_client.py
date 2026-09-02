@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import quote
 
 from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
@@ -73,6 +73,13 @@ class Pinecone:
         proxy_headers (Mapping[str, str] | None): Custom headers for proxy authentication.
         ssl_ca_certs (str | None): Path to a CA certificate bundle for SSL verification.
         ssl_verify (bool): Whether to verify SSL certificates. Defaults to ``True``.
+        grpc_scheme ("http" | "https" | None): URL scheme that :meth:`index` with
+            ``grpc=True`` dials the data plane over. State it when the data plane is
+            reached over something other than public TLS — a plaintext gateway, an
+            egress proxy, a private endpoint, or a local simulator — rather than
+            leaving the SDK to assume one. ``None`` (default) falls back to the
+            ``PINECONE_GRPC_SCHEME`` env var, and then to ``https``. Has no effect on
+            REST clients, which take the scheme from the host they are given.
         timeout (float): Request timeout in seconds. Defaults to ``30.0``.
         connection_pool_maxsize (int): Maximum number of connections to keep in the
             pool. ``0`` (default) uses httpx defaults.
@@ -143,6 +150,7 @@ class Pinecone:
         proxy_headers: Mapping[str, str] | None = None,
         ssl_ca_certs: str | None = None,
         ssl_verify: bool = True,
+        grpc_scheme: Literal["http", "https"] | None = None,
         timeout: float = 30.0,
         connection_pool_maxsize: int = 0,
         retry_config: RetryConfig | None = None,
@@ -170,6 +178,7 @@ class Pinecone:
             proxy_headers=dict(proxy_headers or {}),
             ssl_ca_certs=ssl_ca_certs,
             ssl_verify=ssl_verify,
+            grpc_scheme=grpc_scheme,
             connection_pool_maxsize=connection_pool_maxsize,
             retry_config=augmented_retry_config,
         )
@@ -455,7 +464,8 @@ class Pinecone:
             host (str): Direct host URL of the index. Skips the describe call.
             grpc (bool): If ``True``, return a :class:`~pinecone.grpc.GrpcIndex`
                 that routes data-plane operations over gRPC instead of HTTP.
-                Defaults to ``False``.
+                The scheme it dials comes from the ``grpc_scheme`` given to
+                :class:`Pinecone`, which defaults to ``https``. Defaults to ``False``.
             pool_threads (int | None): Maximum number of threads in the connection pool
                 used by the underlying HTTP client. Pass ``None`` to use the client-level
                 default set at :class:`Pinecone` construction time. Has no effect when
@@ -496,6 +506,7 @@ class Pinecone:
             return _GrpcIndex(
                 host=resolved_host,
                 api_key=self._config.api_key,
+                grpc_scheme=self._config.grpc_scheme,
                 source_tag=self._config.source_tag or None,
                 retry_config=self._grpc_retry_config,
                 proxy_url=self._config.proxy_url or None,

@@ -5,12 +5,45 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Literal
+
+from pinecone.errors.exceptions import PineconeValueError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
+
+GrpcScheme = Literal["http", "https"]
+
+GRPC_SCHEMES: tuple[str, ...] = ("http", "https")
+
+
+def resolve_grpc_scheme(scheme: str | None) -> GrpcScheme | None:
+    """Resolve the gRPC endpoint scheme from an explicit value or the environment.
+
+    Args:
+        scheme: The caller's explicit choice, or ``None`` to fall back to the
+            ``PINECONE_GRPC_SCHEME`` environment variable.
+
+    Returns:
+        ``"http"``, ``"https"``, or ``None`` when neither source names one, which
+        leaves the choice to the caller's own default.
+
+    Raises:
+        PineconeValueError: If either source names a scheme other than ``http``
+            or ``https``.
+    """
+    resolved = scheme if scheme is not None else os.environ.get("PINECONE_GRPC_SCHEME", "").strip()
+    if not resolved:
+        return None
+    if resolved == "http":
+        return "http"
+    if resolved == "https":
+        return "https"
+    raise PineconeValueError(
+        f"Invalid gRPC scheme {resolved!r}. Must be one of: {', '.join(GRPC_SCHEMES)}."
+    )
 
 
 def normalize_host(host: str | None) -> str:
@@ -119,6 +152,9 @@ class PineconeConfig:
         proxy_url: HTTP proxy URL.
         ssl_ca_certs: Path to CA certificate bundle.
         ssl_verify: Whether to verify SSL certificates.
+        grpc_scheme: URL scheme used to dial the gRPC data plane, ``"http"`` or
+            ``"https"``. Falls back to the PINECONE_GRPC_SCHEME env var, then to
+            ``None``, which lets the gRPC client keep its own default.
     """
 
     api_key: str = ""
@@ -130,6 +166,7 @@ class PineconeConfig:
     proxy_headers: dict[str, str] = field(default_factory=dict)
     ssl_ca_certs: str | None = None
     ssl_verify: bool = True
+    grpc_scheme: GrpcScheme | None = None
     connection_pool_maxsize: int = 0
     retry_config: RetryConfig = field(default_factory=RetryConfig)
 
@@ -155,6 +192,7 @@ class PineconeConfig:
             f"proxy_headers={self._redact_headers(self.proxy_headers)!r}, "
             f"ssl_ca_certs={self.ssl_ca_certs!r}, "
             f"ssl_verify={self.ssl_verify}, "
+            f"grpc_scheme={self.grpc_scheme!r}, "
             f"connection_pool_maxsize={self.connection_pool_maxsize}"
             f")"
         )
@@ -174,3 +212,4 @@ class PineconeConfig:
                 object.__setattr__(self, "additional_headers", env_headers)
         if self.source_tag:
             object.__setattr__(self, "source_tag", normalize_source_tag(self.source_tag))
+        object.__setattr__(self, "grpc_scheme", resolve_grpc_scheme(self.grpc_scheme))
