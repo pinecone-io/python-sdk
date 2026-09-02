@@ -630,8 +630,13 @@ async def test_namespace_crud_lifecycle_rest_async(
         # 5. Delete namespace — returns None on success (unified-ns-0004)
         await idx.delete_namespace(name=ns_name)
 
-        # 6. After deletion, namespace no longer appears in listing
-        post_delete = await idx.list_namespaces_paginated(prefix=f"{ns}-crud-ns-", limit=100)
+        # 6. After deletion, namespace no longer appears in listing (eventual consistency)
+        post_delete = await async_poll_until(
+            query_fn=lambda: idx.list_namespaces_paginated(prefix=f"{ns}-crud-ns-", limit=100),
+            check_fn=lambda r: ns_name not in [ns_item.name for ns_item in r.namespaces],
+            timeout=60,
+            description=f"namespace {ns_name} removed from listing after delete",
+        )
         assert isinstance(post_delete, ListNamespacesResponse)
         post_names = [n.name for n in post_delete.namespaces]
         assert ns_name not in post_names

@@ -90,15 +90,15 @@ retries happen automatically per batch.
 response = index.upsert(
     vectors=large_list,    # any length
     batch_size=100,        # vectors per request
-    max_concurrency=4,     # parallel in-flight requests (default 4, range 1–64)
+    max_concurrency=8,     # parallel in-flight requests (default 8, range 1–64)
 )
 print(response.upserted_count)         # successful items
 print(response.failed_item_count)      # 0 if everything succeeded
 ```
 
 `AsyncIndex.upsert()` accepts the same `batch_size` and `max_concurrency` kwargs.
-`Index.upsert_from_dataframe()` accepts `batch_size` and batches in parallel like `upsert()`,
-but it doesn't expose `max_concurrency`; it always runs at the default concurrency (4).
+`Index.upsert_from_dataframe()` accepts `batch_size`, `max_concurrency`, and `total_timeout`,
+with the same meanings on all three clients (REST sync, asyncio, and gRPC).
 `Index.upsert_records()` does **not** accept `batch_size` or `max_concurrency`; it
 sends a single NDJSON request per call, so chunk the record list yourself and call
 `upsert_records()` once per chunk.
@@ -106,6 +106,9 @@ sends a single NDJSON request per call, so chunk the record list yourself and ca
 When `batch_size` is set, `upsert()` returns an `UpsertResponse` with partial-failure
 information instead of raising on the first failed batch; see
 [Handling partial failures](../how-to/vectors/upsert-and-query.md#handling-partial-failures).
+
+For a walkthrough of what each of these knobs controls, beyond its effect on
+throughput, see [How Bulk Ingest Behaves](bulk-ingest.md).
 
 ### How much faster is parallel batching?
 
@@ -116,15 +119,16 @@ index ([Methodology](#methodology)); wall time, p50:
 |---|---:|---:|---:|---:|
 | v8 | sequential (baseline) | 112 s | 67 s | 34 s |
 | v9 | 1 | 31.5 s | 32.7 s | 35.0 s |
-| v9 | 4 (default) | **9.6 s** | **10.2 s** | **10.0 s** |
-| v9 | 8 | 5.7 s | 5.9 s | 5.7 s |
+| v9 | 4 | 9.6 s | 10.2 s | 10.0 s |
+| v9 | 8 (default) | **5.7 s** | **5.9 s** | **5.7 s** |
 | v9 | 16 | 5.0 s | 6.6 s | 4.0 s |
 | v9 | 32 | 4.4 s | 5.0 s | 2.7 s |
 
 The v8 row is the published `pinecone==8.x` client running its sequential
 `batch_size=` loop; the v9 rows are this client using native parallel batched
-upsert. The headline win for the typical caller (v8 REST sync sequential vs v9
-REST sync at the default `max_concurrency=4`) is ~12×. Async REST shows a
+upsert. The headline win for the typical caller, v8 REST sync sequential vs v9
+REST sync, is ~12× at `max_concurrency=4` and ~20× at the default `8`.
+Async REST shows a
 similar shape with a smaller multiplier because v8 async sequential was
 already faster than v8 sync sequential. gRPC is faster than REST at high
 concurrency; see [When to Use gRPC](#when-to-use-grpc).
@@ -135,21 +139,20 @@ place. But it's a useful diagnostic. It isolates how much of the v8 → v9
 speedup comes from non-parallelism improvements in the client (request
 building, serialization, response decoding, retry layer) versus the explicit
 fan-out parallel batching adds on top. For REST sync, ~3.6× of the 11.7×
-default-settings win comes from those raw client improvements alone; the
+win at `max_concurrency=4` comes from those raw client improvements alone; the
 remaining ~3.3× is parallelism. For gRPC, almost the entire win comes from
 parallelism: v8 gRPC was already efficient at the request level.
 
 ### Tuning `max_concurrency`
 
-The default of `4` is calibrated to capture ~70% of the achievable speedup with
-modest pressure on the cluster, safe to use without tuning. Push higher only when
-you have a reason and can measure the result on your workload:
+The default is a flat `8` on every method and transport, identical on your laptop and
+on your production hosts, so throughput is reproducible across machines. Push higher
+only when you have a reason and can measure the result on your workload:
 
 | `max_concurrency` | When to use it |
 |---:|---|
 | `1` | Strict per-second quota, or you want sequential semantics for ordering |
-| `4` *(default)* | General use; ~70% of the win, no tuning required |
-| `8` | Large bulk loads on a well-provisioned index, typically the sweet spot |
+| `8` *(default)* | General use, including large bulk loads; no tuning required |
 | `16–32` | Diminishing returns; the cluster (not the SDK) is usually the bottleneck above ~16 |
 | `>32` | Rarely worth it for a single client; consider sharding the work across multiple clients instead |
 
@@ -267,8 +270,9 @@ a few things about gRPC stand out:
   HTTP/2 multiplexing and protobuf encoding buy a lot before any parallelism
   enters the picture, and that gap is structural to the protocols, not
   something parallel batching alone closes.
-- **At default settings, the three transports are essentially tied** (~10 s).
-  For typical workloads, the choice is about API style, not throughput.
+- **At the default `max_concurrency=8`, the three transports are essentially
+  tied** (~5.7–5.9 s). For typical workloads, the choice is about API style,
+  not throughput.
 - **gRPC pulls ahead as concurrency rises**: at `max_concurrency=32`, gRPC
   finishes the same work 1.5–1.9× faster than REST.
 - **`max_concurrency=1` doesn't help gRPC**: v8 gRPC was already pipelining

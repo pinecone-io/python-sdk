@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use pinecone_grpc::retry::{
-    retry_on_transient, retry_on_transient_request, RetryConfig, ThrottleCallback,
+    retry_on_transient, retry_on_transient_request, RetryBudget, RetryConfig, ThrottleCallback,
 };
 use tonic::Status;
 
@@ -326,4 +326,160 @@ async fn first_of_several_permitted_attempts_still_copies() {
 
     assert_eq!(attempts, 1);
     assert_eq!(clones, 1);
+}
+
+/// A backend that refuses further retries must be obeyed, not overruled.
+#[tokio::test(start_paused = true)]
+async fn negative_pushback_stops_retrying_immediately() {
+    let calls = Arc::new(AtomicU32::new(0));
+    let seen = calls.clone();
+
+    let config = RetryConfig {
+        max_retries: 5,
+        ..RetryConfig::default()
+    };
+    let result = retry_on_transient(&config, || {
+        let seen = seen.clone();
+        async move {
+            seen.fetch_add(1, Ordering::SeqCst);
+            let mut s = Status::unavailable("shedding load");
+            s.metadata_mut()
+                .insert("grpc-retry-pushback-ms", "-1".parse().unwrap());
+            Err::<(), Status>(s)
+        }
+    })
+    .await;
+
+    assert!(result.is_err());
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a negative pushback should end the call, not start a retry chain"
+    );
+}
+
+/// The budget bounds the retry multiplier, which the concurrency limiter cannot.
+#[tokio::test(start_paused = true)]
+async fn exhausted_budget_stops_retrying() {
+    let budget = Arc::new(RetryBudget::new(10.0, 0.1));
+    let config = RetryConfig {
+        max_retries: 5,
+        budget: Some(budget.clone()),
+        ..RetryConfig::default()
+    };
+
+    let mut attempts_per_call = Vec::new();
+    for _ in 0..8 {
+        let calls = Arc::new(AtomicU32::new(0));
+        let seen = calls.clone();
+        let _ = retry_on_transient(&config, || {
+            let seen = seen.clone();
+            async move {
+                seen.fetch_add(1, Ordering::SeqCst);
+                Err::<(), Status>(Status::unavailable("down"))
+            }
+        })
+        .await;
+        attempts_per_call.push(calls.load(Ordering::SeqCst));
+    }
+
+    // Not the full 6: the bucket holds 10 and retries stop at half, so the first
+    // call spends 5 tokens getting 5 attempts. The default 100-token bucket
+    // leaves a healthy channel's allowance untouched.
+    assert!(
+        attempts_per_call[0] >= 5,
+        "the first call should retry freely, got {} attempts",
+        attempts_per_call[0]
+    );
+    assert_eq!(
+        *attempts_per_call.last().unwrap(),
+        1,
+        "once the bucket drains, calls should fail on the first attempt"
+    );
+    let total: u32 = attempts_per_call.iter().sum();
+    assert!(
+        total < 8 * 6,
+        "budget did not reduce amplification: {total} requests for 8 calls"
+    );
+}
+
+/// Successful traffic refills the bucket, so a blip does not disable retries forever.
+#[tokio::test(start_paused = true)]
+async fn successes_restore_the_budget() {
+    let budget = Arc::new(RetryBudget::new(10.0, 0.5));
+    let config = RetryConfig {
+        max_retries: 5,
+        budget: Some(budget.clone()),
+        ..RetryConfig::default()
+    };
+
+    for _ in 0..8 {
+        let _ = retry_on_transient(&config, || async {
+            Err::<(), Status>(Status::unavailable("down"))
+        })
+        .await;
+    }
+
+    let drained = Arc::new(AtomicU32::new(0));
+    let seen = drained.clone();
+    let _ = retry_on_transient(&config, || {
+        let seen = seen.clone();
+        async move {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Err::<(), Status>(Status::unavailable("down"))
+        }
+    })
+    .await;
+    assert_eq!(
+        drained.load(Ordering::SeqCst),
+        1,
+        "bucket should be drained"
+    );
+
+    for _ in 0..40 {
+        let _ = retry_on_transient(&config, || async { Ok::<(), Status>(()) }).await;
+    }
+
+    let recovered = Arc::new(AtomicU32::new(0));
+    let seen = recovered.clone();
+    let _ = retry_on_transient(&config, || {
+        let seen = seen.clone();
+        async move {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Err::<(), Status>(Status::unavailable("down"))
+        }
+    })
+    .await;
+
+    assert!(
+        recovered.load(Ordering::SeqCst) > 1,
+        "successful traffic should have restored the retry allowance"
+    );
+}
+
+/// The first retry is where a fleet re-synchronizes after a backend blip: every
+/// client sees the same error at the same moment with no trailers to smear on.
+#[tokio::test(start_paused = true)]
+async fn first_retry_delays_are_spread_across_a_wide_window() {
+    let config = RetryConfig {
+        max_retries: 1,
+        budget: None,
+        ..RetryConfig::default()
+    };
+
+    let mut delays = Vec::new();
+    for _ in 0..200 {
+        let start = tokio::time::Instant::now();
+        let _ = retry_on_transient(&config, || async {
+            Err::<(), Status>(Status::unavailable("restarting"))
+        })
+        .await;
+        delays.push(start.elapsed().as_millis() as u64);
+    }
+
+    let spread = delays.iter().max().unwrap() - delays.iter().min().unwrap();
+    assert!(
+        spread >= 500,
+        "first-retry delays span only {spread}ms; a fleet would re-synchronize"
+    );
 }

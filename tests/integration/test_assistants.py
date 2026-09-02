@@ -825,7 +825,7 @@ def test_upload_file_input_validation_and_delete_returns_none_rest(client: Pinec
 
 
 @pytest.mark.integration
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(600)
 def test_describe_file_signed_url_rest(client: Pinecone) -> None:
     """describe_file(include_url=True) returns a non-None signed_url string;
     describe_file() without include_url returns signed_url=None.
@@ -1366,7 +1366,7 @@ def test_chat_completions_streaming_rest(client: Pinecone) -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(600)
 def test_list_files_page_with_page_size_and_pagination_token_rest(client: Pinecone) -> None:
     """list_files_page() supports page_size and pagination_token.
 
@@ -2201,7 +2201,7 @@ def test_assistants_list_page_response_structure_rest(client: Pinecone) -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(600)
 def test_pagination_next_token_populated(client: Pinecone) -> None:
     """Verify which JSON key carries the pagination token in list responses.
 
@@ -2428,7 +2428,7 @@ def test_upload_file_with_caller_specified_file_id_rest(client: Pinecone) -> Non
 
 
 @pytest.mark.integration
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(600)
 def test_upload_file_upsert_with_metadata(client: Pinecone) -> None:
     """upload_file(file_id=..., metadata=...) sends metadata as a multipart form field.
 
@@ -3140,7 +3140,7 @@ def test_chat_completions_invalid_model_raises(client: Pinecone) -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(600)
 def test_context_filter_metadata_excludes_matching_files(client: Pinecone) -> None:
     """context(filter=...) restricts snippets to files whose metadata matches the filter.
 
@@ -3621,7 +3621,7 @@ def test_multimodal_pdf_context_image_text_and_errors(client: Pinecone) -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(600)
 def test_upload_file_content_hash_populated(client: Pinecone) -> None:
     """Verify the wire-format field name for the file hash.
 

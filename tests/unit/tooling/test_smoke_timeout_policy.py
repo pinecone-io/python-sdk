@@ -8,9 +8,16 @@ import time — the same reason ``test_integration_async_marker_policy.py`` scan
 instead of importing. Regex over ``tomllib`` so it runs on Python 3.10.
 
 The failure this exists to prevent: raising the global default to accommodate a
-slow live test. ``timeout = 5`` is the pressure that got the nine unit tests of
-#345 made fast rather than marked; a global raise would have hidden them
-instead. Slow trees get their own ceiling instead.
+slow live test. The tight global default is the pressure that got the nine unit
+tests of #345 made fast rather than marked; a raise sized for a live backend
+would have hidden them instead. Slow trees get their own ceiling instead.
+
+The default is ``60``, not the original ``5``: #79 raised it for unit tests that
+are legitimately slow on CI runners (the DataFrame partition property test's 200
+Hypothesis examples, and the retry-storm tests in the same band). That is a
+unit-sized ceiling, not a live-backend-sized one, so the policy holds — what it
+still forbids is sizing this key for ``tests/smoke`` or ``tests/integration``,
+both of which carry their own ceiling in the two tests below.
 """
 
 from __future__ import annotations
@@ -25,12 +32,12 @@ _INTEGRATION_CONFTEST = _REPO_ROOT / "tests" / "integration" / "conftest.py"
 _SLOWEST_MEASURED_SMOKE_SECONDS = 43.19
 
 
-def test_global_pytest_timeout_default_is_still_five_seconds() -> None:
+def test_global_pytest_timeout_default_stays_unit_sized() -> None:
     text = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     match = re.search(r"^timeout\s*=\s*(\d+)$", text, re.MULTILINE)
     assert match is not None, "no `timeout = N` in [tool.pytest.ini_options]"
-    assert match.group(1) == "5", (
-        f"global pytest timeout is {match.group(1)}s, expected 5s. See this "
+    assert match.group(1) == "60", (
+        f"global pytest timeout is {match.group(1)}s, expected 60s. See this "
         "module's docstring: give the slow tree its own ceiling instead."
     )
 

@@ -19,20 +19,25 @@ def normalize_host(host: str | None) -> str:
     - If host is None or empty, return "".
     - If host doesn't start with http:// or https://, prepend https://.
     - Existing http:// or https:// prefixes are preserved as-is.
-    - Double-scheme patterns (e.g. "https://https://foo.io") are repaired by
-      stripping the outer scheme and keeping the inner one.
+    - Stacked-scheme patterns (e.g. "https://https://foo.io") are repaired by
+      stripping outer schemes and keeping the innermost one.
+
+    Idempotent: normalizing an already-normalized host returns it unchanged.
     """
     if not host:
         return ""
-    # Detect and repair double-scheme patterns before any other processing.
-    # This handles all four combos: https://https://, https://http://,
-    # http://https://, http://http://.
-    for outer in ("https://", "http://"):
-        if host.startswith(outer):
-            remainder = host[len(outer) :]
-            if remainder.startswith(("http://", "https://")):
-                # Strip the outer scheme; keep the inner scheme intact.
-                host = remainder
+    # Strip outer schemes until at most one remains, so any depth of stacking
+    # collapses to a single scheme and the result is idempotent.
+    while True:
+        stripped = False
+        for outer in ("https://", "http://"):
+            if host.startswith(outer):
+                remainder = host[len(outer) :]
+                if remainder.startswith(("http://", "https://")):
+                    host = remainder
+                    stripped = True
+                break
+        if not stripped:
             break
     if not host.startswith(("http://", "https://")):
         return f"https://{host}"

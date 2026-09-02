@@ -21,12 +21,26 @@ class BatchError(Struct, kw_only=True):
         items: The items that were in this batch (for retry).
         error: The exception that caused the failure.
         error_message: Human-readable description of the error.
+        disposition: How this batch failed. An OPEN set of values — do not
+            match exhaustively; new values may appear in minor releases.
+            Currently: ``"rejected"`` (the attempt completed with an error;
+            the write may still have landed server-side), ``"unsent"`` (a
+            deadline expired before this batch was submitted), and
+            ``"abandoned"`` (the backend appeared down and the remainder of
+            the operation was abandoned without sending).
+        retryable: Whether re-sending these items could plausibly succeed.
+            ``False`` marks deterministic failures (validation errors, 4xx
+            rejections) that would fail identically on every attempt —
+            filter on this before any retry loop so a poison batch cannot
+            spin forever.
     """
 
     batch_index: int
     items: list[dict[str, Any]]
     error: Exception
     error_message: str
+    disposition: str = "rejected"
+    retryable: bool = True
 
     def __repr__(self) -> str:
         return (
@@ -47,6 +61,8 @@ class BatchError(Struct, kw_only=True):
             "items": self.items,
             "error": str(self.error),
             "error_message": self.error_message,
+            "disposition": self.disposition,
+            "retryable": self.retryable,
         }
 
     def to_json(self) -> str:
@@ -82,6 +98,21 @@ class BatchResult(Struct, kw_only=True):
             ``failed_items`` is what remains to be sent. A deadline that elapses
             while the last batches are in flight, all of which then land, does not
             set this — there would be nothing to retry.
+        throttle_event_count: Throttle signals the host's adaptive gate heard
+            during this operation. Host-level, not call-level: concurrent
+            operations against the same host share the gate, so their
+            throttles are counted here too.
+        final_limit: The adaptive concurrency limit when this operation
+            finished, or ``None`` when the operation did not run through the
+            gate. A value far below your ``max_concurrency`` means the
+            backend was pushing back.
+        peak_inflight: The most batches this operation had in flight at once.
+        stalled: Whether the host gate's stall detector fired during this
+            operation — the adaptive limit was at the floor with consecutive
+            all-failed settles, so the remainder was abandoned rather than
+            queued against an apparently-dead backend. Abandoned batches
+            appear in ``errors`` with ``disposition="abandoned"``; the gate
+            itself re-probes after a cool-down.
 
     Examples:
         >>> from pinecone import Pinecone
@@ -116,6 +147,10 @@ class BatchResult(Struct, kw_only=True):
     errors: list[BatchError]
     response_info: BatchResponseInfo | None = None
     timed_out: bool = False
+    throttle_event_count: int = 0
+    final_limit: int | None = None
+    peak_inflight: int = 0
+    stalled: bool = False
 
     @property
     def has_errors(self) -> bool:
@@ -190,6 +225,10 @@ class BatchResult(Struct, kw_only=True):
                 self.response_info.to_dict() if self.response_info is not None else None
             ),
             "timed_out": self.timed_out,
+            "throttle_event_count": self.throttle_event_count,
+            "final_limit": self.final_limit,
+            "peak_inflight": self.peak_inflight,
+            "stalled": self.stalled,
         }
 
     def to_json(self) -> str:

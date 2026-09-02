@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections import OrderedDict
 
 logger = logging.getLogger(__name__)
@@ -34,15 +35,17 @@ class _AdaptiveLimiter:
     resets on each throttle.
     """
 
-    __slots__ = ("_ceiling", "_limit", "_lock", "_success_streak")
+    __slots__ = ("_ceiling", "_condition", "_inflight", "_limit", "_lock", "_success_streak")
 
     def __init__(self, ceiling: int) -> None:
         if ceiling < 1:
             raise ValueError(f"ceiling must be >= 1, got {ceiling}")
         self._lock = threading.Lock()
+        self._condition = threading.Condition(self._lock)
         self._ceiling = ceiling
         self._limit = ceiling
         self._success_streak = 0
+        self._inflight = 0
 
     @property
     def ceiling(self) -> int:
@@ -52,12 +55,53 @@ class _AdaptiveLimiter:
         """Return the current effective concurrency limit (1 <= limit <= ceiling)."""
         return self._limit
 
+    def acquire(self, deadline: float | None = None) -> bool:
+        """Take an in-flight slot, waiting for one if the limit is reached.
+
+        The counter lives here rather than in the caller because the limit is
+        per host: two bulk calls against the same index would otherwise each
+        admit ``current_limit()`` requests and jointly run at twice the limit
+        the limiter believes it has imposed.
+
+        Args:
+            deadline: Absolute ``time.monotonic()`` value to give up at, or
+                ``None`` to wait indefinitely.
+
+        Returns:
+            Whether a slot was taken. ``False`` means the deadline passed first,
+            and :meth:`release` must not be called.
+        """
+        with self._condition:
+            while self._inflight >= self._limit:
+                if deadline is None:
+                    self._condition.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._condition.wait(timeout=remaining)
+            if deadline is not None and time.monotonic() >= deadline:
+                return False
+            self._inflight += 1
+            return True
+
+    def release(self) -> None:
+        """Give back a slot taken by :meth:`acquire`."""
+        with self._condition:
+            self._inflight -= 1
+            self._condition.notify_all()
+
+    @property
+    def inflight(self) -> int:
+        return self._inflight
+
     def report_throttled(self) -> None:
         """Halve the limit (floored at 1) and reset the success streak."""
-        with self._lock:
+        with self._condition:
             before = self._limit
             self._limit = max(1, self._limit // 2)
             self._success_streak = 0
+            self._condition.notify_all()
         if before != self._limit:
             logger.debug(
                 "AIMD limiter decreased: before=%d after=%d ceiling=%d",
@@ -68,13 +112,14 @@ class _AdaptiveLimiter:
 
     def report_success(self) -> None:
         """Increment the success streak; bump limit by 1 if streak hits current limit."""
-        with self._lock:
+        with self._condition:
             self._success_streak += 1
             increased = False
             if self._success_streak >= self._limit:
                 if self._limit < self._ceiling:
                     self._limit = self._limit + 1
                     increased = True
+                    self._condition.notify_all()
                 self._success_streak = 0
         if increased:
             logger.debug(
@@ -91,10 +136,12 @@ class _AdaptiveLimiter:
         """
         if ceiling < 1:
             raise ValueError(f"ceiling must be >= 1, got {ceiling}")
-        with self._lock:
+        with self._condition:
             self._ceiling = ceiling
             if self._limit > ceiling:
                 self._limit = ceiling
+            else:
+                self._condition.notify_all()
 
 
 class _AdaptiveLimiterRegistry:

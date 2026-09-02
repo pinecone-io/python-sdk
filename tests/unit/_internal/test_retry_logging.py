@@ -37,7 +37,7 @@ def test_throttle_response_logs_debug_with_fields(caplog: pytest.LogCaptureFixtu
     ]
     with (
         caplog.at_level(logging.DEBUG, logger="pinecone._internal.http_client"),
-        patch("pinecone._internal.http_client.time.sleep"),
+        patch("pinecone._internal.http_client._retry_sleep"),
     ):
         rt.handle_request(_req())
 
@@ -107,7 +107,7 @@ async def test_async_throttle_response_logs_debug(caplog: pytest.LogCaptureFixtu
     ]
     with (
         caplog.at_level(logging.DEBUG, logger="pinecone._internal.http_client"),
-        patch("pinecone._internal.http_client.asyncio.sleep"),
+        patch("pinecone._internal.http_client._async_retry_sleep"),
     ):
         await rt.handle_async_request(_req())
 

@@ -136,18 +136,32 @@ required-imports = ["from __future__ import annotations"]
 
 [tool.pytest.ini_options]
 anyio_mode = "auto"
-timeout = 5
+# 60s bounds a HUNG test — the point of pytest-timeout — without failing suites
+# that are legitimately slow: the DataFrame partition property test runs 200
+# Hypothesis examples (~1.4s locally, >5s on CI runners under py3.10), and the
+# retry-storm tests sit in the same band.
+timeout = 60
 # --strict-config turns an unrecognized ini key into a startup error and
 # --strict-markers does the same for an unregistered marker. Both were silent
-# warnings until #306, which is how `timeout = 5` and 89 `pytest.mark.timeout`
-# markers sat inert for four months after pytest-timeout went missing from the
-# dev dependency group.
+# warnings until #306, which is how the `timeout` key and 89
+# `pytest.mark.timeout` markers sat inert for four months after pytest-timeout
+# went missing from the dev dependency group.
 addopts = ["--strict-config", "--strict-markers"]
 markers = [
     "smoke: end-to-end smoke tests that hit a real Pinecone backend (see tests/smoke/README.md)",
     "integration: real-API integration tests against a live Pinecone backend",
     "api_op(op_id): conformance claim for a 2026-07 API operation (see tests/unit/conformance/README.md)",
 ]
+
+[tool.coverage.run]
+source = ["pinecone"]
+# pytest-cov auto-combines per-worker data files when pytest-xdist is active,
+# so this config holds even if -n is later added to the unit-test CI command.
+branch = false
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
 
 [dependency-groups]
 dev = [
@@ -169,6 +183,8 @@ dev = [
     "python-dotenv>=1.2.2",
     "pytest-benchmark>=5.0.0",
     "pytest-xdist>=3.6",
+    "pytest-timeout>=2.3",
+    "pytest-cov>=7.0",
     "respx>=0.22.0",
     "mypy>=1.20.0",
     "ruff>=0.15.9",

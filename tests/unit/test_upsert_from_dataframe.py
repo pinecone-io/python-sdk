@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import inspect
 import types
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from pinecone import Index
+from pinecone._internal.constants import DEFAULT_MAX_CONCURRENCY
 from pinecone.async_client.async_index import AsyncIndex
 from pinecone.models.vectors.responses import UpsertResponse
 
@@ -280,33 +282,133 @@ class TestUpsertFromDataframeErrors:
 
 
 class TestAsyncUpsertFromDataframe:
-    """AsyncIndex.upsert_from_dataframe raises NotImplementedError."""
+    """AsyncIndex.upsert_from_dataframe delegates to async upsert (#5)."""
+
+    def _make_async_index(self) -> AsyncIndex:
+        return AsyncIndex(host=INDEX_HOST, api_key="test-key")
 
     @pytest.mark.asyncio
-    async def test_async_upsert_from_dataframe_not_implemented(self) -> None:
-        async_idx = AsyncIndex(host=INDEX_HOST, api_key="test-key")
+    async def test_async_upsert_from_dataframe_basic(self) -> None:
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame(
+            {
+                "id": ["v1", "v2", "v3"],
+                "values": [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
+            }
+        )
+        async_idx = self._make_async_index()
+        async_idx.upsert = AsyncMock(return_value=_make_upsert_response(upserted_count=3))  # type: ignore[method-assign]
 
-        with pytest.raises(NotImplementedError, match="not supported for async"):
+        result = await async_idx.upsert_from_dataframe(df)
+
+        assert isinstance(result, UpsertResponse)
+        assert result.upserted_count == 3
+        call_kwargs = async_idx.upsert.call_args[1]
+        assert len(call_kwargs["vectors"]) == 3
+        assert call_kwargs["vectors"][0] == {"id": "v1", "values": [0.1, 0.2]}
+        assert call_kwargs["batch_size"] == 500
+
+    @pytest.mark.asyncio
+    async def test_async_forwards_all_knobs(self) -> None:
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame({"id": ["v1"], "values": [[0.1]]})
+        async_idx = self._make_async_index()
+        async_idx.upsert = AsyncMock(return_value=_make_upsert_response(upserted_count=1))  # type: ignore[method-assign]
+
+        await async_idx.upsert_from_dataframe(
+            df,
+            namespace="my-ns",
+            batch_size=7,
+            show_progress=False,
+            timeout=30.0,
+            max_concurrency=3,
+            total_timeout=120.0,
+        )
+
+        call_kwargs = async_idx.upsert.call_args[1]
+        assert call_kwargs["namespace"] == "my-ns"
+        assert call_kwargs["batch_size"] == 7
+        assert call_kwargs["show_progress"] is False
+        assert call_kwargs["timeout"] == 30.0
+        assert call_kwargs["max_concurrency"] == 3
+        assert call_kwargs["total_timeout"] == 120.0
+
+    @pytest.mark.asyncio
+    async def test_async_max_concurrency_defaults_to_flat_constant(self) -> None:
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame({"id": ["v1"], "values": [[0.1]]})
+        async_idx = self._make_async_index()
+        async_idx.upsert = AsyncMock(return_value=_make_upsert_response(upserted_count=1))  # type: ignore[method-assign]
+
+        await async_idx.upsert_from_dataframe(df)
+
+        assert async_idx.upsert.call_args[1]["max_concurrency"] == DEFAULT_MAX_CONCURRENCY
+
+    @pytest.mark.asyncio
+    async def test_async_not_a_dataframe_raises(self) -> None:
+        pytest.importorskip("pandas")
+        async_idx = self._make_async_index()
+
+        with pytest.raises(ValueError, match="df must be a pandas DataFrame"):
             await async_idx.upsert_from_dataframe("dummy")
 
     @pytest.mark.asyncio
-    async def test_async_upsert_from_dataframe_timeout_still_raises(self) -> None:
-        """Passing timeout hits NotImplementedError, not a TypeError on the kwarg."""
-        async_idx = AsyncIndex(host=INDEX_HOST, api_key="test-key")
-
-        with pytest.raises(NotImplementedError, match="not supported for async"):
-            await async_idx.upsert_from_dataframe("dummy", timeout=30.0)
-
-    @pytest.mark.asyncio
-    async def test_async_upsert_from_dataframe_batch_size_zero(self) -> None:
-        async_idx = AsyncIndex(host=INDEX_HOST, api_key="test-key")
+    async def test_async_batch_size_zero_raises(self) -> None:
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame({"id": ["v1"], "values": [[0.1]]})
+        async_idx = self._make_async_index()
 
         with pytest.raises(ValueError, match="batch_size must be a positive integer"):
-            await async_idx.upsert_from_dataframe("dummy", batch_size=0)
+            await async_idx.upsert_from_dataframe(df, batch_size=0)
 
     @pytest.mark.asyncio
-    async def test_async_upsert_from_dataframe_batch_size_negative(self) -> None:
-        async_idx = AsyncIndex(host=INDEX_HOST, api_key="test-key")
+    async def test_async_on_error_raise_rethrows_lowest_batch_index(self) -> None:
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame({"id": ["v1", "v2"], "values": [[0.1], [0.2]]})
+        async_idx = self._make_async_index()
+        err_low = RuntimeError("batch 1 failed")
+        err_high = RuntimeError("batch 3 failed")
+        response = UpsertResponse(
+            upserted_count=1,
+            total_item_count=2,
+            failed_item_count=1,
+            errors=[
+                SimpleNamespace(batch_index=3, error=err_high),
+                SimpleNamespace(batch_index=1, error=err_low),
+            ],
+        )
+        async_idx.upsert = AsyncMock(return_value=response)  # type: ignore[method-assign]
 
-        with pytest.raises(ValueError, match="batch_size must be a positive integer"):
-            await async_idx.upsert_from_dataframe("dummy", batch_size=-1)
+        with pytest.raises(RuntimeError, match="batch 1 failed") as excinfo:
+            await async_idx.upsert_from_dataframe(df, on_error="raise")
+
+        assert excinfo.value.response is response  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_async_on_error_default_collects(self) -> None:
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame({"id": ["v1"], "values": [[0.1]]})
+        async_idx = self._make_async_index()
+        response = UpsertResponse(
+            upserted_count=0,
+            total_item_count=1,
+            failed_item_count=1,
+            errors=[SimpleNamespace(batch_index=0, error=RuntimeError("boom"))],
+        )
+        async_idx.upsert = AsyncMock(return_value=response)  # type: ignore[method-assign]
+
+        result = await async_idx.upsert_from_dataframe(df)
+
+        assert result is response
+
+
+class TestUpsertFromDataframeTransportParity:
+    """One signature across REST sync, asyncio, and gRPC (#5, the parity effort)."""
+
+    def test_signature_parity_all_three_transports(self) -> None:
+        from pinecone.grpc import GrpcIndex
+
+        sync_params = list(inspect.signature(Index.upsert_from_dataframe).parameters)
+        async_params = list(inspect.signature(AsyncIndex.upsert_from_dataframe).parameters)
+        grpc_params = list(inspect.signature(GrpcIndex.upsert_from_dataframe).parameters)
+        assert sync_params == async_params == grpc_params

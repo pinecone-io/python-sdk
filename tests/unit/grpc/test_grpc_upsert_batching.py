@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from pinecone._internal.bulk import bulk_execute_sync
 from pinecone.errors.exceptions import PineconeValueError
 from pinecone.grpc import GrpcIndex
 
@@ -87,29 +88,25 @@ class TestGrpcUpsertBatching:
         with pytest.raises(PineconeValueError):
             grpc_index.upsert(vectors=vectors, batch_size=2, max_concurrency=-1)
 
-    def test_upsert_max_concurrency_default_is_4(
+    def test_upsert_max_concurrency_default_is_8(
         self, grpc_index: GrpcIndex, mock_channel: MagicMock
     ) -> None:
-        """Default max_concurrency of 4 is forwarded to _get_batch_executor."""
+        """Default max_concurrency of 8 reaches the bulk engine."""
         mock_channel.upsert.return_value = {"upserted_count": 5}
         vectors = _make_vectors(10)
-        with patch.object(
-            grpc_index, "_get_batch_executor", wraps=grpc_index._get_batch_executor
-        ) as mock_exec:
+        with patch("pinecone.grpc.bulk_execute_sync", wraps=bulk_execute_sync) as mock_engine:
             grpc_index.upsert(vectors=vectors, batch_size=5, show_progress=False)
-            mock_exec.assert_called_once_with(4)
+            assert mock_engine.call_args.kwargs["max_concurrency"] == 8
 
     def test_upsert_max_concurrency_explicit(
         self, grpc_index: GrpcIndex, mock_channel: MagicMock
     ) -> None:
-        """Explicit max_concurrency=8 is forwarded to _get_batch_executor."""
+        """Explicit max_concurrency=8 reaches the bulk engine."""
         mock_channel.upsert.return_value = {"upserted_count": 5}
         vectors = _make_vectors(10)
-        with patch.object(
-            grpc_index, "_get_batch_executor", wraps=grpc_index._get_batch_executor
-        ) as mock_exec:
+        with patch("pinecone.grpc.bulk_execute_sync", wraps=bulk_execute_sync) as mock_engine:
             grpc_index.upsert(vectors=vectors, batch_size=5, max_concurrency=8, show_progress=False)
-            mock_exec.assert_called_once_with(8)
+            assert mock_engine.call_args.kwargs["max_concurrency"] == 8
 
     def test_upsert_show_progress_false_does_not_import_tqdm(
         self, grpc_index: GrpcIndex, mock_channel: MagicMock
@@ -199,51 +196,104 @@ class TestGrpcUpsertBatching:
         assert mock_channel.upsert.call_count == 0
         assert result.upserted_count == 0
 
-    def test_upsert_executor_is_cached_across_calls(
+    def test_many_distinct_concurrency_values_never_interfere(
         self, grpc_index: GrpcIndex, mock_channel: MagicMock
     ) -> None:
-        """Same max_concurrency reuses the same ThreadPoolExecutor instance."""
+        """The pool-cache bug class is gone by construction: any number of
+        distinct max_concurrency values across calls (the old LRU evicted at
+        5 and shut down a live pool) work without cross-call interference."""
         mock_channel.upsert.return_value = {"upserted_count": 5}
         vectors = _make_vectors(10)
-        grpc_index.upsert(vectors=vectors, batch_size=5, max_concurrency=4, show_progress=False)
-        executor_first = grpc_index._batch_executors[4]
-        grpc_index.upsert(vectors=vectors, batch_size=5, max_concurrency=4, show_progress=False)
-        executor_second = grpc_index._batch_executors[4]
-        assert executor_first is executor_second
+        for concurrency in (1, 2, 3, 5, 8, 13, 21, 34):
+            result = grpc_index.upsert(
+                vectors=vectors, batch_size=5, max_concurrency=concurrency, show_progress=False
+            )
+            assert result.upserted_count == 10
+            assert not result.errors
 
-    def test_each_max_concurrency_keeps_its_own_executor(
+    def test_concurrent_calls_with_different_concurrency_do_not_disturb_each_other(
         self, grpc_index: GrpcIndex, mock_channel: MagicMock
     ) -> None:
-        """The pools coexist rather than one replacing the other.
+        """Two bulk calls running simultaneously with different
+        max_concurrency values both complete cleanly — the scenario where the
+        old per-size pool replacement raised 'cannot schedule new futures
+        after shutdown' in whichever call was still submitting."""
+        import threading
 
-        upsert() and upsert_from_dataframe() have different concurrency defaults
-        and can run concurrently on one handle, so shutting a pool down because
-        the other caller asked for a different size would raise "cannot schedule
-        new futures after shutdown" in whichever was still submitting.
-        """
-        mock_channel.upsert.return_value = {"upserted_count": 5}
-        vectors = _make_vectors(10)
-        grpc_index.upsert(vectors=vectors, batch_size=5, max_concurrency=4, show_progress=False)
-        executor_first = grpc_index._batch_executors[4]
-        grpc_index.upsert(vectors=vectors, batch_size=5, max_concurrency=8, show_progress=False)
+        gate_evt = threading.Event()
 
-        assert grpc_index._batch_executors[8] is not executor_first
-        assert grpc_index._batch_executors[4] is executor_first
-        assert executor_first.submit(lambda: "alive").result() == "alive"
+        def slow_upsert(
+            chunk: list[dict[str, object]], ns: object, *, timeout_s: object
+        ) -> dict[str, int]:
+            gate_evt.wait(0.05)
+            return {"upserted_count": len(chunk)}
 
-    def test_close_shuts_down_every_batch_executor(
+        mock_channel.upsert.side_effect = slow_upsert
+        vectors = _make_vectors(40)
+        results: list[object] = []
+
+        def call(concurrency: int) -> None:
+            results.append(
+                grpc_index.upsert(
+                    vectors=vectors,
+                    batch_size=5,
+                    max_concurrency=concurrency,
+                    show_progress=False,
+                )
+            )
+
+        threads = [threading.Thread(target=call, args=(c,)) for c in (2, 8)]
+        for thread in threads:
+            thread.start()
+        gate_evt.set()
+        for thread in threads:
+            thread.join(timeout=30)
+        assert len(results) == 2
+        for result in results:
+            assert result.upserted_count == 40  # type: ignore[attr-defined]
+            assert not result.errors  # type: ignore[attr-defined]
+
+
+class TestGrpcUpsertTotalTimeout:
+    """total_timeout on GrpcIndex.upsert (#142) — parity with REST/async."""
+
+    def test_total_timeout_defaults_to_none(self) -> None:
+        import inspect
+
+        sig = inspect.signature(GrpcIndex.upsert)
+        assert sig.parameters["total_timeout"].default is None
+
+    def test_total_timeout_is_forwarded_to_the_engine(
         self, grpc_index: GrpcIndex, mock_channel: MagicMock
     ) -> None:
-        """close() must shut down each pool that was created."""
         mock_channel.upsert.return_value = {"upserted_count": 5}
         vectors = _make_vectors(10)
-        grpc_index.upsert(vectors=vectors, batch_size=5, max_concurrency=4, show_progress=False)
-        grpc_index.upsert(vectors=vectors, batch_size=5, max_concurrency=8, show_progress=False)
-        executors = list(grpc_index._batch_executors.values())
-        assert len(executors) == 2
+        with patch("pinecone.grpc.bulk_execute_sync", wraps=bulk_execute_sync) as mock_engine:
+            grpc_index.upsert(
+                vectors=vectors, batch_size=5, show_progress=False, total_timeout=90.0
+            )
+            assert mock_engine.call_args.kwargs["total_timeout"] == 90.0
 
-        grpc_index.close()
+    def test_expired_total_timeout_abandons_unsent_batches(
+        self, grpc_index: GrpcIndex, mock_channel: MagicMock
+    ) -> None:
+        import time
 
-        for executor in executors:
-            with pytest.raises(RuntimeError):
-                executor.submit(lambda: None)
+        def slow_upsert(*args: object, **kwargs: object) -> dict[str, int]:
+            time.sleep(0.05)
+            return {"upserted_count": 2}
+
+        mock_channel.upsert.side_effect = slow_upsert
+        vectors = _make_vectors(40)
+
+        response = grpc_index.upsert(
+            vectors=vectors,
+            batch_size=2,
+            max_concurrency=1,
+            show_progress=False,
+            total_timeout=0.08,
+        )
+
+        assert response.failed_item_count > 0
+        assert response.upserted_count < 40
+        assert response.errors

@@ -9,6 +9,16 @@ the artifacts were tracked, so every unit-test run dirtied the checkout, and the
 gRPC producer collected *after* the parity consumer, so the gRPC arm of the
 comparison always read the previous run's value. See "Cross-transport storm
 parity" in README.md.
+
+The REST arms get an effectively unlimited retry budget, matching
+test_retry_storm_{sync,async}.py. A full-outage window is precisely where the
+gRFC A6 retry budget correctly suppresses retries, and with the default 100-token
+bucket 50 concurrent clients drain it past the half-way suppression threshold on
+their first round of failures: no request survives the window, so there is no
+dispersion left to measure. The gRPC arm has no budget of its own, so leaving the
+REST budgets at their default made the parity comparison one between throttled
+and unthrottled transports rather than between transports.
+test_retry_budget.py pins suppression itself.
 """
 
 from __future__ import annotations
@@ -16,7 +26,11 @@ from __future__ import annotations
 import httpx
 
 from pinecone._internal.config import RetryConfig
-from pinecone._internal.http_client import _AsyncRetryTransport, _RetryTransport
+from pinecone._internal.http_client import (
+    _AsyncRetryTransport,
+    _BudgetRegistry,
+    _RetryTransport,
+)
 from tests.unit._internal._storm_fixture import StormConfig, StormScenario
 
 StormMetrics = dict[str, object]
@@ -47,7 +61,9 @@ def sync_parity_metrics() -> StormMetrics:
     config = canonical_config()
     scenario = StormScenario(config)
     transport = _RetryTransport(  # type: ignore[arg-type]
-        transport=scenario.sync_transport, retry_config=_retry_config()
+        transport=scenario.sync_transport,
+        retry_config=_retry_config(),
+        budget_registry=_BudgetRegistry(max_tokens=1e9),
     )
 
     scenario.run_sync(
@@ -69,7 +85,9 @@ async def async_parity_metrics() -> StormMetrics:
     config = canonical_config()
     scenario = StormScenario(config)
     transport = _AsyncRetryTransport(  # type: ignore[arg-type]
-        transport=scenario.async_transport, retry_config=_retry_config()
+        transport=scenario.async_transport,
+        retry_config=_retry_config(),
+        budget_registry=_BudgetRegistry(max_tokens=1e9),
     )
 
     await scenario.run_async(

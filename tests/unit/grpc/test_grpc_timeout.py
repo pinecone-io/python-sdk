@@ -234,25 +234,26 @@ class TestRetryConfigReachesChannel:
         assert not any("status" in key for key in kwargs)
 
     def test_on_throttle_from_retry_config_is_not_dropped(self) -> None:
-        """The client wires the limiter hook onto RetryConfig; honor it."""
-
-        def _hook(host: str) -> None:
-            pass
-
-        kwargs = self._channel_kwargs(retry_config=RetryConfig(on_throttle=_hook))
-        assert kwargs["on_throttle"] is _hook
+        """A hook threaded through RetryConfig still fires — composed with
+        the gate feed rather than passed through bare since #70."""
+        seen: list[str] = []
+        kwargs = self._channel_kwargs(retry_config=RetryConfig(on_throttle=seen.append))
+        callback = kwargs["on_throttle"]
+        assert callable(callback)
+        callback("some-host.svc.pinecone.io")  # type: ignore[operator]
+        assert seen == ["some-host.svc.pinecone.io"]
 
     def test_explicit_on_throttle_wins_over_retry_config(self) -> None:
-        def _from_config(host: str) -> None:
-            pass
-
-        def _explicit(host: str) -> None:
-            pass
+        from_config: list[str] = []
+        explicit: list[str] = []
 
         kwargs = self._channel_kwargs(
-            retry_config=RetryConfig(on_throttle=_from_config), on_throttle=_explicit
+            retry_config=RetryConfig(on_throttle=from_config.append),
+            on_throttle=explicit.append,
         )
-        assert kwargs["on_throttle"] is _explicit
+        kwargs["on_throttle"]("some-host.svc.pinecone.io")  # type: ignore[operator]
+        assert explicit == ["some-host.svc.pinecone.io"]
+        assert from_config == []
 
 
 class TestMaxRetriesZeroRaisesImmediately:

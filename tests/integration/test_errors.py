@@ -642,7 +642,7 @@ def test_exception_catch_hierarchy_rest(client: Pinecone) -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(600)
 def test_grpc_query_too_short_timeout_raises(client: Pinecone) -> None:
     """A gRPC query with a sub-millisecond per-call timeout raises PineconeTimeoutError.
 

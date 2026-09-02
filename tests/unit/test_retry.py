@@ -128,7 +128,7 @@ def _make_request() -> httpx.Request:
 
 
 class TestSyncRetryTransport:
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_sync_retries_on_500(self, mock_sleep: Any) -> None:
         fake = _FakeTransport(
             [
@@ -146,7 +146,7 @@ class TestSyncRetryTransport:
         assert fake.call_count == 3
         assert mock_sleep.call_count == 2
 
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_sync_retries_on_502(self, mock_sleep: Any) -> None:
         fake = _FakeTransport(
             [
@@ -162,7 +162,7 @@ class TestSyncRetryTransport:
         assert response.status_code == 200
         assert fake.call_count == 2
 
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_sync_retries_on_429(self, mock_sleep: Any) -> None:
         """429 is now retried by default."""
         fake = _FakeTransport(
@@ -179,7 +179,7 @@ class TestSyncRetryTransport:
         assert response.status_code == 200
         assert fake.call_count == 2
 
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_sync_no_retry_on_400(self, mock_sleep: Any) -> None:
         fake = _FakeTransport(
             [
@@ -195,7 +195,7 @@ class TestSyncRetryTransport:
         assert fake.call_count == 1
         mock_sleep.assert_not_called()
 
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_sync_exhausts_retries(self, mock_sleep: Any) -> None:
         fake = _FakeTransport(
             [
@@ -212,7 +212,7 @@ class TestSyncRetryTransport:
         assert fake.call_count == 5
         assert mock_sleep.call_count == 4
 
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_sync_retries_post(self, mock_sleep: Any) -> None:
         """POST requests are retried on retryable status codes."""
         fake = _FakeTransport(
@@ -230,7 +230,7 @@ class TestSyncRetryTransport:
         assert response.status_code == 200
         assert fake.call_count == 2
 
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_sync_retries_delete(self, mock_sleep: Any) -> None:
         """DELETE requests are retried on retryable status codes."""
         fake = _FakeTransport(
@@ -248,7 +248,7 @@ class TestSyncRetryTransport:
         assert response.status_code == 200
         assert fake.call_count == 2
 
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_sync_retries_put_and_patch(self, mock_sleep: Any) -> None:
         """PUT and PATCH requests are retried on retryable status codes."""
         for method in ("PUT", "PATCH"):
@@ -267,7 +267,7 @@ class TestSyncRetryTransport:
             assert response.status_code == 200, f"{method} should be retried"
             assert fake.call_count == 2, f"{method} should have 2 attempts"
 
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_sync_retries_head(self, mock_sleep: Any) -> None:
         """HEAD requests are retried."""
         fake = _FakeTransport(
@@ -286,7 +286,7 @@ class TestSyncRetryTransport:
         assert fake.call_count == 2
 
     @patch("pinecone._internal.http_client.random.uniform", side_effect=lambda a, b: b)
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_sync_backoff_delays(self, mock_sleep: Any, mock_uniform: Any) -> None:
         """Verify decorrelated jitter backoff: uniform(base, prev*3) capped at max_wait."""
         fake = _FakeTransport(
@@ -313,7 +313,7 @@ class TestSyncRetryTransport:
         assert delays == [6.0, 18.0, 54.0]
 
     @patch("pinecone._internal.http_client.random.uniform", side_effect=lambda a, b: b)
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_sync_backoff_capped(self, mock_sleep: Any, mock_uniform: Any) -> None:
         """Verify sync backoff is capped at max_wait."""
         fake = _FakeTransport(
@@ -339,7 +339,7 @@ class TestSyncRetryTransport:
         # base=2.0, max_wait=3.0; attempt 0: upper=min(3,6)=3, all subsequent same
         assert delays == [3.0, 3.0, 3.0, 3.0]
 
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_sync_closes_discarded_responses(self, mock_sleep: Any) -> None:
         """Discarded responses must be closed to release connections back to the pool."""
         responses = [
@@ -360,7 +360,7 @@ class TestSyncRetryTransport:
         # The final (returned) response should NOT be closed
         responses[2].close.assert_not_called()  # type: ignore[union-attr]
 
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_post_retries_on_server_error(self, mock_sleep: Any) -> None:
         """POST retries on server error: 503 twice then 200 = 3 total requests."""
         fake = _FakeTransport(
@@ -379,7 +379,7 @@ class TestSyncRetryTransport:
         assert response.status_code == 200
         assert fake.call_count == 3
 
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_put_retries_on_server_error(self, mock_sleep: Any) -> None:
         """PUT retries on server error: 503 twice then 200 = 3 total requests."""
         fake = _FakeTransport(
@@ -398,7 +398,7 @@ class TestSyncRetryTransport:
         assert response.status_code == 200
         assert fake.call_count == 3
 
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_retries_on_429_rate_limit(self, mock_sleep: Any) -> None:
         """429 triggers retries: 429 twice then 200 = 3 total requests."""
         fake = _FakeTransport(
@@ -417,7 +417,7 @@ class TestSyncRetryTransport:
         assert fake.call_count == 3
 
     @patch("pinecone._internal.http_client.random.uniform", side_effect=lambda a, b: b)
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_retry_after_header_respected(self, mock_sleep: Any, mock_uniform: Any) -> None:
         """When Retry-After header is present, delay is ra + uniform(0, ra*0.5) smear."""
         fake = _FakeTransport(
@@ -442,7 +442,7 @@ class TestSyncRetryTransport:
         mock_sleep.assert_called_once_with(3.75)
 
     @patch("pinecone._internal.http_client.random.uniform", side_effect=lambda a, b: b)
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_retry_after_header_invalid_falls_back_to_backoff(
         self, mock_sleep: Any, mock_uniform: Any
     ) -> None:
@@ -469,7 +469,7 @@ class TestSyncRetryTransport:
         mock_sleep.assert_called_once_with(6.0)  # mock returns upper bound
 
     @patch("pinecone._internal.http_client.random.uniform", side_effect=lambda a, b: b)
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_decorrelated_jitter_backoff_range(self, mock_sleep: Any, mock_uniform: Any) -> None:
         """Decorrelated jitter: uniform(base, min(max_wait, prev*3)) for each attempt."""
         fake = _FakeTransport(
@@ -491,7 +491,7 @@ class TestSyncRetryTransport:
         assert uniform_calls == [(2.0, 6.0), (2.0, 18.0)]
 
     @patch("pinecone._internal.http_client.random.uniform", side_effect=lambda a, b: b)
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_backoff_capped_at_max_wait(self, mock_sleep: Any, mock_uniform: Any) -> None:
         """Backoff is capped at max_wait even when prev*3 would exceed it."""
         fake = _FakeTransport([httpx.Response(500, json={"message": "error"})] * 5)
@@ -506,7 +506,7 @@ class TestSyncRetryTransport:
         assert uniform_calls[0] == (10.0, 30.0)
         assert uniform_calls[1] == (10.0, 30.0)
 
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_sync_closes_all_on_exhaustion(self, mock_sleep: Any) -> None:
         """When retries are exhausted, all intermediate responses are closed."""
         responses = [
@@ -535,7 +535,7 @@ class TestSyncRetryTransport:
 
 
 class TestAsyncRetryTransport:
-    @patch("pinecone._internal.http_client.asyncio.sleep")
+    @patch("pinecone._internal.http_client._async_retry_sleep")
     @pytest.mark.asyncio
     async def test_async_retries_on_500(self, mock_sleep: Any) -> None:
         fake = _FakeAsyncTransport(
@@ -553,7 +553,7 @@ class TestAsyncRetryTransport:
         assert response.status_code == 200
         assert fake.call_count == 3
 
-    @patch("pinecone._internal.http_client.asyncio.sleep")
+    @patch("pinecone._internal.http_client._async_retry_sleep")
     @pytest.mark.asyncio
     async def test_async_retries_on_503(self, mock_sleep: Any) -> None:
         fake = _FakeAsyncTransport(
@@ -571,7 +571,7 @@ class TestAsyncRetryTransport:
         assert response.status_code == 200
         assert fake.call_count == 3
 
-    @patch("pinecone._internal.http_client.asyncio.sleep")
+    @patch("pinecone._internal.http_client._async_retry_sleep")
     @pytest.mark.asyncio
     async def test_async_retries_on_429(self, mock_sleep: Any) -> None:
         """429 is now retried by default."""
@@ -589,7 +589,7 @@ class TestAsyncRetryTransport:
         assert response.status_code == 200
         assert fake.call_count == 2
 
-    @patch("pinecone._internal.http_client.asyncio.sleep")
+    @patch("pinecone._internal.http_client._async_retry_sleep")
     @pytest.mark.asyncio
     async def test_async_exhausts_retries(self, mock_sleep: Any) -> None:
         fake = _FakeAsyncTransport(
@@ -607,7 +607,7 @@ class TestAsyncRetryTransport:
         assert fake.call_count == 5
         assert mock_sleep.call_count == 4
 
-    @patch("pinecone._internal.http_client.asyncio.sleep")
+    @patch("pinecone._internal.http_client._async_retry_sleep")
     @pytest.mark.asyncio
     async def test_async_retries_post(self, mock_sleep: Any) -> None:
         """POST requests are retried on retryable status codes."""
@@ -626,7 +626,7 @@ class TestAsyncRetryTransport:
         assert response.status_code == 200
         assert fake.call_count == 2
 
-    @patch("pinecone._internal.http_client.asyncio.sleep")
+    @patch("pinecone._internal.http_client._async_retry_sleep")
     @pytest.mark.asyncio
     async def test_async_retries_delete(self, mock_sleep: Any) -> None:
         """DELETE requests are retried on retryable status codes."""
@@ -646,7 +646,7 @@ class TestAsyncRetryTransport:
         assert fake.call_count == 2
 
     @patch("pinecone._internal.http_client.random.uniform", side_effect=lambda a, b: b)
-    @patch("pinecone._internal.http_client.asyncio.sleep")
+    @patch("pinecone._internal.http_client._async_retry_sleep")
     @pytest.mark.asyncio
     async def test_async_backoff_capped(self, mock_sleep: Any, mock_uniform: Any) -> None:
         """Verify async backoff is capped at max_wait."""
@@ -673,7 +673,7 @@ class TestAsyncRetryTransport:
         # base=2.0, max_wait=3.0; attempt 0: upper=min(3,6)=3, all subsequent same
         assert delays == [3.0, 3.0, 3.0, 3.0]
 
-    @patch("pinecone._internal.http_client.asyncio.sleep")
+    @patch("pinecone._internal.http_client._async_retry_sleep")
     @pytest.mark.asyncio
     async def test_async_closes_discarded_responses(self, mock_sleep: Any) -> None:
         """Discarded responses must be aclosed to release connections back to the pool."""
@@ -695,7 +695,7 @@ class TestAsyncRetryTransport:
         # The final (returned) response should NOT be aclosed
         responses[2].aclose.assert_not_awaited()  # type: ignore[union-attr]
 
-    @patch("pinecone._internal.http_client.asyncio.sleep")
+    @patch("pinecone._internal.http_client._async_retry_sleep")
     @pytest.mark.asyncio
     async def test_async_closes_all_on_exhaustion(self, mock_sleep: Any) -> None:
         """When retries are exhausted, all intermediate responses are aclosed."""
@@ -720,7 +720,7 @@ class TestAsyncRetryTransport:
 
     @pytest.mark.asyncio
     @patch("pinecone._internal.http_client.random.uniform", side_effect=lambda a, b: b)
-    @patch("pinecone._internal.http_client.asyncio.sleep", new_callable=AsyncMock)
+    @patch("pinecone._internal.http_client._async_retry_sleep", new_callable=AsyncMock)
     async def test_async_retry_after_header_respected(
         self, mock_sleep: AsyncMock, mock_uniform: Any
     ) -> None:
@@ -746,7 +746,7 @@ class TestAsyncRetryTransport:
 
     @pytest.mark.asyncio
     @patch("pinecone._internal.http_client.random.uniform", side_effect=lambda a, b: b)
-    @patch("pinecone._internal.http_client.asyncio.sleep", new_callable=AsyncMock)
+    @patch("pinecone._internal.http_client._async_retry_sleep", new_callable=AsyncMock)
     async def test_async_retry_after_header_invalid_falls_back_to_backoff(
         self, mock_sleep: AsyncMock, mock_uniform: Any
     ) -> None:
@@ -777,7 +777,7 @@ class TestAsyncRetryTransport:
 
 
 class TestHTTPClientRetryIntegration:
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_sync_client_retries_500_then_raises(self, mock_sleep: Any) -> None:
         """HTTPClient wraps transport with _RetryTransport; 500s are retried then raised."""
         config = PineconeConfig(api_key="test-key", host=BASE_URL)
@@ -801,7 +801,7 @@ class TestHTTPClientRetryIntegration:
         assert exc_info.value.status_code == 500
         assert fake.call_count == 3
 
-    @patch("pinecone._internal.http_client.time.sleep")
+    @patch("pinecone._internal.http_client._retry_sleep")
     def test_sync_client_retries_then_succeeds(self, mock_sleep: Any) -> None:
         config = PineconeConfig(api_key="test-key", host=BASE_URL)
         client = HTTPClient(config, api_version="2025-10")
