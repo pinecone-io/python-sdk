@@ -98,17 +98,38 @@ class Pinecone:
 
     Examples:
 
+        Construct the client once and reuse it. Leaving ``api_key`` off
+        entirely falls back to the ``PINECONE_API_KEY`` environment variable:
+
         .. code-block:: python
 
             from pinecone import Pinecone
 
-            pc = Pinecone(api_key="your-api-key")  # or set PINECONE_API_KEY env var
+            pc = Pinecone(api_key="your-api-key")
 
-            # Control plane: manage indexes
-            indexes = pc.indexes.list()
+        The namespace properties reach the control plane, which is where
+        indexes, collections, and backups are created and inspected:
 
-            # Data plane: operate on vectors
-            index = pc.index("my-index")
+        .. code-block:: python
+
+            if not pc.indexes.exists("product-search"):
+                pc.indexes.create(
+                    name="product-search",
+                    schema={"fields": {"embedding": {
+                        "type": "dense_vector", "dimension": 1536, "metric": "cosine"}}},
+                )
+
+        :meth:`index` hands back a separate data-plane client scoped to one
+        index, which is what reads and writes vectors. A query vector has to
+        be as wide as the index's dense field — the three floats below stand
+        in for a full 1536-dimensional embedding:
+
+        .. code-block:: python
+
+            idx = pc.index(name="product-search")
+            results = idx.query(vector=[0.012, -0.087, 0.153], top_k=10)
+            for match in results.matches:
+                print(match.id, match.score)
     """
 
     def __init__(
@@ -202,7 +223,8 @@ class Pinecone:
 
         Examples:
 
-            >>> names = [idx.name for idx in pc.indexes.list()]  # doctest: +SKIP
+            >>> for index in pc.indexes.list():
+            ...     print(index.name, index.status.state)
         """
         if self._indexes is None:
             from pinecone.client.indexes import Indexes as _Indexes
@@ -221,7 +243,10 @@ class Pinecone:
 
         Examples:
 
-            >>> names = [col.name for col in pc.collections.list()]  # doctest: +SKIP
+            >>> for col in pc.collections.list():
+            ...     print(col.name, col.status)
+            movie-embeddings-snapshot Ready
+            product-catalog-snapshot Initializing
         """
         if self._collections is None:
             from pinecone.client.collections import Collections as _Collections
@@ -240,7 +265,10 @@ class Pinecone:
 
         Examples:
 
-            >>> ids = [backup.backup_id for backup in pc.backups.list()]  # doctest: +SKIP
+            >>> for backup in pc.backups.list(limit=100):
+            ...     print(backup.backup_id, backup.source_index_name, backup.status)
+            bk-abc123 product-search Ready
+            bk-def456 product-search Ready
         """
         if self._backups is None:
             from pinecone.client.backups import Backups as _Backups
@@ -266,7 +294,9 @@ class Pinecone:
 
         Examples:
 
-            >>> schedules = pc.backup_schedules.list(index_name="my-index")  # doctest: +SKIP
+            >>> for schedule in pc.backup_schedules.list(index_name="product-search"):
+            ...     print(schedule.name, schedule.frequency, schedule.enabled)
+            compliance-snapshots daily True
         """
         if self._backup_schedules is None:
             from pinecone.client.backup_schedules import BackupSchedules as _BackupSchedules
@@ -292,7 +322,8 @@ class Pinecone:
 
         Examples:
 
-            >>> ids = [job.restore_job_id for job in pc.restore_jobs.list()]  # doctest: +SKIP
+            >>> for job in pc.restore_jobs.list(limit=10):
+            ...     print(job.restore_job_id, job.target_index_name, job.status)
         """
         if self._restore_jobs is None:
             from pinecone.client.restore_jobs import RestoreJobs as _RestoreJobs
@@ -317,10 +348,17 @@ class Pinecone:
 
         Examples:
 
-            >>> embeddings = pc.inference.embed(  # doctest: +SKIP
+            ``multilingual-e5-large`` is asymmetric, so ``input_type`` tells it
+            which side of a search the text belongs to — ``"passage"`` for text
+            you intend to store, ``"query"`` for text you intend to search with:
+
+            >>> embeddings = pc.inference.embed(
             ...     model="multilingual-e5-large",
             ...     inputs=["Solar panels reduce energy costs and lower carbon emissions."],
+            ...     parameters={"input_type": "passage"},
             ... )
+            >>> len(embeddings.data)
+            1
         """
         if self._inference is None:
             from pinecone.client.inference import Inference as _Inference
@@ -346,7 +384,8 @@ class Pinecone:
 
         Examples:
 
-            >>> names = [assistant.name for assistant in pc.assistants.list()]  # doctest: +SKIP
+            >>> for assistant in pc.assistants.list():
+            ...     print(assistant.name, assistant.status)
         """
         if self._assistants is None:
             from pinecone.client.assistants import Assistants as _Assistants
@@ -371,11 +410,23 @@ class Pinecone:
 
         Examples:
 
-            >>> bot = pc.assistant("acme-support-bot")  # doctest: +SKIP
-            >>> pc.assistant.create(  # doctest: +SKIP
-            ...     name="support-bot",
+            Calling the proxy with a name is shorthand for
+            :meth:`~pinecone.client.assistants.Assistants.describe`:
+
+            >>> bot = pc.assistant("acme-support-bot")
+            >>> bot.status
+            'Ready'
+
+            Every other attribute forwards to the plural namespace, so
+            ``pc.assistant.create`` and ``pc.assistants.create`` are the same
+            method reached two ways:
+
+            >>> new_bot = pc.assistant.create(
+            ...     name="acme-billing-bot",
             ...     instructions="Help users with billing questions.",
             ... )
+            >>> new_bot.status
+            'Ready'
         """
         from pinecone.client._assistant_namespace_proxy import _AssistantNamespaceProxy
 
@@ -421,16 +472,21 @@ class Pinecone:
 
         Examples:
 
-            .. code-block:: python
+            Naming the index resolves its host with a describe call the first
+            time; the host is cached on this client, so later calls for the
+            same name cost nothing:
 
-                from pinecone import Pinecone
+            >>> idx = pc.index(name="product-search")
 
-                pc = Pinecone(api_key="your-api-key")
-                idx = pc.index(host="product-search-abc123.svc.pinecone.io")
-                # or resolve the host by name
-                idx = pc.index(name="product-search")
-                # gRPC transport for high-throughput upserts
-                idx = pc.index(name="product-search", grpc=True)
+            Passing the host directly skips that lookup entirely, which saves
+            a round trip when you already know it:
+
+            >>> idx = pc.index(host="product-search-abc123.svc.pinecone.io")
+
+            Either form accepts ``grpc=True`` to route the same data-plane
+            operations over gRPC instead of HTTP:
+
+            >>> idx = pc.index(name="product-search", grpc=True)
         """
         resolved_host = self._resolve_index_host(name=name, host=host)
 
@@ -566,25 +622,37 @@ class Pinecone:
                 example if the backup is not yet complete.
 
         Examples:
-            >>> from pinecone import Pinecone
-            >>> pc = Pinecone(api_key="your-api-key")
-            >>> index = pc.create_index_from_backup(  # doctest: +SKIP
-            ...     name="product-search-restored",
-            ...     backup_id="bk-daily-20240115",
-            ... )
 
-            >>> result = pc.create_index_from_backup(  # doctest: +SKIP
+            The default form blocks until the restored index is ready and hands
+            back the index itself, so the next call can use it:
+
+            >>> index = pc.create_index_from_backup(
             ...     name="product-search-restored",
-            ...     backup_id="bk-daily-20240115",
+            ...     backup_id="bk-abc123",
+            ... )
+            >>> index.status.state
+            'Ready'
+
+            ``timeout=-1`` returns as soon as the restore is accepted. What
+            comes back is a :class:`CreateIndexFromBackupResponse`, not an
+            index — the index does not exist yet, so follow the restore through
+            ``pc.restore_jobs`` rather than treating the return value as one:
+
+            >>> result = pc.create_index_from_backup(
+            ...     name="product-search-restored",
+            ...     backup_id="bk-abc123",
             ...     timeout=-1,
             ... )
-            >>> print(result.restore_job_id)  # doctest: +SKIP
+            >>> job = pc.restore_jobs.describe(job_id=result.restore_job_id)
+            >>> job.status
+            'Completed'
 
-            Restore directly onto dedicated read nodes:
+            A restore can land straight onto dedicated read nodes instead of
+            the on-demand default:
 
-            >>> index = pc.create_index_from_backup(  # doctest: +SKIP
-            ...     name="restored-drn-index",
-            ...     backup_id="bk-daily-20240115",
+            >>> index = pc.create_index_from_backup(
+            ...     name="product-search-restored",
+            ...     backup_id="bk-abc123",
             ...     read_capacity={
             ...         "mode": "Dedicated",
             ...         "dedicated": {
@@ -594,6 +662,8 @@ class Pinecone:
             ...         },
             ...     },
             ... )
+            >>> index.status.state
+            'Ready'
         """
         require_non_empty("name", name)
         require_non_empty("backup_id", backup_id)
@@ -640,8 +710,13 @@ class Pinecone:
 
         Examples:
 
-            >>> cfg = pc.config
-            >>> cfg.timeout
+            The values are the resolved ones, after defaults and environment
+            variables have been folded in, so this is where to confirm which
+            host a client is actually pointed at:
+
+            >>> pc.config.host
+            'https://api.pinecone.io'
+            >>> pc.config.timeout
             30.0
         """
         return self._config
@@ -1304,16 +1379,22 @@ class Pinecone:
         :meth:`close` automatically on exit.
 
         Examples:
-            Close the client explicitly after use:
+            The context manager form closes the client on the way out, on an
+            exception as well as on a normal exit:
 
             >>> from pinecone import Pinecone
+            >>> with Pinecone(api_key="your-api-key") as client:
+            ...     for index in client.indexes.list():
+            ...         print(index.name)
+
+            Close it yourself when the client has to outlive a single block:
+
             >>> client = Pinecone(api_key="your-api-key")
-            >>> client.close()
-
-            Use Pinecone as a context manager (``close`` is called automatically):
-
-            >>> with Pinecone(api_key="your-api-key") as pinecone_client:
-            ...     _ = pinecone_client.indexes.list()
+            >>> try:
+            ...     print(client.indexes.exists("product-search"))
+            ... finally:
+            ...     client.close()
+            True
         """
         self._http.close()
         if self._inference is not None:
@@ -1328,8 +1409,9 @@ class Pinecone:
             This :class:`Pinecone` instance.
 
         Examples:
-            >>> with Pinecone(api_key="your-api-key") as pc:
-            ...     names = [idx.name for idx in pc.indexes.list()]  # doctest: +SKIP
+            >>> with Pinecone(api_key="your-api-key") as client:
+            ...     for index in client.indexes.list():
+            ...         print(index.name)
         """
         return self
 
@@ -1339,7 +1421,8 @@ class Pinecone:
         Calls :meth:`close` to release open HTTP connections.
 
         Examples:
-            >>> with Pinecone(api_key="your-api-key") as pc:
-            ...     names = [idx.name for idx in pc.indexes.list()]  # doctest: +SKIP
+            >>> with Pinecone(api_key="your-api-key") as client:
+            ...     for index in client.indexes.list():
+            ...         print(index.name)
         """
         self.close()

@@ -129,6 +129,14 @@ _INDEX_RESPONSE = {
     },
 }
 
+_SEMANTIC_INDEX_RESPONSE = {
+    **_INDEX_RESPONSE,
+    "name": "semantic-search",
+    "host": "semantic-search-abc123.svc.pinecone.io",
+    "schema": {"fields": {"chunk_text": {"type": "semantic_text",
+                                         "model": "multilingual-e5-large"}}},
+}
+
 _ORG_RESPONSE = {
     "id": "org-abc123",
     "name": "Acme Corp",
@@ -171,6 +179,28 @@ _BACKUP_RESPONSE = {
     "created_at": "2024-01-15T00:00:00Z",
 }
 
+_BACKUP_RESPONSE_2 = {
+    "backup_id": "bk-def456", "source_index_name": "product-search",
+    "source_index_id": "idx-abc123", "status": "Ready", "cloud": "aws",
+    "region": "us-east-1", "name": "daily-20240116",
+    "created_at": "2024-01-16T00:00:00Z",
+}
+
+_BACKUP_RESPONSE_3 = {
+    "backup_id": "bk-ghi789", "source_index_name": "support-tickets",
+    "source_index_id": "idx-def456", "status": "Ready", "cloud": "aws",
+    "region": "us-east-1", "name": "pre-migration",
+    "created_at": "2024-01-17T00:00:00Z",
+}
+
+_ORPHANED_BACKUP_RESPONSE = {
+    "backup_id": "bk-old111", "source_index_name": "legacy-catalog",
+    "source_index_id": "idx-legacy", "status": "Ready", "cloud": "aws",
+    "region": "us-east-1", "name": "final-snapshot",
+    "created_at": "2023-11-01T00:00:00Z",
+    "source_index_deleted_at": "2024-01-02T00:00:00Z",
+}
+
 _RESTORE_JOB_RESPONSE = {
     "restore_job_id": "rj-abc123",
     "backup_id": "bkp-abc123",
@@ -184,28 +214,137 @@ _ASSISTANT_RESPONSE = {
     "name": "acme-support-bot",
     "status": "Ready",
     "created_at": "2024-01-01T00:00:00Z",
+    "host": "https://acme-support-bot-abc123.svc.pinecone.io",
+}
+
+_ASSISTANT_FILE_RESPONSE = {
+    "name": "q3-revenue-review.pdf", "id": "file-abc123", "status": "Available",
+    "created_on": "2024-01-15T00:00:00Z", "size": 20480,
+    "metadata": {"department": "finance", "quarter": "2024-Q3"},
+}
+
+_ASSISTANT_OPERATION_RESPONSE = {
+    "id": "op-1234-abcd-5678", "status": "Completed", "operation_type": "upload_file",
+    "file_id": "file-abc123", "percent_complete": 100,
+    "created_at": "2024-01-15T00:00:00Z", "completed_on": "2024-01-15T00:00:05Z",
+    "ingestion_units": 1.0,
+}
+
+_ALIGNMENT_RESPONSE = {
+    "metrics": {"correctness": 0.0, "completeness": 0.0, "alignment": 0.0},
+    "reasoning": {"evaluated_facts": [{
+        "fact": {"content": "The capital of Spain is Madrid."},
+        "entailment": "contradicted",
+        "reasoning": "The answer names Barcelona instead of Madrid.",
+    }]},
+    "usage": {"prompt_tokens": 26, "completion_tokens": 12, "total_tokens": 38},
 }
 
 _MODEL_INFO_RESPONSE = {
     "model": "multilingual-e5-large",
     "short_description": "A multilingual embedding model",
     "type": "embed",
-    "supported_parameters": [],
+    "supported_parameters": [
+        {"parameter": "input_type", "type": "one_of", "value_type": "string",
+         "required": False, "allowed_values": ["query", "passage"]},
+        {"parameter": "truncate", "type": "one_of", "value_type": "string",
+         "required": False, "allowed_values": ["END", "NONE", "START"], "default": "END"},
+        {"parameter": "dimension", "type": "one_of", "value_type": "integer",
+         "required": False, "allowed_values": [1024]},
+    ],
     "vector_type": "dense",
     "default_dimension": 1024,
 }
 
-_EMBED_RESPONSE = {
-    "model": "multilingual-e5-large",
-    "vector_type": "dense",
-    "data": [{"values": [0.1, 0.2, 0.3]}],
-    "usage": {"total_tokens": 5},
+_COLLECTION_RESPONSE = {
+    "name": "movie-embeddings-snapshot",
+    "status": "Ready",
+    "environment": "us-east1-gcp",
+    "size": 3126700,
+    "dimension": 1024,
+    "vector_count": 99,
 }
 
-_RERANK_RESPONSE = {
-    "model": "bge-reranker-v2-m3",
-    "data": [{"index": 0, "score": 0.9, "document": None}],
-    "usage": {"rerank_units": 1},
+_MODELS = [
+    {"model": "multilingual-e5-large", "short_description": "A multilingual embedding model",
+     "type": "embed", "supported_parameters": [], "vector_type": "dense",
+     "default_dimension": 1024},
+    {"model": "pinecone-sparse-english-v0", "short_description": "A sparse embedding model",
+     "type": "embed", "supported_parameters": [], "vector_type": "sparse"},
+    {"model": "bge-reranker-v2-m3", "short_description": "A reranking model",
+     "type": "rerank", "supported_parameters": []},
+]
+
+
+def _embed_response(request):
+    _body = json.loads(request.content or b"{}")
+    _n = max(1, len(_body.get("inputs", []) or []))
+    return {
+        "model": _body.get("model", "multilingual-e5-large"),
+        "vector_type": "dense",
+        "data": [{"values": [0.1, 0.2, 0.3]} for _ in range(_n)],
+        "usage": {"total_tokens": 5 * _n},
+    }
+
+
+def _rerank_response(request):
+    # A static fixture pins index 0, hiding the reordering rerank exists to do.
+    documents = json.loads(request.content or b"{}").get("documents", [])
+    if not documents:
+        return {"model": "bge-reranker-v2-m3", "data": [], "usage": {"rerank_units": 1}}
+    return {
+        "model": "bge-reranker-v2-m3",
+        "data": [{"index": len(documents) - 1, "score": 0.95, "document": documents[-1]}],
+        "usage": {"rerank_units": 1},
+    }
+
+_BACKUP_SCHEDULE_RESPONSE = {
+    "schedule_id": "e88f7273-42aa-47e9-af73-593827136867",
+    "name": "compliance-snapshots",
+    "index_id": "8cbf7ba6-4135-438e-a3c3-4a89a3298905",
+    "project_id": "71ce31ea-75f7-45d6-a147-ef67f661a1b0",
+    "schedule_type": "time-based",
+    "frequency": "daily",
+    "retention_expire_after_days": 90,
+    "enabled": True,
+    "next_scheduled_run": "2026-04-03T06:00:00Z",
+    "created_at": "2026-04-02T18:22:56Z",
+}
+
+_BACKUP_SCHEDULE_HISTORY_SCHEDULED = {
+    "backup_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+    "source_index_id": "8cbf7ba6-4135-438e-a3c3-4a89a3298905",
+    "source_index_name": "product-search",
+    "status": "Scheduled",
+    "cloud": "aws",
+    "region": "us-east-1",
+    "created_at": "2026-04-02T18:22:56Z",
+    "scheduled_execution_at": "2026-04-03T06:00:00Z",
+    "name": "compliance-snapshots-20260403T060000Z",
+    "record_count": 0,
+    "namespace_count": 1,
+    "size_bytes": 0,
+}
+
+_BACKUP_SCHEDULE_HISTORY_DONE = {
+    "backup_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "source_index_id": "8cbf7ba6-4135-438e-a3c3-4a89a3298905",
+    "source_index_name": "product-search",
+    "status": "Ready",
+    "cloud": "aws",
+    "region": "us-east-1",
+    "created_at": "2026-04-01T06:00:00Z",
+    "scheduled_execution_at": None,
+    "name": "compliance-snapshots-20260401T060000Z",
+    "record_count": 12000,
+    "namespace_count": 3,
+    "size_bytes": 4194304,
+}
+
+_USER_RESPONSE = {
+    "id": "e2e92523-85dc-4142-b8c2-e681be8b78df",
+    "email": "alice@example.com",
+    "name": "Alice Nakamura",
 }
 
 def _route_request(request):
@@ -245,6 +384,17 @@ def _route_request(request):
         return httpx.Response(201, content=json.dumps(_API_KEY_WITH_SECRET).encode(),
                               headers={"content-type": "application/json"})
 
+    if "/admin/users" in path:
+        if method == "DELETE":
+            return httpx.Response(204, content=b"",
+                                  headers={"content-type": "application/json"})
+        if method == "GET" and path.rstrip("/").endswith("/admin/users"):
+            return httpx.Response(200, content=json.dumps(
+                {"data": [_USER_RESPONSE], "pagination": None}).encode(),
+                                  headers={"content-type": "application/json"})
+        return httpx.Response(200, content=json.dumps(_USER_RESPONSE).encode(),
+                              headers={"content-type": "application/json"})
+
     if "/admin/projects" in path:
         if "delete_with_cleanup" in path:
             return httpx.Response(204, content=b"",
@@ -262,10 +412,54 @@ def _route_request(request):
         return httpx.Response(204, content=b"",
                               headers={"content-type": "application/json"})
 
+    if "/backup-schedules" in path:
+        if method == "DELETE":
+            return httpx.Response(204, content=b"",
+                                  headers={"content-type": "application/json"})
+        if method == "PATCH":
+            _patch_body = json.loads(request.read() or b"{}")
+            _sched = dict(_BACKUP_SCHEDULE_RESPONSE)
+            if "frequency" in _patch_body:
+                _sched["frequency"] = _patch_body["frequency"]
+            if "retention" in _patch_body:
+                _sched["retention_expire_after_days"] = (
+                    _patch_body["retention"]["expire_after_days"])
+            if _patch_body.get("enabled") is False:
+                _sched["enabled"] = False
+                _sched["next_scheduled_run"] = None
+            return httpx.Response(200, content=json.dumps(_sched).encode(),
+                                  headers={"content-type": "application/json"})
+        if path.endswith("/history"):
+            if request.url.params.get("paginationToken"):
+                _page = {"data": [_BACKUP_SCHEDULE_HISTORY_DONE], "pagination": None}
+            else:
+                _page = {"data": [_BACKUP_SCHEDULE_HISTORY_SCHEDULED],
+                         "pagination": {"next": "history-page-2"}}
+            return httpx.Response(200, content=json.dumps(_page).encode(),
+                                  headers={"content-type": "application/json"})
+        if method == "GET" and path.endswith("/backup-schedules"):
+            return httpx.Response(200, content=json.dumps(
+                {"data": [_BACKUP_SCHEDULE_RESPONSE], "pagination": None}).encode(),
+                                  headers={"content-type": "application/json"})
+        if method == "POST":
+            return httpx.Response(201,
+                                  content=json.dumps(_BACKUP_SCHEDULE_RESPONSE).encode(),
+                                  headers={"content-type": "application/json"})
+        return httpx.Response(200, content=json.dumps(_BACKUP_SCHEDULE_RESPONSE).encode(),
+                              headers={"content-type": "application/json"})
+
     if "/indexes" in path:
+        if "create-for-model" in path or path.endswith("/indexes/semantic-search"):
+            return httpx.Response(200, content=json.dumps(_SEMANTIC_INDEX_RESPONSE).encode(),
+                                  headers={"content-type": "application/json"})
         if "/backups" in path:
             if method == "GET":
-                return httpx.Response(200, content=json.dumps({"data": [], "pagination": None}).encode(),
+                if "/indexes/legacy-catalog/" in path:
+                    _rows = [_ORPHANED_BACKUP_RESPONSE]
+                else:
+                    _rows = [_BACKUP_RESPONSE]
+                return httpx.Response(200, content=json.dumps(
+                    {"data": _rows, "pagination": None}).encode(),
                                       headers={"content-type": "application/json"})
             # POST create-backup returns a BackupModel
             return httpx.Response(202, content=json.dumps(_BACKUP_RESPONSE).encode(),
@@ -291,6 +485,14 @@ def _route_request(request):
         if method == "DELETE":
             return httpx.Response(204, content=b"",
                                   headers={"content-type": "application/json"})
+        if method == "GET" and path.rstrip("/").endswith("/backups"):
+            if request.url.params.get("paginationToken") is None:
+                _body = {"data": [_BACKUP_RESPONSE, _BACKUP_RESPONSE_2],
+                         "pagination": {"next": "bk-page-2"}}
+            else:
+                _body = {"data": [_BACKUP_RESPONSE_3], "pagination": None}
+            return httpx.Response(200, content=json.dumps(_body).encode(),
+                                  headers={"content-type": "application/json"})
         return httpx.Response(200, content=json.dumps(_BACKUP_RESPONSE).encode(),
                               headers={"content-type": "application/json"})
 
@@ -303,14 +505,38 @@ def _route_request(request):
 
     if "/collections" in path:
         if method == "GET" and path.endswith("/collections"):
-            return httpx.Response(200, content=json.dumps({"collections": []}).encode(),
+            return httpx.Response(200, content=json.dumps({"collections": [
+                _COLLECTION_RESPONSE,
+                {"name": "product-catalog-snapshot", "status": "Initializing",
+                 "environment": "us-east1-gcp"}]}).encode(),
                                   headers={"content-type": "application/json"})
         if method == "DELETE":
             return httpx.Response(204, content=b"",
                                   headers={"content-type": "application/json"})
-        return httpx.Response(200, content=json.dumps({"name": "my-collection",
-            "size": 1000, "status": "Ready", "dimension": 1536,
-            "vector_count": 1000, "environment": "us-east1-gcp"}).encode(),
+        if method == "POST":
+            return httpx.Response(201, content=json.dumps(
+                {"name": "movie-embeddings-snapshot", "status": "Initializing",
+                 "environment": "us-east1-gcp"}).encode(),
+                                  headers={"content-type": "application/json"})
+        return httpx.Response(200, content=json.dumps(_COLLECTION_RESPONSE).encode(),
+                              headers={"content-type": "application/json"})
+
+    if "/assistant/evaluation/metrics/alignment" in path:
+        return httpx.Response(200, content=json.dumps(_ALIGNMENT_RESPONSE).encode(),
+                              headers={"content-type": "application/json"})
+
+    if "/assistant/operations/" in path:
+        return httpx.Response(200, content=json.dumps(_ASSISTANT_OPERATION_RESPONSE).encode(),
+                              headers={"content-type": "application/json"})
+
+    if "/assistant/files/" in path:
+        if method == "DELETE":
+            return httpx.Response(204, content=b"",
+                                  headers={"content-type": "application/json"})
+        if method in ("POST", "PUT"):
+            return httpx.Response(200, content=json.dumps(_ASSISTANT_OPERATION_RESPONSE).encode(),
+                                  headers={"content-type": "application/json"})
+        return httpx.Response(200, content=json.dumps(_ASSISTANT_FILE_RESPONSE).encode(),
                               headers={"content-type": "application/json"})
 
     if "/assistants" in path:
@@ -324,16 +550,23 @@ def _route_request(request):
                               headers={"content-type": "application/json"})
 
     if "/embed" in path:
-        return httpx.Response(200, content=json.dumps(_EMBED_RESPONSE).encode(),
+        return httpx.Response(200, content=json.dumps(_embed_response(request)).encode(),
                               headers={"content-type": "application/json"})
 
     if "/rerank" in path:
-        return httpx.Response(200, content=json.dumps(_RERANK_RESPONSE).encode(),
+        return httpx.Response(200, content=json.dumps(_rerank_response(request)).encode(),
                               headers={"content-type": "application/json"})
 
     if "/models" in path:
         if path.endswith("/models"):
-            return httpx.Response(200, content=json.dumps({"models": []}).encode(),
+            wanted_type = request.url.params.get("type")
+            wanted_vector_type = request.url.params.get("vector_type")
+            models = [
+                m for m in _MODELS
+                if (wanted_type is None or m["type"] == wanted_type)
+                and (wanted_vector_type is None or m.get("vector_type") == wanted_vector_type)
+            ]
+            return httpx.Response(200, content=json.dumps({"models": models}).encode(),
                                   headers={"content-type": "application/json"})
         # Single model describe
         return httpx.Response(200, content=json.dumps(_MODEL_INFO_RESPONSE).encode(),
@@ -368,6 +601,10 @@ _sync_patcher.start()
 
 _transport_patcher = patch.object(httpx.HTTPTransport, "handle_request", _mock_handle_request)
 _transport_patcher.start()
+
+import time
+_sleep_patcher = patch.object(time, "sleep", lambda seconds: None)
+_sleep_patcher.start()
 
 from pinecone import Pinecone, Admin
 pc = Pinecone(api_key="test-key")

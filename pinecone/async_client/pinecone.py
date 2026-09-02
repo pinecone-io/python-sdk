@@ -92,17 +92,24 @@ class AsyncPinecone:
 
     Examples:
 
+        The index client manages its own connections, so it gets its own
+        ``async with`` block. A query vector has to be as wide as the index's
+        dense field — the three floats below stand in for a full
+        1536-dimensional embedding:
+
         .. code-block:: python
 
             from pinecone import AsyncPinecone
 
             async with AsyncPinecone(api_key="your-api-key") as pc:
-                index = await pc.index(name="my-index")
-                async with index:
-                    results = await index.query(
-                        vector=[0.012, -0.087, 0.153, ...],  # 1536-dim embedding
+                idx = await pc.index(name="product-search")
+                async with idx:
+                    results = await idx.query(
+                        vector=[0.012, -0.087, 0.153],
                         top_k=10,
                     )
+                    for match in results.matches:
+                        print(match.id, match.score)
 
     .. note:: **Differences from sync Pinecone**
 
@@ -207,8 +214,8 @@ class AsyncPinecone:
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    async for idx in pc.indexes.list():
-                        print(idx.name)
+                    async for index in pc.indexes.list():
+                        print(index.name, index.status.state)
         """
         if self._indexes is None:
             from pinecone.async_client.indexes import AsyncIndexes as _AsyncIndexes
@@ -231,7 +238,7 @@ class AsyncPinecone:
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     for col in await pc.collections.list():
-                        print(col.name)
+                        print(col.name, col.status)
         """
         if self._collections is None:
             from pinecone.async_client.collections import AsyncCollections as _AsyncCollections
@@ -260,7 +267,8 @@ class AsyncPinecone:
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    assistants = await pc.assistants.list()
+                    async for assistant in pc.assistants.list():
+                        print(assistant.name, assistant.status)
         """
         if self._assistants is None:
             from pinecone.async_client.assistants import AsyncAssistants as _AsyncAssistants
@@ -285,14 +293,27 @@ class AsyncPinecone:
 
         Examples:
 
+            Awaiting the proxy with a name is shorthand for
+            :meth:`~pinecone.async_client.assistants.AsyncAssistants.describe`:
+
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     bot = await pc.assistant("acme-support-bot")
-                    await pc.assistant.create(
-                        name="support-bot",
+                    print(bot.status, bot.instructions)
+
+            Every other attribute forwards to the plural namespace, so
+            ``pc.assistant.create`` and ``pc.assistants.create`` are the same
+            method reached two ways:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    new_bot = await pc.assistant.create(
+                        name="acme-billing-bot",
                         instructions="Help users with billing questions.",
                     )
+                    print(new_bot.status)
         """
         from pinecone.client._assistant_namespace_proxy import _AsyncAssistantNamespaceProxy
 
@@ -312,8 +333,8 @@ class AsyncPinecone:
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    for backup in await pc.backups.list():
-                        print(backup.backup_id)
+                    for backup in await pc.backups.list(limit=100):
+                        print(backup.backup_id, backup.source_index_name, backup.status)
         """
         if self._backups is None:
             from pinecone.async_client.backups import AsyncBackups as _AsyncBackups
@@ -342,7 +363,10 @@ class AsyncPinecone:
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    schedules = await pc.backup_schedules.list(index_name="my-index")
+                    for schedule in await pc.backup_schedules.list(
+                        index_name="product-search"
+                    ):
+                        print(schedule.name, schedule.frequency, schedule.enabled)
         """
         if self._backup_schedules is None:
             from pinecone.async_client.backup_schedules import (
@@ -373,8 +397,8 @@ class AsyncPinecone:
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    for job in await pc.restore_jobs.list():
-                        print(job.restore_job_id)
+                    for job in await pc.restore_jobs.list(limit=10):
+                        print(job.restore_job_id, job.target_index_name, job.status)
         """
         if self._restore_jobs is None:
             from pinecone.async_client.restore_jobs import AsyncRestoreJobs as _AsyncRestoreJobs
@@ -399,13 +423,19 @@ class AsyncPinecone:
 
         Examples:
 
+            ``multilingual-e5-large`` is asymmetric, so ``input_type`` tells it
+            which side of a search the text belongs to — ``"passage"`` for text
+            you intend to store, ``"query"`` for text you intend to search with:
+
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     embeddings = await pc.inference.embed(
                         model="multilingual-e5-large",
-                        inputs=["Hello, world!"],
+                        inputs=["Solar panels reduce energy costs and lower carbon emissions."],
+                        parameters={"input_type": "passage"},
                     )
+                    print(len(embeddings.data))
         """
         if self._inference is None:
             from pinecone.async_client.inference import AsyncInference as _AsyncInference
@@ -472,34 +502,45 @@ class AsyncPinecone:
 
         Examples:
 
+            The default form blocks until the restored index is ready and hands
+            back the index itself, so the next call can use it:
+
             .. code-block:: python
 
-                # Restore an index from a backup
                 from pinecone import AsyncPinecone
+
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     index = await pc.create_index_from_backup(
                         name="product-search-restored",
-                        backup_id="bk-daily-20240115",
+                        backup_id="bk-abc123",
                     )
+                    print(index.status.state)
+
+            ``timeout=-1`` returns as soon as the restore is accepted. What
+            comes back is a :class:`CreateIndexFromBackupResponse`, not an
+            index — the index does not exist yet, so follow the restore through
+            ``pc.restore_jobs`` rather than treating the return value as one:
 
             .. code-block:: python
 
-                # Restore without waiting (returns restore_job_id)
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     result = await pc.create_index_from_backup(
                         name="product-search-restored",
-                        backup_id="bk-daily-20240115",
+                        backup_id="bk-abc123",
                         timeout=-1,
                     )
-                    print(result.restore_job_id)
+                    job = await pc.restore_jobs.describe(job_id=result.restore_job_id)
+                    print(job.status)
+
+            A restore can land straight onto dedicated read nodes instead of
+            the on-demand default:
 
             .. code-block:: python
 
-                # Restore directly onto dedicated read nodes
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     index = await pc.create_index_from_backup(
-                        name="restored-drn-index",
-                        backup_id="bk-daily-20240115",
+                        name="product-search-restored",
+                        backup_id="bk-abc123",
                         read_capacity={
                             "mode": "Dedicated",
                             "dedicated": {
@@ -509,6 +550,7 @@ class AsyncPinecone:
                             },
                         },
                     )
+                    print(index.status.state)
         """
         require_non_empty("name", name)
         require_non_empty("backup_id", backup_id)
@@ -555,9 +597,14 @@ class AsyncPinecone:
 
         Examples:
 
-            >>> cfg = pc.config
-            >>> cfg.timeout
-            30.0
+            The values are the resolved ones, after defaults and environment
+            variables have been folded in, so this is where to confirm which
+            host a client is actually pointed at:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    print(pc.config.host, pc.config.timeout)
         """
         return self._config
 
@@ -1267,12 +1314,26 @@ class AsyncPinecone:
 
         Examples:
 
+            Naming the index resolves its host with a describe call the first
+            time; the host is cached on this client, so later calls for the
+            same name cost nothing:
+
             .. code-block:: python
 
-                async with AsyncPinecone(api_key="...") as pc:
-                    idx = await pc.index(host="my-index-abc123.svc.pinecone.io")
-                    # or
-                    idx = await pc.index(name="my-index")  # triggers describe on cache miss
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    idx = await pc.index(name="product-search")
+                    async with idx:
+                        print(await idx.describe_index_stats())
+
+            Passing the host directly skips that lookup entirely, which saves
+            a round trip when you already know it:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    idx = await pc.index(host="product-search-abc123.svc.pinecone.io")
+                    async with idx:
+                        print(await idx.describe_index_stats())
 
         .. warning::
            The returned :class:`AsyncIndex` manages its own HTTP client.
@@ -1298,21 +1359,26 @@ class AsyncPinecone:
         which calls :meth:`close` automatically on exit.
 
         Examples:
-            Close the client explicitly after use:
+            The async context manager form closes the client on the way out,
+            on an exception as well as on a normal exit:
 
-            >>> import asyncio
-            >>> from pinecone import AsyncPinecone
-            >>> async def example():
-            ...     client = AsyncPinecone(api_key="your-api-key")
-            ...     await client.close()
-            >>> asyncio.run(example())
+            .. code-block:: python
 
-            Use AsyncPinecone as a context manager (``close`` is called automatically):
+                from pinecone import AsyncPinecone
 
-            >>> async def example():
-            ...     async with AsyncPinecone(api_key="your-api-key") as pc:
-            ...         _ = await pc.indexes.list().to_list()
-            >>> asyncio.run(example())
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    async for index in pc.indexes.list():
+                        print(index.name)
+
+            Close it yourself when the client has to outlive a single block:
+
+            .. code-block:: python
+
+                pc = AsyncPinecone(api_key="your-api-key")
+                try:
+                    print(await pc.indexes.exists("product-search"))
+                finally:
+                    await pc.close()
         """
         await self._http.close()
         if self._assistants is not None:
@@ -1327,11 +1393,12 @@ class AsyncPinecone:
             This :class:`AsyncPinecone` instance.
 
         Examples:
-            >>> import asyncio
-            >>> async def example():
-            ...     async with AsyncPinecone(api_key="your-api-key") as pc:
-            ...         _ = await pc.indexes.list().to_list()
-            >>> asyncio.run(example())  # doctest: +SKIP
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    async for index in pc.indexes.list():
+                        print(index.name)
         """
         return self
 
@@ -1341,10 +1408,11 @@ class AsyncPinecone:
         Calls :meth:`close` to release open HTTP connections.
 
         Examples:
-            >>> import asyncio
-            >>> async def example():
-            ...     async with AsyncPinecone(api_key="your-api-key") as pc:
-            ...         _ = await pc.indexes.list().to_list()
-            >>> asyncio.run(example())  # doctest: +SKIP
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    async for index in pc.indexes.list():
+                        print(index.name)
         """
         await self.close()

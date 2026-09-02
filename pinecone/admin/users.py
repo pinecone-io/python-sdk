@@ -37,6 +37,7 @@ class Users:
         >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
         >>> for user in admin.users.list():
         ...     print(user.email)
+        alice@example.com
     """
 
     def __init__(self, *, http: HTTPClient) -> None:

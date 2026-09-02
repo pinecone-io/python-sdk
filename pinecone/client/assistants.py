@@ -146,7 +146,8 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             from pinecone import Pinecone
 
             pc = Pinecone(api_key="your-api-key")
-            assistants = pc.assistants
+            for assistant in pc.assistants.list():
+                print(assistant.name, assistant.status)
     """
 
     def __init__(self, config: PineconeConfig) -> None:
@@ -352,18 +353,30 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             :exc:`PineconeError`: If processing fails.
 
         Examples:
-            >>> file = pc.assistants.upload_file(
+            Upload from a local path. The basename supplies the extension the
+            server types the file by:
+
+            >>> file = pc.assistants.upload_file(  # doctest: +SKIP
             ...     assistant_name="research-assistant",
-            ...     file_path="/data/report.pdf",
+            ...     file_path="/data/q3-revenue-review.pdf",
             ... )
             >>> file.status  # doctest: +SKIP
             'Available'
 
-            >>> file = pc.assistants.upload_file(  # doctest: +SKIP
+            Or upload from an open byte stream instead. ``file_path`` and
+            ``file_stream`` are alternatives — pass exactly one — and a stream
+            needs ``file_name`` to carry the extension a path would have
+            supplied:
+
+            >>> import io
+            >>> file = pc.assistants.upload_file(
             ...     assistant_name="research-assistant",
-            ...     file_stream=io.BytesIO(pdf_bytes),
-            ...     file_name="report.pdf",
+            ...     file_stream=io.BytesIO(b"%PDF-1.4 Q3 revenue review"),
+            ...     file_name="q3-revenue-review.pdf",
+            ...     metadata={"department": "finance", "quarter": "2024-Q3"},
             ... )
+            >>> file.status
+            'Available'
         """
         import json as _json
 
@@ -474,7 +487,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             ...     assistant_name="my-assistant",
             ...     file_id="file-abc123",
             ... )
-            >>> file.status  # doctest: +SKIP
+            >>> file.status
             'Available'
         """
         data_http = self._data_plane_http(assistant_name)
@@ -522,6 +535,12 @@ class Assistants(AssistantsLegacyNamespaceMixin):
 
                 for f in pc.assistants.list_files(assistant_name="my-assistant"):
                     print(f.name, f.status)
+
+            The paginator fetches pages lazily as you iterate. Call
+            ``to_list()`` instead when you want every file materialized up
+            front:
+
+            .. code-block:: python
 
                 files = pc.assistants.list_files(assistant_name="my-assistant").to_list()
         """
@@ -574,9 +593,18 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         Examples:
             .. code-block:: python
 
-                page = pc.assistants.list_files_page(assistant_name="my-assistant")
-                names = [f.name for f in page.files]
-                token = page.next  # use as pagination_token for the next call
+                page = pc.assistants.list_files_page(
+                    assistant_name="my-assistant",
+                    page_size=10,
+                )
+                for f in page.files:
+                    print(f.name)
+                if page.next:
+                    next_page = pc.assistants.list_files_page(
+                        assistant_name="my-assistant",
+                        page_size=10,
+                        pagination_token=page.next,
+                    )
         """
         from pinecone._internal.kwargs_aliases import (
             reject_unknown_kwargs,
@@ -725,10 +753,8 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             ...     assistant_name="my-assistant",
             ...     operation_id="op-1234-abcd-5678",
             ... )
-            >>> operation.status  # doctest: +SKIP
-            'Processing'
-            >>> operation.percent_complete  # doctest: +SKIP
-            42
+            >>> operation.status, operation.percent_complete
+            ('Completed', 100)
         """
         data_http = self._data_plane_http(assistant_name)
         logger.info("Describing operation %r in assistant %r", operation_id, assistant_name)
@@ -777,6 +803,11 @@ class Assistants(AssistantsLegacyNamespaceMixin):
 
                 for op in pc.assistants.list_operations(assistant_name="my-assistant"):
                     print(op.operation_id, op.status, op.percent_complete)
+
+            Filter server-side to narrow the listing — here, uploads that have
+            not finished yet:
+
+            .. code-block:: python
 
                 pending = pc.assistants.list_operations(
                     assistant_name="my-assistant",
@@ -847,7 +878,13 @@ class Assistants(AssistantsLegacyNamespaceMixin):
                 )
                 for op in page.operations:
                     print(op.operation_id, op.error)
-                token = page.next
+                if page.next:
+                    next_page = pc.assistants.list_operations_page(
+                        assistant_name="my-assistant",
+                        status="Failed",
+                        page_size=10,
+                        pagination_token=page.next,
+                    )
         """
         params: dict[str, str | int] = {}
         if operation_type is not None:
@@ -922,14 +959,22 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         Examples:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
-            >>> assistant = pc.assistants.create(name="my-assistant")  # doctest: +SKIP
+            >>> assistant = pc.assistants.create(name="my-assistant")
+            >>> assistant.status
+            'Ready'
 
-            >>> assistant = pc.assistants.create(  # doctest: +SKIP
+            Instructions, metadata and region are all optional. ``create``
+            returns once the assistant reaches ``"Ready"``, so the assistant
+            below is usable as soon as the call returns:
+
+            >>> assistant = pc.assistants.create(
             ...     name="research-assistant",
-            ...     instructions="You are a helpful research assistant.",
-            ...     metadata={"team": "engineering", "version": "1"},
+            ...     instructions="Always cite the source document.",
+            ...     metadata={"team": "research", "cost_center": "R-4120"},
             ...     region="eu",
             ... )
+            >>> assistant.status
+            'Ready'
         """
         from pinecone._internal.kwargs_aliases import (
             reject_unknown_kwargs,
@@ -993,7 +1038,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
 
         Examples:
             >>> assistant = pc.assistants.describe(name="my-assistant")
-            >>> assistant.status  # doctest: +SKIP
+            >>> assistant.status
             'Ready'
         """
         from pinecone._internal.kwargs_aliases import (
@@ -1049,8 +1094,14 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         Examples:
             .. code-block:: python
 
-                for a in pc.assistants.list():
-                    print(a.name, a.status)
+                for assistant in pc.assistants.list():
+                    print(assistant.name, assistant.status)
+
+            The paginator fetches pages lazily as you iterate. Call
+            ``to_list()`` instead when you want every assistant materialized
+            up front:
+
+            .. code-block:: python
 
                 all_assistants = pc.assistants.list().to_list()
         """
@@ -1093,8 +1144,13 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             .. code-block:: python
 
                 page = pc.assistants.list_page(page_size=10)
-                names = [a.name for a in page.assistants]
-                token = page.next  # use as pagination_token for the next call
+                for assistant in page.assistants:
+                    print(assistant.name)
+                if page.next:
+                    next_page = pc.assistants.list_page(
+                        page_size=10,
+                        pagination_token=page.next,
+                    )
         """
         from pinecone._internal.kwargs_aliases import (
             reject_unknown_kwargs,
@@ -1170,14 +1226,24 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
-            >>> assistant = pc.assistants.update(  # doctest: +SKIP
+            Patch only the instructions. ``metadata`` is left out of the
+            request body entirely, so whatever metadata the assistant already
+            carries survives untouched:
+
+            >>> assistant = pc.assistants.update(
             ...     name="my-assistant",
-            ...     instructions="You are a helpful research assistant.",
+            ...     instructions="Always cite the source document.",
             ... )
 
-            >>> assistant = pc.assistants.update(  # doctest: +SKIP
+            Passing ``metadata`` replaces the whole dictionary instead of
+            merging into it. An assistant carrying
+            ``{"team": "research", "cost_center": "R-4120"}`` is left with
+            only ``team`` after the call below — and with its instructions
+            unchanged, since they were not named:
+
+            >>> assistant = pc.assistants.update(
             ...     name="my-assistant",
-            ...     metadata={"team": "ml", "version": "2"},
+            ...     metadata={"team": "docs-platform"},
             ... )
         """
         from pinecone._internal.kwargs_aliases import (
@@ -1263,8 +1329,13 @@ class Assistants(AssistantsLegacyNamespaceMixin):
 
                 pc.assistants.delete(name="my-assistant")
 
-                # Return immediately without waiting for deletion
-                pc.assistants.delete(name="my-assistant", timeout=-1)
+            The call above blocks until the assistant is confirmed gone. Pass
+            ``timeout=-1`` to return as soon as the request is accepted — the
+            assistant may still be terminating when this returns:
+
+            .. code-block:: python
+
+                pc.assistants.delete(name="stale-prototype", timeout=-1)
         """
         from pinecone._internal.kwargs_aliases import (
             reject_unknown_kwargs,
@@ -1487,11 +1558,23 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             .. code-block:: python
 
                 from pinecone import Pinecone
+
                 pc = Pinecone(api_key="your-api-key")
                 response = pc.assistants.chat(
                     assistant_name="my-assistant",
                     messages=[{"content": "What is Pinecone?"}],
                 )
+                print(response.message.content)
+                for citation in response.citations:
+                    for reference in citation.references:
+                        print(citation.position, reference.file.name)
+
+            The citations come back as structured objects here rather than
+            woven into the text, which is what separates this method from
+            :meth:`chat_completions`. Set ``stream=True`` for a
+            :class:`ChatStream` instead of a single response — ``text()``
+            yields content fragments as they arrive, skipping the start,
+            citation and end chunks:
 
             .. code-block:: python
 
@@ -1613,12 +1696,17 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             .. code-block:: python
 
                 from pinecone import Pinecone
+
                 pc = Pinecone(api_key="your-api-key")
                 response = pc.assistants.chat_completions(
                     assistant_name="research-assistant",
                     messages=[{"content": "Explain quantum entanglement briefly."}],
                 )
-                response.choices[0].message.content
+                print(response.choices[0].message.content)
+
+            The response carries no separate ``citations`` list — the shape is
+            OpenAI's, so citations arrive inline in the message text. Set
+            ``stream=True`` for a :class:`ChatCompletionStream`:
 
             .. code-block:: python
 
@@ -1798,11 +1886,19 @@ class Assistants(AssistantsLegacyNamespaceMixin):
                 endpoint requires a paid plan.
 
         Examples:
+            The answer below contradicts the ground truth on purpose, so the
+            scores come back low and ``result.facts`` records where the
+            contradiction is:
+
             >>> result = pc.assistants.evaluate_alignment(
             ...     question="What is the capital of Spain?",
             ...     answer="Barcelona.",
             ...     ground_truth_answer="Madrid.",
             ... )
+            >>> result.scores.alignment
+            0.0
+            >>> [fact.entailment for fact in result.facts]
+            ['contradicted']
         """
         body = {
             "question": question,

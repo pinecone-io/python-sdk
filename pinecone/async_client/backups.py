@@ -36,7 +36,8 @@ class AsyncBackups:
             from pinecone import AsyncPinecone
 
             async with AsyncPinecone(api_key="your-api-key") as pc:
-                for backup in await pc.backups.list():
+                first_page = await pc.backups.list(limit=100)
+                for backup in first_page:
                     print(backup.backup_id)
     """
 
@@ -84,20 +85,33 @@ class AsyncBackups:
                 example because *index_name* names a pod-based index.
 
         Examples:
+            Creating a backup is asynchronous. The call returns as soon as
+            the backup is initiated, so the model it hands back reports
+            ``"Initializing"`` rather than ``"Ready"``. Poll :meth:`describe`
+            until the status leaves ``"Initializing"``: a backup that fails
+            settles on ``"Failed"``, so waiting for ``"Ready"`` specifically
+            would never return.
 
             .. code-block:: python
 
-                # Create a backup of an index
+                import asyncio
+
                 from pinecone import AsyncPinecone
+
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    backup = await pc.backups.create(
-                        index_name="product-search",
-                    )
-                    print(backup.backup_id)
+                    backup = await pc.backups.create(index_name="product-search")
+                    print(backup.backup_id, backup.status)
+
+                    while backup.status == "Initializing":
+                        await asyncio.sleep(10)
+                        backup = await pc.backups.describe(backup_id=backup.backup_id)
+                    print(backup.status)
+
+            Give the backup a name and description so a later listing
+            identifies it by more than its server-assigned ``backup_id``:
 
             .. code-block:: python
 
-                # Create a backup with a name and description
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     backup = await pc.backups.create(
                         index_name="product-search",
@@ -177,30 +191,55 @@ class AsyncBackups:
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
+            One call returns one page. Iterating the result walks that page
+            and stops — it does not follow ``pagination`` on your behalf:
 
             .. code-block:: python
 
-                # List all backups in the project
                 from pinecone import AsyncPinecone
+
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    for backup in await pc.backups.list():
+                    page = await pc.backups.list(limit=100)
+                    for backup in page:
                         print(backup.backup_id, backup.name)
 
+            Walk the rest by driving the token yourself, consuming each page
+            before asking for the next one:
+
             .. code-block:: python
 
-                # List backups for a specific index
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    for backup in await pc.backups.list(
-                        index_name="product-search",
-                    ):
-                        print(backup.name)
+                    page = await pc.backups.list(limit=100)
+                    backups = list(page)
+                    while page.pagination and page.pagination.next:
+                        page = await pc.backups.list(
+                            pagination_token=page.pagination.next
+                        )
+                        backups.extend(page)
+
+                print(len(backups))
+
+            Passing *index_name* scopes the listing to one index.
+            :meth:`~pinecone.async_client.indexes.AsyncIndexes.list_backups`
+            covers the same ground with a paginator that walks every page for
+            you:
 
             .. code-block:: python
 
-                # Recover backups of an index that has since been deleted
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    for backup in await pc.backups.list(index_name="product-search"):
+                        print(backup.name, backup.status)
+
+            Backups outlive the index they were taken from, but an
+            index-scoped listing resolves *index_name* against the active
+            indexes first. Pass ``include_deleted=True`` to reach the backups
+            of an index you have already torn down:
+
+            .. code-block:: python
+
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     orphaned = await pc.backups.list(
-                        index_name="product-search",
+                        index_name="legacy-catalog",
                         include_deleted=True,
                     )
                     print([b.backup_id for b in orphaned if b.source_index_deleted_at])
@@ -241,11 +280,10 @@ class AsyncBackups:
             .. code-block:: python
 
                 from pinecone import AsyncPinecone
+
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    backup = await pc.backups.describe(
-                        backup_id="bk-daily-20240115",
-                    )
-                    print(backup.status)
+                    backup = await pc.backups.describe(backup_id="bk-abc123")
+                    print(backup.status, backup.source_index_name)
         """
         require_non_empty("backup_id", backup_id)
         logger.info("Describing backup %r", backup_id)
@@ -272,11 +310,10 @@ class AsyncBackups:
             .. code-block:: python
 
                 from pinecone import AsyncPinecone
+
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    backup = await pc.backups.get(
-                        backup_id="bk-daily-20240115",
-                    )
-                    print(backup.status)
+                    backup = await pc.backups.get(backup_id="bk-abc123")
+                    print(backup.status, backup.source_index_name)
         """
         return await self.describe(backup_id=backup_id)
 
@@ -292,11 +329,15 @@ class AsyncBackups:
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
+            Deleting a backup discards the snapshot only. The index it was
+            taken from is untouched, and other backups of that index remain:
+
             .. code-block:: python
 
                 from pinecone import AsyncPinecone
+
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    await pc.backups.delete(backup_id="bk-daily-20240115")
+                    await pc.backups.delete(backup_id="bk-abc123")
         """
         require_non_empty("backup_id", backup_id)
         logger.info("Deleting backup %r", backup_id)

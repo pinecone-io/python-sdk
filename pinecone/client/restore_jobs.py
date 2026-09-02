@@ -33,7 +33,8 @@ class RestoreJobs:
             from pinecone import Pinecone
 
             pc = Pinecone(api_key="your-api-key")
-            ids = [job.restore_job_id for job in pc.restore_jobs.list()]
+            for job in pc.restore_jobs.list(limit=10):
+                print(job.restore_job_id, job.target_index_name, job.status)
     """
 
     def __init__(self, http: HTTPClient) -> None:
@@ -95,7 +96,10 @@ class RestoreJobs:
             <https://github.com/pinecone-io/python-sdk-internal/issues/250>`_.
 
         Examples:
-            Walk every page the server will hand out:
+            Walk every page the server will hand out. Because pages can overlap,
+            the loop collects into a dict keyed by ``restore_job_id`` rather than
+            a list — that is the de-duplication the warning above calls for, and
+            it costs nothing on a listing that happens not to repeat:
 
             .. code-block:: python
 
@@ -103,14 +107,17 @@ class RestoreJobs:
 
                 pc = Pinecone(api_key="your-api-key")
 
+                by_id = {}
                 page = pc.restore_jobs.list(limit=100)
-                jobs = list(page)
-                while page.pagination and page.pagination.next:
+                while True:
+                    for job in page:
+                        by_id[job.restore_job_id] = job
+                    if not (page.pagination and page.pagination.next):
+                        break
                     page = pc.restore_jobs.list(pagination_token=page.pagination.next)
-                    jobs.extend(page)
 
-                for job in jobs:
-                    print(job.restore_job_id, job.status, job.percent_complete)
+                for job in by_id.values():
+                    print(job.restore_job_id, job.target_index_name, job.status)
 
             When one page is all you want:
 
@@ -173,13 +180,33 @@ class RestoreJobs:
             <https://github.com/pinecone-io/python-sdk-internal/issues/250>`_.
 
         Examples:
+            Read a restore job once:
+
             .. code-block:: python
 
                 from pinecone import Pinecone
 
                 pc = Pinecone(api_key="your-api-key")
-                job = pc.restore_jobs.describe(job_id="rj-restore-20240115")
-                print(job.status)
+                job = pc.restore_jobs.describe(job_id="rj-xyz789")
+                print(job.status, job.target_index_name)
+
+            To wait for a restore, poll until ``status`` *leaves* ``"Pending"``
+            rather than waiting for it to reach a running state — there is no
+            running state to reach. Bound the wait with a deadline so a job that
+            never lands stops the loop instead of spinning forever; ten minutes
+            below is illustrative, not a service guarantee:
+
+            .. code-block:: python
+
+                import time
+
+                deadline = time.monotonic() + 600
+                job = pc.restore_jobs.describe(job_id="rj-xyz789")
+                while job.status == "Pending" and time.monotonic() < deadline:
+                    time.sleep(5)
+                    job = pc.restore_jobs.describe(job_id="rj-xyz789")
+
+                print(job.status, job.completed_at)
         """
         require_non_empty("job_id", job_id)
         logger.info("Describing restore job %r", job_id)

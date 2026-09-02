@@ -553,6 +553,7 @@ class Admin:
             >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
             >>> for user in admin.users.list():
             ...     print(user.email)
+            alice@example.com
         """
         if self._users is None:
             from pinecone.admin.users import Users as _Users

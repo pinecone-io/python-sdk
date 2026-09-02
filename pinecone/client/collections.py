@@ -32,7 +32,8 @@ class Collections:
             from pinecone import Pinecone
 
             pc = Pinecone(api_key="your-api-key")
-            names = [col.name for col in pc.collections.list()]
+            for col in pc.collections.list():
+                print(col.name, col.status)
     """
 
     def __init__(self, http: HTTPClient) -> None:
@@ -46,12 +47,23 @@ class Collections:
     def create(self, *, name: str, source: str) -> CollectionModel:
         """Create a collection from an existing pod-based index.
 
-        A collection is a static copy of an index's vector data. Create one
-        to preserve an index's contents, then later pass its name as
-        ``source_collection`` when creating a new index to restore the data.
+        A collection is a static copy of an index's vector data, held outside
+        the index as a snapshot of its contents at the moment it was taken.
         Only a pod-based index can be used as a source, and it must already
         be ready. The call returns as soon as creation starts — it does not
         wait for the collection to become ready.
+
+        .. note::
+           The 2026-07 API has no path from a collection back to an index.
+           :meth:`Pinecone.indexes.create` rejects ``source_collection=``
+           with a :exc:`PineconeTypeError`, and the backend rejects the
+           request with ``400 Creating an index from collection or backup is
+           not yet supported``. Passing ``source_collection`` inside a
+           :class:`~pinecone.models.indexes.specs.PodSpec` (via the
+           deprecated ``spec=`` argument) is worse: it is silently dropped,
+           and the new index comes back empty. Use
+           :meth:`Pinecone.create_index_from_backup` for the supported
+           restore path.
 
         Args:
             name (str): Name for the new collection. 1-45 characters,
@@ -69,9 +81,25 @@ class Collections:
                 project.
 
         Examples:
-            >>> col = pc.collections.create(name="my-collection", source="my-index")
-            >>> col.status  # doctest: +SKIP
+            The collection is still being built when the call returns, so its
+            status is ``"Initializing"`` rather than ``"Ready"``:
+
+            >>> col = pc.collections.create(
+            ...     name="movie-embeddings-snapshot", source="movie-recommendations"
+            ... )
+            >>> col.status
             'Initializing'
+
+            There is no ``timeout=`` argument to wait on. Poll
+            :meth:`describe` until the status leaves ``"Initializing"``, then
+            read ``col.status`` to see where it settled:
+
+            >>> import time
+            >>> while col.status == "Initializing":
+            ...     time.sleep(5)
+            ...     col = pc.collections.describe(col.name)
+            >>> col.status
+            'Ready'
         """
         require_valid_resource_name("name", name)
         require_non_empty("source", source)
@@ -93,8 +121,12 @@ class Collections:
 
         Examples:
             >>> collections = pc.collections.list()
-            >>> collections.names()  # doctest: +SKIP
-            ['my-collection']
+            >>> collections.names()
+            ['movie-embeddings-snapshot', 'product-catalog-snapshot']
+            >>> for col in collections:
+            ...     print(col.name, col.status)
+            movie-embeddings-snapshot Ready
+            product-catalog-snapshot Initializing
         """
         logger.info("Listing collections")
         response = self._http.get("/collections")
@@ -117,9 +149,14 @@ class Collections:
             NotFoundError: If the collection does not exist.
 
         Examples:
-            >>> desc = pc.collections.describe("my-collection")
-            >>> desc.size  # doctest: +SKIP
-            1024
+            ``size`` is how much space the snapshot occupies, in bytes — not
+            the dimension of its vectors. It, ``dimension``, and
+            ``vector_count`` are ``None`` until the collection finishes
+            initializing:
+
+            >>> desc = pc.collections.describe("movie-embeddings-snapshot")
+            >>> print(desc.status, desc.dimension, desc.vector_count, desc.size)
+            Ready 1024 99 3126700
         """
         require_non_empty("name", name)
         logger.info("Describing collection %r", name)
@@ -131,6 +168,11 @@ class Collections:
     def delete(self, name: str) -> None:
         """Delete a collection permanently.
 
+        Deletion is asynchronous: the call returns as soon as the request is
+        accepted, and the collection can still show up in :meth:`list` for a
+        short time afterwards. The source index can't be deleted until the
+        collection is really gone.
+
         Args:
             name (str): Name of the collection to delete.
 
@@ -139,7 +181,7 @@ class Collections:
             NotFoundError: If the collection does not exist.
 
         Examples:
-            >>> pc.collections.delete("my-collection")
+            >>> pc.collections.delete("movie-embeddings-snapshot")
         """
         require_non_empty("name", name)
         logger.info("Deleting collection %r", name)

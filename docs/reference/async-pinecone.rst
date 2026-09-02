@@ -11,8 +11,7 @@ Sub-clients for each resource type are accessed as properties (e.g.
    from pinecone import AsyncPinecone
 
    async with AsyncPinecone(api_key="your-api-key") as pc:
-       desc = await pc.indexes.describe("my-index")
-       index = pc.index(host=desc.host)
+       index = await pc.index("my-index")
        async with index:
            results = await index.query(
                vector=[0.012, -0.087, 0.153],
@@ -21,14 +20,16 @@ Sub-clients for each resource type are accessed as properties (e.g.
 
 .. note::
 
-   Unlike :class:`~pinecone.Pinecone`, ``AsyncPinecone.index()`` cannot auto-resolve an
-   index host by name.  Call ``await pc.indexes.describe(name)`` first to populate the
-   cache, then create the data-plane client::
+   ``AsyncPinecone.index()`` is a coroutine and must be awaited, where
+   :meth:`Pinecone.index() <pinecone.Pinecone.index>` is a plain call.  Both resolve a
+   host the same way: an explicit ``host`` is used as-is, a name is served from the
+   host cache, and a name that misses the cache costs one describe request.  Awaiting
+   is what makes that request non-blocking.
+
+   Pass ``host=`` when you already have it to skip the lookup entirely::
 
        desc = await pc.indexes.describe("my-index")
-       idx = pc.index("my-index")          # uses cached host
-       # — or —
-       idx = pc.index(host=desc.host)       # explicit host
+       idx = await pc.index(host=desc.host)
 
 .. autoclass:: pinecone.async_client.pinecone.AsyncPinecone
    :members:

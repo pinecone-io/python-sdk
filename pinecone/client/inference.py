@@ -45,18 +45,19 @@ class ModelResource:
             HTTP requests on behalf of this resource.
 
     Examples:
-        List all available models:
+        List every available model. An unfiltered listing spans both model
+        types — embedding models and reranking models alike:
 
         >>> from pinecone import Pinecone
         >>> pc = Pinecone(api_key="your-api-key")
         >>> models = pc.inference.model.list()
-        >>> models.names()  # doctest: +SKIP
-        ['multilingual-e5-large', 'pinecone-sparse-english-v0']
+        >>> models.names()
+        ['multilingual-e5-large', 'pinecone-sparse-english-v0', 'bge-reranker-v2-m3']
 
         Get details about a specific model:
 
         >>> info = pc.inference.model.get("multilingual-e5-large")
-        >>> info.type  # doctest: +SKIP
+        >>> info.type
         'embed'
     """
 
@@ -92,7 +93,17 @@ class ModelResource:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
             >>> models = pc.inference.model.list()
-            >>> embed_models = pc.inference.model.list(type="embed")
+            >>> models.names()
+            ['multilingual-e5-large', 'pinecone-sparse-english-v0', 'bge-reranker-v2-m3']
+
+            ``vector_type`` narrows embedding models by the kind of vector they
+            produce, so it only carries meaning alongside ``type="embed"``.
+            Pairing it with ``type="rerank"`` raises :exc:`PineconeValueError`
+            rather than being ignored:
+
+            >>> sparse = pc.inference.model.list(type="embed", vector_type="sparse")
+            >>> sparse.names()
+            ['pinecone-sparse-english-v0']
         """
         return self._inference.list_models(type=type, vector_type=vector_type)
 
@@ -119,7 +130,7 @@ class ModelResource:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
             >>> info = pc.inference.model.get("multilingual-e5-large")
-            >>> info.type  # doctest: +SKIP
+            >>> info.type
             'embed'
         """
         model_name: str | None = kwargs.pop("model_name", None)
@@ -142,15 +153,14 @@ class Inference:
             HTTP client targeting the inference API version.
 
     Examples:
-
-        .. code-block:: python
-
-            from pinecone import Pinecone
-
-            pc = Pinecone(api_key="your-api-key")
-            embeddings = pc.inference.embed(
-                model="multilingual-e5-large", inputs=["Hello, world!"]
-            )
+        >>> from pinecone import Pinecone
+        >>> pc = Pinecone(api_key="your-api-key")
+        >>> embeddings = pc.inference.embed(
+        ...     model="multilingual-e5-large",
+        ...     inputs=["Vector databases index embeddings for similarity search."],
+        ... )
+        >>> len(embeddings.data)
+        1
     """
 
     EmbedModel = _enums.EmbedModel
@@ -180,8 +190,11 @@ class Inference:
         Examples:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
-            >>> models = pc.inference.model.list()
+            >>> len(pc.inference.model.list())
+            3
             >>> info = pc.inference.model.get("multilingual-e5-large")
+            >>> info.default_dimension
+            1024
         """
         return ModelResource(self)
 
@@ -220,22 +233,57 @@ class Inference:
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
+            Embed the text you intend to store. ``multilingual-e5-large`` is an
+            asymmetric model, so ``input_type`` tells it which side of a search
+            the text belongs to — ``"passage"`` for the corpus:
+
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
             >>> embeddings = pc.inference.embed(
             ...     model="multilingual-e5-large",
-            ...     inputs=["Hello, world!"],
+            ...     inputs=[
+            ...         "Vector databases index embeddings for similarity search.",
+            ...         "Reranking reorders candidate results by relevance.",
+            ...     ],
             ...     parameters={"input_type": "passage"},
             ... )
-            >>> len(embeddings.data)  # doctest: +SKIP
+            >>> embeddings.vector_type
+            'dense'
+
+            ``vector_type`` reports which of the two embedding shapes came
+            back, and is the value to branch on before unpacking a vector — see
+            the note below.
+
+            Embed the search query with ``input_type="query"``. The two values
+            are the only ones the parameter accepts and they are not
+            interchangeable, so a query embedded as a passage will not sit where
+            the model expects it. A bare string is wrapped for you, and still
+            yields a one-item ``data`` list rather than a lone embedding:
+
+            >>> query = pc.inference.embed(
+            ...     model="multilingual-e5-large",
+            ...     inputs="How does reranking work?",
+            ...     parameters={"input_type": "query"},
+            ... )
+            >>> len(query.data)
             1
 
         .. note::
-           To store embeddings in a Pinecone index, extract the raw vector
-           values and pass them to :meth:`~pinecone.Index.upsert`::
+           To store embeddings in a Pinecone index, read the raw vector values
+           off each embedding and pass them to :meth:`~pinecone.Index.upsert`::
 
-               values = embeddings.data[0].values
-               index.upsert(vectors=[("doc-1", values)])
+               with pc.index(name="product-search") as idx:
+                   values = embeddings.data[0].values
+                   idx.upsert(vectors=[("doc-1", values)])
+
+           ``.values`` is a field on the ``DenseEmbedding`` objects a dense
+           model returns. A sparse model such as ``pinecone-sparse-english-v0``
+           returns ``SparseEmbedding`` objects instead, which carry
+           ``.sparse_values`` and ``.sparse_indices`` and have no ``values``
+           field — reading ``.values`` on one yields a dict-view method rather
+           than the vector, with no error to warn you. Branch on
+           ``embeddings.vector_type`` before unpacking if the model is not
+           fixed in advance.
 
            Alternatively, use an index with integrated inference
            (``IntegratedSpec``) and call :meth:`~pinecone.Index.upsert_records`
@@ -307,6 +355,9 @@ class Inference:
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
+            Rank a list of strings. Each string is wrapped as ``{"text": ...}``,
+            which is what the default *rank_fields* of ``["text"]`` scores on:
+
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
             >>> result = pc.inference.rerank(
@@ -315,8 +366,35 @@ class Inference:
             ...     documents=["Apple is a fruit.", "Acme Inc. revolutionized tech."],
             ...     top_n=1,
             ... )
-            >>> result.data[0].score  # doctest: +SKIP
-            0.95
+
+            ``result.data`` is ordered by descending relevance, not by the order
+            the documents were passed in. Read ``.index`` to map a result back
+            to its position in *documents* — the top hit here is the second
+            document, so its ``.index`` is ``1``, not ``0``:
+
+            >>> top = result.data[0]
+            >>> top.index, top.score
+            (1, 0.95)
+            >>> top.document["text"]
+            'Acme Inc. revolutionized tech.'
+
+            Rank mappings instead when the text lives under some other key, or
+            when you want your own identifiers back alongside the scores. Name
+            the field to score on in *rank_fields*; every other key rides along
+            untouched and comes back in ``.document``:
+
+            >>> result = pc.inference.rerank(
+            ...     model="bge-reranker-v2-m3",
+            ...     query="Tell me about tech companies",
+            ...     documents=[
+            ...         {"id": "doc-1", "summary": "Apple is a fruit."},
+            ...         {"id": "doc-2", "summary": "Acme Inc. revolutionized tech."},
+            ...     ],
+            ...     rank_fields=["summary"],
+            ...     top_n=1,
+            ... )
+            >>> result.data[0].document["id"]
+            'doc-2'
 
         .. note::
            The model that serves a request is not always the model named in it —
@@ -375,10 +453,17 @@ class Inference:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
             >>> models = pc.inference.list_models()
-            >>> models.names()  # doctest: +SKIP
-            ['multilingual-e5-large', 'pinecone-sparse-english-v0']
+            >>> models.names()
+            ['multilingual-e5-large', 'pinecone-sparse-english-v0', 'bge-reranker-v2-m3']
 
-            >>> embed_models = pc.inference.list_models(type="embed")
+            ``vector_type`` narrows embedding models by the kind of vector they
+            produce, so it only carries meaning alongside ``type="embed"``.
+            Pairing it with ``type="rerank"`` raises :exc:`PineconeValueError`
+            rather than being ignored:
+
+            >>> sparse = pc.inference.list_models(type="embed", vector_type="sparse")
+            >>> sparse.names()
+            ['pinecone-sparse-english-v0']
         """
         if type is not None:
             require_one_of("type", type, ("embed", "rerank"))
@@ -427,8 +512,15 @@ class Inference:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
             >>> model_info = pc.inference.get_model(model="multilingual-e5-large")
-            >>> model_info.type  # doctest: +SKIP
+            >>> model_info.type
             'embed'
+
+            ``supported_parameters`` is what :meth:`embed` and :meth:`rerank`
+            point at for discovering the keys their *parameters* argument
+            accepts for a given model:
+
+            >>> [p.parameter for p in model_info.supported_parameters]
+            ['input_type', 'truncate', 'dimension']
         """
         model_name: str | None = kwargs.pop("model_name", None)
         if kwargs:

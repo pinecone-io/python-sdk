@@ -36,7 +36,8 @@ class Backups:
             from pinecone import Pinecone
 
             pc = Pinecone(api_key="your-api-key")
-            ids = [b.backup_id for b in pc.backups.list()]
+            first_page = pc.backups.list(limit=100)
+            ids = [b.backup_id for b in first_page]
     """
 
     def __init__(self, http: HTTPClient) -> None:
@@ -83,17 +84,35 @@ class Backups:
                 example because *index_name* names a pod-based index.
 
         Examples:
+            Creating a backup is asynchronous. The call returns as soon as
+            the backup is initiated, so the model it hands back reports
+            ``"Initializing"`` until the snapshot is complete. Poll
+            :meth:`describe` until the status leaves ``"Initializing"``: a
+            backup that fails settles on ``"Failed"``, so waiting for
+            ``"Ready"`` specifically would never return.
+
+            >>> import time
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
             >>> backup = pc.backups.create(index_name="product-search")
-            >>> backup.backup_id  # doctest: +SKIP
+            >>> while backup.status == "Initializing":
+            ...     time.sleep(10)
+            ...     backup = pc.backups.describe(backup_id=backup.backup_id)
+            >>> backup.backup_id
             'bk-abc123'
+            >>> backup.status
+            'Ready'
 
-            >>> backup = pc.backups.create(  # doctest: +SKIP
+            Give the backup a name and description so a later listing
+            identifies it by more than its server-assigned ``backup_id``:
+
+            >>> backup = pc.backups.create(
             ...     index_name="product-search",
             ...     name="daily-20240115",
             ...     description="Scheduled daily backup before reindexing",
             ... )
+            >>> backup.name
+            'daily-20240115'
         """
         require_non_empty("index_name", index_name)
         body: dict[str, Any] = {}
@@ -165,21 +184,44 @@ class Backups:
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
+            One call returns one page. Iterating the result walks that page
+            and stops — it does not follow ``pagination`` on your behalf:
+
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
-            >>> for backup in pc.backups.list():  # doctest: +SKIP
-            ...     print(backup.backup_id, backup.name)
+            >>> page = pc.backups.list(limit=100)
+            >>> [(b.backup_id, b.name) for b in page]
+            [('bk-abc123', 'daily-20240115'), ('bk-def456', 'daily-20240116')]
 
-            >>> for backup in pc.backups.list(index_name="product-search"):  # doctest: +SKIP
-            ...     print(backup.name)
+            Walk the rest by driving the token yourself, consuming each page
+            before asking for the next one:
 
-            Recover backups of an index that has since been deleted:
+            >>> page = pc.backups.list(limit=100)
+            >>> backups = list(page)
+            >>> while page.pagination and page.pagination.next:
+            ...     page = pc.backups.list(pagination_token=page.pagination.next)
+            ...     backups.extend(page)
+            >>> [b.backup_id for b in backups]
+            ['bk-abc123', 'bk-def456', 'bk-ghi789']
 
-            >>> orphaned = pc.backups.list(  # doctest: +SKIP
-            ...     index_name="product-search", include_deleted=True
+            Passing *index_name* scopes the listing to one index.
+            :meth:`~pinecone.client.indexes.Indexes.list_backups` covers the
+            same ground with a paginator that walks every page for you:
+
+            >>> for backup in pc.backups.list(index_name="product-search"):
+            ...     print(backup.name, backup.status)
+            daily-20240115 Ready
+
+            Backups outlive the index they were taken from, but an
+            index-scoped listing resolves *index_name* against the active
+            indexes first. Pass ``include_deleted=True`` to reach the backups
+            of an index you have already torn down:
+
+            >>> orphaned = pc.backups.list(
+            ...     index_name="legacy-catalog", include_deleted=True
             ... )
-            >>> [b.backup_id for b in orphaned if b.source_index_deleted_at]  # doctest: +SKIP
-            ['bk-abc123']
+            >>> [b.backup_id for b in orphaned if b.source_index_deleted_at]
+            ['bk-old111']
         """
         require_index_scope_for_include_deleted(index_name, include_deleted)
         params: dict[str, Any] = backup_list_params(
@@ -216,9 +258,11 @@ class Backups:
         Examples:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
-            >>> backup = pc.backups.describe(backup_id="bk-daily-20240115")
+            >>> backup = pc.backups.describe(backup_id="bk-abc123")
             >>> backup.status
             'Ready'
+            >>> backup.source_index_name
+            'product-search'
         """
         require_non_empty("backup_id", backup_id)
         logger.info("Describing backup %r", backup_id)
@@ -244,9 +288,11 @@ class Backups:
         Examples:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
-            >>> backup = pc.backups.get(backup_id="bk-daily-20240115")
+            >>> backup = pc.backups.get(backup_id="bk-abc123")
             >>> backup.status
             'Ready'
+            >>> backup.source_index_name
+            'product-search'
         """
         return self.describe(backup_id=backup_id)
 
@@ -262,9 +308,12 @@ class Backups:
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
+            Deleting a backup discards the snapshot only. The index it was
+            taken from is untouched, and other backups of that index remain:
+
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
-            >>> pc.backups.delete(backup_id="bk-daily-20240115")
+            >>> pc.backups.delete(backup_id="bk-abc123")
         """
         require_non_empty("backup_id", backup_id)
         logger.info("Deleting backup %r", backup_id)

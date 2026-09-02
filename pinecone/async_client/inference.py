@@ -45,18 +45,21 @@ class AsyncModelResource:
             handles HTTP requests on behalf of this resource.
 
     Examples:
+        List every available model. An unfiltered listing spans both model
+        types — embedding models and reranking models alike:
 
         .. code-block:: python
 
-            # List all available models
             from pinecone import AsyncPinecone
+
             async with AsyncPinecone(api_key="your-api-key") as pc:
                 models = await pc.inference.model.list()
-                models.names()
+                print(models.names())
+
+        Get details about a specific model:
 
         .. code-block:: python
 
-            # Get details about a specific model
             async with AsyncPinecone(api_key="your-api-key") as pc:
                 info = await pc.inference.model.get("multilingual-e5-large")
                 print(info.type)
@@ -95,9 +98,24 @@ class AsyncModelResource:
             .. code-block:: python
 
                 from pinecone import AsyncPinecone
+
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     models = await pc.inference.model.list()
-                    embed_models = await pc.inference.model.list(type="embed")
+                    print(models.names())
+
+            ``vector_type`` narrows embedding models by the kind of vector they
+            produce, so it only carries meaning alongside ``type="embed"``.
+            Pairing it with ``type="rerank"`` raises :exc:`PineconeValueError`
+            rather than being ignored:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    sparse = await pc.inference.model.list(
+                        type="embed",
+                        vector_type="sparse",
+                    )
+                    print(sparse.names())
         """
         return await self._inference.list_models(type=type, vector_type=vector_type)
 
@@ -157,8 +175,9 @@ class AsyncInference:
             async with AsyncPinecone(api_key="your-api-key") as pc:
                 embeddings = await pc.inference.embed(
                     model="multilingual-e5-large",
-                    inputs=["Hello, world!"],
+                    inputs=["Vector databases index embeddings for similarity search."],
                 )
+                print(len(embeddings.data))
     """
 
     EmbedModel = _enums.EmbedModel
@@ -189,9 +208,13 @@ class AsyncInference:
             .. code-block:: python
 
                 from pinecone import AsyncPinecone
+
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     models = await pc.inference.model.list()
+                    print(len(models))
+
                     info = await pc.inference.model.get("multilingual-e5-large")
+                    print(info.default_dimension)
         """
         return AsyncModelResource(self)
 
@@ -231,15 +254,68 @@ class AsyncInference:
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
+            Embed the text you intend to store. ``multilingual-e5-large`` is an
+            asymmetric model, so ``input_type`` tells it which side of a search
+            the text belongs to — ``"passage"`` for the corpus:
+
             .. code-block:: python
 
                 from pinecone import AsyncPinecone
+
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     embeddings = await pc.inference.embed(
                         model="multilingual-e5-large",
-                        inputs=["Hello, world!"],
+                        inputs=[
+                            "Vector databases index embeddings for similarity search.",
+                            "Reranking reorders candidate results by relevance.",
+                        ],
                         parameters={"input_type": "passage"},
                     )
+                    print(embeddings.vector_type)
+
+            ``vector_type`` reports which of the two embedding shapes came
+            back, and is the value to branch on before unpacking a vector — see
+            the note below.
+
+            Embed the search query with ``input_type="query"``. The two values
+            are the only ones the parameter accepts and they are not
+            interchangeable, so a query embedded as a passage will not sit where
+            the model expects it. A bare string is wrapped for you, and still
+            yields a one-item ``data`` list rather than a lone embedding:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    query = await pc.inference.embed(
+                        model="multilingual-e5-large",
+                        inputs="How does reranking work?",
+                        parameters={"input_type": "query"},
+                    )
+                    print(len(query.data))
+
+        .. note::
+           To store embeddings in a Pinecone index, read the raw vector values
+           off each embedding and pass them to
+           :meth:`~pinecone.async_client.async_index.AsyncIndex.upsert`::
+
+               idx = await pc.index(name="product-search")
+               values = embeddings.data[0].values
+               await idx.upsert(vectors=[("doc-1", values)])
+
+           ``.values`` is a field on the ``DenseEmbedding`` objects a dense
+           model returns. A sparse model such as ``pinecone-sparse-english-v0``
+           returns ``SparseEmbedding`` objects instead, which carry
+           ``.sparse_values`` and ``.sparse_indices`` and have no ``values``
+           field — reading ``.values`` on one yields a dict-view method rather
+           than the vector, with no error to warn you. Branch on
+           ``embeddings.vector_type`` before unpacking if the model is not
+           fixed in advance.
+
+           Alternatively, use an index with integrated inference
+           (``IntegratedSpec``) and call
+           :meth:`~pinecone.async_client.async_index.AsyncIndex.upsert_records`
+           to let Pinecone handle embedding server-side — no manual embed step
+           required.
         """
         model_id = resolve_model_id(model)
         require_non_empty("model", model_id)
@@ -307,9 +383,17 @@ class AsyncInference:
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
+            Rank a list of strings. Each string is wrapped as ``{"text": ...}``,
+            which is what the default *rank_fields* of ``["text"]`` scores on.
+            ``result.data`` comes back ordered by descending relevance, not by
+            the order the documents were passed in, so read ``.index`` to map a
+            result back to its position in *documents* — the top hit below is
+            the second document, so its ``.index`` is ``1``, not ``0``:
+
             .. code-block:: python
 
                 from pinecone import AsyncPinecone
+
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     result = await pc.inference.rerank(
                         model="bge-reranker-v2-m3",
@@ -317,6 +401,28 @@ class AsyncInference:
                         documents=["Apple is a fruit.", "Acme Inc. revolutionized tech."],
                         top_n=1,
                     )
+                    top = result.data[0]
+                    print(top.index, top.score, top.document["text"])
+
+            Rank mappings instead when the text lives under some other key, or
+            when you want your own identifiers back alongside the scores. Name
+            the field to score on in *rank_fields*; every other key rides along
+            untouched and comes back in ``.document``:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    result = await pc.inference.rerank(
+                        model="bge-reranker-v2-m3",
+                        query="Tell me about tech companies",
+                        documents=[
+                            {"id": "doc-1", "summary": "Apple is a fruit."},
+                            {"id": "doc-2", "summary": "Acme Inc. revolutionized tech."},
+                        ],
+                        rank_fields=["summary"],
+                        top_n=1,
+                    )
+                    print(result.data[0].document["id"])
 
         .. note::
            The model that serves a request is not always the model named in it —
@@ -376,9 +482,24 @@ class AsyncInference:
             .. code-block:: python
 
                 from pinecone import AsyncPinecone
+
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     models = await pc.inference.list_models()
-                    models.names()
+                    print(models.names())
+
+            ``vector_type`` narrows embedding models by the kind of vector they
+            produce, so it only carries meaning alongside ``type="embed"``.
+            Pairing it with ``type="rerank"`` raises :exc:`PineconeValueError`
+            rather than being ignored:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    sparse = await pc.inference.list_models(
+                        type="embed",
+                        vector_type="sparse",
+                    )
+                    print(sparse.names())
         """
         if type is not None:
             require_one_of("type", type, ("embed", "rerank"))
@@ -424,14 +545,20 @@ class AsyncInference:
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
+            ``supported_parameters`` is what :meth:`embed` and :meth:`rerank`
+            point at for discovering the keys their *parameters* argument
+            accepts for a given model:
+
             .. code-block:: python
 
                 from pinecone import AsyncPinecone
+
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     model_info = await pc.inference.get_model(
                         model="multilingual-e5-large",
                     )
                     print(model_info.type)
+                    print([p.parameter for p in model_info.supported_parameters])
         """
         model_name: str | None = kwargs.pop("model_name", None)
         if kwargs:

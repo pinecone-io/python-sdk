@@ -140,7 +140,7 @@ class Indexes:
             from pinecone import Pinecone
 
             pc = Pinecone(api_key="your-api-key")
-            names = [idx.name for idx in pc.indexes.list()]
+            names = [index.name for index in pc.indexes.list()]
     """
 
     def __init__(self, http: HTTPClient, host_cache: dict[str, str] | None = None) -> None:
@@ -170,7 +170,7 @@ class Indexes:
            Returns a :class:`~pinecone.models.pagination.Paginator` instead of
            an ``IndexList``. Iteration keeps working; replace
            ``pc.indexes.list().names()`` with
-           ``[idx.name for idx in pc.indexes.list()]``.
+           ``[index.name for index in pc.indexes.list()]``.
 
         Args:
             limit: Maximum number of items to yield. Must be a positive
@@ -187,8 +187,8 @@ class Indexes:
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
-            >>> for index in pc.indexes.list():  # doctest: +SKIP
-            ...     print(index.name)
+            >>> for index in pc.indexes.list():
+            ...     print(index.name, index.status.state)
         """
         if limit is not None:
             require_positive("limit", limit)
@@ -222,9 +222,12 @@ class Indexes:
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
-            >>> desc = pc.indexes.describe("my-index")
-            >>> desc.host  # doctest: +SKIP
-            'https://my-index.svc.pinecone.io'
+            The returned host always carries the ``https://`` scheme, even
+            though the API reports it without one:
+
+            >>> index = pc.indexes.describe("my-index")
+            >>> index.host
+            'https://my-index-abc123.svc.pinecone.io'
         """
         require_non_empty("name", name)
         logger.info("Describing index %r", name)
@@ -256,7 +259,7 @@ class Indexes:
             :exc:`ApiError`: If the API returns an error response other than a not-found error.
 
         Examples:
-            >>> pc.indexes.exists("my-index")  # doctest: +SKIP
+            >>> pc.indexes.exists("my-index")
             True
         """
         require_non_empty("name", name)
@@ -288,12 +291,22 @@ class Indexes:
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
+            Delete an index and block until it is gone:
+
             .. code-block:: python
 
                 pc.indexes.delete("my-index")
 
-                # Wait up to 60 seconds for deletion to complete
+            Or bound the wait, so an index still present after a minute
+            raises :exc:`PineconeTimeoutError` instead of polling forever:
+
+            .. code-block:: python
+
                 pc.indexes.delete("my-index", timeout=60)
+
+            Passing ``timeout=-1`` returns as soon as the delete request is
+            accepted, without polling at all — the index is still being torn
+            down when the call returns.
         """
         require_non_empty("name", name)
         logger.info("Deleting index %r", name)
@@ -456,10 +469,35 @@ class Indexes:
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
-            >>> pc.indexes.create(  # doctest: +SKIP
+            A dense index on the default deployment — managed, AWS
+            ``us-east-1``. The call waits for the index to become ready
+            before returning:
+
+            >>> index = pc.indexes.create(
             ...     name="movie-recommendations",
             ...     schema={"fields": {"embedding": {
             ...         "type": "dense_vector", "dimension": 1536, "metric": "cosine"}}},
+            ... )
+            >>> index.status.ready
+            True
+
+            A hybrid index, in a region of your choosing. The
+            ``sparse_vector`` field has to be declared here: ``configure()``
+            cannot add one later, so an index that needs sparse search and
+            was created without it has to be recreated:
+
+            >>> index = pc.indexes.create(
+            ...     name="support-articles",
+            ...     schema={"fields": {
+            ...         "embedding": {"type": "dense_vector",
+            ...                       "dimension": 1024, "metric": "cosine"},
+            ...         "keywords": {"type": "sparse_vector"},
+            ...         "body": {"type": "string",
+            ...                  "full_text_search": {"language": "en"}},
+            ...     }},
+            ...     deployment={"deployment_type": "managed",
+            ...                 "cloud": "aws", "region": "us-west-2"},
+            ...     tags={"env": "prod"},
             ... )
         """
         reject_legacy_create_kwargs(legacy_kwargs, name)
@@ -605,13 +643,19 @@ class Indexes:
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
-            >>> pc.indexes.create_for_model(  # doctest: +SKIP
+            The ``field_map`` text entry names the record field Pinecone
+            embeds, and that same name is what the field is called in the
+            returned schema — ``chunk_text`` below:
+
+            >>> index = pc.indexes.create_for_model(
             ...     name="semantic-search",
             ...     cloud="aws",
             ...     region="us-east-1",
             ...     embed={"model": "multilingual-e5-large",
             ...            "field_map": {"text": "chunk_text"}},
             ... )
+            >>> index.schema.fields["chunk_text"].model
+            'multilingual-e5-large'
         """
         require_valid_resource_name("name", name)
         cloud_str = resolve_enum_value(cloud)
@@ -756,8 +800,21 @@ class Indexes:
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
-            >>> pc.indexes.configure("my-index", deployment={"replicas": 4})  # doctest: +SKIP
-            >>> pc.indexes.configure("my-index", tags={"env": "prod"})  # doctest: +SKIP
+            Scale a pod-based index. Pod scaling is applied in the
+            background, so read ``index.status`` on the returned model to
+            see how far the change has got rather than assuming it landed:
+
+            >>> index = pc.indexes.configure(
+            ...     "legacy-recommender", deployment={"replicas": 4, "pod_type": "p1.x2"}
+            ... )
+
+            Tag updates merge into the tags the index already carries. Given
+            an index tagged ``{"env": "staging", "team": "search"}``, the
+            call below sets ``env``, deletes ``team`` — an empty value
+            removes a key — and leaves every other tag as it was, so
+            ``index.tags`` comes back ``{"env": "prod"}``:
+
+            >>> index = pc.indexes.configure("my-index", tags={"env": "prod", "team": ""})
         """
         require_non_empty("name", name)
         reject_legacy_configure_kwargs(legacy_kwargs)
@@ -863,9 +920,9 @@ class Indexes:
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
-            >>> backup = pc.indexes.create_backup("my-index", name="nightly")  # doctest: +SKIP
-            >>> backup.status  # doctest: +SKIP
-            'Initializing'
+            >>> backup = pc.indexes.create_backup("my-index", name="nightly-20240115")
+            >>> backup.backup_id
+            'bk-abc123'
         """
         require_non_empty("index_name", index_name)
 
@@ -936,14 +993,20 @@ class Indexes:
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
-            >>> for backup in pc.indexes.list_backups("my-index"):  # doctest: +SKIP
+            >>> for backup in pc.indexes.list_backups("my-index"):
             ...     print(backup.backup_id, backup.status)
+            bk-abc123 Ready
 
-            >>> orphans = pc.indexes.list_backups(  # doctest: +SKIP
-            ...     "my-index", include_deleted=True
-            ... )
-            >>> [b.backup_id for b in orphans if b.source_index_deleted_at]  # doctest: +SKIP
-            ['bkp_oldidx']
+            Once every index that used a name has been deleted, that name's
+            backups come back only with ``include_deleted=True`` — without
+            it this raises :exc:`NotFoundError`. They are the ones carrying
+            a ``source_index_deleted_at``:
+
+            >>> backups = pc.indexes.list_backups(
+            ...     "legacy-catalog", include_deleted=True
+            ... ).to_list()
+            >>> [b.backup_id for b in backups if b.source_index_deleted_at]
+            ['bk-old111']
         """
         require_non_empty("index_name", index_name)
         if limit is not None:
@@ -988,8 +1051,8 @@ class Indexes:
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
-            >>> backup = pc.indexes.describe_backup("bkp-123")  # doctest: +SKIP
-            >>> backup.status  # doctest: +SKIP
+            >>> backup = pc.indexes.describe_backup("bk-daily-20240115")
+            >>> backup.status
             'Ready'
         """
         require_non_empty("backup_id", backup_id)

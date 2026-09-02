@@ -75,6 +75,10 @@ class AsyncBackupSchedules:
 
     Examples:
 
+        Create a schedule, then follow the backups it produces. History rows
+        appear as runs are planned, so a schedule created moments ago has
+        little or nothing in it yet:
+
         .. code-block:: python
 
             from pinecone import AsyncPinecone
@@ -82,10 +86,11 @@ class AsyncBackupSchedules:
             async with AsyncPinecone(api_key="your-api-key") as pc:
                 schedule = await pc.backup_schedules.create(
                     index_name="product-search",
-                    name="daily-compliance-backup",
+                    name="compliance-snapshots",
                     frequency="daily",
                     retention_days=90,
                 )
+                print(schedule.schedule_id, schedule.next_scheduled_run)
                 async for run in pc.backup_schedules.iter_history(
                     schedule_id=schedule.schedule_id
                 ):
@@ -115,9 +120,12 @@ class AsyncBackupSchedules:
         choose one of the three fixed cadences below.
 
         .. important::
-           Keep the schedule name short. Each run names its backup
-           ``"{name}-{run timestamp}"``, and a long schedule name can push
-           that derived name past the length limit backup names allow.
+           Keep the schedule name short — 28 characters or fewer. Each run
+           names its backup ``"{name}-{run timestamp}"``, and the timestamp
+           costs a fixed 17 characters out of the 45-character limit on
+           resource names, so a longer schedule name yields backup names past
+           that limit. Neither the SDK nor the server rejects a long schedule
+           name at create time; the cost surfaces later, at run time.
 
         Args:
             index_name (str): Name of the index to attach the schedule to.
@@ -156,11 +164,16 @@ class AsyncBackupSchedules:
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     schedule = await pc.backup_schedules.create(
                         index_name="product-search",
-                        name="daily-compliance-backup",
+                        name="compliance-snapshots",
                         frequency="daily",
                         retention_days=90,
                     )
-                    print(schedule.frequency)
+                    print(schedule.schedule_id, schedule.next_scheduled_run)
+
+            The response spells the retention window
+            ``retention_expire_after_days``, mirroring the request body's
+            ``retention.expire_after_days`` — the returned schedule has no
+            ``retention_days`` attribute.
         """
         require_non_empty("index_name", index_name)
         require_non_empty("name", name)
@@ -225,9 +238,13 @@ class AsyncBackupSchedules:
                 from pinecone import AsyncPinecone
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    schedules = await pc.backup_schedules.list(index_name="my-index")
+                    schedules = await pc.backup_schedules.list(index_name="product-search")
                     print(schedules.names())
                     print([s.schedule_id for s in schedules.enabled_schedules()])
+
+            ``names()`` and ``enabled_schedules()`` read the page in hand
+            rather than the whole listing, so check ``schedules.pagination``
+            before concluding that an index has no enabled schedule.
         """
         require_non_empty("index_name", index_name)
         if limit is not None:
@@ -287,7 +304,7 @@ class AsyncBackupSchedules:
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     async for s in pc.backup_schedules.iter_schedules(
-                        index_name="my-index"
+                        index_name="product-search"
                     ):
                         print(s.schedule_id, s.frequency, s.enabled)
         """
@@ -337,7 +354,7 @@ class AsyncBackupSchedules:
                     schedule = await pc.backup_schedules.describe(
                         schedule_id="e88f7273-42aa-47e9-af73-593827136867"
                     )
-                    print(schedule.enabled)
+                    print(schedule.enabled, schedule.next_scheduled_run)
         """
         require_non_empty("schedule_id", schedule_id)
         logger.info("Describing backup schedule %r", schedule_id)
@@ -429,11 +446,31 @@ class AsyncBackupSchedules:
 
         Note:
             Calling this with none of *frequency*, *retention_days*, or
-            *enabled* set is a no-op: it returns the schedule unchanged.
+            *enabled* set still issues the ``PATCH``, with an empty body. It
+            changes nothing server-side and hands back the schedule as it
+            stands, but it is a request rather than a skipped one. Use
+            :meth:`describe` to re-read a schedule.
 
         Examples:
 
-            Pause a schedule without losing its configuration:
+            Only the fields you name are sent. Moving this schedule to a
+            weekly cadence with a shorter retention window leaves its
+            ``name``, its index, and its enabled state exactly as they were:
+
+            .. code-block:: python
+
+                from pinecone import AsyncPinecone
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    updated = await pc.backup_schedules.update(
+                        schedule_id="e88f7273-42aa-47e9-af73-593827136867",
+                        frequency="weekly",
+                        retention_days=30,
+                    )
+                    print(updated.frequency, updated.retention_expire_after_days)
+                    print(updated.name, updated.enabled)
+
+            Pause the schedule instead, keeping the rest of its configuration:
 
             .. code-block:: python
 
@@ -444,18 +481,7 @@ class AsyncBackupSchedules:
                         schedule_id="e88f7273-42aa-47e9-af73-593827136867",
                         enabled=False,
                     )
-                    assert paused.next_scheduled_run is None
-
-            Move to a weekly cadence with a shorter retention window:
-
-            .. code-block:: python
-
-                async with AsyncPinecone(api_key="your-api-key") as pc:
-                    await pc.backup_schedules.update(
-                        schedule_id="e88f7273-42aa-47e9-af73-593827136867",
-                        frequency="weekly",
-                        retention_days=30,
-                    )
+                    print(paused.frequency, paused.next_scheduled_run)
         """
         require_non_empty("schedule_id", schedule_id)
         with schedule_request_validation():
@@ -563,15 +589,26 @@ class AsyncBackupSchedules:
 
         Examples:
 
+            Walk the history a page at a time, narrowing each page to the runs
+            that have not started yet. ``scheduled()`` filters the page in
+            hand, so it belongs inside the loop rather than after it:
+
             .. code-block:: python
 
                 from pinecone import AsyncPinecone
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    runs = await pc.backup_schedules.history(
-                        schedule_id="e88f7273-42aa-47e9-af73-593827136867"
-                    )
-                    print([r.backup_id for r in runs.scheduled()])
+                    pagination_token = None
+                    while True:
+                        runs = await pc.backup_schedules.history(
+                            schedule_id="e88f7273-42aa-47e9-af73-593827136867",
+                            pagination_token=pagination_token,
+                        )
+                        for run in runs.scheduled():
+                            print(run.backup_id, run.scheduled_execution_at)
+                        pagination_token = runs.pagination.next if runs.pagination else None
+                        if pagination_token is None:
+                            break
         """
         require_non_empty("schedule_id", schedule_id)
         if limit is not None:

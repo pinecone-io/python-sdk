@@ -33,8 +33,8 @@ class AsyncRestoreJobs:
             from pinecone import AsyncPinecone
 
             async with AsyncPinecone(api_key="your-api-key") as pc:
-                for job in await pc.restore_jobs.list():
-                    print(job.restore_job_id)
+                for job in await pc.restore_jobs.list(limit=10):
+                    print(job.restore_job_id, job.target_index_name, job.status)
     """
 
     def __init__(self, http: AsyncHTTPClient) -> None:
@@ -96,23 +96,29 @@ class AsyncRestoreJobs:
             <https://github.com/pinecone-io/python-sdk-internal/issues/250>`_.
 
         Examples:
-            Walk every page the server will hand out:
+            Walk every page the server will hand out. Because pages can overlap,
+            the loop collects into a dict keyed by ``restore_job_id`` rather than
+            a list — that is the de-duplication the warning above calls for, and
+            it costs nothing on a listing that happens not to repeat:
 
             .. code-block:: python
 
                 from pinecone import AsyncPinecone
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
+                    by_id = {}
                     page = await pc.restore_jobs.list(limit=100)
-                    jobs = list(page)
-                    while page.pagination and page.pagination.next:
+                    while True:
+                        for job in page:
+                            by_id[job.restore_job_id] = job
+                        if not (page.pagination and page.pagination.next):
+                            break
                         page = await pc.restore_jobs.list(
                             pagination_token=page.pagination.next
                         )
-                        jobs.extend(page)
 
-                for job in jobs:
-                    print(job.restore_job_id, job.status, job.percent_complete)
+                    for job in by_id.values():
+                        print(job.restore_job_id, job.target_index_name, job.status)
 
             When one page is all you want:
 
@@ -176,15 +182,35 @@ class AsyncRestoreJobs:
             <https://github.com/pinecone-io/python-sdk-internal/issues/250>`_.
 
         Examples:
+            Read a restore job once:
+
             .. code-block:: python
 
                 from pinecone import AsyncPinecone
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    job = await pc.restore_jobs.describe(
-                        job_id="rj-restore-20240115",
-                    )
-                    print(job.status)
+                    job = await pc.restore_jobs.describe(job_id="rj-xyz789")
+                    print(job.status, job.target_index_name)
+
+            To wait for a restore, poll until ``status`` *leaves* ``"Pending"``
+            rather than waiting for it to reach a running state — there is no
+            running state to reach. Bound the wait with a deadline so a job that
+            never lands stops the loop instead of spinning forever; ten minutes
+            below is illustrative, not a service guarantee:
+
+            .. code-block:: python
+
+                import asyncio
+                import time
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    deadline = time.monotonic() + 600
+                    job = await pc.restore_jobs.describe(job_id="rj-xyz789")
+                    while job.status == "Pending" and time.monotonic() < deadline:
+                        await asyncio.sleep(5)
+                        job = await pc.restore_jobs.describe(job_id="rj-xyz789")
+
+                    print(job.status, job.completed_at)
         """
         require_non_empty("job_id", job_id)
         logger.info("Describing restore job %r", job_id)

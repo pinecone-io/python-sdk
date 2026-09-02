@@ -149,7 +149,8 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             from pinecone import AsyncPinecone
 
             async with AsyncPinecone(api_key="your-api-key") as pc:
-                assistants = pc.assistants
+                async for assistant in pc.assistants.list():
+                    print(assistant.name, assistant.status)
     """
 
     def __init__(self, config: PineconeConfig) -> None:
@@ -310,8 +311,23 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             .. code-block:: python
 
                 from pinecone import AsyncPinecone
+
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     assistant = await pc.assistants.create(name="my-assistant")
+                    print(assistant.status)
+
+            Instructions, metadata and region are all optional. ``create``
+            returns once the assistant reaches ``"Ready"``, so the assistant
+            below is usable as soon as the call returns:
+
+            .. code-block:: python
+
+                assistant = await pc.assistants.create(
+                    name="research-assistant",
+                    instructions="Always cite the source document.",
+                    metadata={"team": "research", "cost_center": "R-4120"},
+                    region="eu",
+                )
         """
         from pinecone._internal.kwargs_aliases import (
             reject_unknown_kwargs,
@@ -374,7 +390,6 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
-
             .. code-block:: python
 
                 assistant = await pc.assistants.describe(name="my-assistant")
@@ -432,11 +447,16 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
-
             .. code-block:: python
 
-                async for a in pc.assistants.list():
-                    print(a.name, a.status)
+                async for assistant in pc.assistants.list():
+                    print(assistant.name, assistant.status)
+
+            The paginator fetches pages lazily as you iterate. Call
+            ``to_list()`` instead when you want every assistant materialized
+            up front:
+
+            .. code-block:: python
 
                 all_assistants = await pc.assistants.list().to_list()
         """
@@ -476,14 +496,16 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
-
             .. code-block:: python
 
                 page = await pc.assistants.list_page(page_size=10)
-                for a in page.assistants:
-                    print(a.name)
+                for assistant in page.assistants:
+                    print(assistant.name)
                 if page.next:
-                    next_page = await pc.assistants.list_page(pagination_token=page.next)
+                    next_page = await pc.assistants.list_page(
+                        page_size=10,
+                        pagination_token=page.next,
+                    )
         """
         from pinecone._internal.kwargs_aliases import (
             reject_unknown_kwargs,
@@ -559,21 +581,28 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
+            Patch only the instructions. ``metadata`` is left out of the
+            request body entirely, so whatever metadata the assistant already
+            carries survives untouched:
 
             .. code-block:: python
 
-                # Update an assistant's instructions
                 assistant = await pc.assistants.update(
                     name="my-assistant",
-                    instructions="You are a helpful research assistant.",
+                    instructions="Always cite the source document.",
                 )
 
+            Passing ``metadata`` replaces the whole dictionary instead of
+            merging into it. An assistant carrying
+            ``{"team": "research", "cost_center": "R-4120"}`` is left with
+            only ``team`` after the call below — and with its instructions
+            unchanged, since they were not named:
+
             .. code-block:: python
 
-                # Replace an assistant's metadata
                 assistant = await pc.assistants.update(
                     name="my-assistant",
-                    metadata={"team": "ml", "version": "2"},
+                    metadata={"team": "docs-platform"},
                 )
         """
         from pinecone._internal.kwargs_aliases import (
@@ -659,13 +688,17 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
         :rtype: None
 
         Examples:
-
             .. code-block:: python
 
                 await pc.assistants.delete(name="my-assistant")
 
-                # Return immediately without waiting for deletion
-                await pc.assistants.delete(name="my-assistant", timeout=-1)
+            The call above blocks until the assistant is confirmed gone. Pass
+            ``timeout=-1`` to return as soon as the request is accepted — the
+            assistant may still be terminating when this returns:
+
+            .. code-block:: python
+
+                await pc.assistants.delete(name="stale-prototype", timeout=-1)
         """
         from pinecone._internal.kwargs_aliases import (
             reject_unknown_kwargs,
@@ -747,7 +780,6 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             listing.
 
         Examples:
-
             .. code-block:: python
 
                 file = await pc.assistants.describe_file(
@@ -796,17 +828,18 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
-
             .. code-block:: python
 
                 page = await pc.assistants.list_files_page(
                     assistant_name="my-assistant",
+                    page_size=10,
                 )
                 for f in page.files:
                     print(f.name)
                 if page.next:
                     next_page = await pc.assistants.list_files_page(
                         assistant_name="my-assistant",
+                        page_size=10,
                         pagination_token=page.next,
                     )
         """
@@ -884,11 +917,16 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             retrievable by id through :meth:`describe_file`.
 
         Examples:
-
             .. code-block:: python
 
                 async for f in pc.assistants.list_files(assistant_name="my-assistant"):
                     print(f.name, f.status)
+
+            The paginator fetches pages lazily as you iterate. Call
+            ``to_list()`` instead when you want every file materialized up
+            front:
+
+            .. code-block:: python
 
                 files = await pc.assistants.list_files(assistant_name="my-assistant").to_list()
         """
@@ -998,23 +1036,32 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :exc:`PineconeError`: If processing fails.
 
         Examples:
+            Upload from a local path. The basename supplies the extension the
+            server types the file by:
 
             .. code-block:: python
 
-                file = await async_pc.assistants.upload_file(
+                file = await pc.assistants.upload_file(
                     assistant_name="research-assistant",
-                    file_path="/data/report.pdf",
+                    file_path="/data/q3-revenue-review.pdf",
                 )
-                print(file.status)
+                print(file.id, file.status)
 
-                with open("report.pdf", "rb") as f:
-                    file = await async_pc.assistants.upload_file(
+            Or upload from an open byte stream instead. ``file_path`` and
+            ``file_stream`` are alternatives — pass exactly one — and a stream
+            needs ``file_name`` to carry the extension a path would have
+            supplied:
+
+            .. code-block:: python
+
+                with open("/data/q3-revenue-review.pdf", "rb") as handle:
+                    file = await pc.assistants.upload_file(
                         assistant_name="research-assistant",
-                        file_stream=f,
-                        file_name="report.pdf",
-                        metadata={"source": "quarterly-review"},
+                        file_stream=handle,
+                        file_name="q3-revenue-review.pdf",
+                        metadata={"department": "finance", "quarter": "2024-Q3"},
                     )
-                print(file.status)
+                print(file.id, file.status)
         """
         import json as _json
 
@@ -1123,7 +1170,6 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
-
             .. code-block:: python
 
                 await pc.assistants.delete_file(
@@ -1192,7 +1238,6 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
-
             .. code-block:: python
 
                 operation = await pc.assistants.describe_operation(
@@ -1245,11 +1290,15 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
-
             .. code-block:: python
 
                 async for op in pc.assistants.list_operations(assistant_name="my-assistant"):
                     print(op.operation_id, op.status, op.percent_complete)
+
+            Filter server-side to narrow the listing — here, uploads that have
+            not finished yet:
+
+            .. code-block:: python
 
                 pending = await pc.assistants.list_operations(
                     assistant_name="my-assistant",
@@ -1311,7 +1360,6 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
-
             .. code-block:: python
 
                 page = await pc.assistants.list_operations_page(
@@ -1321,7 +1369,13 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 )
                 for op in page.operations:
                     print(op.operation_id, op.error)
-                token = page.next
+                if page.next:
+                    next_page = await pc.assistants.list_operations_page(
+                        assistant_name="my-assistant",
+                        status="Failed",
+                        page_size=10,
+                        pagination_token=page.next,
+                    )
         """
         params: dict[str, str | int] = {}
         if operation_type is not None:
@@ -1514,10 +1568,8 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             iteration, after earlier chunks have already been yielded.
 
         Examples:
-
             .. code-block:: python
 
-                # Non-streaming chat
                 import asyncio
                 from pinecone import AsyncPinecone
 
@@ -1528,11 +1580,21 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                         assistant_name="my-assistant",
                         messages=[{"content": "What is Pinecone?"}],
                     )
+                    print(response.message.content)
+                    for citation in response.citations:
+                        for reference in citation.references:
+                            print(citation.position, reference.file.name)
                 asyncio.run(main())
+
+            The citations come back as structured objects here rather than
+            woven into the text, which is what separates this method from
+            :meth:`chat_completions`. Set ``stream=True`` for an
+            :class:`AsyncChatStream` instead of a single response — ``text()``
+            yields content fragments as they arrive, skipping the start,
+            citation and end chunks:
 
             .. code-block:: python
 
-                # Streaming chat
                 async def stream_main() -> None:
                     stream = await pc.assistants.chat(
                         assistant_name="my-assistant",
@@ -1711,10 +1773,8 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             earlier chunks have already been yielded.
 
         Examples:
-
             .. code-block:: python
 
-                # Non-streaming chat completion
                 import asyncio
                 from pinecone import AsyncPinecone
 
@@ -1728,9 +1788,12 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                     print(response.choices[0].message.content)
                 asyncio.run(main())
 
+            The response carries no separate ``citations`` list — the shape is
+            OpenAI's, so citations arrive inline in the message text. Set
+            ``stream=True`` for an :class:`AsyncChatCompletionStream`:
+
             .. code-block:: python
 
-                # Streaming chat completion
                 async def stream_main() -> None:
                     stream = await pc.assistants.chat_completions(
                         assistant_name="research-assistant",
@@ -1857,6 +1920,9 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 endpoint requires a paid plan.
 
         Examples:
+            The answer below contradicts the ground truth on purpose, so the
+            scores come back low and ``result.facts`` records where the
+            contradiction is:
 
             .. code-block:: python
 
@@ -1866,6 +1932,8 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                     ground_truth_answer="Madrid.",
                 )
                 print(result.scores.alignment)
+                for fact in result.facts:
+                    print(fact.entailment, fact.fact)
         """
         body = {
             "question": question,

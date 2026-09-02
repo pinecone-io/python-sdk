@@ -72,6 +72,10 @@ class BackupSchedules:
 
     Examples:
 
+        Create a schedule, then follow the backups it produces. History rows
+        appear as runs are planned, so a schedule created moments ago has
+        little or nothing in it yet:
+
         .. code-block:: python
 
             from pinecone import Pinecone
@@ -79,10 +83,11 @@ class BackupSchedules:
             pc = Pinecone(api_key="your-api-key")
             schedule = pc.backup_schedules.create(
                 index_name="product-search",
-                name="daily-compliance-backup",
+                name="compliance-snapshots",
                 frequency="daily",
                 retention_days=90,
             )
+            print(schedule.schedule_id, schedule.next_scheduled_run)
             for run in pc.backup_schedules.iter_history(schedule_id=schedule.schedule_id):
                 print(run.backup_id, run.status)
     """
@@ -110,9 +115,12 @@ class BackupSchedules:
         choose one of the three fixed cadences below.
 
         .. important::
-           Keep the schedule name short. Each run names its backup
-           ``"{name}-{run timestamp}"``, and a long schedule name can push
-           that derived name past the length limit backup names allow.
+           Keep the schedule name short — 28 characters or fewer. Each run
+           names its backup ``"{name}-{run timestamp}"``, and the timestamp
+           costs a fixed 17 characters out of the 45-character limit on
+           resource names, so a longer schedule name yields backup names past
+           that limit. Neither the SDK nor the server rejects a long schedule
+           name at create time; the cost surfaces later, at run time.
 
         Args:
             index_name (str): Name of the index to attach the schedule to.
@@ -145,14 +153,19 @@ class BackupSchedules:
         Examples:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
-            >>> schedule = pc.backup_schedules.create(  # doctest: +SKIP
+            >>> schedule = pc.backup_schedules.create(
             ...     index_name="product-search",
-            ...     name="daily-compliance-backup",
+            ...     name="compliance-snapshots",
             ...     frequency="daily",
             ...     retention_days=90,
             ... )
-            >>> schedule.frequency  # doctest: +SKIP
-            'daily'
+            >>> print(schedule.schedule_id, schedule.next_scheduled_run)
+            e88f7273-42aa-47e9-af73-593827136867 2026-04-03 06:00:00+00:00
+
+            The response spells the retention window
+            ``retention_expire_after_days``, mirroring the request body's
+            ``retention.expire_after_days`` — the returned schedule has no
+            ``retention_days`` attribute.
         """
         require_non_empty("index_name", index_name)
         require_non_empty("name", name)
@@ -213,11 +226,15 @@ class BackupSchedules:
         Examples:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
-            >>> schedules = pc.backup_schedules.list(index_name="my-index")  # doctest: +SKIP
-            >>> schedules.names()  # doctest: +SKIP
-            ['daily-compliance-backup']
-            >>> [s.schedule_id for s in schedules.enabled_schedules()]  # doctest: +SKIP
+            >>> schedules = pc.backup_schedules.list(index_name="product-search")
+            >>> schedules.names()
+            ['compliance-snapshots']
+            >>> [s.schedule_id for s in schedules.enabled_schedules()]
             ['e88f7273-42aa-47e9-af73-593827136867']
+
+            ``names()`` and ``enabled_schedules()`` read the page in hand
+            rather than the whole listing, so check ``schedules.pagination``
+            before concluding that an index has no enabled schedule.
         """
         require_non_empty("index_name", index_name)
         if limit is not None:
@@ -272,10 +289,9 @@ class BackupSchedules:
         Examples:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
-            >>> for s in pc.backup_schedules.iter_schedules(  # doctest: +SKIP
-            ...     index_name="my-index"
-            ... ):
+            >>> for s in pc.backup_schedules.iter_schedules(index_name="product-search"):
             ...     print(s.schedule_id, s.frequency, s.enabled)
+            e88f7273-42aa-47e9-af73-593827136867 daily True
         """
         require_non_empty("index_name", index_name)
         if limit is not None:
@@ -316,11 +332,11 @@ class BackupSchedules:
         Examples:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
-            >>> schedule = pc.backup_schedules.describe(  # doctest: +SKIP
+            >>> schedule = pc.backup_schedules.describe(
             ...     schedule_id="e88f7273-42aa-47e9-af73-593827136867"
             ... )
-            >>> schedule.enabled  # doctest: +SKIP
-            True
+            >>> print(schedule.enabled, schedule.next_scheduled_run)
+            True 2026-04-03 06:00:00+00:00
         """
         require_non_empty("schedule_id", schedule_id)
         logger.info("Describing backup schedule %r", schedule_id)
@@ -348,10 +364,10 @@ class BackupSchedules:
         Examples:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
-            >>> schedule = pc.backup_schedules.get(  # doctest: +SKIP
+            >>> schedule = pc.backup_schedules.get(
             ...     schedule_id="e88f7273-42aa-47e9-af73-593827136867"
             ... )
-            >>> schedule.frequency  # doctest: +SKIP
+            >>> schedule.frequency
             'daily'
         """
         return self.describe(schedule_id=schedule_id)
@@ -409,27 +425,37 @@ class BackupSchedules:
 
         Note:
             Calling this with none of *frequency*, *retention_days*, or
-            *enabled* set is a no-op: it returns the schedule unchanged.
+            *enabled* set still issues the ``PATCH``, with an empty body. It
+            changes nothing server-side and hands back the schedule as it
+            stands, but it is a request rather than a skipped one. Use
+            :meth:`describe` to re-read a schedule.
 
         Examples:
+
+            Only the fields you name are sent. Moving this schedule to a
+            weekly cadence with a shorter retention window leaves its
+            ``name``, its index, and its enabled state exactly as they were:
+
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
-
-            Pause a schedule without losing its configuration:
-
-            >>> paused = pc.backup_schedules.update(  # doctest: +SKIP
-            ...     schedule_id="e88f7273-42aa-47e9-af73-593827136867", enabled=False
-            ... )
-            >>> paused.next_scheduled_run is None  # doctest: +SKIP
-            True
-
-            Move to a weekly cadence with a shorter retention window:
-
-            >>> pc.backup_schedules.update(  # doctest: +SKIP
+            >>> updated = pc.backup_schedules.update(
             ...     schedule_id="e88f7273-42aa-47e9-af73-593827136867",
             ...     frequency="weekly",
             ...     retention_days=30,
             ... )
+            >>> print(updated.frequency, updated.retention_expire_after_days)
+            weekly 30
+            >>> print(updated.name, updated.enabled)
+            compliance-snapshots True
+
+            Pause the schedule instead, keeping the rest of its configuration:
+
+            >>> paused = pc.backup_schedules.update(
+            ...     schedule_id="e88f7273-42aa-47e9-af73-593827136867",
+            ...     enabled=False,
+            ... )
+            >>> print(paused.frequency, paused.next_scheduled_run)
+            daily None
         """
         require_non_empty("schedule_id", schedule_id)
         with schedule_request_validation():
@@ -478,7 +504,7 @@ class BackupSchedules:
         Examples:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
-            >>> pc.backup_schedules.delete(  # doctest: +SKIP
+            >>> pc.backup_schedules.delete(
             ...     schedule_id="e88f7273-42aa-47e9-af73-593827136867"
             ... )
         """
@@ -532,13 +558,25 @@ class BackupSchedules:
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
+
+            Walk the history a page at a time, narrowing each page to the runs
+            that have not started yet. ``scheduled()`` filters the page in
+            hand, so it belongs inside the loop rather than after it:
+
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
-            >>> runs = pc.backup_schedules.history(  # doctest: +SKIP
-            ...     schedule_id="e88f7273-42aa-47e9-af73-593827136867"
-            ... )
-            >>> [r.backup_id for r in runs.scheduled()]  # doctest: +SKIP
-            ['b2c3d4e5-f6a7-8901-bcde-f12345678901']
+            >>> pagination_token = None
+            >>> while True:
+            ...     runs = pc.backup_schedules.history(
+            ...         schedule_id="e88f7273-42aa-47e9-af73-593827136867",
+            ...         pagination_token=pagination_token,
+            ...     )
+            ...     for run in runs.scheduled():
+            ...         print(run.backup_id, run.scheduled_execution_at)
+            ...     pagination_token = runs.pagination.next if runs.pagination else None
+            ...     if pagination_token is None:
+            ...         break
+            b2c3d4e5-f6a7-8901-bcde-f12345678901 2026-04-03 06:00:00+00:00
         """
         require_non_empty("schedule_id", schedule_id)
         if limit is not None:
@@ -594,10 +632,12 @@ class BackupSchedules:
         Examples:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
-            >>> for run in pc.backup_schedules.iter_history(  # doctest: +SKIP
+            >>> for run in pc.backup_schedules.iter_history(
             ...     schedule_id="e88f7273-42aa-47e9-af73-593827136867"
             ... ):
             ...     print(run.backup_id, run.status, run.scheduled_execution_at)
+            b2c3d4e5-f6a7-8901-bcde-f12345678901 Scheduled 2026-04-03 06:00:00+00:00
+            a1b2c3d4-e5f6-7890-abcd-ef1234567890 Ready None
         """
         require_non_empty("schedule_id", schedule_id)
         if limit is not None:

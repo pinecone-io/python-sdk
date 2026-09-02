@@ -93,7 +93,7 @@ class AsyncIndexes:
             from pinecone import AsyncPinecone
 
             async with AsyncPinecone(api_key="your-api-key") as pc:
-                names = [idx.name async for idx in pc.indexes.list()]
+                names = [index.name async for index in pc.indexes.list()]
     """
 
     def __init__(self, http: AsyncHTTPClient, host_cache: dict[str, str] | None = None) -> None:
@@ -124,7 +124,7 @@ class AsyncIndexes:
            Returns an :class:`~pinecone.models.pagination.AsyncPaginator`
            instead of an ``IndexList``, and is no longer a coroutine —
            replace ``(await pc.indexes.list()).names()`` with
-           ``[idx.name async for idx in pc.indexes.list()]``.
+           ``[index.name async for index in pc.indexes.list()]``.
 
         Args:
             limit: Maximum number of items to yield. Must be a positive
@@ -145,7 +145,7 @@ class AsyncIndexes:
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     async for index in pc.indexes.list():
-                        print(index.name)
+                        print(index.name, index.status.state)
         """
         if limit is not None:
             require_positive("limit", limit)
@@ -182,8 +182,9 @@ class AsyncIndexes:
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    desc = await pc.indexes.describe("my-index")
-                    print(desc.host)
+                    index = await pc.indexes.describe("my-index")
+                    print(index.host)
+                    print(list(index.schema.fields))
         """
         require_non_empty("name", name)
         logger.info("Describing index %r", name)
@@ -250,13 +251,24 @@ class AsyncIndexes:
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
+            Delete an index and block until it is gone:
+
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     await pc.indexes.delete("my-index")
 
-                    # Wait up to 60 seconds for deletion to complete
+            Or bound the wait, so an index still present after a minute
+            raises :exc:`PineconeTimeoutError` instead of polling forever:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
                     await pc.indexes.delete("my-index", timeout=60)
+
+            Passing ``timeout=-1`` returns as soon as the delete request is
+            accepted, without polling at all — the index is still being torn
+            down when the call returns.
         """
         require_non_empty("name", name)
         logger.info("Deleting index %r", name)
@@ -419,6 +431,9 @@ class AsyncIndexes:
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
+            A dense index on the default deployment — managed, AWS
+            ``us-east-1``:
+
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
@@ -427,6 +442,29 @@ class AsyncIndexes:
                         schema={"fields": {"embedding": {
                             "type": "dense_vector", "dimension": 1536, "metric": "cosine"}}},
                     )
+
+            A hybrid index, in a region of your choosing. The
+            ``sparse_vector`` field has to be declared here: ``configure()``
+            cannot add one later, so an index that needs sparse search and
+            was created without it has to be recreated:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    index = await pc.indexes.create(
+                        name="support-articles",
+                        schema={"fields": {
+                            "embedding": {"type": "dense_vector",
+                                          "dimension": 1024, "metric": "cosine"},
+                            "keywords": {"type": "sparse_vector"},
+                            "body": {"type": "string",
+                                     "full_text_search": {"language": "en"}},
+                        }},
+                        deployment={"deployment_type": "managed",
+                                    "cloud": "aws", "region": "us-west-2"},
+                        tags={"env": "prod"},
+                    )
+                    print(index.host)
         """
         reject_legacy_create_kwargs(legacy_kwargs, name)
         reject_integrated_spec_create(spec, name)
@@ -571,16 +609,21 @@ class AsyncIndexes:
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
+            The ``field_map`` text entry names the record field Pinecone
+            embeds, and that same name is what the field is called in the
+            returned schema — ``chunk_text`` below:
+
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    await pc.indexes.create_for_model(
+                    index = await pc.indexes.create_for_model(
                         name="semantic-search",
                         cloud="aws",
                         region="us-east-1",
                         embed={"model": "multilingual-e5-large",
                                "field_map": {"text": "chunk_text"}},
                     )
+                    print(index.schema.fields["chunk_text"])
         """
         require_valid_resource_name("name", name)
         cloud_str = resolve_enum_value(cloud)
@@ -725,11 +768,30 @@ class AsyncIndexes:
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
+            Scale a pod-based index. Pod scaling is applied in the
+            background, so the returned model reports the state of the
+            change rather than its result:
+
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    await pc.indexes.configure("my-index", deployment={"replicas": 4})
-                    await pc.indexes.configure("my-index", tags={"env": "prod"})
+                    index = await pc.indexes.configure(
+                        "legacy-recommender", deployment={"replicas": 4, "pod_type": "p1.x2"}
+                    )
+                    print(index.status.state)
+
+            Tag updates merge into the tags the index already carries. Given
+            an index tagged ``{"env": "staging", "team": "search"}``, the
+            call below sets ``env``, deletes ``team`` — an empty value
+            removes a key — and leaves every other tag as it was:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    index = await pc.indexes.configure(
+                        "my-index", tags={"env": "prod", "team": ""}
+                    )
+                    print(index.tags)
         """
         require_non_empty("name", name)
         reject_legacy_configure_kwargs(legacy_kwargs)
@@ -838,8 +900,10 @@ class AsyncIndexes:
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    backup = await pc.indexes.create_backup("my-index", name="nightly")
-                    print(backup.status)
+                    backup = await pc.indexes.create_backup(
+                        "my-index", name="nightly-20240115"
+                    )
+                    print(backup.backup_id, backup.status)
         """
         require_non_empty("index_name", index_name)
 
@@ -918,10 +982,18 @@ class AsyncIndexes:
                     async for backup in pc.indexes.list_backups("my-index"):
                         print(backup.backup_id, backup.status)
 
-                    orphans = await pc.indexes.list_backups(
-                        "my-index", include_deleted=True
+            Once every index that used a name has been deleted, that name's
+            backups come back only with ``include_deleted=True`` — without
+            it this raises :exc:`NotFoundError`. They are the ones carrying
+            a ``source_index_deleted_at``:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    backups = await pc.indexes.list_backups(
+                        "legacy-catalog", include_deleted=True
                     ).to_list()
-                    print([b.backup_id for b in orphans if b.source_index_deleted_at])
+                    print([b.backup_id for b in backups if b.source_index_deleted_at])
         """
         require_non_empty("index_name", index_name)
         if limit is not None:
@@ -969,8 +1041,8 @@ class AsyncIndexes:
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    backup = await pc.indexes.describe_backup("bkp-123")
-                    print(backup.status)
+                    backup = await pc.indexes.describe_backup("bk-daily-20240115")
+                    print(backup.status, backup.record_count)
         """
         require_non_empty("backup_id", backup_id)
         logger.info("Describing backup %r", backup_id)
