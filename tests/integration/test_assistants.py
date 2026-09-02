@@ -2571,8 +2571,9 @@ def test_assistant_model_dict_mixin_operations_rest(client: Pinecone) -> None:
     - unified-model-0005: model.get(key, default) returns value or default
     - unified-model-0006: model.to_dict() recursively converts to a plain dict
 
-    AssistantModel declares 7 fields: name, status, metadata, instructions,
-    host, created_at, updated_at.
+    AssistantModel declares 8 fields, one per property of the 2026-07
+    ``Assistant`` schema: name, status, metadata, instructions, host, region,
+    created_at, updated_at.
     """
     name = unique_name("asst")
     try:
@@ -2594,28 +2595,52 @@ def test_assistant_model_dict_mixin_operations_rest(client: Pinecone) -> None:
         assert isinstance(model, AssistantModel)
 
         # --- unified-model-0003: len(model) returns field count ---
-        # AssistantModel has 7 declared fields
-        assert len(model) == 7, f"AssistantModel has 7 declared fields; got len()={len(model)}"
+        # Spelled out instead of read back from AssistantModel.__struct_fields__:
+        # StructDictMixin derives len() and keys() from exactly that attribute, so
+        # comparing against it would hold whichever fields the model declared. These
+        # eight are the properties of the 2026-07 ``Assistant`` schema; ``region`` is
+        # the one this API version added.
+        expected_fields = {
+            "name",
+            "status",
+            "metadata",
+            "instructions",
+            "host",
+            "region",
+            "created_at",
+            "updated_at",
+        }
+        assert len(model) == len(expected_fields), (
+            f"AssistantModel should declare {len(expected_fields)} fields; "
+            f"got len()={len(model)} ({sorted(model.keys())})"
+        )
 
         # --- unified-model-0004: keys(), values(), items() ---
         keys = model.keys()
         assert isinstance(keys, tuple), f"keys() should return tuple, got {type(keys).__name__}"
-        assert "name" in keys, "keys() must include 'name'"
-        assert "status" in keys, "keys() must include 'status'"
-        assert "metadata" in keys, "keys() must include 'metadata'"
-        assert "instructions" in keys, "keys() must include 'instructions'"
-        assert len(keys) == 7, f"keys() length should be 7, got {len(keys)}"
+        assert set(keys) == expected_fields, (
+            "keys() drifted from the 2026-07 Assistant schema: "
+            f"missing={sorted(expected_fields - set(keys))}, "
+            f"unexpected={sorted(set(keys) - expected_fields)}"
+        )
+        assert len(keys) == len(expected_fields), (
+            f"keys() should have {len(expected_fields)} entries, got {len(keys)}: {keys}"
+        )
 
         values = model.values()
         assert isinstance(values, list), f"values() should return list, got {type(values).__name__}"
-        assert len(values) == 7, f"values() length should be 7, got {len(values)}"
+        assert len(values) == len(expected_fields), (
+            f"values() length should be {len(expected_fields)}, got {len(values)}"
+        )
         # values() is ordered by field declaration: name, status, metadata, ...
         assert values[0] == model.name, "values()[0] (name) should match model.name"
         assert values[1] == model.status, "values()[1] (status) should match model.status"
 
         items = model.items()
         assert isinstance(items, list), f"items() should return list, got {type(items).__name__}"
-        assert len(items) == 7, f"items() length should be 7, got {len(items)}"
+        assert len(items) == len(expected_fields), (
+            f"items() length should be {len(expected_fields)}, got {len(items)}"
+        )
         items_dict = dict(items)
         assert items_dict["name"] == model.name, "items() 'name' should match model.name"
         assert items_dict["status"] == model.status, "items() 'status' should match model.status"

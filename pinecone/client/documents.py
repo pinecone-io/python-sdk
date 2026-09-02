@@ -154,6 +154,7 @@ class Documents:
         max_concurrency: int | None = None,
         show_progress: bool = True,
         timeout: float | None = None,
+        total_timeout: float | None = None,
     ) -> BatchResult:
         """Upsert a large list of documents in parallel batches.
 
@@ -181,6 +182,20 @@ class Documents:
                 installed. Defaults to ``True``.
             timeout (float | None): Per-request timeout in seconds applied to
                 each batch's request — not to the whole call.
+            total_timeout (float | None): Deadline in seconds for the **whole
+                batched upsert**, as opposed to *timeout*, which bounds a
+                single attempt of a single batch. On expiry no further batches
+                are submitted; batches already in flight are awaited and never
+                cancelled, because dropping one client-side would not stop the
+                host from applying it. Un-submitted batches are reported in
+                ``result.failed_items`` so they can be retried, and
+                ``result.timed_out`` is ``True`` only when something was
+                actually left unsent — if the in-flight batches were the last
+                ones and all landed, the upsert succeeded late rather than
+                failing. Time spent waiting for the host's admission gate
+                counts against the budget, so a throttled host can consume it
+                without a request being sent. ``None`` (default) means no
+                deadline.
 
         Returns:
             :class:`~pinecone.models.batch.BatchResult` with aggregated
@@ -206,8 +221,15 @@ class Documents:
                     documents=documents,
                     batch_size=100,
                     max_concurrency=8,
+                    total_timeout=60.0,
                 )
                 print(result.successful_item_count, result.failed_item_count)
+                if result.timed_out:
+                    result = idx.documents.batch_upsert(
+                        namespace="published",
+                        documents=result.failed_items,
+                        batch_size=100,
+                    )
 
         .. seealso::
            - :meth:`upsert` — for a single-request upsert of up to
@@ -237,6 +259,7 @@ class Documents:
             show_progress=show_progress,
             desc="Upserting documents",
             host=self._host,
+            total_timeout=total_timeout,
         )
 
     def search(

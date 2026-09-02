@@ -483,19 +483,12 @@ async def test_rerank_documents_validation_rest_async(async_client: AsyncPinecon
 
 @pytest.mark.integration
 @pytest.mark.anyio
-@pytest.mark.xfail(
-    strict=False,
-    reason="SDK async-parity bug: async rerank() does not validate top_n<1 client-side "
-    "(sync Inference.rerank raises ValidationError; pinecone/async_client/inference.py "
-    "sends top_n to backend which returns 422 serde error instead). See FINDINGS.",
-)
 async def test_rerank_top_n_validation_async(async_client: AsyncPinecone) -> None:
-    """async rerank() raises ValidationError for top_n < 1; top_n=1 is accepted.
+    """async rerank() raises ValidationError for top_n < 1.
 
-    Async counterpart of test_rerank_top_n_validation (sync), which passes with
-    a clean client-side ValidationError. The async path currently lacks this
-    validation and instead surfaces the backend's confusing 422 serde error on
-    negative usize values — tracked as an SDK async-parity bug.
+    Async counterpart of test_rerank_top_n_validation (sync). Both surfaces
+    reject an out-of-range top_n client-side, so neither sends the value on to
+    the backend.
     """
     with pytest.raises(ValidationError, match="top_n must be >= 1"):
         await async_client.inference.rerank(

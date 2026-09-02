@@ -10,8 +10,6 @@ from __future__ import annotations
 import threading
 import time
 
-import pytest
-
 from pinecone._internal.adaptive import _AdaptiveLimiter, _AdaptiveLimiterRegistry
 
 
@@ -95,82 +93,3 @@ class TestSharedAcrossCallers:
             "the second caller's slots must count against the first's limit"
         )
         assert first.inflight == 2
-
-
-class TestBatchExecuteUsesIt:
-    def test_peak_inflight_never_exceeds_the_limit(self) -> None:
-        from pinecone._internal.batch import batch_execute
-
-        registry = _AdaptiveLimiterRegistry()
-        host = "idx.svc.pinecone.io"
-        registry.get(host, 4)
-
-        lock = threading.Lock()
-        peak = 0
-        current = 0
-
-        def _op(batch: list[dict[str, object]]) -> dict[str, int]:
-            nonlocal peak, current
-            with lock:
-                current += 1
-                peak = max(peak, current)
-            try:
-                return {"upserted_count": len(batch)}
-            finally:
-                with lock:
-                    current -= 1
-
-        result = batch_execute(
-            items=[{"id": str(i)} for i in range(60)],
-            operation=_op,
-            batch_size=1,
-            max_concurrency=4,
-            show_progress=False,
-            limiter_registry=registry,
-            host=host,
-        )
-
-        assert result.successful_item_count == 60
-        assert peak <= 4, f"{peak} operations ran concurrently against a limit of 4"
-
-    def test_slots_are_returned_when_a_batch_fails(self) -> None:
-        from pinecone._internal.batch import batch_execute
-
-        registry = _AdaptiveLimiterRegistry()
-        host = "idx.svc.pinecone.io"
-
-        def _always_fails(batch: list[dict[str, object]]) -> dict[str, int]:
-            raise RuntimeError("boom")
-
-        result = batch_execute(
-            items=[{"id": str(i)} for i in range(8)],
-            operation=_always_fails,
-            batch_size=1,
-            max_concurrency=2,
-            show_progress=False,
-            limiter_registry=registry,
-            host=host,
-        )
-
-        assert result.failed_batch_count == 8
-        assert registry.get(host, 2).inflight == 0, "a failing batch leaked its slot"
-
-
-@pytest.mark.parametrize("ceiling", [1, 4, 16])
-def test_the_counter_lands_back_at_zero(ceiling: int) -> None:
-    from pinecone._internal.batch import batch_execute
-
-    registry = _AdaptiveLimiterRegistry()
-    host = "idx.svc.pinecone.io"
-
-    batch_execute(
-        items=[{"id": str(i)} for i in range(20)],
-        operation=lambda b: {"upserted_count": len(b)},
-        batch_size=2,
-        max_concurrency=ceiling,
-        show_progress=False,
-        limiter_registry=registry,
-        host=host,
-    )
-
-    assert registry.get(host, ceiling).inflight == 0

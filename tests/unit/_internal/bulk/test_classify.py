@@ -66,24 +66,29 @@ def test_disposition_constants_are_distinct_strings() -> None:
     assert values == {"rejected", "unsent", "abandoned"}
 
 
-def test_legacy_async_path_classifies_retryable() -> None:
+def test_async_engine_classifies_retryable() -> None:
+    """The table is only worth versioning if the engine actually consults it,
+    so this drives a poison batch all the way through the async engine rather
+    than calling ``is_retryable`` directly."""
     import asyncio
 
-    from pinecone._internal.batch import async_batch_execute
+    from pinecone._internal.bulk.async_engine import bulk_execute_async
     from pinecone.errors.exceptions import PineconeValueError
 
     async def poison_op(batch: list[dict[str, object]]) -> object:
         raise PineconeValueError("dimension mismatch")
 
     async def run() -> object:
-        return await async_batch_execute(
+        return await bulk_execute_async(
             items=[{"id": "1"}, {"id": "2"}],
             operation=poison_op,
             batch_size=1,
             show_progress=False,
+            host="classify-async.svc.pinecone.io",
         )
 
     result = asyncio.run(run())
+    assert result.errors
     assert all(e.retryable is False for e in result.errors)
 
 
