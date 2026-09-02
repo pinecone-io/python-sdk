@@ -941,9 +941,13 @@ pd_udf = pytest.importorskip("pandas", reason="pandas required for upsert_from_d
 async def test_upsert_from_dataframe_async(async_client: AsyncPinecone) -> None:
     """AsyncIndex.upsert_from_dataframe works end-to-end over async REST.
 
-    On main, async upsert_from_dataframe IS implemented (single signature
-    across all three transports). This replaces the obsolete
-    "not supported for async clients" NotImplementedError assertion.
+    ``upsert_from_dataframe`` carries one signature across all three
+    transports, so the async client batches and upserts a DataFrame just as
+    the sync and gRPC clients do (#525).
+
+    The index comes from ``indexes.create``'s legacy ``dimension=``/``spec=``
+    sugar, which synthesizes a schema of exactly the reserved ``_values`` /
+    ``_sparse_values`` fields — the shape the vectors API serves (#500, #504).
     """
     name = unique_name("idx")
     try:

@@ -169,8 +169,6 @@ class Index:
         self._http = HTTPClient(config, DATA_PLANE_API_VERSION)
         self._adapter = VectorsAdapter()
         self._imports_adapter = ImportsAdapter()
-        self._batch_executor: ThreadPoolExecutor | None = None
-        self._batch_executor_workers: int = 0
         self._documents: Documents | None = None
 
         from pinecone._legacy.async_req import (
@@ -218,21 +216,8 @@ class Index:
         if self._documents is None:
             from pinecone.client.documents import Documents as _Documents
 
-            self._documents = _Documents(
-                http=self._http, get_batch_executor=self._get_batch_executor
-            )
+            self._documents = _Documents(http=self._http, host=self._host)
         return self._documents
-
-    def _get_batch_executor(self, max_concurrency: int) -> ThreadPoolExecutor:
-        if self._batch_executor is None or self._batch_executor_workers != max_concurrency:
-            if self._batch_executor is not None:
-                self._batch_executor.shutdown(wait=False)
-            self._batch_executor = ThreadPoolExecutor(
-                max_concurrency,
-                thread_name_prefix="pinecone-upsert",
-            )
-            self._batch_executor_workers = max_concurrency
-        return self._batch_executor
 
     def upsert(
         self,

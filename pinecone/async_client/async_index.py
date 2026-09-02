@@ -200,7 +200,7 @@ class AsyncIndex:
         if self._documents is None:
             from pinecone.async_client.documents import AsyncDocuments as _AsyncDocuments
 
-            self._documents = _AsyncDocuments(http=self._http)
+            self._documents = _AsyncDocuments(http=self._http, host=self._host)
         return self._documents
 
     async def upsert_records(

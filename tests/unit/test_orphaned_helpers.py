@@ -9,11 +9,13 @@ one, rather than a one-time list of today's findings.
 
 `ACKNOWLEDGED_ORPHANS` is the known, already-filed backlog (issue #479) —
 not a growing allowlist. `PENDING_CONSUMERS` is the opposite direction: a
-helper landed deliberately ahead of the ticket that calls it. Equality (not
-subset) is asserted both ways over the two sets together: a name outside
-them fails the test as a newly discovered orphan, and a name in either that
-the detector no longer reports (because someone deleted or wired it up) also
-fails, so neither set can go stale silently.
+helper landed deliberately ahead of the ticket that calls it.
+`SUPERSEDED_BY_THE_GATE` is a third direction again: code whose last caller
+was deliberately rewired away from it, awaiting deletion rather than a
+consumer. Equality (not subset) is asserted both ways over the three sets
+together: a name outside them fails the test as a newly discovered orphan,
+and a name in any of them that the detector no longer reports (because
+someone deleted or wired it up) also fails, so no set can go stale silently.
 """
 
 from __future__ import annotations
@@ -41,7 +43,24 @@ ACKNOWLEDGED_ORPHANS = frozenset(
 #: tickets' work, and this set is what forces these names off it when they do.
 PENDING_CONSUMERS = frozenset()
 
-EXPECTED_ORPHANS = ACKNOWLEDGED_ORPHANS | PENDING_CONSUMERS
+#: The pre-gate batch engine. Porting the admission gate onto the documents
+#: surfaces took its last two production callers, so `batch_execute`,
+#: `async_batch_execute` and the two helpers only they call are now dead —
+#: `pinecone/_internal/bulk/` supersedes all four (`is_retryable` replaces
+#: `_classify_retryable`). Deleting them also deletes
+#: `tests/unit/test_{async_,}batch_execute.py`, which is a larger change than
+#: the gate port, so it is listed here rather than done inside it. This set
+#: exists to make the deletion someone's next job instead of nobody's.
+SUPERSEDED_BY_THE_GATE = frozenset(
+    {
+        "batch_execute",
+        "async_batch_execute",
+        "_chunk",
+        "_classify_retryable",
+    }
+)
+
+EXPECTED_ORPHANS = ACKNOWLEDGED_ORPHANS | PENDING_CONSUMERS | SUPERSEDED_BY_THE_GATE
 
 
 def test_no_new_orphaned_helpers() -> None:
