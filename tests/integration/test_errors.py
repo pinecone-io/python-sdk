@@ -11,6 +11,7 @@ block — otherwise nothing is sent and nothing raises.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 import pytest
@@ -26,9 +27,9 @@ from pinecone.errors import (
 )
 from tests.integration.conftest import cleanup_resource, poll_until, unique_name
 from tests.integration.index_shapes import DENSE_FIELD, MANAGED_AWS, dense_schema
+from tests.integration.legacy_index import LegacyIndex, assert_serves_vectors_api
 
 _DENSE_SCHEMA_2D = dense_schema(2)
-_DENSE_SCHEMA_3D = dense_schema(3)
 
 # ---------------------------------------------------------------------------
 # error-bad-api-key
@@ -643,7 +644,9 @@ def test_exception_catch_hierarchy_rest(client: Pinecone) -> None:
 
 @pytest.mark.integration
 @pytest.mark.timeout(600)
-def test_grpc_query_too_short_timeout_raises(client: Pinecone) -> None:
+def test_grpc_query_too_short_timeout_raises(
+    client: Pinecone, legacy_index_dim3: LegacyIndex
+) -> None:
     """A gRPC query with a sub-millisecond per-call timeout raises PineconeTimeoutError.
 
     Verifies that:
@@ -654,43 +657,38 @@ def test_grpc_query_too_short_timeout_raises(client: Pinecone) -> None:
     3. A subsequent query with a generous timeout succeeds — confirming the
        timeout is per-call and does not permanently break the channel.
 
-    Seeding goes through the REST documents API because GrpcIndex has no
-    documents write method and a schema-bearing index refuses gRPC vector
-    writes. gRPC *reads* are unaffected, which is all this test needs.
+    The index has to be a legacy vectors-API one. A schema-bearing index
+    refuses the whole vectors API, *reads included* — the backend answers a
+    vectors-API query on one with 400 "This index has a document schema, so
+    reads must go through the documents API", so no amount of waiting makes a
+    gRPC query against it succeed. See ``tests.integration.legacy_index`` for
+    the sanctioned way to get an index the vectors API serves.
     """
-    name = unique_name("idx")
-    namespace = "grpc-timeout-ns"
-    try:
-        client.indexes.create(
-            name=name,
-            schema=_DENSE_SCHEMA_3D,
-            deployment=MANAGED_AWS,
-            timeout=300,
-        )
-        client.index(name=name).documents.upsert(
-            namespace=namespace,
-            documents=[
-                {"_id": "t1", DENSE_FIELD: [0.1, 0.2, 0.3]},
-                {"_id": "t2", DENSE_FIELD: [0.4, 0.5, 0.6]},
-                {"_id": "t3", DENSE_FIELD: [0.7, 0.8, 0.9]},
-            ],
-        )
-        grpc_idx = client.index(name=name, grpc=True)
+    assert_serves_vectors_api(client, legacy_index_dim3)
+    namespace = f"grpc-timeout-{uuid.uuid4().hex[:8]}"
+    grpc_idx: GrpcIndex = client.index(host=legacy_index_dim3.host, grpc=True)
 
-        # Wait until the upserted vectors are queryable
-        poll_until(
-            lambda: grpc_idx.query(vector=[0.1, 0.2, 0.3], top_k=3, namespace=namespace),
-            lambda r: len(r.matches) > 0,
-            timeout=60,
-            description="vectors queryable via gRPC",
-        )
+    grpc_idx.upsert(
+        vectors=[
+            ("t1", [0.1, 0.2, 0.3]),
+            ("t2", [0.4, 0.5, 0.6]),
+            ("t3", [0.7, 0.8, 0.9]),
+        ],
+        namespace=namespace,
+    )
 
-        # Sub-microsecond deadline — must fire before the server responds
-        with pytest.raises(PineconeTimeoutError):
-            grpc_idx.query(vector=[0.1, 0.2, 0.3], top_k=3, namespace=namespace, timeout=0.000001)
+    # Wait until the upserted vectors are queryable
+    poll_until(
+        lambda: grpc_idx.query(vector=[0.1, 0.2, 0.3], top_k=3, namespace=namespace),
+        lambda r: len(r.matches) > 0,
+        timeout=60,
+        description="vectors queryable via gRPC",
+    )
 
-        # Generous timeout: proves the channel is healthy and the knob is per-call
-        result = grpc_idx.query(vector=[0.1, 0.2, 0.3], top_k=3, namespace=namespace, timeout=30)
-        assert result.matches is not None
-    finally:
-        cleanup_resource(lambda: client.indexes.delete(name), name, "index")
+    # Sub-microsecond deadline — must fire before the server responds
+    with pytest.raises(PineconeTimeoutError):
+        grpc_idx.query(vector=[0.1, 0.2, 0.3], top_k=3, namespace=namespace, timeout=0.000001)
+
+    # Generous timeout: proves the channel is healthy and the knob is per-call
+    result = grpc_idx.query(vector=[0.1, 0.2, 0.3], top_k=3, namespace=namespace, timeout=30)
+    assert result.matches is not None
