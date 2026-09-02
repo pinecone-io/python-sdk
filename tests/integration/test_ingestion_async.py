@@ -989,29 +989,53 @@ async def test_delete_mode_validation_async(async_client: AsyncPinecone) -> None
 
 
 # ---------------------------------------------------------------------------
-# upsert_from_dataframe — not supported on async client
+# upsert_from_dataframe — async REST (gated on pandas)
 # ---------------------------------------------------------------------------
+
+
+pd_udf = pytest.importorskip("pandas", reason="pandas required for upsert_from_dataframe")
 
 
 @pytest.mark.integration
 @pytest.mark.anyio
-async def test_upsert_from_dataframe_not_supported_async(async_client: AsyncPinecone) -> None:
-    """AsyncIndex raises NotImplementedError for upsert_from_dataframe.
+async def test_upsert_from_dataframe_async(async_client: AsyncPinecone) -> None:
+    """AsyncIndex.upsert_from_dataframe works end-to-end over async REST.
 
-    Verifies unified-vec-0054: the async client does not support
-    upsert-from-DataFrame; calling it raises NotImplementedError immediately,
-    before any network call is made.
-
-    No resources are created or cleaned up in this test.
+    On main, async upsert_from_dataframe IS implemented (single signature
+    across all three transports). This replaces the obsolete
+    "not supported for async clients" NotImplementedError assertion.
     """
-    # Use a valid-looking fake host so the constructor does not reject it.
-    # No network call is made — NotImplementedError is raised synchronously.
-    index = await async_client.index(host="fake-index.svc.pinecone.io")
+    name = unique_name("idx")
+    try:
+        await async_client.indexes.create(
+            name=name,
+            dimension=4,
+            metric="cosine",
+            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            timeout=300,
+        )
+        desc = await async_client.indexes.describe(name)
+        index = await async_client.index(host=desc.host)
 
-    with pytest.raises(
-        NotImplementedError, match="upsert_from_dataframe is not supported for async clients"
-    ):
-        await index.upsert_from_dataframe(df=None)  # type: ignore[arg-type]
+        df = pd_udf.DataFrame(
+            [
+                {"id": f"audf-{i}", "values": [0.1 + i * 0.01 + j * 0.001 for j in range(4)]}
+                for i in range(20)
+            ]
+        )
+        resp = await index.upsert_from_dataframe(df, batch_size=5, show_progress=False)
+        assert resp.upserted_count == 20
+        assert resp.failed_item_count == 0
+
+        stats = await async_poll_until(
+            query_fn=lambda: index.describe_index_stats(),
+            check_fn=lambda r: r.total_vector_count >= 20,
+            timeout=120,
+            description=f"async udf 20 rows visible in stats ({name})",
+        )
+        assert stats.total_vector_count == 20
+    finally:
+        await async_cleanup_resource(lambda: async_client.indexes.delete(name), name, "index")
 
 
 # ---------------------------------------------------------------------------
