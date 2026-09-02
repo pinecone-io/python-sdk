@@ -19,41 +19,53 @@ the backend refusing requests:
 
 These tests use modest vector counts (<= ~3000) with a tiny total_timeout so
 they expire by the wall clock and never hammer the backend.
+
+The total_timeout arms run ``batch_size=1, max_concurrency=1`` rather than
+``batch_size=25, max_concurrency=64``. The deadline has to expire *part way*
+through the ingest for ``upserted_count + failed_item_count`` to mean anything,
+and 120 wide-fanned batches complete inside 50 ms against a loopback backend —
+which reports 3000 upserted, 0 failed, and asserts nothing. One batch at a time
+makes the wall clock, not the backend's speed, decide where the ingest stops,
+so the split is partial on a local simulator and on the real API alike.
+
+The index comes from :func:`legacy_index_factory`, not from
+``pc.indexes.create``: 2026-07 has no way to create an index the vectors API
+will serve, and every write here is a vectors-API call. See
+:mod:`tests.integration.legacy_index` for the sanctioned pattern.
 """
 
 from __future__ import annotations
 
-from collections.abc import Generator
+import uuid
 
 import pandas as pd
 import pytest
 
 from pinecone import AsyncPinecone, Pinecone, PineconeValueError, RetryConfig
 from pinecone._internal.constants import DEFAULT_MAX_CONCURRENCY
-from pinecone.models.indexes.specs import ServerlessSpec
-from tests.integration.conftest import ensure_index_deleted, unique_name
+from tests.integration.conftest import LegacyIndexFactory, poll_until
+from tests.integration.legacy_index import assert_serves_vectors_api
 
 pytestmark = pytest.mark.integration
 
 _DIM = 8
 
+# Wide enough that the deadline lands mid-ingest on a fast loopback backend and
+# on a slow real one: at 0.5s, minicone gets through a few hundred of the 3000
+# single-row batches, the real API through a few dozen.
+_PARTIAL_TOTAL_TIMEOUT = 0.5
+
 
 @pytest.fixture(scope="module")
-def gap_index(api_key: str) -> Generator[str, None, None]:
-    """Shared module-scoped 8-dim serverless index for all retry-gap tests."""
-    pc = Pinecone(api_key=api_key)
-    name = unique_name("retrygap")
-    pc.indexes.create(
-        name=name,
-        dimension=_DIM,
-        metric="cosine",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        timeout=300,
-    )
-    try:
-        yield name
-    finally:
-        ensure_index_deleted(pc, name)
+def gap_index(client: Pinecone, legacy_index_factory: LegacyIndexFactory) -> str:
+    """Shared legacy index (dim=8, cosine) for all retry-gap tests."""
+    index = legacy_index_factory(dimension=_DIM)
+    assert_serves_vectors_api(client, index)
+    return index.name
+
+
+def _ns(tag: str) -> str:
+    return f"retry-{tag}-{uuid.uuid4().hex[:8]}"
 
 
 def _vectors(n: int, prefix: str = "g") -> list[tuple[str, list[float]]]:
@@ -72,17 +84,20 @@ def test_rest_upsert_total_timeout_reports_unsent_failed_items(
 ) -> None:
     """A tiny total_timeout must leave unsent batches reported as failed_items."""
     index = client.index(name=gap_index)
-    # 3000 vectors, batch_size=25 => 120 batches. total_timeout=0.05s cannot
-    # possibly submit all of them, so some are left unsent deterministically.
     response = index.upsert(
         vectors=_vectors(3000, "r-u"),
-        batch_size=25,
-        max_concurrency=64,
+        namespace=_ns("rest-tt"),
+        batch_size=1,
+        max_concurrency=1,
         show_progress=False,
-        total_timeout=0.05,
+        total_timeout=_PARTIAL_TOTAL_TIMEOUT,
     )
     assert response.has_errors, "total_timeout expiry should produce error entries"
     assert response.failed_item_count > 0, "bulk methods must report unsent work"
+    assert response.upserted_count > 0, (
+        "the deadline must expire part way through, not before the first batch — "
+        "otherwise the accounting assertion below holds trivially"
+    )
     assert response.failed_item_count == len(response.failed_items)
     assert response.upserted_count + response.failed_item_count == 3000
 
@@ -96,13 +111,17 @@ async def test_async_upsert_total_timeout_reports_unsent_failed_items(
     index = await async_client.index(name=gap_index)
     response = await index.upsert(
         vectors=_vectors(3000, "a-u"),
-        batch_size=25,
-        max_concurrency=64,
+        namespace=_ns("async-tt"),
+        batch_size=1,
+        max_concurrency=1,
         show_progress=False,
-        total_timeout=0.05,
+        total_timeout=_PARTIAL_TOTAL_TIMEOUT,
     )
     assert response.has_errors
     assert response.failed_item_count > 0
+    assert response.upserted_count > 0, (
+        "the deadline must expire part way through, not before the first batch"
+    )
     assert response.failed_item_count == len(response.failed_items)
     assert response.upserted_count + response.failed_item_count == 3000
 
@@ -115,10 +134,11 @@ def test_grpc_upsert_total_timeout_reports_unsent_failed_items(
     index = client.index(name=gap_index, grpc=True)
     response = index.upsert(
         vectors=_vectors(3000, "g-u"),
-        batch_size=25,
-        max_concurrency=64,
+        namespace=_ns("grpc-tt"),
+        batch_size=1,
+        max_concurrency=1,
         show_progress=False,
-        total_timeout=0.05,
+        total_timeout=_PARTIAL_TOTAL_TIMEOUT,
     )
     assert response.has_errors
     assert response.failed_item_count > 0
@@ -143,7 +163,9 @@ def test_max_concurrency_out_of_range_rejected(
     """max_concurrency outside [1, 64] must be rejected before any DB I/O."""
     index = client.index(name=gap_index)
     with pytest.raises(PineconeValueError):
-        index.upsert(vectors=_vectors(10), batch_size=5, max_concurrency=65)
+        index.upsert(
+            vectors=_vectors(10), namespace=_ns("badconc"), batch_size=5, max_concurrency=65
+        )
 
 
 @pytest.mark.integration
@@ -152,16 +174,23 @@ def test_default_concurrency_upsert_is_sane(
     gap_index: str,
 ) -> None:
     """With default concurrency (8) a batched upsert lands everything."""
+    ns = _ns("sane")
     index = client.index(name=gap_index)
     response = index.upsert(
         vectors=_vectors(200, "r-sane"),
+        namespace=ns,
         batch_size=50,
         show_progress=False,
     )
     assert response.upserted_count == 200
     assert not response.has_errors
-    stats = index.describe_index_stats()
-    assert stats.total_vector_count >= 200
+    stats = poll_until(
+        query_fn=lambda: index.describe_index_stats(),
+        check_fn=lambda r: ns in r.namespaces and r.namespaces[ns].vector_count >= 200,
+        timeout=120,
+        description=f"200 default-concurrency vectors in stats ({ns})",
+    )
+    assert stats.namespaces[ns].vector_count == 200
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +206,9 @@ def test_retry_config_max_retries_zero_upsert_works(
     """max_retries=0 (single attempt, no retry) must still upsert successfully."""
     pc = Pinecone(api_key=api_key, retry_config=RetryConfig(max_retries=0))
     index = pc.index(name=gap_index)
-    response = index.upsert(vectors=_vectors(150, "r-z"), batch_size=50, show_progress=False)
+    response = index.upsert(
+        vectors=_vectors(150, "r-z"), namespace=_ns("retries0"), batch_size=50, show_progress=False
+    )
     assert response.upserted_count == 150
     assert not response.has_errors
 
@@ -198,7 +229,9 @@ def test_retry_config_custom_retryable_codes_upsert_works(
         ),
     )
     index = pc.index(name=gap_index)
-    response = index.upsert(vectors=_vectors(150, "r-c3"), batch_size=50, show_progress=False)
+    response = index.upsert(
+        vectors=_vectors(150, "r-c3"), namespace=_ns("codes"), batch_size=50, show_progress=False
+    )
     assert response.upserted_count == 150
     assert not response.has_errors
 
@@ -223,13 +256,19 @@ def test_upsert_from_dataframe_partial_failure_collect(
     )
     response = index.upsert_from_dataframe(
         df,
-        batch_size=25,
-        max_concurrency=64,
+        namespace=_ns("df-collect"),
+        batch_size=1,
+        max_concurrency=1,
         show_progress=False,
-        total_timeout=0.05,
+        total_timeout=_PARTIAL_TOTAL_TIMEOUT,
     )
     assert response.has_errors
     assert response.failed_item_count > 0
+    assert response.upserted_count > 0, (
+        "the deadline must expire part way through, not before the first batch — "
+        "otherwise the accounting assertion below holds trivially and nothing "
+        "partial has been demonstrated"
+    )
     assert response.failed_item_count == len(response.failed_items)
     assert response.upserted_count + response.failed_item_count == 3000
 
@@ -250,14 +289,20 @@ def test_upsert_from_dataframe_on_error_raise_attaches_partial_response(
     with pytest.raises(Exception) as excinfo:
         index.upsert_from_dataframe(
             df,
-            batch_size=25,
-            max_concurrency=64,
+            namespace=_ns("df-raise"),
+            batch_size=1,
+            max_concurrency=1,
             show_progress=False,
-            total_timeout=0.05,
+            total_timeout=_PARTIAL_TOTAL_TIMEOUT,
             on_error="raise",
         )
     exc = excinfo.value
     assert getattr(exc, "response", None) is not None
     assert exc.response.has_errors  # type: ignore[attr-defined]
     assert exc.response.failed_item_count > 0  # type: ignore[attr-defined]
+    assert exc.response.upserted_count > 0, (  # type: ignore[attr-defined]
+        "the deadline must expire part way through, not before the first batch — "
+        "otherwise the accounting assertion below holds trivially and the "
+        "attached response is not a partial result"
+    )
     assert exc.response.upserted_count + exc.response.failed_item_count == 3000  # type: ignore[attr-defined]

@@ -1,6 +1,6 @@
-"""Engine behavior: result-contract parity with batch_execute, plus the
-failure paths that motivated the rewrite — each reproduced bug from the old
-implementation appears here as a regression test."""
+"""Engine behavior: the result contract, plus the failure paths that motivated
+the rewrite — each reproduced bug from the pre-gate implementation appears here
+as a regression test."""
 
 from __future__ import annotations
 
@@ -280,3 +280,36 @@ def test_deadline_unsent_batches_carry_unsent_disposition() -> None:
     unsent = [e for e in result.errors if e.disposition == "unsent"]
     assert unsent, "deadline-expired batches must be labeled unsent"
     assert all(e.retryable for e in unsent)
+
+
+def test_engine_drives_aimd_recovery_end_to_end() -> None:
+    """AIMD's increase half, seen from outside the gate.
+
+    The old engine's equivalent of this lived in the storm suite and drove
+    ``report_throttled``/``report_success`` by hand from the operation, so it
+    proved the limiter's arithmetic rather than that an engine reaches it.
+    Here the only thing touching the gate during the run is the engine, and
+    ``final_limit`` is read off the result: a throttled host that starts
+    serving again gets its concurrency back without the caller doing anything.
+    """
+    gate = get_registry().get(HOST)
+    while gate.limit > 1:
+        gate.report_throttled()
+    assert gate.limit == 1
+
+    result = bulk_execute_sync(
+        items=_items(24),
+        operation=lambda batch: {"upserted_count": len(batch)},
+        batch_size=1,
+        max_concurrency=8,
+        show_progress=False,
+        host=HOST,
+    )
+
+    assert result.successful_item_count == 24
+    assert result.final_limit is not None
+    assert result.final_limit > 1, (
+        f"gate stayed pinned at {result.final_limit} across 24 clean batches; "
+        "one throttle would permanently lower a long-lived client"
+    )
+    assert result.throttle_event_count == 0

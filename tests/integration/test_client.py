@@ -76,7 +76,7 @@ def test_create_index_from_backup_no_wait_returns_restore_job_id() -> None:
         ),
     )
 
-    pc = Pinecone(api_key="test-key")
+    pc = Pinecone(api_key="test-key", host=BASE_URL)
     result = pc.create_index_from_backup(
         name="test-restore-nowait",
         backup_id="bk-test",
@@ -123,7 +123,7 @@ def test_create_index_rejects_schema_kwarg() -> None:
         return_value=httpx.Response(201, json=make_index_response(name="test-schema-shim")),
     )
 
-    pc = Pinecone(api_key="test-key")
+    pc = Pinecone(api_key="test-key", host=BASE_URL)
     with pytest.raises(PineconeTypeError, match=r"Use pc\.indexes\.create\(\)"):
         pc.create_index(
             name="test-schema-shim",
@@ -146,7 +146,7 @@ def test_configure_index_read_capacity() -> None:
         return_value=httpx.Response(202, json=make_index_response(name="my-serverless-idx")),
     )
 
-    pc = Pinecone(api_key="test-key")
+    pc = Pinecone(api_key="test-key", host=BASE_URL)
     pc.configure_index("my-serverless-idx", read_capacity={"mode": "OnDemand"})
 
     sent_body = json.loads(route.calls[0].request.content)
@@ -168,7 +168,7 @@ def test_configure_index_tags_sparse_patch() -> None:
     # Ensure no GET /indexes/{name} is registered — if the client calls describe,
     # respx will raise an error (no matching route) rather than silently passing.
 
-    pc = Pinecone(api_key="test-key")
+    pc = Pinecone(api_key="test-key", host=BASE_URL)
 
     # Sparse add: send a new key; backend will preserve any pre-existing tags.
     pc.indexes.configure(index_name, tags={"new_key": "new_val"})
@@ -199,7 +199,7 @@ def test_create_index_read_capacity_forwarded() -> None:
         return_value=httpx.Response(201, json=response_body),
     )
 
-    pc = Pinecone(api_key="test-key")
+    pc = Pinecone(api_key="test-key", host=BASE_URL)
     result = pc.indexes.create(
         name="rc-index",
         schema=_DENSE_SCHEMA,
@@ -228,7 +228,7 @@ def test_create_byoc_index_schema_forwarded() -> None:
         return_value=httpx.Response(201, json=byoc_response),
     )
 
-    pc = Pinecone(api_key="test-key")
+    pc = Pinecone(api_key="test-key", host=BASE_URL)
     result = pc.indexes.create(
         name="byoc-schema-index",
         schema=_DENSE_SCHEMA,
@@ -255,7 +255,7 @@ def test_create_index_rejects_quarantined_pods_kwarg() -> None:
         return_value=httpx.Response(201, json=make_index_response()),
     )
 
-    pc = Pinecone(api_key="test-key")
+    pc = Pinecone(api_key="test-key", host=BASE_URL)
     with pytest.raises(PineconeTypeError, match="pods=: capacity is replicas x shards"):
         pc.indexes.create(
             name="legacy-index",

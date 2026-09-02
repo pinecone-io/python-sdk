@@ -294,8 +294,15 @@ class StormScenario:
         return max(timestamps) - min(timestamps)
 
     def first_success_after_window(self) -> float | None:
-        """Return earliest 200 timestamp at or after throttle window end, or None."""
-        window_end = self.sync_transport.start_time + self._config.throttle_window_seconds
+        """Return earliest 200 timestamp at or after throttle window end, or None.
+
+        Measured from ``_active_start_time``, stamped by whichever ``run_*``
+        drove the scenario. ``sync_transport.start_time`` would be wrong for an
+        async run — each transport sets its own in ``__init__``, so the window
+        would end early by the scenario's construction-to-run gap and this
+        filter would admit successes from inside the real window.
+        """
+        window_end = self._active_start_time + self._config.throttle_window_seconds
         candidates = [
             r.timestamp for r in self._records if r.outcome == "200" and r.timestamp >= window_end
         ]

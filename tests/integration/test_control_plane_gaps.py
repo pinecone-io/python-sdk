@@ -18,6 +18,7 @@ import pytest
 
 from pinecone import Pinecone
 from pinecone.errors.exceptions import NotFoundError
+from pinecone.models.indexes.index import IndexModel
 from pinecone.models.indexes.specs import PodSpec, ServerlessSpec
 from tests.integration.conftest import cleanup_resource, poll_until, unique_name
 
@@ -122,7 +123,8 @@ def test_configure_serverless_read_capacity_real(client: Pinecone) -> None:
 
     The mocked request-body test confirms the PATCH payload shape; this verifies
     the real backend accepts OnDemand read-capacity configuration on a
-    serverless index and that describe() reflects it.
+    serverless index, that ``configure()`` hands back the reconfigured
+    ``IndexModel``, and that describe() reflects it.
     """
     name = unique_name("idx")
     try:
@@ -134,12 +136,12 @@ def test_configure_serverless_read_capacity_real(client: Pinecone) -> None:
             timeout=300,
         )
 
-        # Configure read capacity to OnDemand; must return None and not error.
         result = client.indexes.configure(
             name,
             serverless_read_capacity={"mode": "OnDemand"},
         )
-        assert result is None
+        assert isinstance(result, IndexModel)
+        assert result.name == name
 
         desc = client.indexes.describe(name)
         # Backend may report the read capacity on the returned spec or not;

@@ -8,8 +8,14 @@ Assertions cover:
   - Operation completes successfully despite sustained throttling
   - Request amplification stays below 2.5x (not a storm)
   - Peak in-flight count never exceeds the backend quota
-  - AIMD limiter recovers after throttle pressure is removed
   - async query_namespaces fan-out stays bounded under quota
+
+The AIMD ramp-down/ramp-up cycle used to be asserted here through the
+pre-gate ``async_batch_execute``, the only bulk path that consulted this
+limiter registry. That engine is gone; the cycle is now covered by
+``tests/unit/_internal/bulk/test_core_aimd_contract.py`` at the arithmetic
+level and by ``test_engine.test_engine_drives_aimd_recovery_end_to_end``
+through a real engine.
 """
 
 from __future__ import annotations
@@ -19,7 +25,6 @@ from typing import Any
 import pytest
 
 from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
-from pinecone._internal.batch import async_batch_execute
 from pinecone._internal.config import RetryConfig
 from pinecone._internal.http_client import _AsyncRetryTransport, _RetryTransport
 from pinecone.async_client.async_index import AsyncIndex
@@ -202,80 +207,6 @@ def test_no_storm_under_quota_starvation() -> None:
     assert total_requests < 2.5 * n_batches, (
         f"total requests {total_requests} >= 2.5 * n_batches ({2.5 * n_batches:.0f}); "
         f"amplification {total_requests / n_batches:.2f}x suggests storm behavior"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Test 4: AIMD limiter recovers after throttle pressure is removed
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_aimd_increases_back_after_throttle_stops() -> None:
-    """AIMD limiter descends during throttle phase then climbs back during free phase.
-
-    Uses async_batch_execute directly (the only bulk path that consults the limiter
-    registry) to test the AIMD ramp-up/ramp-down cycle end-to-end.
-
-    Phase 1: first PHASE1_THROTTLE_COUNT batches call report_throttled() (simulating
-             429s from the backend), driving the limit from MAX_CONCURRENCY down to 1.
-    Phase 2: remaining batches call report_success() (simulating the transport's
-             success callback), letting AIMD ramp the limit back up.
-
-    Notes:
-    - async_batch_execute does not auto-call report_success(); callers are expected
-      to invoke it via the RetryConfig on_throttle / HTTP success hooks. Here we
-      drive AIMD directly from the operation to keep the test self-contained.
-    - AIMD math: from limit=1 after 4 halvings, reaching limit=6 (75% of 8=MAX)
-      requires sum(1..5)=15 consecutive successes; with 24 recovery batches we
-      reach limit=7 before the assertion.
-    """
-    host = INDEX_HOST
-    max_concurrency = 8
-    phase1_throttle_count = 4  # drives limit: 8→4→2→1→1
-
-    registry = _AdaptiveLimiterRegistry()
-    limiter = registry.get(host, max_concurrency)
-    assert limiter.current_limit() == max_concurrency
-
-    batch_count = 0
-
-    async def operation(batch: list[dict[str, Any]]) -> dict[str, Any]:
-        nonlocal batch_count
-        batch_count += 1
-        if batch_count <= phase1_throttle_count:
-            # Phase 1: simulate 429 — drives AIMD down.
-            registry.report_throttled(host)
-        else:
-            # Phase 2: simulate success — drives AIMD up.
-            limiter.report_success()
-        return {"upserted_count": len(batch)}
-
-    # 4 throttle batches + 24 recovery batches = 28 total.
-    # After 24 recovery successes starting from limit=1 the limit reaches 7
-    # (verified by tracing AIMD math: 1+2+3+4+5=15 successes → limit=6;
-    # 6 more → limit=7; 3 extra remain as streak → final limit=7).
-    total_items = 28  # one item per batch (batch_size=1)
-    items = [{"id": str(i), "values": [float(i)]} for i in range(total_items)]
-
-    result = await async_batch_execute(
-        items=items,
-        operation=operation,
-        batch_size=1,
-        max_concurrency=max_concurrency,
-        show_progress=False,
-        limiter_registry=registry,
-        host=host,
-    )
-
-    assert result.total_item_count == total_items
-
-    # After 4 throttle halvings the limit reached 1; after 24 recoveries it
-    # should be >= 75% of ceiling (6/8).
-    recovered_limit = limiter.current_limit()
-    min_expected = max(1, max_concurrency * 3 // 4)  # 6
-    assert recovered_limit >= min_expected, (
-        f"AIMD did not recover: limit={recovered_limit}, expected >= {min_expected}"
     )
 
 

@@ -8,9 +8,9 @@ pre-gate implementation drove a cached ``ThreadPoolExecutor`` directly and
 passed every one of those tests while no gate was involved at all.
 
 ``BatchResult.final_limit`` is the discriminator. Only the gate-aware engines
-populate it; the executor-driven ``batch_execute`` leaves it ``None``. So
-``final_limit is not None`` is a statement about which code path ran, not
-about a value.
+populate it; the executor-driven engine this surface used to call left it
+``None``. So ``final_limit is not None`` is a statement about which code path
+ran, not about a value.
 """
 
 from __future__ import annotations

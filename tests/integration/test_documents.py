@@ -35,7 +35,7 @@ from collections.abc import Iterator
 import pytest
 
 from pinecone.index import Index
-from pinecone.models.documents.responses import FetchDocumentsResponse
+from pinecone.models.documents.responses import DeleteDocumentsResponse, FetchDocumentsResponse
 from pinecone.models.documents.score_by import DenseVectorQuery, TextQuery
 
 pytestmark = [
@@ -203,7 +203,19 @@ def test_delete_documents_by_ids_filter_and_all(index: Index, namespace: str) ->
         time.sleep(1)
     assert set(remaining.documents) == {"doc-1"}
 
-    index.documents.delete(namespace=namespace, delete_all=True)
+    all_docs = index.documents.delete(namespace=namespace, delete_all=True)
+    assert isinstance(all_docs, DeleteDocumentsResponse)
+    assert all_docs.matched_records is None, (
+        "matched_records is populated only for a filtered delete; delete_all reports no count"
+    )
+
+    deadline = time.time() + 60
+    while True:
+        emptied = index.documents.fetch(namespace=namespace, ids=["doc-1", "doc-2", "doc-3"])
+        if not emptied.documents or time.time() > deadline:
+            break
+        time.sleep(1)
+    assert emptied.documents == {}, "delete_all left documents behind"
 
 
 def test_update_documents_per_id_and_by_filter(index: Index, namespace: str) -> None:

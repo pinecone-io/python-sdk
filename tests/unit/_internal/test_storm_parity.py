@@ -12,6 +12,7 @@ import asyncio
 
 import pytest
 
+from tests.unit._internal._storm_fixture import RequestRecord, StormConfig, StormScenario
 from tests.unit._internal._storm_parity_scenarios import (
     METRIC_KEYS,
     StormMetrics,
@@ -76,3 +77,28 @@ def test_amplifications_within_1_5x(metrics: dict[str, StormMetrics]) -> None:
     assert sync_a <= async_a * 1.5, f"sync amp {sync_a:.3f} > 1.5x async {async_a:.3f}"
     assert grpc_a <= sync_a * 1.5, f"gRPC amp {grpc_a:.3f} > 1.5x sync {sync_a:.3f}"
     assert sync_a <= grpc_a * 1.5, f"sync amp {sync_a:.3f} > 1.5x gRPC {grpc_a:.3f}"
+
+
+def test_first_success_after_window_measures_the_window_from_the_run_that_happened() -> None:
+    """A 200 from inside the real window must not be read as the first one after it.
+
+    ``first_success_relative`` above is only as good as the window origin
+    behind it. Measuring from ``sync_transport.start_time`` — which each
+    transport stamps in its own ``__init__`` — ends an async run's window early
+    by the construction-to-run gap, staged here as 0.3s, and admits the 0.85s
+    success below.
+    """
+    config = StormConfig(n_clients=1, throttle_window_seconds=1.0)
+    scenario = StormScenario(config)
+    async_start = scenario.sync_transport.start_time + 0.3
+    scenario.async_transport.start_time = async_start
+    scenario._active_start_time = async_start
+
+    inside_window = async_start + 0.85
+    after_window = async_start + 1.5
+    scenario._records = [
+        RequestRecord(timestamp=inside_window, host="example.com", attempt_index=0, outcome="200"),
+        RequestRecord(timestamp=after_window, host="example.com", attempt_index=1, outcome="200"),
+    ]
+
+    assert scenario.first_success_after_window() == after_window

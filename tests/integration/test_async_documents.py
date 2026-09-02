@@ -30,7 +30,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from pinecone.async_client.async_index import AsyncIndex
-from pinecone.models.documents.responses import FetchDocumentsResponse
+from pinecone.models.documents.responses import DeleteDocumentsResponse, FetchDocumentsResponse
 from pinecone.models.documents.score_by import DenseVectorQuery, TextQuery
 
 pytestmark = [
@@ -200,7 +200,19 @@ async def test_delete_documents_by_ids_filter_and_all(index: AsyncIndex, namespa
         await asyncio.sleep(1)
     assert set(remaining.documents) == {"doc-1"}
 
-    await index.documents.delete(namespace=namespace, delete_all=True)
+    all_docs = await index.documents.delete(namespace=namespace, delete_all=True)
+    assert isinstance(all_docs, DeleteDocumentsResponse)
+    assert all_docs.matched_records is None, (
+        "matched_records is populated only for a filtered delete; delete_all reports no count"
+    )
+
+    deadline = time.time() + 60
+    while True:
+        emptied = await index.documents.fetch(namespace=namespace, ids=["doc-1", "doc-2", "doc-3"])
+        if not emptied.documents or time.time() > deadline:
+            break
+        await asyncio.sleep(1)
+    assert emptied.documents == {}, "delete_all left documents behind"
 
 
 async def test_update_documents_per_id_and_by_filter(index: AsyncIndex, namespace: str) -> None:
