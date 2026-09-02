@@ -115,30 +115,24 @@ _MANAGED_AWS = {"deployment_type": "managed", "cloud": "aws", "region": "us-east
 
 
 @respx.mock
-def test_create_index_schema_parameter_forwarded() -> None:
-    """Verify schema/deployment params are forwarded through the create_index shim.
+def test_create_index_rejects_schema_kwarg() -> None:
+    """create_index() rejects schema=/deployment= before making any request."""
+    from pinecone.errors.exceptions import PineconeTypeError
 
-    2026-07: ``schema`` is a top-level request field declaring searched fields;
-    it is no longer nested under ``spec.serverless.schema``.
-    """
-    response_body = make_index_response(name="test-schema-shim")
     route = respx.post("https://api.pinecone.io/indexes").mock(
-        return_value=httpx.Response(201, json=response_body),
+        return_value=httpx.Response(201, json=make_index_response(name="test-schema-shim")),
     )
 
     pc = Pinecone(api_key="test-key")
-    result = pc.create_index(
-        name="test-schema-shim",
-        schema=_DENSE_SCHEMA,
-        deployment=_MANAGED_AWS,
-        timeout=-1,
-    )
+    with pytest.raises(PineconeTypeError, match=r"Use pc\.indexes\.create\(\)"):
+        pc.create_index(
+            name="test-schema-shim",
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
+            timeout=-1,
+        )
 
-    assert result.name == "test-schema-shim"
-    sent_body = json.loads(route.calls[0].request.content)
-    assert sent_body["schema"] == _DENSE_SCHEMA
-    assert sent_body["deployment"] == _MANAGED_AWS
-    assert "spec" not in sent_body
+    assert len(route.calls) == 0
 
 
 @respx.mock
@@ -253,22 +247,21 @@ def test_create_byoc_index_schema_forwarded() -> None:
 
 
 @respx.mock
-def test_create_index_rejects_legacy_spec_kwarg() -> None:
-    """The removed 2025-10 create shape raises a guided PineconeTypeError, not a 4xx."""
+def test_create_index_rejects_quarantined_pods_kwarg() -> None:
+    """pods= has no 2026-07 deployment translation and raises before any request."""
     from pinecone.errors.exceptions import PineconeTypeError
-    from pinecone.models.indexes.specs import ServerlessSpec
 
     route = respx.post(f"{BASE_URL}/indexes").mock(
         return_value=httpx.Response(201, json=make_index_response()),
     )
 
     pc = Pinecone(api_key="test-key")
-    with pytest.raises(PineconeTypeError, match="no longer accepts legacy keyword argument"):
+    with pytest.raises(PineconeTypeError, match="pods=: capacity is replicas x shards"):
         pc.indexes.create(
             name="legacy-index",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
             dimension=128,
             metric="cosine",
+            pods=1,
             timeout=-1,
         )
 

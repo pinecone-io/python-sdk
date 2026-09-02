@@ -223,7 +223,11 @@ def test_describe_index_returns_full_model(client: Pinecone) -> None:
         assert isinstance(desc.host, str)
         assert len(desc.host) > 0
 
-        for removed in ("dimension", "metric", "vector_type", "spec", "embed", "created_at"):
+        assert desc.dimension == 4
+        assert desc.metric == "dotproduct"
+        assert desc.vector_type == "dense"
+
+        for removed in ("spec", "embed", "created_at"):
             with pytest.raises(AttributeError, match="was removed in the 2026-07"):
                 getattr(desc, removed)
     finally:
