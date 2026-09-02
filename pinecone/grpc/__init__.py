@@ -19,7 +19,12 @@ from pinecone._internal.adapters.vectors_adapter import VectorsAdapter, extract_
 from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
 from pinecone._internal.batching import validate_batch_size
 from pinecone._internal.bulk import bulk_execute_sync
-from pinecone._internal.config import PineconeConfig, RetryConfig
+from pinecone._internal.config import (
+    GRPC_SCHEMES,
+    PineconeConfig,
+    RetryConfig,
+    resolve_grpc_scheme,
+)
 from pinecone._internal.constants import DATA_PLANE_API_VERSION, DEFAULT_MAX_CONCURRENCY
 from pinecone._internal.data_plane_helpers import _build_search_records_body, _validate_host
 from pinecone._internal.dataframe import _resolve_on_error, extract_records
@@ -90,19 +95,41 @@ from pinecone.models.vectors.vector import ScoredVector, Vector
 logger = logging.getLogger(__name__)
 
 
-def _build_grpc_endpoint(host: str, secure: bool) -> str:
+def _build_grpc_endpoint(host: str, *, secure: bool, scheme: str | None) -> str:
     """Build a gRPC endpoint URL from a host string.
 
-    Strips any existing scheme and applies the correct one for gRPC.
+    Strips any existing scheme and applies *scheme*, or the one implied by
+    *secure* when no scheme was configured.
+
+    The scheme, not *secure*, is what decides whether the wire carries TLS:
+    tonic runs a handshake only for an ``https`` endpoint, so a ``http``
+    endpoint stays plaintext even with TLS material configured, and an
+    ``https`` one without that material cannot connect at all. That pairing is
+    rejected here rather than at the first call.
+
+    Raises:
+        PineconeValueError: If *scheme* is ``"https"`` while *secure* is
+            ``False``, or names anything other than ``http`` or ``https``.
     """
+    if scheme is not None and scheme not in GRPC_SCHEMES:
+        raise PineconeValueError(
+            f"Invalid gRPC scheme {scheme!r}. Must be one of: {', '.join(GRPC_SCHEMES)}."
+        )
+    if scheme == "https" and not secure:
+        raise PineconeValueError(
+            'grpc_scheme="https" requires secure=True: an https endpoint needs the TLS '
+            "material secure=False withholds, so the channel could not connect. Pass "
+            'secure=True for a TLS data plane, or grpc_scheme="http" for a plaintext one.'
+        )
+
     bare = host
     for prefix in ("https://", "http://"):
         if bare.startswith(prefix):
             bare = bare[len(prefix) :]
             break
 
-    scheme = "https" if secure else "http"
-    return f"{scheme}://{bare}"
+    resolved = scheme if scheme is not None else ("https" if secure else "http")
+    return f"{resolved}://{bare}"
 
 
 def _vector_to_grpc_dict(v: Vector) -> dict[str, Any]:
@@ -286,7 +313,21 @@ class GrpcIndex:
         api_key (str | None): Pinecone API key. Falls back to ``PINECONE_API_KEY`` env var.
         api_version (str): API version string. Defaults to the current data plane version.
         source_tag (str | None): Tag appended to the User-Agent string for request attribution.
-        secure (bool): Whether to use TLS encryption. Defaults to ``True``.
+        secure (bool): Whether the channel is given TLS material — system root
+            certificates for gRPC, certificate verification for the REST calls this
+            client makes alongside it. Defaults to ``True``. It supplies the default
+            for ``grpc_scheme``, and ``grpc_scheme`` is what decides whether the wire
+            is actually encrypted.
+        grpc_scheme ("http" | "https" | None): URL scheme used to dial the data plane.
+            State it when the data plane is reached over something other than public
+            TLS — a plaintext gateway, an egress proxy, a private endpoint, or a local
+            simulator — rather than leaving the SDK to assume one. ``None`` (default)
+            takes the scheme from ``secure``: ``https`` when ``True``, ``http`` when
+            ``False``. Falls back to the ``PINECONE_GRPC_SCHEME`` env var before that
+            default applies. ``"https"`` requires ``secure=True``, since an https
+            endpoint cannot connect without the TLS material ``secure=False``
+            withholds. ``"http"`` with ``secure=True`` is a plaintext channel: the
+            scheme, not the TLS material, decides what goes on the wire.
         timeout (float): Deadline in seconds for a **single attempt** of a request, not
             for the call as a whole. Defaults to ``20.0``. A per-call ``timeout=`` does not
             replace it — the channel keeps this one too, so the shorter of the two governs.
@@ -304,7 +345,9 @@ class GrpcIndex:
             :meth:`Pinecone.index`; not intended for user configuration.
 
     Raises:
-        :exc:`PineconeValueError`: If no API key can be resolved or the host is invalid.
+        :exc:`PineconeValueError`: If no API key can be resolved, the host is invalid,
+            ``grpc_scheme`` names a scheme other than ``http`` or ``https``, or
+            ``grpc_scheme="https"`` is combined with ``secure=False``.
 
     Note:
         **Four timeout layers apply to every gRPC call**, and only the first three bound a
@@ -338,6 +381,17 @@ class GrpcIndex:
             from pinecone.grpc import GrpcIndex
 
             idx = GrpcIndex(host="movie-recs-abc123.svc.pinecone.io", api_key="...")
+
+        A data plane fronted by a plaintext gateway or served by a local
+        simulator is dialled over ``http`` by saying so:
+
+        .. code-block:: python
+
+            idx = GrpcIndex(
+                host="http://127.0.0.1:5085",
+                api_key="...",
+                grpc_scheme="http",
+            )
     """
 
     def __init__(
@@ -348,6 +402,7 @@ class GrpcIndex:
         api_version: str = DATA_PLANE_API_VERSION,
         source_tag: str | None = None,
         secure: bool = True,
+        grpc_scheme: Literal["http", "https"] | None = None,
         timeout: float = 20.0,
         connect_timeout: float = 1.0,
         retry_config: RetryConfig | None = None,
@@ -374,7 +429,9 @@ class GrpcIndex:
         self._source_tag = source_tag
 
         # Build gRPC endpoint and create the Rust-backed channel
-        endpoint = _build_grpc_endpoint(self._host, secure)
+        endpoint = _build_grpc_endpoint(
+            self._host, secure=secure, scheme=resolve_grpc_scheme(grpc_scheme)
+        )
 
         from pinecone import __version__
         from pinecone._grpc import GrpcChannel  # type: ignore[import-not-found]
@@ -1484,8 +1541,8 @@ class GrpcIndex:
 
         if batch_result.errors:
             if resolved_on_error == "raise":
-                # All batches have settled by the time batch_execute returns, so
-                # nothing is left running server-side when this propagates.
+                # All batches have settled by the time bulk_execute_sync returns,
+                # so nothing is left running server-side when this propagates.
                 error = min(batch_result.errors, key=lambda err: err.batch_index).error
                 if isinstance(error, PineconeTimeoutError):
                     raise PineconeTimeoutError(
