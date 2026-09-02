@@ -6,6 +6,7 @@ import pytest
 
 from pinecone import AsyncPinecone
 from pinecone.errors import PineconeTypeError, PineconeValueError
+from pinecone.errors.exceptions import ValidationError
 from pinecone.models.inference.embed import SparseEmbedding
 
 # ---------------------------------------------------------------------------
@@ -482,6 +483,39 @@ async def test_rerank_documents_validation_rest_async(async_client: AsyncPinecon
 
 @pytest.mark.integration
 @pytest.mark.anyio
+@pytest.mark.xfail(
+    strict=False,
+    reason="SDK async-parity bug: async rerank() does not validate top_n<1 client-side "
+    "(sync Inference.rerank raises ValidationError; pinecone/async_client/inference.py "
+    "sends top_n to backend which returns 422 serde error instead). See FINDINGS.",
+)
+async def test_rerank_top_n_validation_async(async_client: AsyncPinecone) -> None:
+    """async rerank() raises ValidationError for top_n < 1; top_n=1 is accepted.
+
+    Async counterpart of test_rerank_top_n_validation (sync), which passes with
+    a clean client-side ValidationError. The async path currently lacks this
+    validation and instead surfaces the backend's confusing 422 serde error on
+    negative usize values — tracked as an SDK async-parity bug.
+    """
+    with pytest.raises(ValidationError, match="top_n must be >= 1"):
+        await async_client.inference.rerank(
+            model="bge-reranker-v2-m3",
+            query="test query",
+            documents=["doc"],
+            top_n=-1,
+        )
+
+    with pytest.raises(ValidationError, match="top_n must be >= 1"):
+        await async_client.inference.rerank(
+            model="bge-reranker-v2-m3",
+            query="test query",
+            documents=["doc"],
+            top_n=0,
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
 async def test_rerank_dict_documents_with_rank_fields_async(async_client: AsyncPinecone) -> None:
     """async rerank() with list-of-dict documents and custom rank_fields passes dicts through.
 
@@ -574,6 +608,24 @@ async def test_list_models_filter_by_vector_type_and_invalid_values_async(
     # invalid vector_type → PineconeValueError, no HTTP call
     with pytest.raises(PineconeValueError):
         await async_client.inference.list_models(vector_type="invalid_vector_type")
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_list_models_rerank_vector_type_combination_async(
+    async_client: AsyncPinecone,
+) -> None:
+    """async list_models(type='rerank', vector_type=...) raises ValidationError client-side.
+
+    Async counterpart of test_list_models_rerank_vector_type_combination (sync).
+    Verifies D6 fix: the combination type='rerank' + any vector_type is rejected
+    before any HTTP request, matching the backend's InvalidArgument behavior.
+    """
+    with pytest.raises(ValidationError, match="vector_type is not supported"):
+        await async_client.inference.list_models(type="rerank", vector_type="dense")
+
+    with pytest.raises(ValidationError, match="vector_type is not supported"):
+        await async_client.inference.list_models(type="rerank", vector_type="sparse")
 
 
 # ---------------------------------------------------------------------------
