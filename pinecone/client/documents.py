@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from pinecone._internal.adapters.documents_adapter import DocumentsAdapter
-from pinecone._internal.batch import batch_execute
+from pinecone._internal.bulk import bulk_execute_sync
+from pinecone._internal.constants import DEFAULT_MAX_CONCURRENCY
 from pinecone._internal.documents_helpers import (
     _build_delete_documents_body,
     _build_fetch_documents_body,
@@ -33,8 +34,6 @@ from pinecone.models.documents.score_by import DocumentScoringMethod
 from pinecone.models.pagination import Page, Paginator
 
 if TYPE_CHECKING:
-    from concurrent.futures import ThreadPoolExecutor
-
     from pinecone._internal.http_client import HTTPClient
 
 logger = logging.getLogger(__name__)
@@ -65,10 +64,10 @@ class Documents:
         self,
         *,
         http: HTTPClient,
-        get_batch_executor: Callable[[int], ThreadPoolExecutor],
+        host: str,
     ) -> None:
         self._http = http
-        self._get_batch_executor = get_batch_executor
+        self._host = host
 
     def __repr__(self) -> str:
         return "Documents()"
@@ -152,17 +151,21 @@ class Documents:
         namespace: str,
         documents: Sequence[Mapping[str, Any] | DocumentRecord],
         batch_size: int = 50,
-        max_concurrency: int = 4,
+        max_concurrency: int | None = None,
         show_progress: bool = True,
         timeout: float | None = None,
     ) -> BatchResult:
         """Upsert a large list of documents in parallel batches.
 
         Splits *documents* into chunks of *batch_size* and submits them
-        concurrently via a thread pool. Per-batch HTTP failures are captured
-        in the returned :class:`~pinecone.models.batch.BatchResult` rather
-        than raised, so one failed batch does not abort the rest; retry only
-        the failures by passing ``result.failed_items`` back in.
+        through the host's admission gate. Concurrency is bounded by
+        *max_concurrency* and by the host's adaptive concurrency limit,
+        whichever is lower, so a struggling backend applies backpressure
+        instead of being handed every batch at once. Per-batch HTTP failures
+        are captured in the returned
+        :class:`~pinecone.models.batch.BatchResult` rather than raised, so one
+        failed batch does not abort the rest; retry only the failures by
+        passing ``result.failed_items`` back in.
 
         Args:
             namespace (str): Target namespace (required, non-empty).
@@ -170,8 +173,10 @@ class Documents:
                 ``_id`` key or a :class:`~pinecone.models.documents.document.DocumentRecord`;
                 IDs must be unique across the whole list.
             batch_size (int): Maximum documents per request (1-1000, default 50).
-            max_concurrency (int): Thread pool size for concurrent requests
-                (1-64, default 4).
+            max_concurrency (int | None): Upper bound on concurrent requests
+                (1-64). Defaults to ``None``, which lets the admission gate
+                use ``DEFAULT_MAX_CONCURRENCY`` (8); the gate's own adaptive
+                limit for the host applies on top of whatever is passed.
             show_progress (bool): Display a progress bar when ``tqdm`` is
                 installed. Defaults to ``True``.
             timeout (float | None): Per-request timeout in seconds applied to
@@ -208,8 +213,11 @@ class Documents:
            - :meth:`upsert` — for a single-request upsert of up to
              1000 documents.
         """
+        effective_max_concurrency = (
+            DEFAULT_MAX_CONCURRENCY if max_concurrency is None else max_concurrency
+        )
         require_in_range("batch_size", batch_size, 1, 1000)
-        require_in_range("max_concurrency", max_concurrency, 1, 64)
+        require_in_range("max_concurrency", effective_max_concurrency, 1, 64)
         segment = _encode_document_namespace(namespace)
         normalized = _validate_documents(documents, max_documents=None)
 
@@ -221,14 +229,14 @@ class Documents:
             )
             return DocumentsAdapter.to_upsert_response(response)
 
-        return batch_execute(
+        return bulk_execute_sync(
             items=normalized,
             operation=_operation,
             batch_size=batch_size,
-            max_concurrency=max_concurrency,
+            max_concurrency=effective_max_concurrency,
             show_progress=show_progress,
             desc="Upserting documents",
-            executor=self._get_batch_executor(max_concurrency),
+            host=self._host,
         )
 
     def search(

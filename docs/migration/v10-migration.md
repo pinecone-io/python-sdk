@@ -349,7 +349,9 @@ and existing `fetch` call sites need no loop.
 
 `timeout` is a new keyword on every document method, `None` by default,
 matching the previous behavior. `documents.batch_upsert(max_concurrency=...)`
-no longer accepts `None`; it's `int = 4` now, so pass the number or omit it.
+defaults to `None`, which lets the host's admission gate use its own default
+of 8; pass a number to set your own ceiling, which the gate still holds
+effective concurrency below whenever the backend is pushing back.
 `documents.batch_upsert` dropped `**kwargs`, so a typo is now a `TypeError`
 at the call site instead of being silently swallowed. `documents=` accepts
 `Sequence[Mapping[...]]`, not just `list[dict]`, and also accepts typed

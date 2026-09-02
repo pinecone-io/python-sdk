@@ -652,16 +652,6 @@ class TestBatchUpsertDocuments:
                 max_workers=8,  # type: ignore[call-arg]
             )
 
-    @respx.mock
-    def test_executor_reused_across_calls(self, index: Index) -> None:
-        respx.post(f"{BASE_URL}/namespaces/{NS}/documents/upsert").mock(
-            return_value=httpx.Response(202, json={"upserted_count": 1})
-        )
-        index.documents.batch_upsert(namespace=NS, documents=[{"_id": "a"}], show_progress=False)
-        first = index._batch_executor
-        index.documents.batch_upsert(namespace=NS, documents=[{"_id": "b"}], show_progress=False)
-        assert index._batch_executor is first
-
 
 class TestServerErrorSurfacing:
     @respx.mock
