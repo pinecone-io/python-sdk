@@ -1,26 +1,34 @@
 # Working with collections
 
-Collections are read-only snapshots of pod indexes. Create one to preserve a pod index's
-data before deleting or reconfiguring it. Restoring a collection into a new index is not
-currently supported by the API (see [below](#create-an-index-from-a-collection)).
-Collections are only supported for pod-based indexes; serverless indexes use backups
-instead.
+Collections are read-only snapshots of pod indexes. Collections are only supported for
+pod-based indexes; serverless indexes use backups instead. Restoring a collection into a new
+index is not currently supported by the API (see
+[below](#create-an-index-from-a-collection)).
+
+````{important}
+API version `2026-07`, the version this SDK targets, does not create pod-based indexes:
+
+```
+[400 INVALID_ARGUMENT] deployment_type 'pod' is not supported on this API
+version. Set deployment_type to 'managed' to create a serverless index, or
+set the X-Pinecone-API-Version header to an earlier version.
+```
+
+A collection is a snapshot of a pod index, so with no pod index to point at, there is no
+source `pc.collections.create()` can accept here. Everything else on this page still works:
+the `/collections` routes are served, `pc.collections` and `AsyncPinecone.collections` are
+still on the client, and `list()`, `describe()`, and `delete()` operate normally on
+collections that already exist. See {ref}`pod-collections` in the v10 migration guide.
+````
 
 ## Create a collection
 
-Pass the name of the pod index you want to snapshot:
+`create()` takes the name of a pod index to snapshot, and `2026-07` has no reachable source
+to give it: a pod index cannot be created, and a serverless source is rejected with a 400.
 
-```python
-from pinecone import Pinecone
-
-pc = Pinecone(api_key="your-api-key")
-
-collection = pc.collections.create(name="snap-2025-01", source="my-pod-index")
-print(collection.status)   # "Initializing" immediately after creation
-```
-
-The collection transitions through ``Initializing`` → ``Ready`` when the snapshot is
-complete. ``create`` returns immediately without polling; check status with ``describe``.
+For snapshot and restore on managed (serverless) indexes, use backups instead — see
+{doc}`/how-to/indexes/backups-and-restore`, and `pc.create_index_from_backup(...)` for the
+restore path.
 
 ## List collections
 
@@ -37,6 +45,9 @@ names = pc.collections.list().names()
 print(names)   # e.g. ["snap-2025-01", "archive-q3"]
 ```
 
+This is the way to inventory the collections a project already holds, including before an
+``admin.projects.delete()``, which a leftover collection blocks with a 412.
+
 ## Describe a collection
 
 ``describe`` returns a {class}`~pinecone.models.collections.model.CollectionModel` with
@@ -50,18 +61,6 @@ print(col.dimension)     # vector dimension
 print(col.vector_count)  # number of vectors stored
 print(col.size)          # size in bytes
 print(col.environment)   # cloud environment
-```
-
-Poll until ready after creation:
-
-```python
-import time
-
-while True:
-    col = pc.collections.describe("snap-2025-01")
-    if col.status == "Ready":
-        break
-    time.sleep(5)
 ```
 
 ## Delete a collection

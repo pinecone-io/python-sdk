@@ -1,10 +1,16 @@
-"""Integration tests for collection lifecycle (sync REST).
+"""Integration tests for the collections surface (sync REST).
 
 Phase 4 area tag: collection-lifecycle
 Transport: rest (sync), grpc: N/A
 
-NOTE: Collections can only be created from pod-based indexes (not serverless).
-Tests use a p1.x1 pod index in us-east-1-aws.
+NOTE: collections are snapshots of pod-based indexes, and API version
+2026-07 refuses to create a pod-based index at all
+(400 INVALID_ARGUMENT: deployment_type 'pod' is not supported on this API
+version). There is therefore no reachable source index for
+collections.create(), and no collection lifecycle to exercise here. What is
+still reachable is the rejection path below, plus the client-side name
+validation in test_client.py. See docs/migration/v10-migration.md,
+"Pod deployments, and what that means for collections".
 """
 
 from __future__ import annotations
@@ -13,113 +19,7 @@ import pytest
 
 from pinecone import Pinecone
 from pinecone.errors.exceptions import ApiError
-from pinecone.models.collections.list import CollectionList
-from pinecone.models.collections.model import CollectionModel
-from pinecone.models.indexes.specs import PodSpec
-from tests.integration.conftest import cleanup_resource, poll_until, unique_name
-
-# ---------------------------------------------------------------------------
-# collection-lifecycle — REST sync
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.integration
-def test_collection_lifecycle_rest(client: Pinecone) -> None:
-    """Full collection CRUD lifecycle: create a pod index, seed vectors,
-    create a collection, verify CollectionModel fields, list, describe,
-    then delete both the collection and the source index.
-
-    Area tag: collection-lifecycle
-    Transport: rest
-
-    NOTE: Collections require a pod-based index. Serverless indexes do not
-    support collection creation (HTTP 400: "Cannot create collections from
-    serverless indexes").
-    """
-    index_name = unique_name("idx")
-    col_name = unique_name("col")
-
-    try:
-        # 1. Create a small pod-based source index
-        # Collections only work from pod-based indexes.
-        client.indexes.create(
-            name=index_name,
-            dimension=2,
-            metric="cosine",
-            spec=PodSpec(environment="us-east-1-aws", pod_type="p1.x1"),
-            timeout=300,
-        )
-
-        # 2. Seed a few vectors so the collection has data
-        index = client.index(name=index_name)
-        upsert_result = index.upsert(
-            vectors=[
-                {"id": "col-v1", "values": [0.1, 0.9]},
-                {"id": "col-v2", "values": [0.5, 0.5]},
-                {"id": "col-v3", "values": [0.9, 0.1]},
-            ]
-        )
-        assert upsert_result.upserted_count == 3
-
-        # Wait for vectors to be indexed before snapshotting
-        poll_until(
-            query_fn=lambda: index.describe_index_stats(),
-            check_fn=lambda s: s.total_vector_count >= 3,
-            timeout=120,
-            description="3 vectors indexed before collection creation",
-        )
-
-        # 3. Create the collection (snapshot of the index)
-        col = client.collections.create(name=col_name, source=index_name)
-        assert isinstance(col, CollectionModel)
-        assert col.name == col_name
-        assert col.status in ("Initializing", "Ready")
-
-        # 4. Poll until the collection is Ready (can take several minutes)
-        ready_col = poll_until(
-            query_fn=lambda: client.collections.describe(col_name),
-            check_fn=lambda c: c.status == "Ready",
-            timeout=600,
-            interval=10,
-            description="collection Ready",
-        )
-        assert isinstance(ready_col, CollectionModel)
-        assert ready_col.name == col_name
-        assert ready_col.status == "Ready"
-
-        # 5. Verify key CollectionModel fields
-        assert ready_col.dimension == 2
-        assert isinstance(ready_col.vector_count, int)
-        assert ready_col.vector_count >= 3
-        assert isinstance(ready_col.size, int)
-        assert ready_col.size > 0
-        assert ready_col.environment != ""
-
-        # 6. list() — verify the collection appears
-        col_list = client.collections.list()
-        assert isinstance(col_list, CollectionList)
-        assert col_name in col_list.names()
-
-        # 7. describe() returns the same CollectionModel
-        desc = client.collections.describe(col_name)
-        assert isinstance(desc, CollectionModel)
-        assert desc.name == col_name
-        assert desc.dimension == 2
-        assert isinstance(desc.vector_count, int)
-
-    finally:
-        # Clean up collection first, then the source index
-        cleanup_resource(
-            lambda: client.collections.delete(col_name),
-            col_name,
-            "collection",
-        )
-        cleanup_resource(
-            lambda: client.indexes.delete(index_name),
-            index_name,
-            "index",
-        )
-
+from tests.integration.conftest import cleanup_resource, unique_name
 
 # ---------------------------------------------------------------------------
 # collection-from-serverless — REST sync
@@ -130,10 +30,17 @@ def test_collection_lifecycle_rest(client: Pinecone) -> None:
 def test_collection_from_serverless_raises_error_rest(client: Pinecone) -> None:
     """Creating a collection from a serverless index raises ApiError(400).
 
-    Collections are a pod-index-only feature (unified-col-0008). The Pinecone
-    API returns HTTP 400 when the caller attempts to snapshot a serverless
-    index. This test verifies that the SDK surfaces that error as ApiError
-    with status_code=400.
+    Collections are a pod-index-only feature (unified-col-0008): the API
+    returns HTTP 400 when the caller attempts to snapshot a serverless index.
+    This verifies that the SDK reaches POST /collections and surfaces the
+    refusal as ApiError with status_code=400 rather than as a transport or
+    routing error.
+
+    Scope note: on 2026-07 a serverless index is the only index that can be
+    created, so this asserts only the 400 and not its reason — it cannot
+    distinguish "wrong source type" from any other 400 the collections
+    surface may return at this API version. It is a reachability and
+    error-mapping check, not a proof of the pod-only rule.
 
     Area tag: collection-lifecycle
     Transport: rest

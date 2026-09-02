@@ -199,7 +199,7 @@ become `isinstance(field, IntegerField)`.
 | `PreviewSparseVectorField` → `SparseVectorField` | `metric` removed; sparse fields have no configurable metric |
 | `PreviewSemanticTextField` → `SemanticTextField` | `model` is required; `dimension` removed. Can't be declared at create time on `2026-07`, it appears in responses only |
 | `PreviewFullTextSearchConfig` → `FullTextSearchConfig` | `lowercase` and `max_term_len` removed; gained `ngram: NgramConfig \| None` |
-| `PreviewPodDeployment` → `PodDeployment` | `replicas` and `shards` are required; `pods` removed |
+| `PreviewPodDeployment` → `PodDeployment` | `replicas` and `shards` are required; `pods` removed. The type still describes existing pod indexes, but `2026-07` won't create one — see [Pod deployments, and what that means for collections](#pod-collections) |
 | `PreviewByocDeployment` → `ByocDeployment` | `cloud` and `region` removed, only `environment` remains |
 | `PreviewQueryStringQuery` → `QueryStringQuery` | gained `field` and `fields`, so a query-string clause can be scoped to named fields |
 | `PreviewUsage` → three types | split by operation, see below |
@@ -499,7 +499,10 @@ equivalent:
 | 0 dense, 0 sparse fields | not representable (every real index has one) | all three raise `AttributeError` ("no dense or sparse vector fields") |
 
 New fields on `IndexModel`: `schema`, `deployment`, `read_capacity`,
-`source_collection`, `source_backup_id`, `cmek_id`. Removed exports:
+`source_collection`, `source_backup_id`, `cmek_id`. `source_collection` is a
+response field only, and no `2026-07` create path populates it: see
+[Pod deployments, and what that means for collections](#pod-collections).
+Removed exports:
 `ServerlessSpecInfo`, `PodSpecInfo`, `ByocSpecInfo`, `IndexSpec`,
 `ModelIndexEmbed`. New exports: `IndexSchema`, `IndexSchemaField`,
 `DenseVectorField`, `SparseVectorField`, `SemanticTextField`, `StringField`,
@@ -568,14 +571,69 @@ time, they're indexed automatically at upsert, and the server rejects a 400
 if you declare one. `read_capacity` moved to the top level; `cmek_id` is new.
 `name` is now optional, the server assigns one if omitted. `pods=` and
 `metadata_config=` have no faithful translation and raise a
-`PineconeTypeError` naming the equivalent call. Pod deployments must include
-all of `environment`, `pod_type`, `replicas`, and `shards`, the server
-rejects omissions with a 422.
+`PineconeTypeError` naming the equivalent call.
 
 `source_collection=` / `source_backup_id=` aren't exposed: the `2026-07`
 backend rejects both with `400 Creating an index from collection or backup
 is not yet supported`. Use `pc.create_index_from_backup(...)` to restore a
 backup.
+
+(pod-collections)=
+
+##### Pod deployments, and what that means for collections
+
+`2026-07` does not create pod-backed indexes. This covers both spellings —
+`deployment={"deployment_type": "pod", ...}` and the deprecated
+`spec=PodSpec(...)` — and the refusal comes from the server, not from
+client-side validation:
+
+```
+[400 INVALID_ARGUMENT] deployment_type 'pod' is not supported on this API
+version. Set deployment_type to 'managed' to create a serverless index, or
+set the X-Pinecone-API-Version header to an earlier version.
+```
+
+This is a property of the API version, not the SDK dropping a type.
+`PodDeployment` and `PodSpec` are still exported and still describe pod
+indexes that already exist: `describe()` decodes `index.deployment` as a
+`PodDeployment` (with its `environment`, `pod_type`, `replicas`, and
+`shards`), `list()` returns those indexes, `configure()` still accepts
+`replicas=` and `pod_type=` against them, and `delete()` still removes them.
+Creation is the one operation `2026-07` refuses.
+
+New workloads take a managed (serverless) deployment, the same `deployment=`
+shape used throughout this section:
+
+```python
+pc.indexes.create(
+    name="movies",
+    schema={"fields": {"embedding": {
+        "type": "dense_vector", "dimension": 1536, "metric": "cosine"}}},
+    deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
+)
+```
+
+Collections follow from that. A collection is a snapshot of a pod index, and
+`pc.collections.create(source=...)` rejects a serverless source with a 400,
+so on `2026-07` there is no index you can point it at. The `/collections`
+routes are still served and `pc.collections` / `AsyncPinecone.collections`
+are still on the client, so `list()`, `describe()`, and `delete()` keep
+working against collections that already exist — enough to inventory and
+clean them up, including before an `admin.projects.delete()` that a leftover
+collection would otherwise block with a 412. `create()` has no reachable
+source. Build snapshot-and-restore workflows on
+[backups](#backup-models) instead: those work on managed indexes, and
+`pc.create_index_from_backup(...)` is the restore path.
+
+If you genuinely need pod indexes, the server's message names the only other
+option: send an earlier `X-Pinecone-Api-Version`. `Pinecone` and
+`AsyncPinecone` take an `additional_headers=` mapping that is merged last, so
+an entry keyed exactly `"X-Pinecone-Api-Version"` replaces the header the SDK
+would otherwise send — matching is case-sensitive, and any other spelling is
+sent alongside the SDK's header instead of replacing it. The pin then applies
+to every request that client makes, and `10.x` models decode `2026-07`
+response shapes, so keep a pinned client scoped to the pod and collection
+calls that need it rather than using it as a general downgrade.
 
 Integrated-embedding creation moved from `create(spec=IntegratedSpec(...))`
 to a dedicated `pc.indexes.create_for_model(name=..., cloud=..., region=...,
