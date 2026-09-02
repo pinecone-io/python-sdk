@@ -214,6 +214,19 @@ fn smear_pushback(pushback: Duration, max_backoff: Duration, floor: Duration) ->
 /// capped at max_backoff. Less self-correlation across retries than plain
 /// full jitter, which spreads fleet retries better.
 fn decorrelated_jitter(base: Duration, prev_delay: Duration, max_backoff: Duration) -> Duration {
+    let (base_ms, upper) = jitter_window(base, prev_delay, max_backoff);
+    if upper == base_ms {
+        return Duration::from_millis(base_ms);
+    }
+    let ms = rand::rng().random_range(base_ms..=upper);
+    Duration::from_millis(ms)
+}
+
+/// The inclusive `[lower, upper]` millisecond window retry `n` draws from:
+/// `base` up to three times the delay retry `n - 1` actually slept, capped at
+/// `max_backoff`. Split out from [`decorrelated_jitter`] so the escalation rule
+/// is assertable without timing a retry loop against the wall clock.
+fn jitter_window(base: Duration, prev_delay: Duration, max_backoff: Duration) -> (u64, u64) {
     let base_ms = base.as_millis() as u64;
     let upper_unbounded = prev_delay
         .as_millis()
@@ -221,11 +234,7 @@ fn decorrelated_jitter(base: Duration, prev_delay: Duration, max_backoff: Durati
         .min(u64::MAX as u128) as u64;
     let upper_capped = std::cmp::min(upper_unbounded, max_backoff.as_millis() as u64);
     let upper = std::cmp::max(base_ms, upper_capped); // guard against base > cap misconfig
-    if upper == base_ms {
-        return Duration::from_millis(base_ms);
-    }
-    let ms = rand::rng().random_range(base_ms..=upper);
-    Duration::from_millis(ms)
+    (base_ms, upper)
 }
 
 /// Execute an async gRPC operation with retry on transient error codes.
@@ -528,44 +537,91 @@ mod tests {
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }
 
-    #[tokio::test]
-    async fn backoff_delay_increases() {
-        // Verify that successive retries take progressively longer.
-        // We measure wall-clock time for configs with different retry counts.
-        let config_1 = RetryConfig {
-            max_retries: 1,
-            initial_backoff: Duration::from_millis(10),
-            max_backoff: Duration::from_millis(500),
-            multiplier: 2,
-            ..Default::default()
-        };
-        let config_3 = RetryConfig {
-            max_retries: 3,
-            initial_backoff: Duration::from_millis(10),
-            max_backoff: Duration::from_millis(500),
-            multiplier: 2,
-            ..Default::default()
-        };
+    /// Replaces a wall-clock comparison of a 3-retry run against a 1-retry run.
+    /// That inverted on a noisy CI runner, and decorrelated jitter does not
+    /// actually guarantee it: three draws from `[base, 3*prev]` can total less
+    /// than one draw from the same seeded window. What the schedule does
+    /// guarantee is that each retry's window ceiling is three times the delay
+    /// just slept, which is what this asserts.
+    #[test]
+    fn backoff_window_escalates_from_each_delay() {
+        let base = Duration::from_millis(10);
+        let max_backoff = Duration::from_secs(60);
+        let mut prev = base * FIRST_RETRY_SPREAD;
 
-        let start_1 = std::time::Instant::now();
-        let _ = retry_on_transient(&config_1, || async {
-            Err::<(), Status>(Status::unavailable("unavailable"))
-        })
-        .await;
-        let elapsed_1 = start_1.elapsed();
+        for retry in 1..=5u32 {
+            let (lower, upper) = jitter_window(base, prev, max_backoff);
+            assert_eq!(lower, base.as_millis() as u64, "retry {retry} floor");
+            assert_eq!(
+                upper,
+                prev.as_millis() as u64 * 3,
+                "retry {retry} ceiling is not 3x the previous delay"
+            );
+            assert!(
+                upper > prev.as_millis() as u64,
+                "retry {retry} ceiling {upper} did not escalate past prev {prev:?}"
+            );
 
-        let start_3 = std::time::Instant::now();
-        let _ = retry_on_transient(&config_3, || async {
-            Err::<(), Status>(Status::unavailable("unavailable"))
-        })
-        .await;
-        let elapsed_3 = start_3.elapsed();
+            let delay = decorrelated_jitter(base, prev, max_backoff);
+            assert!(delay >= base, "retry {retry} delay {delay:?} below floor");
+            assert!(
+                delay.as_millis() as u64 <= upper,
+                "retry {retry} delay {delay:?} above ceiling {upper}"
+            );
+            prev = delay;
+        }
+    }
 
-        // 3 retries should take longer than 1 retry due to increasing backoff
-        assert!(
-            elapsed_3 > elapsed_1,
-            "3 retries ({elapsed_3:?}) should take longer than 1 retry ({elapsed_1:?})"
-        );
+    #[test]
+    fn backoff_window_grows_with_the_previous_delay() {
+        let base = Duration::from_millis(10);
+        let max_backoff = Duration::from_millis(900);
+        let ceilings: Vec<u64> = [10u64, 20, 40, 80, 160]
+            .into_iter()
+            .map(|ms| jitter_window(base, Duration::from_millis(ms), max_backoff).1)
+            .collect();
+
+        assert_eq!(ceilings, vec![30, 60, 120, 240, 480]);
+        for pair in ceilings.windows(2) {
+            assert!(pair[1] > pair[0], "ceiling shrank: {pair:?}");
+        }
+
+        // Above the cap the ceiling clamps instead of growing without bound.
+        let capped = jitter_window(base, Duration::from_secs(1000), max_backoff).1;
+        assert_eq!(capped, max_backoff.as_millis() as u64);
+    }
+
+    /// The escalation rule above is arithmetic; this pins that the loop really
+    /// sleeps it, once per retry. `initial_backoff == max_backoff` collapses the
+    /// jitter window to a single point, so the schedule is exact, and paused
+    /// time makes the measurement tokio's virtual clock rather than the runner's.
+    #[tokio::test(start_paused = true)]
+    async fn more_retries_sleep_strictly_longer() {
+        fn flat_config(max_retries: u32) -> RetryConfig {
+            RetryConfig {
+                max_retries,
+                initial_backoff: Duration::from_millis(10),
+                max_backoff: Duration::from_millis(10),
+                multiplier: 2,
+                ..Default::default()
+            }
+        }
+
+        async fn slept(config: &RetryConfig) -> Duration {
+            let start = tokio::time::Instant::now();
+            let _ = retry_on_transient(config, || async {
+                Err::<(), Status>(Status::unavailable("unavailable"))
+            })
+            .await;
+            start.elapsed()
+        }
+
+        let one = slept(&flat_config(1)).await;
+        let three = slept(&flat_config(3)).await;
+
+        assert_eq!(one, Duration::from_millis(10));
+        assert_eq!(three, Duration::from_millis(30));
+        assert!(three > one);
     }
 
     #[tokio::test]
@@ -710,9 +766,12 @@ mod tests {
         assert_eq!(call_count.load(Ordering::SeqCst), 3);
     }
 
-    #[tokio::test]
+    /// Paused time, so the measurement is tokio's virtual clock: the assertion
+    /// is the exact schedule the cap produces rather than a wall-clock budget a
+    /// stalled runner can blow through. `smear_pushback(1h, 5ms, 1ms)` clamps
+    /// the base to 5ms and smears up to `max(5/2, 1) = 2ms` on top of it.
+    #[tokio::test(start_paused = true)]
     async fn pushback_capped_at_max_backoff() {
-        // Build a config with a tight cap and a giant pushback; assert the call returns quickly.
         let config = RetryConfig {
             max_retries: 1,
             initial_backoff: Duration::from_millis(1),
@@ -720,7 +779,7 @@ mod tests {
             multiplier: 2,
             ..Default::default()
         };
-        let start = std::time::Instant::now();
+        let start = tokio::time::Instant::now();
         let _ = retry_on_transient(&config, || async {
             let mut s = Status::resource_exhausted("limited");
             // 1 hour in milliseconds — would block forever if not capped
@@ -729,12 +788,14 @@ mod tests {
             Err::<(), Status>(s)
         })
         .await;
-        // With max_backoff=5ms, the single retry sleeps at most 5ms;
-        // total elapsed must be well under 100ms.
+        let elapsed = start.elapsed();
         assert!(
-            start.elapsed() < Duration::from_millis(100),
-            "elapsed={:?} — pushback not capped",
-            start.elapsed()
+            elapsed >= Duration::from_millis(5),
+            "elapsed={elapsed:?} — the clamped pushback was not waited out"
+        );
+        assert!(
+            elapsed <= Duration::from_millis(7),
+            "elapsed={elapsed:?} — pushback not capped at max_backoff + smear"
         );
     }
 

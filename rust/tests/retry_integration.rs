@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use pinecone_grpc::retry::{
     retry_on_transient, retry_on_transient_request, RetryBudget, RetryConfig, ThrottleCallback,
@@ -44,9 +44,13 @@ async fn callback_fires_per_retry_attempt() {
     assert_eq!(cb_call_count.load(Ordering::SeqCst), 3);
 }
 
-#[tokio::test]
+/// Paused time, so the bound is the exact schedule `smear_pushback` produces
+/// rather than a wall-clock budget: the base clamps to the 20ms hint and the
+/// smear adds up to `max(20/2, 1) = 10ms` on top of it.
+#[tokio::test(start_paused = true)]
 async fn pushback_smear_produces_delays_within_range() {
     let pushback_ms: u64 = 20;
+    let ceiling_ms = pushback_ms + pushback_ms / 2;
 
     let config = RetryConfig {
         max_retries: 1,
@@ -55,7 +59,7 @@ async fn pushback_smear_produces_delays_within_range() {
         ..RetryConfig::default()
     };
 
-    let start = Instant::now();
+    let start = tokio::time::Instant::now();
     let _ = retry_on_transient(&config, || async {
         let mut s = Status::resource_exhausted("throttled");
         s.metadata_mut().insert(
@@ -67,20 +71,17 @@ async fn pushback_smear_produces_delays_within_range() {
     .await;
     let elapsed = start.elapsed();
 
-    // smear_pushback(20ms, 200ms) returns uniform(20ms, 30ms), well under cap.
-    // Lower bound: must wait at least pushback ms.
-    // Upper bound: pushback + pushback/2 + generous CI slack (200ms).
     assert!(
         elapsed >= Duration::from_millis(pushback_ms),
-        "elapsed {:?} should be >= pushback {}ms",
+        "elapsed {:?} is less than the {}ms the server asked for",
         elapsed,
         pushback_ms
     );
     assert!(
-        elapsed < Duration::from_millis(pushback_ms + pushback_ms / 2 + 200),
-        "elapsed {:?} exceeded expected ceiling {}ms",
+        elapsed <= Duration::from_millis(ceiling_ms),
+        "elapsed {:?} exceeded the smear ceiling {}ms",
         elapsed,
-        pushback_ms + pushback_ms / 2 + 200
+        ceiling_ms
     );
 }
 
