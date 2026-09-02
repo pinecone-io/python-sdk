@@ -175,3 +175,21 @@ def _vector_to_dict(v: Vector) -> dict[str, Any]:
     if v.metadata is not None:
         return {"id": id_, "values": vals, "metadata": v.metadata}
     return {"id": id_, "values": vals}
+
+
+def _limiter_host_key(host: str) -> str:
+    """The bare-hostname key the adaptive limiter registry is keyed by.
+
+    Throttle callbacks report under the bare hostname; a scheme-prefixed
+    key would register a limiter that never sees a throttle (issue #60).
+    Interim shim: the bulk-core rewrite (#69) moves this normalization
+    inside the registry so call sites cannot miss it.
+    """
+    bare = host
+    for prefix in ("https://", "http://"):
+        if bare.startswith(prefix):
+            bare = bare[len(prefix) :]
+            break
+    for separator in (":", "/"):
+        bare = bare.split(separator, 1)[0]
+    return bare

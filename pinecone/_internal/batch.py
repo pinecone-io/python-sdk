@@ -8,13 +8,13 @@ parallel, collect errors, and optionally display a tqdm progress bar.
 from __future__ import annotations
 
 import asyncio
-import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as _FuturesTimeoutError
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
+from pinecone._internal.constants import DEFAULT_MAX_CONCURRENCY
 from pinecone.errors.exceptions import PineconeValueError
 from pinecone.models.batch import BatchError, BatchResult
 from pinecone.models.response_info import BatchResponseInfo
@@ -113,6 +113,10 @@ class _Deadline:
             return None
         return max(0.0, self._expires_at - time.monotonic())
 
+    def at(self) -> float | None:
+        """The absolute monotonic instant this expires, or None if unbounded."""
+        return self._expires_at
+
 
 def _abandoned_error(batch_index: int, batch: list[dict[str, Any]], total_timeout: float) -> Any:
     from pinecone.errors.exceptions import PineconeTimeoutError
@@ -126,7 +130,16 @@ def _abandoned_error(batch_index: int, batch: list[dict[str, Any]], total_timeou
         items=batch,
         error=PineconeTimeoutError(message),
         error_message=message,
+        disposition="unsent",
     )
+
+
+def _classify_retryable(error: BaseException) -> bool:
+    """Deferred import: bulk.classify cannot be imported at module top —
+    bulk/__init__ imports the engine, which imports this module."""
+    from pinecone._internal.bulk.classify import is_retryable
+
+    return is_retryable(error)
 
 
 def _empty_result() -> BatchResult:
@@ -181,7 +194,7 @@ def batch_execute(
     items: list[dict[str, Any]],
     operation: Callable[[list[dict[str, Any]]], Any],
     batch_size: int,
-    max_concurrency: int = 4,
+    max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
     show_progress: bool = True,
     desc: str = "Batches",
     executor: ThreadPoolExecutor | None = None,
@@ -201,7 +214,7 @@ def batch_execute(
         operation (Callable): Callable that accepts a batch (sublist).
         batch_size (int): Maximum items per batch (must be >= 1).
         max_concurrency (int): Thread pool size for concurrent requests
-            (1-64, default 4).
+            (1-64, default 8).
         show_progress (bool): Display a tqdm progress bar when installed.
         desc (str): Label shown on the progress bar.
         executor (ThreadPoolExecutor | None): Optional caller-owned executor
@@ -245,31 +258,20 @@ def batch_execute(
     else:
         limiter = None
 
-    condition = threading.Condition()
-    inflight = 0
-
     def _acquire(deadline: _Deadline) -> bool:
-        """Take an in-flight slot, or report that the budget ran out waiting for one."""
-        nonlocal inflight
+        """Take an in-flight slot, or report that the budget ran out waiting for one.
+
+        The slot is owned by the limiter, not by this call, so concurrent bulk
+        operations against one host share a single bound.
+        """
         if limiter is None:
             return not deadline.expired()
-        with condition:
-            while inflight >= limiter.current_limit():
-                if deadline.expired():
-                    return False
-                condition.wait(timeout=deadline.remaining())
-            if deadline.expired():
-                return False
-            inflight += 1
-        return True
+        return limiter.acquire(deadline.at())
 
     def _release() -> None:
-        nonlocal inflight
         if limiter is None:
             return
-        with condition:
-            inflight -= 1
-            condition.notify_all()
+        limiter.release()
 
     def _wrapped_op(batch: list[dict[str, Any]]) -> Any:
         try:
@@ -306,6 +308,7 @@ def batch_execute(
                     items=batch,
                     error=exc,
                     error_message=str(exc),
+                    retryable=_classify_retryable(exc),
                 )
             )
         else:
@@ -381,7 +384,7 @@ async def async_batch_execute(
     items: list[dict[str, Any]],
     operation: Callable[[list[dict[str, Any]]], Awaitable[Any]],
     batch_size: int,
-    max_concurrency: int = 4,
+    max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
     show_progress: bool = True,
     desc: str = "Batches",
     limiter_registry: _AdaptiveLimiterRegistry | None = None,
@@ -399,7 +402,7 @@ async def async_batch_execute(
         operation (Callable): Async callable that accepts a batch (sublist).
         batch_size (int): Maximum items per batch (must be >= 1).
         max_concurrency (int): Maximum concurrent batch requests
-            (1-64, default 4).
+            (1-64, default 8).
         show_progress (bool): Display a tqdm progress bar when installed.
         desc (str): Label shown on the progress bar.
         limiter_registry (_AdaptiveLimiterRegistry | None): Optional registry
@@ -437,15 +440,22 @@ async def async_batch_execute(
     progress = _create_progress_bar(total_batches, desc, show_progress)
 
     async def _acquire() -> None:
+        nonlocal inflight
         if semaphore is not None:
             await semaphore.acquire()
             return
-        # Limiter path: spin until inflight < current_limit
+        # Limiter path: spin until inflight < current_limit. The increment
+        # happens under the SAME lock acquisition as the check: between a
+        # passed check and a deferred increment, every other waiter would
+        # pass the same check and the cap would not hold (found when issue
+        # #45's global sleep no-op was fixed and this path saw real timing;
+        # the busy-poll itself is replaced by the bulk rewrite, #73).
         if limiter is None:
             return
         while True:
             async with inflight_lock:
                 if inflight < limiter.current_limit():
+                    inflight += 1
                     return
             await asyncio.sleep(0.05)
 
@@ -458,9 +468,6 @@ async def async_batch_execute(
         # so += and .append() cannot interleave between await points.
         nonlocal successful_item_count, inflight
         await _acquire()
-        if use_limiter:
-            async with inflight_lock:
-                inflight += 1
         try:
             try:
                 batch_result = await operation(batch)
@@ -471,6 +478,7 @@ async def async_batch_execute(
                         items=batch,
                         error=exc,
                         error_message=str(exc),
+                        retryable=_classify_retryable(exc),
                     )
                 )
             else:

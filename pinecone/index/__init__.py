@@ -16,10 +16,10 @@ if TYPE_CHECKING:
 
 from pinecone._internal.adapters.imports_adapter import ImportsAdapter
 from pinecone._internal.adapters.vectors_adapter import VectorsAdapter, extract_response_info
-from pinecone._internal.batch import batch_execute
 from pinecone._internal.batching import validate_batch_size
+from pinecone._internal.bulk import bulk_execute_sync
 from pinecone._internal.config import PineconeConfig
-from pinecone._internal.constants import DATA_PLANE_API_VERSION
+from pinecone._internal.constants import DATA_PLANE_API_VERSION, DEFAULT_MAX_CONCURRENCY
 from pinecone._internal.data_plane_helpers import (
     _build_search_records_body,
     _validate_host,
@@ -246,8 +246,9 @@ class Index:
         namespace: str = "",
         batch_size: int | None = None,
         show_progress: bool = True,
-        max_concurrency: int = 4,
+        max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
         timeout: float | None = None,
+        total_timeout: float | None = None,
     ) -> UpsertResponse:
         """Upsert a batch of vectors into a namespace.
 
@@ -275,9 +276,15 @@ class Index:
                 ``batch_size`` is ``None`` or ``tqdm`` is not installed.
                 Defaults to ``True``.
             max_concurrency (int): Thread pool size for concurrent batch requests
-                (range 1–64, default 4). Only used when ``batch_size`` is set.
+                (range 1–64, default 8). Only used when ``batch_size`` is set.
             timeout (float | None): Per-request timeout in seconds. Overrides
                 the client-level default for this call only.
+            total_timeout (float | None): Deadline in seconds for the whole
+                batched operation (only meaningful with ``batch_size``). On
+                expiry no further batches are submitted; batches already in
+                flight are awaited and never cancelled; unsent batches are
+                reported in ``failed_items``. ``None`` (default) means no
+                deadline.
 
         Returns:
             :class:`UpsertResponse` with the count of vectors upserted.
@@ -303,9 +310,13 @@ class Index:
 
         Notes:
             When ``batch_size`` is set, batches are submitted **in parallel** via a
-            ``ThreadPoolExecutor`` of ``max_concurrency`` workers (default 4, range
+            ``ThreadPoolExecutor`` of ``max_concurrency`` workers (default 8, range
             1–64). Per-batch HTTP retries are handled by the client's configured
-            ``RetryConfig`` (connection errors and retryable status codes).
+            ``RetryConfig`` — connection errors, client-side timeouts, and the
+            configured ``retryable_status_codes``. Unlike the gRPC transport, a timeout
+            **is** retried here, so *timeout* is a per-attempt deadline: the default
+            ``max_retries=3`` admits up to 4 attempts × *timeout* per batch, plus
+            backoff. Lower ``max_retries`` to shrink that.
 
             **Partial failures do not raise.** When ``batch_size`` is set, per-batch
             errors are captured on the returned :class:`UpsertResponse` (see
@@ -361,14 +372,15 @@ class Index:
         def _operation(chunk: list[dict[str, Any]]) -> UpsertResponse:
             return self._upsert_dict_batch(items=chunk, namespace=namespace, timeout=timeout)
 
-        batch_result = batch_execute(
+        batch_result = bulk_execute_sync(
             items=items,
             operation=_operation,
             batch_size=batch_size,
             max_concurrency=max_concurrency,
             show_progress=show_progress,
             desc="Upserting",
-            executor=self._get_batch_executor(max_concurrency),
+            host=self._host,
+            total_timeout=total_timeout,
         )
 
         synth_headers: dict[str, str] = {}
@@ -439,6 +451,8 @@ class Index:
         show_progress: bool = True,
         timeout: float | None = None,
         *,
+        max_concurrency: int | None = None,
+        total_timeout: float | None = None,
         on_error: Literal["raise", "collect"] | None = None,
     ) -> UpsertResponse:
         """Upsert vectors from a pandas DataFrame.
@@ -460,6 +474,16 @@ class Index:
                 batch's* upsert request — not to the DataFrame as a whole.
                 ``None`` (default) uses the client-level default. Raise it to
                 accommodate large or slow batches.
+            max_concurrency: Number of batches in flight at once, range
+                ``[1, 64]``. ``None`` (default) uses ``8`` — flat and
+                identical across every transport. The host's adaptive limit
+                still applies underneath.
+            total_timeout: Deadline in seconds for the **whole ingest**, as
+                opposed to *timeout*, which bounds a single attempt of a
+                single batch. On expiry no further batches are submitted;
+                batches already in flight are awaited and never cancelled;
+                unsent batches are reported in ``failed_items``. ``None``
+                (default) means no deadline.
             on_error: What to do when some batches fail. ``"collect"`` (the
                 default) returns an :class:`UpsertResponse` carrying
                 ``failed_item_count``, ``errors``, and ``failed_items``.
@@ -543,7 +567,11 @@ class Index:
             namespace=ns,
             batch_size=batch_size,
             show_progress=show_progress,
+            max_concurrency=(
+                DEFAULT_MAX_CONCURRENCY if max_concurrency is None else max_concurrency
+            ),
             timeout=timeout,
+            total_timeout=total_timeout,
         )
 
         if resolved_on_error == "raise" and response.errors:
@@ -2080,8 +2108,6 @@ class Index:
                     idx.upsert(namespace="articles-en", vectors=[...])
         """
         self._http.close()
-        if self._batch_executor is not None:
-            self._batch_executor.shutdown(wait=False)
         legacy_pool = getattr(self, "_legacy_async_pool", None)
         if legacy_pool is not None:
             legacy_pool.close()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from pinecone._internal.dataframe import extract_records
+from pinecone.errors.exceptions import PineconeValueError
 
 pd = pytest.importorskip("pandas")
 np = pytest.importorskip("numpy")
@@ -24,16 +25,27 @@ class TestRequiredColumns:
 
         assert extract_records(df) == []
 
-    def test_missing_id_column_raises_keyerror(self) -> None:
-        df = pd.DataFrame({"values": [[0.1]]})
+    def test_missing_id_column_names_the_schema(self) -> None:
+        df = pd.DataFrame({"values": [[0.1]], "metadata": [{}]})
 
-        with pytest.raises(KeyError):
+        with pytest.raises(PineconeValueError) as excinfo:
             extract_records(df)
 
-    def test_missing_values_column_raises_keyerror(self) -> None:
+        message = str(excinfo.value)
+        assert "['id']" in message
+        assert "upsert_from_dataframe" in message
+        assert "values" in message and "metadata" in message
+
+    def test_missing_values_column_names_the_schema(self) -> None:
         df = pd.DataFrame({"id": ["v1"]})
 
-        with pytest.raises(KeyError):
+        with pytest.raises(PineconeValueError, match=r"\['values'\]"):
+            extract_records(df)
+
+    def test_both_missing_are_reported_together(self) -> None:
+        df = pd.DataFrame({"vector": [[0.1]]})
+
+        with pytest.raises(PineconeValueError, match=r"\['id', 'values'\]"):
             extract_records(df)
 
 
@@ -56,6 +68,16 @@ class TestOptionalColumns:
 
     def test_absent_columns_are_not_invented(self) -> None:
         df = pd.DataFrame({"id": ["v1"], "values": [[0.1]]})
+
+        (record,) = extract_records(df)
+
+        assert set(record) == {"id", "values"}
+
+
+class TestUnrecognizedColumns:
+    def test_extra_columns_are_ignored_not_rejected(self) -> None:
+        """Long-standing behavior on both transports: only the four columns count."""
+        df = pd.DataFrame({"id": ["v1"], "values": [[0.1]], "colour": ["red"]})
 
         (record,) = extract_records(df)
 

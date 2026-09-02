@@ -12,6 +12,7 @@ import pytest
 import respx
 
 from pinecone import Index
+from pinecone._internal.bulk import bulk_execute_sync
 from pinecone.errors.exceptions import PineconeValueError
 from pinecone.models.vectors.responses import UpsertResponse
 from pinecone.models.vectors.vector import Vector
@@ -182,7 +183,7 @@ class TestUpsertMaxConcurrency:
     """max_concurrency parameter validation and forwarding."""
 
     @respx.mock
-    def test_upsert_max_concurrency_default_is_4(self) -> None:
+    def test_upsert_max_concurrency_default_is_8(self) -> None:
         respx.post(UPSERT_URL).mock(
             side_effect=lambda req: httpx.Response(
                 200,
@@ -192,9 +193,9 @@ class TestUpsertMaxConcurrency:
             )
         )
         idx = _make_index()
-        with patch.object(idx, "_get_batch_executor", wraps=idx._get_batch_executor) as spy:
+        with patch("pinecone.index.bulk_execute_sync", wraps=bulk_execute_sync) as spy:
             idx.upsert(vectors=_make_vectors(10), batch_size=5, show_progress=False)
-        spy.assert_called_once_with(4)
+        assert spy.call_args.kwargs["max_concurrency"] == 8
 
     @respx.mock
     def test_upsert_max_concurrency_explicit(self) -> None:
@@ -207,11 +208,11 @@ class TestUpsertMaxConcurrency:
             )
         )
         idx = _make_index()
-        with patch.object(idx, "_get_batch_executor", wraps=idx._get_batch_executor) as spy:
+        with patch("pinecone.index.bulk_execute_sync", wraps=bulk_execute_sync) as spy:
             idx.upsert(
                 vectors=_make_vectors(10), batch_size=5, max_concurrency=8, show_progress=False
             )
-        spy.assert_called_once_with(8)
+        assert spy.call_args.kwargs["max_concurrency"] == 8
 
     def test_upsert_invalid_max_concurrency_zero(self) -> None:
         idx = _make_index()
@@ -278,11 +279,13 @@ class TestUpsertPartialFailure:
         assert ids == [f"v{i}" for i in range(100, 200)]
 
 
-class TestUpsertExecutorCaching:
-    """Executor is cached and recreated on concurrency change."""
+class TestUpsertConcurrencyBehavior:
+    """The per-handle executor cache is gone (it replaced a live pool on any
+    max_concurrency change — the pre-A5 bug on its last transport). What
+    remains testable is behavior: distinct sizes never interfere."""
 
     @respx.mock
-    def test_upsert_executor_is_cached_across_calls(self) -> None:
+    def test_changing_max_concurrency_across_calls_is_safe(self) -> None:
         respx.post(UPSERT_URL).mock(
             side_effect=lambda req: httpx.Response(
                 200,
@@ -292,45 +295,15 @@ class TestUpsertExecutorCaching:
             )
         )
         idx = _make_index()
-        idx.upsert(vectors=_make_vectors(10), batch_size=5, max_concurrency=4, show_progress=False)
-        executor_first = idx._batch_executor
-        assert executor_first is not None
-
-        idx.upsert(vectors=_make_vectors(10), batch_size=5, max_concurrency=4, show_progress=False)
-        assert idx._batch_executor is executor_first
-
-    @respx.mock
-    def test_upsert_executor_recreated_on_max_concurrency_change(self) -> None:
-        respx.post(UPSERT_URL).mock(
-            side_effect=lambda req: httpx.Response(
-                200,
-                json=_make_upsert_response(
-                    upserted_count=len(orjson.loads(req.content)["vectors"])
-                ),
+        for concurrency in (1, 4, 8, 3, 16, 4):
+            result = idx.upsert(
+                vectors=_make_vectors(10),
+                batch_size=5,
+                max_concurrency=concurrency,
+                show_progress=False,
             )
-        )
-        idx = _make_index()
-        idx.upsert(vectors=_make_vectors(10), batch_size=5, max_concurrency=4, show_progress=False)
-        executor_first = idx._batch_executor
-
-        idx.upsert(vectors=_make_vectors(10), batch_size=5, max_concurrency=8, show_progress=False)
-        assert idx._batch_executor is not executor_first
-        assert idx._batch_executor_workers == 8
-
-    def test_close_shuts_down_batch_executor(self) -> None:
-        idx = _make_index()
-        # Inject a real executor to verify shutdown is called.
-        from concurrent.futures import ThreadPoolExecutor
-
-        executor = ThreadPoolExecutor(max_workers=2)
-        idx._batch_executor = executor
-        idx._batch_executor_workers = 2
-
-        idx.close()
-
-        # After close, the executor should be shut down (no new tasks accepted).
-        with pytest.raises(RuntimeError):
-            executor.submit(lambda: None)
+            assert result.upserted_count == 10
+            assert not result.has_errors
 
 
 class TestUpsertResponseInfoAggregated:

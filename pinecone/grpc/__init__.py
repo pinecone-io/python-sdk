@@ -5,7 +5,6 @@ from __future__ import annotations
 import builtins
 import logging
 import os
-import threading
 import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -18,10 +17,10 @@ if TYPE_CHECKING:
 from pinecone._internal.adapters.imports_adapter import ImportsAdapter
 from pinecone._internal.adapters.vectors_adapter import VectorsAdapter, extract_response_info
 from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
-from pinecone._internal.batch import batch_execute
 from pinecone._internal.batching import validate_batch_size
+from pinecone._internal.bulk import bulk_execute_sync
 from pinecone._internal.config import PineconeConfig, RetryConfig
-from pinecone._internal.constants import DATA_PLANE_API_VERSION
+from pinecone._internal.constants import DATA_PLANE_API_VERSION, DEFAULT_MAX_CONCURRENCY
 from pinecone._internal.data_plane_helpers import _build_search_records_body, _validate_host
 from pinecone._internal.dataframe import _resolve_on_error, extract_records
 from pinecone._internal.keyword_only import keyword_only_methods
@@ -235,6 +234,14 @@ def _upsert_response_from(batch_result: BatchResult) -> UpsertResponse:
     )
 
 
+def _bulk_gate_registry() -> Any:
+    """Deferred import: the bulk registry pulls in gate machinery this module
+    only needs once a client is constructed, not at import time."""
+    from pinecone._internal.bulk import get_registry
+
+    return get_registry()
+
+
 def _limiter_host(host: str) -> str:
     """The key the Rust throttle callback reports under.
 
@@ -253,13 +260,17 @@ def _limiter_host(host: str) -> str:
     return bare
 
 
-def _default_max_concurrency() -> int:
-    """What an unbounded submission into a default ThreadPoolExecutor already gave.
+def _as_sentence(text: str) -> str:
+    """Close the wrapped message off, so appended guidance starts a new sentence.
 
-    Bounding submission without keeping this number would be a throughput
-    regression rather than a fix, so it is the default and callers override it.
+    Without the period, ``deadline exceeded`` and the guidance become one clause,
+    and anything matching on the leading clause picks up the run-specific timeout
+    values from the guidance — which these messages do not promise to keep stable.
     """
-    return min(32, (os.cpu_count() or 1) + 4)
+    stripped = text.rstrip()
+    if not stripped or stripped[-1] in ".!?":
+        return stripped
+    return f"{stripped}."
 
 
 @keyword_only_methods
@@ -276,7 +287,9 @@ class GrpcIndex:
         api_version (str): API version string. Defaults to the current data plane version.
         source_tag (str | None): Tag appended to the User-Agent string for request attribution.
         secure (bool): Whether to use TLS encryption. Defaults to ``True``.
-        timeout (float): Request timeout in seconds. Defaults to ``20.0``.
+        timeout (float): Deadline in seconds for a **single attempt** of a request, not
+            for the call as a whole. Defaults to ``20.0``. A per-call ``timeout=`` does not
+            replace it — the channel keeps this one too, so the shorter of the two governs.
         connect_timeout (float): Connection timeout in seconds. Defaults to ``1.0``.
         retry_config (RetryConfig | None): Retry policy for transient gRPC errors. Accepts
             the same :class:`~pinecone._internal.config.RetryConfig` REST uses. ``None``
@@ -299,15 +312,24 @@ class GrpcIndex:
 
         1. **Connect** — ``connect_timeout``, default ``1.0s``.
         2. **Per attempt** — ``timeout`` (or a per-call ``timeout=``), default ``20.0s``.
-           This is a deadline on *one attempt*, not on the call.
+           This is a deadline on *one attempt*, not on the call. Both apply when a call
+           passes its own, so the shorter of the two is what fires.
         3. **Retry budget** — ``retry_config.max_retries`` attempts after the first, with
            backoff between them.
         4. **Whole job** — for bulk methods only, ``total_timeout``.
 
-        Layers 2 and 3 multiply. ``timeout=120`` is not a 120s bound: with the default
-        ``max_retries=5`` it is up to 6 attempts × 120s **plus** backoff, so a worst case
-        near 17 minutes. Lower ``max_retries`` to shrink that, or bound the whole
-        operation with ``total_timeout``.
+        Layers 2 and 3 compound **only across retryable failures.** This transport retries
+        a fixed set of ``tonic::Code`` values — UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED —
+        so reaching the multiplied worst case (with the default ``max_retries=5``, up to 6
+        attempts × ``timeout`` plus backoff, or near 17 minutes at ``timeout=120``) takes
+        every attempt burning nearly its full deadline and *then* failing with one of those
+        codes. That is the case a lower ``max_retries`` shrinks.
+
+        **An expiring deadline is not one of them.** Layer 2 firing raises
+        :exc:`~pinecone.errors.PineconeTimeoutError` after a single attempt, so
+        ``max_retries`` is not the knob for a timeout. Raise ``timeout=`` to give the server
+        longer per attempt — raising the index-level ``timeout`` too if it is the lower of
+        the two — or bound a bulk job with ``total_timeout``.
 
     Examples:
 
@@ -342,9 +364,13 @@ class GrpcIndex:
             )
 
         # Validate and normalize host
+        self._request_timeout = timeout
         self._host = _validate_host(host)
         self._limiter_host = _limiter_host(self._host)
-        self._limiter_registry = limiter_registry
+        # A directly-constructed handle has no client behind it to supply one,
+        # and without a registry the bulk paths do no adaptive backoff at all.
+        # Per-handle state is weaker than per-client but far better than none.
+        self._limiter_registry = limiter_registry or _AdaptiveLimiterRegistry()
         self._source_tag = source_tag
 
         # Build gRPC endpoint and create the Rust-backed channel
@@ -361,10 +387,16 @@ class GrpcIndex:
             backoff_factor=_GRPC_DEFAULT_BACKOFF_FACTOR,
             max_wait=_GRPC_DEFAULT_MAX_WAIT,
         )
-        # RetryConfig.on_throttle is how REST carries the limiter hook; honor it when
-        # the explicit argument is absent so threading a client-built config does not
-        # silently drop the callback.
-        resolved_on_throttle = on_throttle or self._retry_config.on_throttle
+        # The bulk gate must always hear throttles — it is how admission adapts —
+        # so the transport callback feeds the process-global registry first and
+        # any caller-supplied hook (explicit argument, or threaded through a
+        # client-built RetryConfig) second, as observability.
+        user_on_throttle = on_throttle or self._retry_config.on_throttle
+
+        def resolved_on_throttle(throttled_host: str) -> None:
+            _bulk_gate_registry().report_throttled(throttled_host)
+            if user_on_throttle is not None:
+                user_on_throttle(throttled_host)
 
         self._channel: GrpcChannelProtocol = GrpcChannel(
             endpoint,
@@ -383,8 +415,6 @@ class GrpcIndex:
         )
 
         self._executor = ThreadPoolExecutor()
-        self._batch_executors: dict[int, ThreadPoolExecutor] = {}
-        self._batch_executor_lock = threading.Lock()
 
         # REST HTTP client for records operations (integrated inference).
         # upsert_records and search use REST endpoints with no gRPC equivalent.
@@ -408,25 +438,6 @@ class GrpcIndex:
         """The data plane host URL for this index."""
         return self._host
 
-    def _get_batch_executor(self, max_concurrency: int) -> ThreadPoolExecutor:
-        """Return the pool of this size, creating it once.
-
-        Pools are kept per size rather than resized in place. upsert() and
-        upsert_from_dataframe() have different concurrency defaults and can run
-        concurrently on one index handle; shutting a pool down because the other
-        caller asked for a different size would raise "cannot schedule new
-        futures after shutdown" in whichever one was still submitting.
-        """
-        with self._batch_executor_lock:
-            executor = self._batch_executors.get(max_concurrency)
-            if executor is None:
-                executor = ThreadPoolExecutor(
-                    max_concurrency,
-                    thread_name_prefix="pinecone-grpc-batch-upsert",
-                )
-                self._batch_executors[max_concurrency] = executor
-            return executor
-
     def upsert(
         self,
         *,
@@ -438,9 +449,10 @@ class GrpcIndex:
         ],
         namespace: str = "",
         batch_size: int | None = None,
-        max_concurrency: int = 4,
+        max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
         show_progress: bool = True,
         timeout: float | None = None,
+        total_timeout: float | None = None,
     ) -> UpsertResponse:
         """Upsert a batch of vectors into a namespace.
 
@@ -464,13 +476,19 @@ class GrpcIndex:
                 sends all vectors in a single request. Must be a positive
                 integer when set.
             max_concurrency (int): Number of parallel threads used when
-                ``batch_size`` is set. Default ``4``, range ``[1, 64]``. Ignored
+                ``batch_size`` is set. Default ``8``, range ``[1, 64]``. Ignored
                 when ``batch_size`` is ``None``.
             show_progress (bool): If ``True`` and ``tqdm`` is installed, display a
                 progress bar while submitting batches. Ignored when ``batch_size``
                 is ``None``. Defaults to ``True``.
             timeout (float | None): Per-call timeout in seconds. Applied per batch
                 when batching. None uses the client-level default.
+            total_timeout (float | None): Deadline in seconds for the whole
+                batched operation (only meaningful with ``batch_size``). On
+                expiry no further batches are submitted; batches already in
+                flight are awaited and never cancelled; unsent batches are
+                reported in ``failed_items``. ``None`` (default) means no
+                deadline.
 
         Returns:
             :class:`UpsertResponse` with the count of vectors upserted.
@@ -487,13 +505,14 @@ class GrpcIndex:
                 *timeout* elapses.
 
         Notes:
-            When ``batch_size`` is set, up to ``max_concurrency`` batches run
-            at once (default 4, range 1-64), each retried independently on
-            transient errors. **Partial failures do not raise** — the
-            returned :class:`UpsertResponse` carries ``upserted_count``,
-            ``failed_item_count``, ``errors``, and ``failed_items`` for
-            inspection or retry. Pass ``response.failed_items`` back to
-            ``upsert(...)`` to retry only the failures.
+            When ``batch_size`` is set, batches are submitted **in parallel** via a
+            ``ThreadPoolExecutor`` of ``max_concurrency`` workers (default 8, range
+            1–64). Per-batch retries are handled by the gRPC channel's own retry
+            policy. **Partial failures do not raise** — the returned
+            :class:`UpsertResponse` carries ``upserted_count``,
+            ``failed_item_count``, ``errors``, and ``failed_items`` for inspection /
+            retry. Pass ``response.failed_items`` back to ``upsert(...)`` to retry
+            only the failures.
 
         Examples:
 
@@ -532,16 +551,15 @@ class GrpcIndex:
         def _operation(chunk: builtins.list[dict[str, Any]]) -> dict[str, Any]:
             return self._channel.upsert(chunk, namespace or None, timeout_s=timeout)
 
-        batch_result = batch_execute(
+        batch_result = bulk_execute_sync(
             items=items,
             operation=_operation,
             batch_size=batch_size,
             max_concurrency=max_concurrency,
             show_progress=show_progress,
             desc="Upserting",
-            executor=self._get_batch_executor(max_concurrency),
-            limiter_registry=self._limiter_registry,
             host=self._limiter_host,
+            total_timeout=total_timeout,
         )
 
         return UpsertResponse(
@@ -1228,6 +1246,36 @@ class GrpcIndex:
             storage_fullness=result.get("storage_fullness"),
         )
 
+    def _timeout_guidance(self, timeout: float | None) -> str:
+        """Say which of the four layers fired, with the value that was in effect.
+
+        A timeout here is the entire diagnostic surface for a batch job that died
+        partway through, and "deadline exceeded" on its own does not say which
+        knob to turn.
+        """
+        index_level = self._request_timeout
+        if timeout is None:
+            deadline = f"the index-level timeout of {index_level}s"
+        else:
+            # The channel keeps the Endpoint-level deadline it was built with even
+            # when a call passes its own, so the shorter of the two is what fired.
+            # Naming only the per-call value points at the wrong number and the
+            # wrong knob whenever the index-level one is smaller.
+            deadline = (
+                f"{min(timeout, index_level)}s, the shorter of timeout={timeout} and the "
+                f"index-level timeout of {index_level}s — both apply to every call"
+            )
+        return (
+            f"The per-attempt deadline fired: {deadline}. It was not the connect timeout "
+            f"and not total_timeout. Timeouts are not retried on this transport, which "
+            f"retries only UNAVAILABLE, RESOURCE_EXHAUSTED and ABORTED, so this batch "
+            f"failed after a single attempt and retry_config.max_retries is not the knob "
+            f"to change. Raise timeout= to give the server longer per attempt — raising "
+            f"the index-level timeout= too if it is the lower of the two — or set "
+            f"total_timeout= to bound the whole ingest. Upserts are idempotent by vector "
+            f"id, so retrying the same rows is safe."
+        )
+
     def upsert_from_dataframe(
         self,
         df: pd.DataFrame,
@@ -1256,8 +1304,11 @@ class GrpcIndex:
                 progress bar. The bar advances as batches *complete*. If ``tqdm``
                 is not installed, silently falls back to no progress bar.
             max_concurrency: Number of batches in flight at once, range
-                ``[1, 64]``. ``None`` (default) uses ``min(32, cpu_count + 4)``
-                — pass a value to make throughput reproducible across hosts.
+                ``[1, 64]``. ``None`` (default) uses ``8`` — flat and identical
+                across every transport and machine, so throughput is
+                reproducible across hosts. The host's adaptive limit still
+                applies underneath; raise this only when the backend has
+                headroom for a larger committed retry burst.
             on_error: What to do when some batches fail. ``"collect"`` returns an
                 :class:`UpsertResponse` carrying ``failed_item_count``, ``errors``
                 and ``failed_items``, so the caller can retry only what failed —
@@ -1289,13 +1340,16 @@ class GrpcIndex:
                 deadlines rather than failing prematurely. Raise *timeout* to
                 give slow batches more time on the server.
 
-                **This is not a bound on the batch.** With the default
-                ``max_retries=5`` a batch is up to 6 attempts × *timeout*, plus
-                backoff between them — ``timeout=120`` admits a worst case near 17
-                minutes for a single batch. See the four timeout layers on
-                :class:`GrpcIndex`. To shrink the multiplier, pass a
-                ``retry_config`` with a lower ``max_retries`` when constructing the
-                index.
+                **This is not a bound on the batch, but only retryable failures
+                stretch it.** The transport retries UNAVAILABLE, RESOURCE_EXHAUSTED
+                and ABORTED, so a batch that keeps failing on those codes runs up to
+                6 attempts × *timeout* plus backoff under the default
+                ``max_retries=5`` — a worst case near 17 minutes at ``timeout=120``.
+                Passing a ``retry_config`` with a lower ``max_retries`` when
+                constructing the index shrinks *that* case. A *timeout* that expires
+                is not retried: the batch fails after one attempt, so the knob for a
+                timeout is a larger *timeout*, or *total_timeout* to bound the whole
+                ingest. See the four timeout layers on :class:`GrpcIndex`.
 
         Returns:
             :class:`UpsertResponse` with the total count of vectors upserted across
@@ -1379,13 +1433,17 @@ class GrpcIndex:
             ) from None
 
         if not isinstance(df, pd.DataFrame):
-            raise PineconeValueError("df must be a pandas DataFrame")
+            raise PineconeValueError(
+                f"df must be a pandas DataFrame, got {type(df).__name__}. Build one with "
+                "columns ['id', 'values'] and optionally ['sparse_values', 'metadata'], "
+                "e.g. pd.DataFrame([{'id': 'v1', 'values': [0.1, 0.2]}])."
+            )
 
         validate_batch_size(batch_size)
 
         resolved_on_error = _resolve_on_error(on_error)
         resolved_concurrency = (
-            _default_max_concurrency() if max_concurrency is None else max_concurrency
+            DEFAULT_MAX_CONCURRENCY if max_concurrency is None else max_concurrency
         )
         require_in_range("max_concurrency", resolved_concurrency, 1, 64)
 
@@ -1394,21 +1452,19 @@ class GrpcIndex:
         # Validate before submitting anything, so a malformed row cannot leave
         # part of the frame ingested. VectorFactory would otherwise do this
         # inside a worker thread, after earlier batches had already landed.
-        for record in records:
-            validate_vector_dict(record)
+        for row, record in enumerate(records):
+            validate_vector_dict(record, row=row)
 
         def _upsert_batch(batch: builtins.list[dict[str, Any]]) -> dict[str, Any]:
             return self._channel.upsert(batch, namespace or None, timeout_s=timeout)
 
-        batch_result = batch_execute(
+        batch_result = bulk_execute_sync(
             items=records,
             operation=_upsert_batch,
             batch_size=batch_size,
             max_concurrency=resolved_concurrency,
             show_progress=show_progress,
             desc="Upserting",
-            executor=self._get_batch_executor(resolved_concurrency),
-            limiter_registry=self._limiter_registry,
             host=self._limiter_host,
             total_timeout=total_timeout,
         )
@@ -1431,6 +1487,11 @@ class GrpcIndex:
                 # All batches have settled by the time batch_execute returns, so
                 # nothing is left running server-side when this propagates.
                 error = min(batch_result.errors, key=lambda err: err.batch_index).error
+                if isinstance(error, PineconeTimeoutError):
+                    raise PineconeTimeoutError(
+                        f"{_as_sentence(str(error))} {self._timeout_guidance(timeout)}",
+                        response=response,
+                    ) from error
                 error.response = response  # type: ignore[attr-defined]
                 raise error
             if on_error is None:
@@ -2489,10 +2550,9 @@ class GrpcIndex:
     def close(self) -> None:
         """Close the connection to the index and release background resources.
 
-        Waits for any in-flight ``*_async`` submissions to finish, then shuts
-        down the worker pools used for batch upserts and closes the network
-        connection. Call this when you are done issuing requests through this
-        client and are not using it as a context manager.
+        Waits for any in-flight ``*_async`` submissions to finish, then closes
+        the network connection. Call this when you are done issuing requests
+        through this client and are not using it as a context manager.
 
         Examples:
             .. code-block:: python
@@ -2502,11 +2562,6 @@ class GrpcIndex:
                 idx.close()
         """
         self._executor.shutdown(wait=True)
-        with self._batch_executor_lock:
-            executors = list(self._batch_executors.values())
-            self._batch_executors.clear()
-        for executor in executors:
-            executor.shutdown(wait=False)
         self._http.close()
         if hasattr(self._channel, "close"):
             self._channel.close()

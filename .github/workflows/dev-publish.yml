@@ -35,36 +35,79 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check for changes since last successful run
+      # Anchored on the commit we last *published*, not on a wall-clock
+      # timestamp. The old form asked "any commit newer than the last
+      # successful run's updatedAt?", which had two compounding faults:
+      #
+      #   1. A commit that lands while a run is in flight is older than that
+      #      run's completion time, so the next run's window excludes it.
+      #   2. A gate-skipped run still concludes `success`, so it became the
+      #      new anchor — making the loss permanent rather than transient.
+      #
+      # Together those wedged the schedule: 7817ed50 landed at 14:51:48Z
+      # during a run that finished at 14:52:56Z, and every hourly run after
+      # it compared against the previous skip and reported "no new commits".
+      # The tip of main went unpublished indefinitely.
+      #
+      # A commit SHA has neither failure mode: it advances only when a
+      # publish actually succeeds, so an in-flight commit is simply picked up
+      # by the next run, and a skipped run moves nothing.
+      - name: Check for changes since last published commit
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
             echo "Manual trigger — always run"
             exit 0
           fi
 
-          last_success=$(gh run list \
-            --workflow "Dev Build & Publish" \
-            --status success \
-            --json updatedAt \
-            --jq '.[0].updatedAt // empty')
+          # The publish job uploads `last-published-sha` only on success, so
+          # the newest unexpired copy identifies the last published commit via
+          # its run's head_sha. Sorted explicitly rather than trusting the
+          # listing order, which the API does not document as stable.
+          #
+          # Guarded rather than assigned bare: under `set -e` a failing command
+          # substitution aborts the step, which would leave `has_changes` unset
+          # and skip the publish on any transient API error -- the one anchor
+          # state that resolves itself. An unreachable API is an unknown anchor,
+          # so it takes the same fall-open path as the two cases below.
+          if ! last_sha=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=last-published-sha&per_page=100" \
+            --jq '[.artifacts[] | select(.expired == false)]
+                  | sort_by(.created_at) | last
+                  | .workflow_run.head_sha // empty'); then
+            echo "::warning::artifacts API lookup failed — treating the anchor as unknown and building"
+            last_sha=""
+          fi
 
-          if [ -z "$last_success" ]; then
+          # No marker means either the first run after this change shipped or
+          # the artifact aged out of retention. Publishing is idempotent
+          # (`twine upload --skip-existing`), so building is the safe default.
+          if [ -z "$last_sha" ]; then
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
-            echo "No prior successful run found — running"
+            echo "No published-commit marker found (first run or expired retention) — running"
             exit 0
           fi
 
-          commit_count=$(git rev-list --count --since="$last_success" HEAD)
+          # A force-push or history rewrite can leave a marker naming a commit
+          # this checkout has never heard of; `rev-list` would abort the step.
+          if ! git cat-file -e "${last_sha}^{commit}" 2>/dev/null; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "Last published commit ${last_sha} is not in this history — running"
+            exit 0
+          fi
+
+          commit_count=$(git rev-list --count "${last_sha}..HEAD")
           if [ "$commit_count" -gt 0 ]; then
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
-            echo "$commit_count new commit(s) since $last_success"
+            echo "${commit_count} new commit(s) since published ${last_sha}"
           else
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
-            echo "No new commits since $last_success — skipping"
+            echo "HEAD is already published as ${last_sha} — skipping"
           fi
 
   # ---------------------------------------------------------------------------
@@ -402,6 +445,21 @@ jobs:
             --skip-existing \
             --repository-url "https://${GCP_REGION}-python.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPO_NAME}/" \
             dist/*
+
+      # The gate's anchor. Written only after twine returns 0, so a failed
+      # publish leaves the previous anchor standing and the next run retries
+      # the same commit instead of stepping over it. The file content is for
+      # humans reading the artifact; the gate reads the SHA from the artifact's
+      # associated run, which cannot drift from what this job checked out.
+      - name: Record published commit
+        run: |
+          echo "${{ github.sha }}" > last-published-sha.txt
+
+      - name: Upload published-commit marker
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7.0.0
+        with:
+          name: last-published-sha
+          path: last-published-sha.txt
 
   # ---------------------------------------------------------------------------
   # Stage 4: Smoke tests against the just-published wheel (informational only)

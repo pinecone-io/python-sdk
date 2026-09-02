@@ -49,11 +49,17 @@ class TestAdaptiveBatchExecute:
             max_observed = [0]
             lock = asyncio.Lock()
 
+            peak_limit = [limiter.current_limit()]
+
             async def slow_op(batch: list[dict[str, Any]]) -> Any:
                 nonlocal inflight_observed
                 async with lock:
                     inflight_observed += 1
                     max_observed[0] = max(max_observed[0], inflight_observed)
+                    # AIMD recovery may legitimately raise the limit mid-run
+                    # (real timing since the #45 fix); the invariant is that
+                    # admission never exceeds the limit's trajectory.
+                    peak_limit[0] = max(peak_limit[0], limiter.current_limit())
                 await asyncio.sleep(0.1)
                 async with lock:
                     inflight_observed -= 1
@@ -69,8 +75,9 @@ class TestAdaptiveBatchExecute:
                 limiter_registry=registry,
                 host="test-host",
             )
-            assert max_observed[0] <= 4, (
-                f"observed max concurrency {max_observed[0]} exceeds limiter cap"
+            assert max_observed[0] <= peak_limit[0], (
+                f"observed max concurrency {max_observed[0]} exceeds limiter "
+                f"trajectory peak {peak_limit[0]}"
             )
 
         asyncio.run(run())
@@ -201,7 +208,11 @@ class TestAdaptiveBatchExecute:
             limiter_registry=registry,
             host="host2",
         )
-        assert peak[0] <= 3
+        # limit starts at 3 halved... recovery can raise it while draining;
+        # the run-wide bound is the trajectory peak, which ends at final limit.
+        assert peak[0] <= registry.get("host2", 6).current_limit(), (
+            f"peak {peak[0]} exceeded the recovered limit"
+        )
 
 
 class TestAdaptiveBatchExecuteSync:
@@ -234,11 +245,14 @@ class TestAdaptiveBatchExecuteSync:
         max_observed = [0]
         lock = threading.Lock()
 
+        peak_limit = [limiter.current_limit()]
+
         def slow_op(batch: list[dict[str, Any]]) -> Any:
             nonlocal inflight_counter
             with lock:
                 inflight_counter += 1
                 max_observed[0] = max(max_observed[0], inflight_counter)
+                peak_limit[0] = max(peak_limit[0], limiter.current_limit())
             time.sleep(0.05)
             with lock:
                 inflight_counter -= 1
@@ -254,8 +268,9 @@ class TestAdaptiveBatchExecuteSync:
             limiter_registry=registry,
             host="test-host",
         )
-        assert max_observed[0] <= 4, (
-            f"observed max concurrency {max_observed[0]} exceeds limiter cap"
+        assert max_observed[0] <= peak_limit[0], (
+            f"observed max concurrency {max_observed[0]} exceeds limiter "
+            f"trajectory peak {peak_limit[0]}"
         )
         assert result.successful_item_count == 20
         assert result.failed_item_count == 0

@@ -75,7 +75,14 @@ class LegacyIndexFactory(Protocol):
 
 _HERE = Path(__file__).resolve().parent
 
-_DEFAULT_TIMEOUT_SECONDS = 120
+# The global `timeout` in pyproject.toml is sized for the unit suite, but also
+# applies here and silently overrides each test's own poll budget — nearly every
+# test in this directory asks poll_until() to wait longer than 60s, so they only
+# pass when the control plane happens to be fast. poll_until() already bounds
+# itself with a descriptive TimeoutError, leaving pytest-timeout as a backstop
+# for hangs *outside* polling; size it above the largest declared budget
+# (currently 1020s) rather than below the smallest.
+_DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("PINECONE_TEST_TIMEOUT", "1800"))
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -85,9 +92,9 @@ def pytest_configure(config: pytest.Config) -> None:
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Size the timeout for a live backend (#306) and reject asyncio marks (#313).
 
-    ``timeout = 5`` is sized for unit tests, which mock every sleep away; a
-    real round trip cannot honour it. Tests carrying their own marker are
-    skipped, so the explicit values in this tree keep winning either way.
+    The global ini ``timeout`` is sized for unit tests, which mock every sleep
+    away; a real round trip cannot honour it. Tests carrying their own marker
+    are skipped, so the explicit values in this tree keep winning either way.
 
     Path-filtered because pytest hands a conftest hook the entire session's
     item list, not only the items collected beneath that conftest — an
@@ -150,6 +157,26 @@ def pytest_terminal_summary(
 # Helpers
 # ---------------------------------------------------------------------------
 
+_MAX_POLL_TIMEOUT = float(os.environ.get("PINECONE_TEST_MAX_POLL_TIMEOUT", "0")) or None
+
+
+def _capped_timeout(timeout: int) -> int:
+    """Shrink a poll timeout under PINECONE_TEST_MAX_POLL_TIMEOUT, if set.
+
+    Against a synchronous backend like minicone, a condition that's ever going
+    to become true does so on the first check; a failing test otherwise burns
+    its full real-API-sized timeout (up to 300s) doing nothing.
+    """
+    if _MAX_POLL_TIMEOUT is None:
+        return timeout
+    return int(min(timeout, _MAX_POLL_TIMEOUT))
+
+
+def _capped_interval(interval: int) -> int | float:
+    if _MAX_POLL_TIMEOUT is None:
+        return interval
+    return min(interval, max(_MAX_POLL_TIMEOUT / 10, 0.5))
+
 
 def wait_for_ready(
     check_fn: object,
@@ -159,6 +186,7 @@ def wait_for_ready(
     description: str = "resource",
 ) -> None:
     """Poll until check_fn() returns True or timeout expires."""
+    timeout, interval = _capped_timeout(timeout), _capped_interval(interval)
     start = time.time()
     while time.time() - start < timeout:
         try:
@@ -179,6 +207,7 @@ def poll_until(
     description: str = "condition",
 ) -> object:
     """Poll query_fn() until check_fn(result) is True. Returns the final result."""
+    timeout, interval = _capped_timeout(timeout), _capped_interval(interval)
     start = time.time()
     last_result = None
     while time.time() - start < timeout:
@@ -228,6 +257,7 @@ def ensure_index_deleted(
     none, so every poll raised and this helper leaked every index it was
     asked to delete (#346).
     """
+    timeout, interval = _capped_timeout(timeout), _capped_interval(interval)
     try:
         client.indexes.delete(name)
     except Exception as exc:
@@ -268,6 +298,7 @@ async def async_ensure_index_deleted(
     interval: int = 3,
 ) -> None:
     """Async version of :func:`ensure_index_deleted`. Best-effort; never raises."""
+    timeout, interval = _capped_timeout(timeout), _capped_interval(interval)
     try:
         await async_client.indexes.delete(name)
     except Exception as exc:
@@ -296,6 +327,7 @@ async def async_poll_until(
     description: str = "condition",
 ) -> object:
     """Async version of poll_until."""
+    timeout, interval = _capped_timeout(timeout), _capped_interval(interval)
     start = time.time()
     last_result = None
     while time.time() - start < timeout:

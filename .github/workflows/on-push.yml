@@ -70,7 +70,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
         with:
-          toolchain: stable
+          toolchain: "1.98.0"
 
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc  # v2.9.1
@@ -126,7 +126,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
         with:
-          toolchain: stable
+          toolchain: "1.98.0"
 
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc  # v2.9.1
@@ -151,7 +151,14 @@ jobs:
         # The scoped pytest.mark.timeout values are sized against measured
         # runtimes (#327), and without this the only way to check a claimed
         # margin against real CI hardware is to push a throwaway commit.
-        run: uv run pytest tests/unit -x -v --durations=25 --durations-min=0.5
+        run: uv run pytest tests/unit -x -v --cov --cov-report=term-missing --durations=25 --durations-min=0.5
+
+      # One matrix leg is enough to see the shape of coverage; posting it five
+      # times over would just be noise on the PR checks tab. See
+      # tests/unit/README.md for why there's no threshold yet.
+      - name: Post coverage to job summary
+        if: matrix.python-version == '3.12'
+        run: uv run --no-sync coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
   # Wheel-only install verify, on THIS ref
@@ -183,7 +190,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
         with:
-          toolchain: stable
+          toolchain: "1.98.0"
 
       - name: Cache cargo build artifacts
         uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc  # v2.9.1
@@ -260,7 +267,7 @@ jobs:
       - name: Install Rust toolchain (rustfmt + clippy)
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
         with:
-          toolchain: stable
+          toolchain: "1.98.0"
           components: rustfmt, clippy
 
       - name: Cache cargo build artifacts
