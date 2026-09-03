@@ -290,7 +290,7 @@ jobs:
         run: cargo install cargo-audit --locked
 
       - name: cargo audit
-        run: cargo audit
+        run: cargo audit --file ../Cargo.lock
 
       # --no-default-features turns off pyo3's extension-module so the test
       # binaries can link against libpython. With it on, Python symbols are
