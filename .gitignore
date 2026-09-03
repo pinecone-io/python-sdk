@@ -31,3 +31,9 @@ htmlcov/
 # Harness artifacts (should live in the harness repo, not here)
 pipeline-state/
 tasks/
+
+# Agent session working copies — per-run scratch copies of internal/reviews/*
+# source-of-truth files, marked up in place by orchestrators. Ephemeral by
+# design; see internal/sessions/README.md.
+internal/sessions/*
+!internal/sessions/README.md

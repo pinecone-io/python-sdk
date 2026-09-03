@@ -40,6 +40,15 @@ Backups
    :show-inheritance:
 
 
+BackupSchedules
+---------------
+
+.. autoclass:: pinecone.client.backup_schedules.BackupSchedules
+   :members:
+   :undoc-members: False
+   :show-inheritance:
+
+
 RestoreJobs
 -----------
 

@@ -15,7 +15,6 @@ import orjson
 from pinecone._internal.adapters.assistants_adapter import AssistantsAdapter
 from pinecone._internal.constants import (
     ASSISTANT_API_VERSION,
-    ASSISTANT_API_VERSION_2026_04,
     ASSISTANT_EVALUATION_BASE_URL,
     DEFAULT_BASE_URL,
 )
@@ -30,9 +29,14 @@ from pinecone.models.assistant.chat import ChatCompletionResponse, ChatResponse
 from pinecone.models.assistant.context import ContextResponse
 from pinecone.models.assistant.evaluation import AlignmentResult
 from pinecone.models.assistant.file_model import AssistantFileModel
-from pinecone.models.assistant.list import ListAssistantsResponse, ListFilesResponse
+from pinecone.models.assistant.list import (
+    ListAssistantsResponse,
+    ListFilesResponse,
+    ListOperationsResponse,
+)
 from pinecone.models.assistant.message import Message
 from pinecone.models.assistant.model import AssistantModel
+from pinecone.models.assistant.operation import OperationModel
 from pinecone.models.assistant.options import ContextOptions
 from pinecone.models.assistant.streaming import (
     ChatCompletionStream,
@@ -53,6 +57,80 @@ _CREATE_POLL_INTERVAL_SECONDS = 0.5
 _DELETE_POLL_INTERVAL_SECONDS = 5
 _UPLOAD_POLL_INTERVAL_SECONDS = 5
 
+# A read timeout on an SSE stream measures the gap between tokens, and
+# POST /chat/{name}/chat/completions sends nothing during that gap: no keepalive,
+# unlike POST /chat/{name}, which heartbeats every 15s. A model that thinks for
+# longer than PineconeConfig.timeout (30s) is therefore indistinguishable from a
+# dead connection. Both endpoints get the raised floor so they fail alike.
+_STREAM_TIMEOUT_FLOOR_SECONDS = 300.0
+
+# Checked client-side because the backend answers an unparseable filter with a
+# 400 that does not enumerate what it would have accepted.
+_VALID_OPERATION_TYPES = ("upload_file", "upsert_file", "update_file_metadata", "delete_file")
+_VALID_OPERATION_STATUSES = ("Processing", "Completed", "Failed")
+
+# Statuses that mean delete() will never see the 404 it polls for: the
+# server-side reconciler only rescues Create operations, so an assistant that
+# fails while being deleted stays put and an untimed poll spins forever.
+# "Terminating" is deliberately absent — that one is a delete in flight.
+_DELETE_TERMINAL_STATUSES = ("Failed", "InitializationFailed")
+
+
+def _operation_target(file_id: str | None) -> str:
+    return f"file {file_id!r}" if file_id is not None else "the file"
+
+
+def _stream_upload_name(file_name: str | None) -> str:
+    """The multipart filename to send for a ``file_stream`` upload.
+
+    The server types an uploaded file by its filename extension alone — it
+    never sniffs the bytes — so a stream sent without a usable filename is a
+    guaranteed 400. Refusing here saves the round trip and names the fix.
+    """
+    if file_name is None or not os.path.splitext(file_name)[1].lstrip("."):
+        raise PineconeValueError(
+            "upload_file(file_stream=...) needs a file_name with an extension: the "
+            "server types an uploaded file by its extension alone, so a stream with "
+            "no filename is rejected whatever the bytes are. Pass "
+            "file_name='report.pdf' (supported extensions: .txt, .pdf, .json, .md, "
+            ".docx)."
+        )
+    return file_name
+
+
+def _validate_choice(name: str, value: str, valid: tuple[str, ...]) -> str:
+    if value not in valid:
+        raise PineconeValueError(f"{name} must be one of {valid!r}, got {value!r}")
+    return value
+
+
+def _stream_timeout(config_timeout: float, override: float | None) -> float:
+    """Resolve the HTTP timeout for a streaming chat request.
+
+    An explicit per-call *override* is used verbatim, including values below the
+    floor. Otherwise *config_timeout* is raised to
+    :data:`_STREAM_TIMEOUT_FLOOR_SECONDS` — raised only, never lowered, so a
+    client configured with a longer timeout keeps it.
+    """
+    if override is not None:
+        return override
+    return max(config_timeout, _STREAM_TIMEOUT_FLOOR_SECONDS)
+
+
+def _operation_failure_message(action: str, file_id: str | None, operation: OperationModel) -> str:
+    """The failure text a caller sees when a file operation reports ``"Failed"``.
+
+    The server's ``error_message`` is quoted verbatim: it is the only part that
+    says *why* ("Uploaded file can only currently be either a pdf or txt file"),
+    and paraphrasing it is the difference between a caller fixing the input and
+    a caller guessing.
+    """
+    detail = operation.error or "the server reported no error message"
+    return (
+        f"{action} of {_operation_target(file_id)} failed "
+        f"(operation_id={operation.operation_id!r}): {detail}"
+    )
+
 
 class Assistants(AssistantsLegacyNamespaceMixin):
     """Control-plane operations for Pinecone assistants.
@@ -68,7 +146,8 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             from pinecone import Pinecone
 
             pc = Pinecone(api_key="your-api-key")
-            assistants = pc.assistants
+            for assistant in pc.assistants.list():
+                print(assistant.name, assistant.status)
     """
 
     def __init__(self, config: PineconeConfig) -> None:
@@ -95,7 +174,6 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             retry_config=config.retry_config,
         )
         self._http = _HTTPClient(cp_config, ASSISTANT_API_VERSION)
-        self._http_v202604 = _HTTPClient(cp_config, ASSISTANT_API_VERSION_2026_04)
         self._adapter = AssistantsAdapter()
         self._data_plane_clients: dict[str, HTTPClient] = {}
 
@@ -136,9 +214,12 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         return model
 
     def close(self) -> None:
-        """Close the underlying HTTP client and any cached data-plane clients."""
+        """Release the HTTP connections held by this namespace.
+
+        Call this when you're done using ``pc.assistants`` to free pooled
+        connections, including any opened for individual assistants.
+        """
         self._http.close()
-        self._http_v202604.close()
         self._eval_http.close()
         for client in self._data_plane_clients.values():
             client.close()
@@ -178,80 +259,44 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             )
         return self._data_plane_clients[assistant_name]
 
-    def _list_files_http(self, assistant_name: str) -> HTTPClient:
-        """Return an HTTPClient for the assistant's data-plane host using v202604."""
-        from pinecone._internal.config import PineconeConfig as _PineconeConfig
-        from pinecone._internal.http_client import HTTPClient as _HTTPClient
-
-        assistant = self.describe(name=assistant_name)
-        if not assistant.host:
-            raise PineconeValueError(f"Assistant '{assistant_name}' has no data-plane host")
-        data_config = _PineconeConfig(
-            api_key=self._config.api_key,
-            host=f"{assistant.host.rstrip('/')}/assistant",
-            timeout=self._config.timeout,
-            additional_headers=self._config.additional_headers,
-            source_tag=self._config.source_tag or "",
-            proxy_url=self._config.proxy_url or "",
-            proxy_headers=self._config.proxy_headers,
-            ssl_ca_certs=self._config.ssl_ca_certs,
-            ssl_verify=self._config.ssl_verify,
-            connection_pool_maxsize=self._config.connection_pool_maxsize,
-            retry_config=self._config.retry_config,
-        )
-        return _HTTPClient(data_config, ASSISTANT_API_VERSION_2026_04)
-
-    def _upsert_http(self, assistant_name: str) -> HTTPClient:
-        """Return an HTTPClient targeting the assistant's data-plane host for 2026-04 upserts."""
-        from pinecone._internal.config import PineconeConfig as _PineconeConfig
-        from pinecone._internal.http_client import HTTPClient as _HTTPClient
-
-        assistant = self.describe(name=assistant_name)
-        if not assistant.host:
-            raise PineconeValueError(f"Assistant '{assistant_name}' has no data-plane host")
-        data_config = _PineconeConfig(
-            api_key=self._config.api_key,
-            host=f"{assistant.host.rstrip('/')}/assistant",
-            timeout=self._config.timeout,
-            additional_headers=self._config.additional_headers,
-            source_tag=self._config.source_tag or "",
-            proxy_url=self._config.proxy_url or "",
-            proxy_headers=self._config.proxy_headers,
-            ssl_ca_certs=self._config.ssl_ca_certs,
-            ssl_verify=self._config.ssl_verify,
-            connection_pool_maxsize=self._config.connection_pool_maxsize,
-            retry_config=self._config.retry_config,
-        )
-        return _HTTPClient(data_config, ASSISTANT_API_VERSION_2026_04)
-
     def _poll_operation_until_done(
         self,
-        upsert_http: HTTPClient,
         assistant_name: str,
         operation_id: str,
         timeout: float | None,
-    ) -> None:
-        """Poll ``GET /operations/{assistant_name}/{operation_id}`` until done."""
+        *,
+        action: str,
+        file_id: str | None = None,
+        poll_interval: float = _UPLOAD_POLL_INTERVAL_SECONDS,
+    ) -> OperationModel:
+        """Poll :meth:`describe_operation` until the operation is done.
+
+        Returns the terminal :class:`OperationModel`. Raises
+        :exc:`PineconeError` when the operation reports ``"Failed"``, quoting
+        the server's ``error_message`` verbatim, and
+        :exc:`PineconeTimeoutError` when *timeout* elapses first.
+        """
         start = time.monotonic()
         while True:
-            response = upsert_http.get(f"/operations/{assistant_name}/{operation_id}")
-            op_model = self._adapter.to_operation(response.content)
+            operation = self.describe_operation(
+                assistant_name=assistant_name, operation_id=operation_id
+            )
 
-            if op_model.status != "Processing":
-                if op_model.status == "Failed":
-                    error_msg = op_model.error or "Unknown operation error"
-                    raise PineconeError(
-                        f"Upsert operation failed for operation '{operation_id}': {error_msg}"
-                    )
-                return
+            if operation.status != "Processing":
+                if operation.status == "Failed":
+                    raise PineconeError(_operation_failure_message(action, file_id, operation))
+                return operation
 
             if timeout is not None:
                 elapsed = time.monotonic() - start
                 if elapsed >= timeout:
                     raise PineconeTimeoutError(
-                        f"Upsert operation timed out after {timeout}s (operation_id={operation_id})"
+                        f"{action} of {_operation_target(file_id)} did not finish within "
+                        f"{timeout}s (operation_id={operation_id!r}, "
+                        f"percent_complete={operation.percent_complete}). The operation is "
+                        "still running server-side; call describe_operation() to follow it."
                     )
-            time.sleep(_UPLOAD_POLL_INTERVAL_SECONDS)
+            time.sleep(poll_interval)
 
     def upload_file(
         self,
@@ -268,20 +313,26 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         """Upload a file to a Pinecone assistant.
 
         Uploads a file from a local path or an in-memory byte stream, then
-        polls until server-side processing completes.
+        waits until processing finishes before returning.
 
         Args:
             assistant_name: Name of the target assistant.
             file_path: Path to a local file to upload. Mutually exclusive
                 with *file_stream*.
             file_stream: An open byte stream to upload. Mutually exclusive
-                with *file_path*. Use *file_name* to set the filename.
-            file_name: Filename to associate with *file_stream*. Ignored
-                when *file_path* is provided.
-            metadata: Optional metadata dictionary. Sent as a JSON string.
+                with *file_path*. Requires *file_name*.
+            file_name: Filename to associate with *file_stream*. Required
+                when *file_stream* is used, and must include a supported
+                extension (``.txt``, ``.pdf``, ``.json``, ``.md``, or
+                ``.docx``), since the extension determines how the file is
+                processed. Ignored when *file_path* is given, since its
+                basename already supplies the extension.
+            metadata: Optional metadata to attach to the file, e.g.
+                ``{"department": "research"}``. At most 16 KB once encoded.
             multimodal: Whether to enable multimodal processing for PDFs.
-            file_id: Optional caller-specified file identifier for upsert
-                behavior.
+            file_id: Optional identifier for the uploaded file. When given,
+                any existing file with that id is replaced. Otherwise the
+                server assigns one.
             timeout: Seconds to wait for processing to complete. ``None``
                 (default) polls indefinitely. Use ``-1`` to return
                 immediately after upload with one describe call. Raises
@@ -289,23 +340,42 @@ class Assistants(AssistantsLegacyNamespaceMixin):
                 before the deadline.
 
         Returns:
-            :class:`AssistantFileModel` fetched fresh from the API after
+            :class:`AssistantFileModel` describing the uploaded file, once
             processing completes.
 
         Raises:
             :exc:`PineconeValueError`: If both or neither of *file_path*
-                and *file_stream* are provided, or if *file_path* does not
-                exist.
+                and *file_stream* are provided, if *file_path* does not
+                exist, or if *file_stream* is used without a *file_name*
+                carrying a file extension.
             :exc:`PineconeTimeoutError`: If processing does not complete
                 before *timeout*.
-            :exc:`PineconeError`: If server-side processing fails.
+            :exc:`PineconeError`: If processing fails.
 
         Examples:
-            >>> file = pc.assistants.upload_file(
+            Upload from a local path. The basename supplies the extension the
+            server types the file by:
+
+            >>> file = pc.assistants.upload_file(  # doctest: +SKIP
             ...     assistant_name="research-assistant",
-            ...     file_path="/data/report.pdf",
+            ...     file_path="/data/q3-revenue-review.pdf",
             ... )
             >>> file.status  # doctest: +SKIP
+            'Available'
+
+            Or upload from an open byte stream instead. ``file_path`` and
+            ``file_stream`` are alternatives — pass exactly one — and a stream
+            needs ``file_name`` to carry the extension a path would have
+            supplied:
+
+            >>> import io
+            >>> file = pc.assistants.upload_file(
+            ...     assistant_name="research-assistant",
+            ...     file_stream=io.BytesIO(b"%PDF-1.4 Q3 revenue review"),
+            ...     file_name="q3-revenue-review.pdf",
+            ...     metadata={"department": "finance", "quarter": "2024-Q3"},
+            ... )
+            >>> file.status
             'Available'
         """
         import json as _json
@@ -324,93 +394,65 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             if file_stream is None:
                 raise PineconeValueError("Exactly one of file_path or file_stream must be provided")
             handle = file_stream
-            upload_name = file_name or "upload"
+            upload_name = _stream_upload_name(file_name)
 
         try:
             data_http = self._data_plane_http(assistant_name)
 
-            params: dict[str, str] = {}
+            form: dict[str, Any] = {"file": (upload_name, handle)}
             if metadata is not None:
-                params["metadata"] = _json.dumps(metadata)
+                form["metadata"] = (None, _json.dumps(metadata))
+            params: dict[str, str] = {}
             if multimodal is not None:
                 params["multimodal"] = str(multimodal).lower()
 
             if file_id is not None:
-                # Use the 2026-04 upsert endpoint: PUT /files/{assistant_name}/{file_id}
-                upsert_http = self._upsert_http(assistant_name)
+                action = "Upsert"
                 logger.info(
                     "Upserting file %r (id=%s) to assistant %r",
                     upload_name,
                     file_id,
                     assistant_name,
                 )
-                # v202604 rejects metadata as a query param; send it as a multipart field instead.
-                upsert_files: dict[str, Any] = {"file": (upload_name, handle)}
-                if metadata is not None:
-                    upsert_files["metadata"] = (None, _json.dumps(metadata))
-                upsert_query: dict[str, str] = {}
-                if multimodal is not None:
-                    upsert_query["multimodal"] = str(multimodal).lower()
-                upsert_response = upsert_http.put(
-                    f"/files/{assistant_name}/{file_id}",
-                    files=upsert_files,
-                    params=upsert_query,
+                response = data_http.put(
+                    f"/files/{assistant_name}/{file_id}", files=form, params=params
                 )
-                op_model = self._adapter.to_operation(upsert_response.content)
-                operation_id = op_model.operation_id
-                if timeout == -1:
-                    return self.describe_file(assistant_name=assistant_name, file_id=file_id)
-                self._poll_operation_until_done(upsert_http, assistant_name, operation_id, timeout)
-                return self.describe_file(assistant_name=assistant_name, file_id=file_id)
-
-            logger.info("Uploading file %r to assistant %r", upload_name, assistant_name)
-            response = data_http.post(
-                f"/files/{assistant_name}",
-                files={"file": (upload_name, handle)},
-                params=params,
-            )
-            file_model = self._adapter.to_file(response.content)
-            logger.debug(
-                "Uploaded file %r (id=%s, status=%s)",
-                upload_name,
-                file_model.id,
-                file_model.status,
-            )
+            else:
+                action = "Upload"
+                logger.info("Uploading file %r to assistant %r", upload_name, assistant_name)
+                response = data_http.post(f"/files/{assistant_name}", files=form, params=params)
+            operation = self._adapter.to_operation(response.content)
         finally:
             if opened_file is not None:
                 opened_file.close()
 
+        uploaded_id = file_id if file_id is not None else operation.file_id
+        if uploaded_id is None:
+            raise PineconeError(
+                f"{action} of {upload_name!r} was accepted (operation_id="
+                f"{operation.operation_id!r}) but the response did not name the file it "
+                "created, so there is nothing to describe. Call describe_operation() with "
+                "that operation id to find the file."
+            )
+        logger.debug(
+            "%s of %r accepted (file_id=%s, operation_id=%s)",
+            action,
+            upload_name,
+            uploaded_id,
+            operation.operation_id,
+        )
+
         if timeout == -1:
-            return self.describe_file(assistant_name=assistant_name, file_id=file_model.id)
+            return self.describe_file(assistant_name=assistant_name, file_id=uploaded_id)
 
-        return self._poll_file_until_processed(data_http, assistant_name, file_model.id, timeout)
-
-    def _poll_file_until_processed(
-        self,
-        data_http: HTTPClient,
-        assistant_name: str,
-        file_id: str,
-        timeout: float | None,
-    ) -> AssistantFileModel:
-        """Poll ``GET /files/{assistant_name}/{file_id}`` until processing completes."""
-        start = time.monotonic()
-        while True:
-            response = data_http.get(f"/files/{assistant_name}/{file_id}")
-            file_model = self._adapter.to_file(response.content)
-
-            if file_model.status != "Processing":
-                if file_model.status == "ProcessingFailed":
-                    error_msg = file_model.error_message or "Unknown processing error"
-                    raise PineconeError(f"File processing failed for '{file_id}': {error_msg}")
-                return file_model
-
-            if timeout is not None:
-                elapsed = time.monotonic() - start
-                if elapsed >= timeout:
-                    raise PineconeTimeoutError(
-                        f"File processing timed out after {timeout}s (operation_id={file_id})"
-                    )
-            time.sleep(_UPLOAD_POLL_INTERVAL_SECONDS)
+        self._poll_operation_until_done(
+            assistant_name,
+            operation.operation_id,
+            timeout,
+            action=action,
+            file_id=uploaded_id,
+        )
+        return self.describe_file(assistant_name=assistant_name, file_id=uploaded_id)
 
     def describe_file(
         self,
@@ -434,12 +476,18 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             :exc:`NotFoundError`: If the file does not exist.
             :exc:`ApiError`: If the API returns an error response.
 
+        Note:
+            Unlike :meth:`list_files`, this applies no age filter: a
+            ``"ProcessingFailed"`` file whose ``created_on`` is more than 7
+            days old is still returned here after it has dropped out of that
+            listing.
+
         Examples:
             >>> file = pc.assistants.describe_file(
             ...     assistant_name="my-assistant",
             ...     file_id="file-abc123",
             ... )
-            >>> file.status  # doctest: +SKIP
+            >>> file.status
             'Available'
         """
         data_http = self._data_plane_http(assistant_name)
@@ -474,13 +522,25 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             ``limit``.
 
         Raises:
+            :exc:`NotFoundError`: If the assistant does not exist.
             :exc:`ApiError`: If the API returns an error response.
+
+        Note:
+            A ``"ProcessingFailed"`` file drops out of this listing once its
+            ``created_on`` is more than 7 days old. It is not gone — it stays
+            retrievable by id through :meth:`describe_file`.
 
         Examples:
             .. code-block:: python
 
                 for f in pc.assistants.list_files(assistant_name="my-assistant"):
                     print(f.name, f.status)
+
+            The paginator fetches pages lazily as you iterate. Call
+            ``to_list()`` instead when you want every file materialized up
+            front:
+
+            .. code-block:: python
 
                 files = pc.assistants.list_files(assistant_name="my-assistant").to_list()
         """
@@ -512,7 +572,11 @@ class Assistants(AssistantsLegacyNamespaceMixin):
 
         Args:
             assistant_name: Name of the assistant whose files to list.
-            page_size: Maximum number of files per page.
+            page_size: Maximum number of files in this page, sent as the
+                ``limit`` query parameter. Only sent when explicitly
+                provided; omitted, the API chooses the page size. A value
+                outside the range the API accepts comes back as an
+                :exc:`ApiError` naming the bound it broke.
             pagination_token: Token from a previous response to fetch the
                 next page.
             filter: Optional metadata filter expression. Serialized to a JSON
@@ -523,14 +587,24 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             ``next`` continuation token.
 
         Raises:
+            :exc:`NotFoundError`: If the assistant does not exist.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
             .. code-block:: python
 
-                page = pc.assistants.list_files_page(assistant_name="my-assistant")
-                names = [f.name for f in page.files]
-                token = page.next  # use as pagination_token for the next call
+                page = pc.assistants.list_files_page(
+                    assistant_name="my-assistant",
+                    page_size=10,
+                )
+                for f in page.files:
+                    print(f.name)
+                if page.next:
+                    next_page = pc.assistants.list_files_page(
+                        assistant_name="my-assistant",
+                        page_size=10,
+                        pagination_token=page.next,
+                    )
         """
         from pinecone._internal.kwargs_aliases import (
             reject_unknown_kwargs,
@@ -553,7 +627,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
 
         import json as _json
 
-        list_http = self._list_files_http(assistant_name)
+        list_http = self._data_plane_http(assistant_name)
         params: dict[str, str | int] = {}
         if page_size is not None:
             params["limit"] = page_size
@@ -582,26 +656,30 @@ class Assistants(AssistantsLegacyNamespaceMixin):
     ) -> None:
         """Delete a file from a Pinecone assistant.
 
-        Sends a DELETE request, then polls every 5 seconds until the file is
-        confirmed gone (404 from describe_file). Other errors during polling
-        propagate immediately.
+        Deletion can finish immediately or run as a pending operation,
+        depending on the file's state. When it is pending, this method polls
+        until it finishes, unless you pass ``timeout=-1``.
 
         Args:
             assistant_name: Name of the assistant that owns the file.
             file_id: Unique identifier of the file to delete.
-            timeout: Seconds to wait for the file to be deleted. Use ``None``
-                (default) to poll indefinitely. Use ``-1`` to return
-                immediately without polling. Use a positive value to poll with
-                a deadline. Raises :exc:`PineconeTimeoutError` if the file
-                is not gone before the deadline.
+            timeout: Seconds to wait for the deletion to finish. Use ``None``
+                (default) to poll indefinitely. Use ``-1`` to return as soon
+                as the request is accepted — the file may still exist when
+                this returns. Use a positive value to poll with a deadline.
+                Raises :exc:`PineconeTimeoutError` if the deletion is not
+                done before the deadline.
 
         Returns:
             ``None``
 
         Raises:
-            :exc:`PineconeError`: If server-side file deletion fails.
-            :exc:`PineconeTimeoutError`: If the file still exists after
-                *timeout* seconds.
+            :exc:`NotFoundError`: If *file_id* does not name a file on this
+                assistant. Deleting an id that is already gone raises rather
+                than returning silently.
+            :exc:`PineconeError`: If the deletion operation reports failure.
+            :exc:`PineconeTimeoutError`: If the deletion has not finished
+                after *timeout* seconds.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -612,26 +690,225 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         """
         data_http = self._data_plane_http(assistant_name)
         logger.info("Deleting file %r from assistant %r", file_id, assistant_name)
-        data_http.delete(f"/files/{assistant_name}/{file_id}")
-        logger.debug("Deleted file %r from assistant %r", file_id, assistant_name)
+        response = data_http.delete(f"/files/{assistant_name}/{file_id}")
+
+        if response.status_code == 204 or not response.content:
+            logger.debug("File %r was deleted immediately (no operation)", file_id)
+            return
+
+        operation = self._adapter.to_operation(response.content)
+        logger.debug(
+            "Deletion of file %r accepted (operation_id=%s)", file_id, operation.operation_id
+        )
 
         if timeout == -1:
             return
 
-        start = time.monotonic()
-        while True:
-            try:
-                file_model = self.describe_file(assistant_name=assistant_name, file_id=file_id)
-            except NotFoundError:
-                return
-            if file_model.status not in ("Deleting", None):
-                error_msg = file_model.error_message or "Unknown deletion error"
-                raise PineconeError(f"File deletion failed for '{file_id}': {error_msg}")
-            if timeout is not None:
-                elapsed = time.monotonic() - start
-                if elapsed >= timeout:
-                    raise PineconeTimeoutError(f"File '{file_id}' still exists after {timeout}s")
-            time.sleep(_DELETE_POLL_INTERVAL_SECONDS)
+        self._poll_operation_until_done(
+            assistant_name,
+            operation.operation_id,
+            timeout,
+            action="Deletion",
+            file_id=file_id,
+            poll_interval=_DELETE_POLL_INTERVAL_SECONDS,
+        )
+
+    def describe_operation(
+        self,
+        *,
+        assistant_name: str,
+        operation_id: str,
+    ) -> OperationModel:
+        """Get the current status of a long-running assistant operation.
+
+        :meth:`upload_file` and :meth:`delete_file` poll their own operation
+        for you by default. Reach for this method when you called one of
+        them with ``timeout=-1`` and want to check on it later — for
+        example, to find the file a fire-and-forget upload created, via
+        :attr:`OperationModel.file_id`.
+
+        Args:
+            assistant_name: Name of the assistant that owns the operation.
+            operation_id: Identifier of the operation to describe, as
+                returned by :meth:`upload_file`, :meth:`delete_file`, or
+                :meth:`list_operations`.
+
+        Returns:
+            :class:`OperationModel` with ``status``, ``operation_type``,
+            ``file_id``, ``percent_complete``, ``created_at``,
+            ``completed_on``, ``ingestion_units`` and ``error``. ``status`` is
+            ``"Processing"``, ``"Completed"`` or ``"Failed"``. Read ``error``
+            only when ``status`` is ``"Failed"``: a retried operation keeps the
+            previous attempt's text, so a non-``None`` ``error`` is not by
+            itself evidence of failure.
+
+        Raises:
+            :exc:`NotFoundError`: If the assistant or the operation does not
+                exist. A finished operation stays describable until it ages out
+                of the API's retention window, and 404s from then on.
+            :exc:`ApiError`: If the API returns an error response.
+
+        Examples:
+            >>> operation = pc.assistants.describe_operation(
+            ...     assistant_name="my-assistant",
+            ...     operation_id="op-1234-abcd-5678",
+            ... )
+            >>> operation.status, operation.percent_complete
+            ('Completed', 100)
+        """
+        data_http = self._data_plane_http(assistant_name)
+        logger.info("Describing operation %r in assistant %r", operation_id, assistant_name)
+        response = data_http.get(f"/operations/{assistant_name}/{operation_id}")
+        return self._adapter.to_operation(response.content)
+
+    def list_operations(
+        self,
+        *,
+        assistant_name: str,
+        operation_type: str | None = None,
+        status: str | None = None,
+        limit: int | None = None,
+        pagination_token: str | None = None,
+    ) -> Paginator[OperationModel]:
+        """List an assistant's operations with lazy pagination.
+
+        Covers operations that are still in progress as well as ones that
+        finished — both successes and failures — until they age out of the
+        API's retention window.
+
+        Args:
+            assistant_name: Name of the assistant whose operations to list.
+            operation_type: Restrict the listing to one kind of operation. One
+                of ``"upload_file"``, ``"upsert_file"``,
+                ``"update_file_metadata"`` or ``"delete_file"``.
+            status: Restrict the listing to one status. One of
+                ``"Processing"``, ``"Completed"`` or ``"Failed"``
+                (case-sensitive).
+            limit: Maximum number of operations to yield across all pages.
+                ``None`` (default) yields all of them.
+            pagination_token: Token to resume pagination from a previous call.
+
+        Returns:
+            :class:`Paginator` over :class:`OperationModel` objects. Supports
+            ``for`` loops, ``.to_list()``, ``.pages()``, and ``limit``.
+
+        Raises:
+            :exc:`PineconeValueError`: If *operation_type* or *status* is not
+                one of the values above.
+            :exc:`NotFoundError`: If the assistant does not exist.
+            :exc:`ApiError`: If the API returns an error response.
+
+        Examples:
+            .. code-block:: python
+
+                for op in pc.assistants.list_operations(assistant_name="my-assistant"):
+                    print(op.operation_id, op.status, op.percent_complete)
+
+            Filter server-side to narrow the listing — here, uploads that have
+            not finished yet:
+
+            .. code-block:: python
+
+                pending = pc.assistants.list_operations(
+                    assistant_name="my-assistant",
+                    operation_type="upload_file",
+                    status="Processing",
+                ).to_list()
+        """
+        logger.info("Listing operations for assistant %r", assistant_name)
+
+        def fetch_page(token: str | None) -> Page[OperationModel]:
+            result = self.list_operations_page(
+                assistant_name=assistant_name,
+                operation_type=operation_type,
+                status=status,
+                pagination_token=token,
+            )
+            return Page(items=result.operations, pagination_token=result.next)
+
+        return Paginator(fetch_page=fetch_page, initial_token=pagination_token, limit=limit)
+
+    def list_operations_page(
+        self,
+        *,
+        assistant_name: str,
+        operation_type: str | None = None,
+        status: str | None = None,
+        page_size: int | None = None,
+        pagination_token: str | None = None,
+    ) -> ListOperationsResponse:
+        """List one page of an assistant's operations with explicit pagination control.
+
+        Only the parameters that are explicitly provided are sent in the
+        request. Omitted parameters are not included as query params.
+
+        Args:
+            assistant_name: Name of the assistant whose operations to list.
+            operation_type: Restrict the listing to one kind of operation. One
+                of ``"upload_file"``, ``"upsert_file"``,
+                ``"update_file_metadata"`` or ``"delete_file"``.
+            status: Restrict the listing to one status. One of
+                ``"Processing"``, ``"Completed"`` or ``"Failed"``
+                (case-sensitive).
+            page_size: Maximum number of operations in this page, sent as the
+                ``limit`` query parameter. Only sent when explicitly provided;
+                omitted, the API chooses the page size. A value outside the
+                range the API accepts comes back as an :exc:`ApiError` naming
+                the bound it broke.
+            pagination_token: Token from a previous response to fetch the next
+                page.
+
+        Returns:
+            :class:`ListOperationsResponse` with an ``operations`` list and an
+            optional ``next`` continuation token.
+
+        Raises:
+            :exc:`PineconeValueError`: If *operation_type* or *status* is not
+                one of the values above.
+            :exc:`NotFoundError`: If the assistant does not exist.
+            :exc:`ApiError`: If the API returns an error response.
+
+        Examples:
+            .. code-block:: python
+
+                page = pc.assistants.list_operations_page(
+                    assistant_name="my-assistant",
+                    status="Failed",
+                    page_size=10,
+                )
+                for op in page.operations:
+                    print(op.operation_id, op.error)
+                if page.next:
+                    next_page = pc.assistants.list_operations_page(
+                        assistant_name="my-assistant",
+                        status="Failed",
+                        page_size=10,
+                        pagination_token=page.next,
+                    )
+        """
+        params: dict[str, str | int] = {}
+        if operation_type is not None:
+            params["operation_type"] = _validate_choice(
+                "operation_type", operation_type, _VALID_OPERATION_TYPES
+            )
+        if status is not None:
+            params["status"] = _validate_choice("status", status, _VALID_OPERATION_STATUSES)
+        if page_size is not None:
+            params["limit"] = page_size
+        if pagination_token is not None:
+            params["pagination_token"] = pagination_token
+
+        data_http = self._data_plane_http(assistant_name)
+        logger.info("Listing operations page for assistant %r", assistant_name)
+        response = data_http.get(f"/operations/{assistant_name}", params=params)
+        result = self._adapter.to_operation_list(response.content)
+        logger.debug(
+            "Listed %d operations for assistant %r (has_next=%s)",
+            len(result.operations),
+            assistant_name,
+            result.next is not None,
+        )
+        return result
 
     def create(
         self,
@@ -646,29 +923,28 @@ class Assistants(AssistantsLegacyNamespaceMixin):
     ) -> AssistantModel:
         """Create a new Pinecone assistant.
 
-        Creates an assistant and optionally polls until it reaches ``"Ready"``
-        status. The assistant starts in ``"Initializing"`` status.
+        A Pinecone assistant is a managed conversational AI service that
+        answers questions grounded in documents you upload to it. This method
+        creates the assistant and, by default, waits until it reaches
+        ``"Ready"`` status before returning.
 
         Args:
-            name (str): Name for the new assistant. Must be 1-63 characters,
-                start and end with an alphanumeric character, and consist only
-                of lowercase alphanumeric characters or hyphens.
-            instructions (str | None): Optional directive for the assistant to
-                apply to all responses. Maximum 16 KB.
-            metadata (dict[str, Any] | None): Optional metadata dictionary.
-                When omitted or ``None``, no metadata is sent and the assistant
-                is created without metadata (``None``).
-            region (str): Region to deploy the assistant in. Must be ``"us"``
-                or ``"eu"`` (case-sensitive). Defaults to ``"us"``.
-            environment (str | None): Optional environment override. Restricted
-                to Pinecone-internal org plans; passing this on a non-internal
-                plan raises a 403 error from the backend.
+            name (str): Name for the new assistant, e.g. ``"docs-assistant"``.
+                Must be unique within the project.
+            instructions (str | None): Guidance the assistant applies to every
+                response, e.g. ``"Always cite the source document."``. Maximum
+                16 KB.
+            metadata (dict[str, Any] | None): Optional metadata to attach to
+                the assistant, e.g. ``{"team": "docs"}``.
+            region (str): Region to deploy the assistant in, ``"us"`` or
+                ``"eu"``. Defaults to ``"us"``. EU availability depends on your
+                plan.
+            environment (str | None): Advanced override for select internal
+                Pinecone deployments. Most users should leave this unset.
             timeout (float | None): Seconds to wait for the assistant to become
-                ready. Use ``None`` (default) to poll indefinitely. Use ``-1``
-                to return immediately without polling. Use ``0`` or a positive
-                value to poll with a deadline. Raises
-                :exc:`PineconeTimeoutError` if the assistant is not ready
-                before the deadline.
+                ready. Use ``None`` (default) to poll indefinitely, ``-1`` to
+                return immediately without polling, or a non-negative value to
+                poll with a deadline.
 
         Returns:
             :class:`AssistantModel` describing the created assistant.
@@ -677,19 +953,28 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             :exc:`PineconeValueError`: If *region* is not ``"us"`` or ``"eu"``.
             :exc:`PineconeTimeoutError`: If the assistant does not become ready
                 before the deadline.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response, such as
+                reaching your project's assistant limit.
 
         Examples:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
-            >>> assistant = pc.assistants.create(name="my-assistant")  # doctest: +SKIP
+            >>> assistant = pc.assistants.create(name="my-assistant")
+            >>> assistant.status
+            'Ready'
 
-            >>> assistant = pc.assistants.create(  # doctest: +SKIP
+            Instructions, metadata and region are all optional. ``create``
+            returns once the assistant reaches ``"Ready"``, so the assistant
+            below is usable as soon as the call returns:
+
+            >>> assistant = pc.assistants.create(
             ...     name="research-assistant",
-            ...     instructions="You are a helpful research assistant.",
-            ...     metadata={"team": "engineering", "version": "1"},
+            ...     instructions="Always cite the source document.",
+            ...     metadata={"team": "research", "cost_center": "R-4120"},
             ...     region="eu",
             ... )
+            >>> assistant.status
+            'Ready'
         """
         from pinecone._internal.kwargs_aliases import (
             reject_unknown_kwargs,
@@ -748,12 +1033,12 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             metadata, instructions, and host.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response (e.g. 404
-                when the assistant does not exist).
+            :exc:`NotFoundError`: If the assistant does not exist.
+            :exc:`ApiError`: If the API returns another error response.
 
         Examples:
             >>> assistant = pc.assistants.describe(name="my-assistant")
-            >>> assistant.status  # doctest: +SKIP
+            >>> assistant.status
             'Ready'
         """
         from pinecone._internal.kwargs_aliases import (
@@ -791,7 +1076,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         limit: int | None = None,
         pagination_token: str | None = None,
     ) -> Paginator[AssistantModel]:
-        """List assistants in the project with transparent lazy pagination.
+        """List assistants in the project with lazy pagination.
 
         Args:
             limit (int | None): Maximum number of assistants to yield across
@@ -809,8 +1094,14 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         Examples:
             .. code-block:: python
 
-                for a in pc.assistants.list():
-                    print(a.name, a.status)
+                for assistant in pc.assistants.list():
+                    print(assistant.name, assistant.status)
+
+            The paginator fetches pages lazily as you iterate. Call
+            ``to_list()`` instead when you want every assistant materialized
+            up front:
+
+            .. code-block:: python
 
                 all_assistants = pc.assistants.list().to_list()
         """
@@ -836,7 +1127,9 @@ class Assistants(AssistantsLegacyNamespaceMixin):
 
         Args:
             page_size (int | None): Maximum number of assistants per page.
-                Only sent when explicitly provided.
+                Only sent when explicitly provided; omitted, the API chooses
+                the page size. A value outside the range the API accepts comes
+                back as an :exc:`ApiError` naming the bound it broke.
             pagination_token (str | None): Token from a previous response
                 to fetch the next page.
 
@@ -851,8 +1144,13 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             .. code-block:: python
 
                 page = pc.assistants.list_page(page_size=10)
-                names = [a.name for a in page.assistants]
-                token = page.next  # use as pagination_token for the next call
+                for assistant in page.assistants:
+                    print(assistant.name)
+                if page.next:
+                    next_page = pc.assistants.list_page(
+                        page_size=10,
+                        pagination_token=page.next,
+                    )
         """
         from pinecone._internal.kwargs_aliases import (
             reject_unknown_kwargs,
@@ -880,7 +1178,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             params["pagination_token"] = pagination_token
 
         logger.info("Listing assistants page")
-        response = self._http_v202604.get("/assistants", params=params)
+        response = self._http.get("/assistants", params=params)
         result = self._adapter.to_assistant_list(response.content)
         for item in result.assistants:
             self._attach_ref(item)
@@ -902,31 +1200,50 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         """Update an existing Pinecone assistant.
 
         Updates the specified assistant's instructions and/or metadata.
-        Metadata is fully replaced (not merged) when provided.
+        Metadata is fully replaced (not merged) when provided. At least one
+        of *instructions* and *metadata* must be given.
+
+        ``None`` means "leave this field alone" — it is omitted from the
+        patch body rather than sent as an explicit null, and the server has
+        no way to clear a field from a null. To clear, send the empty value:
+        ``instructions=""`` or ``metadata={}``.
 
         Args:
             name (str): The name of the assistant to update.
             instructions (str | None): New instructions for the assistant.
                 Pass an empty string to clear existing instructions.
             metadata (dict[str, Any] | None): New metadata dictionary. Fully
-                replaces any existing metadata rather than merging.
+                replaces any existing metadata rather than merging. Pass an
+                empty dict to clear existing metadata.
 
         Returns:
             :class:`AssistantModel` describing the updated assistant.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response (e.g. 404
-                when the assistant does not exist).
+            :exc:`PineconeValueError`: If neither *instructions* nor
+                *metadata* is provided.
+            :exc:`NotFoundError`: If the assistant does not exist.
+            :exc:`ApiError`: If the API returns another error response.
 
         Examples:
-            >>> assistant = pc.assistants.update(  # doctest: +SKIP
+            Patch only the instructions. ``metadata`` is left out of the
+            request body entirely, so whatever metadata the assistant already
+            carries survives untouched:
+
+            >>> assistant = pc.assistants.update(
             ...     name="my-assistant",
-            ...     instructions="You are a helpful research assistant.",
+            ...     instructions="Always cite the source document.",
             ... )
 
-            >>> assistant = pc.assistants.update(  # doctest: +SKIP
+            Passing ``metadata`` replaces the whole dictionary instead of
+            merging into it. An assistant carrying
+            ``{"team": "research", "cost_center": "R-4120"}`` is left with
+            only ``team`` after the call below — and with its instructions
+            unchanged, since they were not named:
+
+            >>> assistant = pc.assistants.update(
             ...     name="my-assistant",
-            ...     metadata={"team": "ml", "version": "2"},
+            ...     metadata={"team": "docs-platform"},
             ... )
         """
         from pinecone._internal.kwargs_aliases import (
@@ -951,6 +1268,13 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             raise PineconeValueError(
                 "update() missing required argument: 'name' (or legacy alias 'assistant_name')."
             )
+        if instructions is None and metadata is None:
+            raise PineconeValueError(
+                "update() needs at least one of 'instructions' or 'metadata'. With both "
+                "omitted the patch body is empty and the server answers 400 'No updates "
+                "provided'. To clear a field, send its empty value: instructions='' or "
+                "metadata={}."
+            )
 
         body: dict[str, Any] = {}
         if instructions is not None:
@@ -973,9 +1297,12 @@ class Assistants(AssistantsLegacyNamespaceMixin):
     ) -> None:
         """Delete a Pinecone assistant by name.
 
-        Sends a DELETE request, then polls every 5 seconds until the
-        assistant is confirmed gone (404 from describe). Other errors
-        during polling propagate immediately.
+        By default, waits until the assistant is confirmed gone before
+        returning.
+
+        If the assistant enters a terminal failure state while being
+        deleted, waiting stops with :exc:`PineconeError` instead of polling
+        indefinitely for a state that will never arrive.
 
         Args:
             name (str): The name of the assistant to delete.
@@ -990,6 +1317,9 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             None
 
         Raises:
+            :exc:`PineconeError`: If the assistant enters a terminal failure
+                state (``"Failed"``, ``"InitializationFailed"``) while being
+                deleted.
             :exc:`PineconeTimeoutError`: If the assistant still exists after
                 *timeout* seconds.
             :exc:`ApiError`: If the API returns an error response.
@@ -999,8 +1329,13 @@ class Assistants(AssistantsLegacyNamespaceMixin):
 
                 pc.assistants.delete(name="my-assistant")
 
-                # Return immediately without waiting for deletion
-                pc.assistants.delete(name="my-assistant", timeout=-1)
+            The call above blocks until the assistant is confirmed gone. Pass
+            ``timeout=-1`` to return as soon as the request is accepted — the
+            assistant may still be terminating when this returns:
+
+            .. code-block:: python
+
+                pc.assistants.delete(name="stale-prototype", timeout=-1)
         """
         from pinecone._internal.kwargs_aliases import (
             reject_unknown_kwargs,
@@ -1035,9 +1370,18 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         start = time.monotonic()
         while True:
             try:
-                self.describe(name=name)
+                model = self.describe(name=name)
             except NotFoundError:
                 return
+            if model.status == "Terminated":
+                logger.debug("Assistant %r reported 'Terminated'; deletion is complete", name)
+                return
+            if model.status in _DELETE_TERMINAL_STATUSES:
+                raise PineconeError(
+                    f"Assistant '{name}' entered terminal state '{model.status}' while being "
+                    f"deleted, so it will never disappear on its own. Check status with "
+                    f"pc.assistants.describe(name='{name}') and retry the delete."
+                )
             if timeout is not None:
                 elapsed = time.monotonic() - start
                 if elapsed >= timeout:
@@ -1058,35 +1402,40 @@ class Assistants(AssistantsLegacyNamespaceMixin):
     ) -> ContextResponse:
         """Retrieve relevant context snippets from a Pinecone assistant.
 
-        Retrieves context snippets matching a text query or conversation
-        history. Exactly one of *query* or *messages* must be provided
-        and non-empty.
+        Retrieves context snippets matching a text query or a conversation
+        history, without generating a chat response. Provide exactly one of
+        *query* or *messages*.
 
         Args:
             assistant_name: Name of the assistant to retrieve context from.
             query: Text query to use for context retrieval. Mutually exclusive
-                with *messages*. Empty string is treated as not provided.
+                with *messages*. An empty string is treated as not provided.
             messages: Conversation messages to use for context retrieval.
-                Mutually exclusive with *query*. Empty list is treated as not
-                provided. Dicts are converted to :class:`Message` objects.
+                Mutually exclusive with *query*. An empty list is treated as
+                not provided. Dicts are converted to :class:`Message` objects.
+                Roles are case-sensitive ``"user"`` or ``"assistant"`` and
+                content must be non-blank — see :class:`Message`.
             filter: Metadata filter restricting which documents contribute
-                context. Omitted from request when ``None``.
+                context. Omitted from the request when ``None``.
             top_k: Maximum number of context snippets to return. Omitted
-                from request when ``None``.
-            snippet_size: Maximum snippet size in tokens. Omitted from
-                request when ``None``.
+                from the request when ``None``, in which case the API
+                applies its own default.
+            snippet_size: Maximum snippet size in tokens. Omitted from the
+                request when ``None``, in which case the API applies its
+                own default.
             multimodal: Whether to include image-related context snippets.
-                Omitted from request when ``None``.
+                Omitted from the request when ``None``.
             include_binary_content: Whether image snippets include base64
                 image data. Only meaningful when *multimodal* is ``True``.
-                Omitted from request when ``None``.
+                Omitted from the request when ``None``.
 
         Returns:
             :class:`ContextResponse` containing the matching context snippets.
 
         Raises:
             :exc:`PineconeValueError`: If both or neither of *query* and
-                *messages* are provided (or if they are empty).
+                *messages* are provided, or if *top_k* or *snippet_size* is
+                negative.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -1151,6 +1500,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         json_response: bool = False,
         include_highlights: bool = False,
         context_options: ContextOptions | dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> ChatResponse | ChatStream:
         """Chat with an assistant and receive citations in Pinecone-native format.
 
@@ -1158,17 +1508,18 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             assistant_name (str): Name of the assistant to chat with.
             messages (list[Message | dict[str, str]]): Conversation messages.
                 Dicts are converted to :class:`Message` objects; role defaults
-                to ``"user"`` when not present.
-            model (str): Large language model to use. Defaults to ``"gpt-4o"``.
-                Must be one of the backend's accepted values: ``"gpt-4o"``,
-                ``"gpt-4o-mini"``, ``"gpt-4.1"``, ``"gpt-4.1-mini"``,
-                ``"gpt-4.1-nano"``, ``"o3-mini"``, ``"o4-mini"``, ``"gpt-5"``,
-                ``"claude-sonnet-4"``, ``"claude-sonnet-4-5"``,
-                ``"gemini-2.5-pro"``, ``"gemini-2.5-flash"``. The aliases
-                ``"claude-3-5-sonnet"`` and ``"claude-3-7-sonnet"`` are
-                accepted but deprecated (silently remapped to
-                ``"claude-sonnet-4-5"`` by the backend). Unknown model names
-                are rejected by the backend with a 400 error.
+                to ``"user"`` when not present. Roles are case-sensitive
+                ``"user"`` or ``"assistant"`` and content must be non-blank —
+                see :class:`Message`. Neither is checked client-side.
+            model (str): Name of the large language model to use. Defaults
+                to ``"gpt-4o"``. The models the ``2026-07`` API documents for
+                this endpoint are ``"gpt-4o"``, ``"gpt-4.1"``, ``"gpt-5"``,
+                ``"o4-mini"``, ``"claude-sonnet-4-5"``, and
+                ``"gemini-2.5-pro"``. The removed aliases
+                ``"claude-3-5-sonnet"`` and ``"claude-3-7-sonnet"`` are still
+                accepted but deprecated — the backend silently remaps them to
+                ``"claude-sonnet-4-5"``, so migrate to that name. Not
+                validated client-side; the API rejects an unrecognized name.
             stream (bool): If ``True``, return a :class:`ChatStream`. Defaults
                 to ``False``.
             temperature (float | None): Controls randomness. Lower values produce
@@ -1181,6 +1532,9 @@ class Assistants(AssistantsLegacyNamespaceMixin):
                 from referenced documents in citations.
             context_options (ContextOptions | dict[str, Any] | None): Options
                 controlling context retrieval. Omitted from request when ``None``.
+            timeout (float | None): Per-call HTTP timeout in seconds, overriding
+                the client-level default. On a streaming request this bounds the
+                gap between chunks rather than the whole response (see below).
 
         Returns:
             :class:`ChatResponse` for non-streaming requests, or a
@@ -1189,17 +1543,38 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         Raises:
             :exc:`PineconeValueError`: If both ``stream=True`` and
                 ``json_response=True`` are specified.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response, for example
+                if the assistant has no processed files yet.
+
+        Note:
+            On a streaming request, the timeout applies to the gap between
+            chunks rather than the whole response, and the default is raised
+            so a model that thinks for a while isn't mistaken for a dead
+            connection. Pass *timeout* to change it. A stream that exceeds its
+            timeout raises :exc:`PineconeTimeoutError` partway through
+            iteration, after earlier chunks have already been yielded.
 
         Examples:
             .. code-block:: python
 
                 from pinecone import Pinecone
+
                 pc = Pinecone(api_key="your-api-key")
                 response = pc.assistants.chat(
                     assistant_name="my-assistant",
                     messages=[{"content": "What is Pinecone?"}],
                 )
+                print(response.message.content)
+                for citation in response.citations:
+                    for reference in citation.references:
+                        print(citation.position, reference.file.name)
+
+            The citations come back as structured objects here rather than
+            woven into the text, which is what separates this method from
+            :meth:`chat_completions`. Set ``stream=True`` for a
+            :class:`ChatStream` instead of a single response — ``text()``
+            yields content fragments as they arrive, skipping the start,
+            citation and end chunks:
 
             .. code-block:: python
 
@@ -1245,10 +1620,12 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         http = self._data_plane_http(assistant_name)
         if stream:
             return ChatStream(
-                self._chat_streaming(http=http, url=f"/chat/{assistant_name}", body=body)
+                self._chat_streaming(
+                    http=http, url=f"/chat/{assistant_name}", body=body, timeout=timeout
+                )
             )
 
-        response = http.post(f"/chat/{assistant_name}", json=body)
+        response = http.post(f"/chat/{assistant_name}", timeout=timeout, json=body)
         return self._adapter.to_chat_response(response.content)
 
     def chat_completions(
@@ -1260,6 +1637,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         stream: bool = False,
         temperature: float | None = None,
         filter: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> ChatCompletionResponse | ChatCompletionStream:
         """Chat with an assistant using an OpenAI-compatible interface.
 
@@ -1273,41 +1651,62 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             assistant_name (str): Name of the assistant to chat with.
             messages (list[Message | dict[str, str]]): Conversation messages.
                 Dicts are converted to :class:`Message` objects; role defaults
-                to ``"user"`` when not present.
-            model (str): Large language model to use. Defaults to ``"gpt-4o"``.
-                Must be one of the backend's accepted values: ``"gpt-4o"``,
-                ``"gpt-4o-mini"``, ``"gpt-4.1"``, ``"gpt-4.1-mini"``,
-                ``"gpt-4.1-nano"``, ``"o3-mini"``, ``"o4-mini"``, ``"gpt-5"``,
-                ``"claude-sonnet-4"``, ``"claude-sonnet-4-5"``,
-                ``"gemini-2.5-pro"``, ``"gemini-2.5-flash"``. The aliases
-                ``"claude-3-5-sonnet"`` and ``"claude-3-7-sonnet"`` are
-                accepted but deprecated (silently remapped to
-                ``"claude-sonnet-4-5"`` by the backend). Unknown model names
-                are rejected by the backend with a 400 error.
+                to ``"user"`` when not present. Roles are case-sensitive
+                ``"user"`` or ``"assistant"`` and content must be non-blank —
+                see :class:`Message`. Neither is checked client-side.
+            model (str): Name of the large language model to use. Defaults
+                to ``"gpt-4o"``. The models the ``2026-07`` API documents for
+                this endpoint are ``"gpt-4o"``, ``"gpt-4.1"``, ``"o4-mini"``,
+                ``"claude-sonnet-4-5"``, and ``"gemini-2.5-pro"`` — the same
+                list :meth:`chat` accepts, minus ``"gpt-5"``, which the spec
+                documents only on the Pinecone-native chat endpoint. The
+                removed aliases ``"claude-3-5-sonnet"`` and
+                ``"claude-3-7-sonnet"`` are still accepted but deprecated —
+                the backend silently remaps them to ``"claude-sonnet-4-5"``,
+                so migrate to that name. Not validated client-side; the API
+                rejects an unrecognized name.
             stream (bool): If ``True``, return a :class:`ChatCompletionStream`.
                 Defaults to ``False``.
             temperature (float | None): Controls randomness. Lower values produce
                 more deterministic responses. Omitted from request when ``None``.
             filter (dict[str, Any] | None): Metadata filter restricting which
                 documents are used as context. Omitted from request when ``None``.
+            timeout (float | None): Per-call HTTP timeout in seconds, overriding
+                the client-level default. On a streaming request this bounds the
+                gap between chunks rather than the whole response (see below).
 
         Returns:
             :class:`ChatCompletionResponse` for non-streaming requests, or a
             :class:`ChatCompletionStream` for streaming requests.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response, for example
+                if the assistant has no processed files yet.
+
+        Note:
+            On a streaming request, the timeout applies to the gap between
+            chunks rather than the whole response, and the default is raised
+            so a model that pauses for longer while reasoning isn't mistaken
+            for a dead connection. Pass *timeout* to widen it further. A
+            stream that exceeds its timeout raises
+            :exc:`PineconeTimeoutError` partway through iteration, after
+            earlier chunks have already been yielded.
 
         Examples:
             .. code-block:: python
 
                 from pinecone import Pinecone
+
                 pc = Pinecone(api_key="your-api-key")
                 response = pc.assistants.chat_completions(
                     assistant_name="research-assistant",
                     messages=[{"content": "Explain quantum entanglement briefly."}],
                 )
-                response.choices[0].message.content
+                print(response.choices[0].message.content)
+
+            The response carries no separate ``citations`` list — the shape is
+            OpenAI's, so citations arrive inline in the message text. Set
+            ``stream=True`` for a :class:`ChatCompletionStream`:
 
             .. code-block:: python
 
@@ -1337,10 +1736,10 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         if stream:
             url = f"/chat/{assistant_name}/chat/completions"
             return ChatCompletionStream(
-                self._chat_completions_streaming(http=http, url=url, body=body)
+                self._chat_completions_streaming(http=http, url=url, body=body, timeout=timeout)
             )
 
-        response = http.post(f"/chat/{assistant_name}/chat/completions", json=body)
+        response = http.post(f"/chat/{assistant_name}/chat/completions", timeout=timeout, json=body)
         return self._adapter.to_chat_completion_response(response.content)
 
     def _chat_streaming(
@@ -1349,6 +1748,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         http: HTTPClient,
         url: str,
         body: dict[str, Any],
+        timeout: float | None = None,
     ) -> Iterator[ChatStreamChunk]:
         """Stream Pinecone-native chat chunks via SSE.
 
@@ -1360,6 +1760,8 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             http: Pre-resolved data-plane HTTP client for the assistant.
             url: Request URL path (e.g. ``/chat/{assistant_name}``).
             body: Pre-built request body (must include ``stream=True``).
+            timeout: Per-call HTTP timeout override. When ``None`` the client
+                timeout is raised to :data:`_STREAM_TIMEOUT_FLOOR_SECONDS`.
 
         Yields:
             :class:`StreamMessageStart`, :class:`StreamContentChunk`,
@@ -1368,12 +1770,17 @@ class Assistants(AssistantsLegacyNamespaceMixin):
 
         Raises:
             :exc:`ApiError`: If the server returns an HTTP error.
+            :exc:`PineconeTimeoutError`: If the gap between chunks exceeds the
+                resolved timeout, possibly after some chunks have been yielded.
         """
+        from pinecone._internal.http_client import _encode_json
+
         with http.stream(
             "POST",
             url,
-            content=orjson.dumps(body),
+            content=_encode_json(body),
             headers={"Content-Type": "application/json"},
+            timeout=_stream_timeout(self._config.timeout, timeout),
         ) as response:
             for line in response.iter_lines():
                 if not line:
@@ -1383,6 +1790,9 @@ class Assistants(AssistantsLegacyNamespaceMixin):
                 line = line[5:].lstrip()
                 if not line:
                     continue
+                # Unreachable against the 2026-07 backend, which ends the stream
+                # by closing it. Kept because an intermediary that terminates the
+                # SSE conventionally would otherwise reach orjson.loads and raise.
                 if line == "[DONE]":
                     break
                 chunk_data: dict[str, Any] = orjson.loads(line)
@@ -1397,6 +1807,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         http: HTTPClient,
         url: str,
         body: dict[str, Any],
+        timeout: float | None = None,
     ) -> Iterator[ChatCompletionStreamChunk]:
         """Stream OpenAI-compatible chat completion chunks via SSE.
 
@@ -1407,18 +1818,27 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             http: Pre-resolved data-plane HTTP client for the assistant.
             url: Request URL path (e.g. ``/chat/{assistant_name}/chat/completions``).
             body: Pre-built request body (must include ``stream=True``).
+            timeout: Per-call HTTP timeout override. When ``None`` the client
+                timeout is raised to :data:`_STREAM_TIMEOUT_FLOOR_SECONDS`.
 
         Yields:
             :class:`ChatCompletionStreamChunk` for each non-empty SSE line.
+            Lines that do not fit the struct are logged and skipped rather than
+            aborting the stream, matching :meth:`_chat_streaming`.
 
         Raises:
             :exc:`ApiError`: If the server returns an HTTP error.
+            :exc:`PineconeTimeoutError`: If the gap between chunks exceeds the
+                resolved timeout, possibly after some chunks have been yielded.
         """
+        from pinecone._internal.http_client import _encode_json
+
         with http.stream(
             "POST",
             url,
-            content=orjson.dumps(body),
+            content=_encode_json(body),
             headers={"Content-Type": "application/json"},
+            timeout=_stream_timeout(self._config.timeout, timeout),
         ) as response:
             for line in response.iter_lines():
                 if not line:
@@ -1428,9 +1848,16 @@ class Assistants(AssistantsLegacyNamespaceMixin):
                 line = line[5:].lstrip()
                 if not line:
                     continue
+                # Unreachable against the 2026-07 backend, which ends the stream
+                # by closing it. Kept because an intermediary that terminates the
+                # SSE conventionally would otherwise reach orjson.loads and raise.
                 if line == "[DONE]":
                     break
-                yield msgspec.convert(orjson.loads(line), ChatCompletionStreamChunk)
+                chunk_data: dict[str, Any] = orjson.loads(line)
+                try:
+                    yield msgspec.convert(chunk_data, ChatCompletionStreamChunk)
+                except msgspec.ValidationError:
+                    logger.debug("Skipping unparseable completion chunk: %s", chunk_data)
 
     def evaluate_alignment(
         self,
@@ -1455,14 +1882,23 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             results, and token usage statistics.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response. This
+                endpoint requires a paid plan.
 
         Examples:
+            The answer below contradicts the ground truth on purpose, so the
+            scores come back low and ``result.facts`` records where the
+            contradiction is:
+
             >>> result = pc.assistants.evaluate_alignment(
             ...     question="What is the capital of Spain?",
             ...     answer="Barcelona.",
             ...     ground_truth_answer="Madrid.",
             ... )
+            >>> result.scores.alignment
+            0.0
+            >>> [fact.entailment for fact in result.facts]
+            ['contradicted']
         """
         body = {
             "question": question,

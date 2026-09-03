@@ -22,11 +22,13 @@ _VALID_ROLES = {r.value for r in APIKeyRole}
 def _validate_roles(roles: Sequence[APIKeyRole | str]) -> list[APIKeyRole]:
     """Validate each role and return typed enum values."""
     result: list[APIKeyRole] = []
-    for role in roles:
+    for index, role in enumerate(roles):
         role_str = role.value if isinstance(role, APIKeyRole) else role
         if role_str not in _VALID_ROLES:
             opts = ", ".join(repr(v) for v in sorted(_VALID_ROLES))
-            raise ValidationError(f"Invalid role {role_str!r}. Must be one of {opts}")
+            raise ValidationError(
+                f"roles[{index}]: Invalid role {role_str!r}. Must be one of {opts}"
+            )
         result.append(APIKeyRole(role_str))
     return result
 
@@ -62,7 +64,7 @@ class ApiKeys:
             project_id (str): The identifier of the project.
 
         Returns:
-            An :class:`APIKeyList` supporting iteration, len(), and index access.
+            An :class:`APIKeyList` supporting iteration, ``len()``, and index access.
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *project_id* is empty.
@@ -99,6 +101,13 @@ class ApiKeys:
                 ``"DataPlaneEditor"``, and ``"DataPlaneViewer"``.
                 Defaults to ``["ProjectEditor"]`` if omitted.
 
+                Which of these a key may actually hold depends on the
+                organization's plan; the more restrictive plans accept
+                ``"ProjectEditor"`` only. A role the plan does not permit is
+                refused with a
+                :exc:`~pinecone.errors.exceptions.ForbiddenError` naming the
+                role and the plan it needs.
+
         Returns:
             An :class:`APIKeyWithSecret` containing the key metadata and secret value.
             The secret value is only available at creation time.
@@ -106,6 +115,13 @@ class ApiKeys:
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`:
                 If *project_id* or *name* is empty, or if *name* exceeds 80 characters.
+            :exc:`~pinecone.errors.exceptions.PaymentRequiredError`: If the organization's
+                billing state does not permit creating an API key.
+            :exc:`~pinecone.errors.exceptions.ForbiddenError`: Either the project has
+                reached its API-key quota, or *roles* names a role the organization's plan
+                does not permit (see *roles* above) — the error message distinguishes the
+                two. Quota exhaustion raises this error rather than
+                :exc:`~pinecone.errors.exceptions.RateLimitError`.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -176,15 +192,21 @@ class ApiKeys:
 
         Args:
             api_key_id (str): The identifier of the API key to update.
-            name (str | None): New name for the API key.
+            name (str | None): New name for the API key. Unlike :meth:`create`, the
+                length limit is not checked locally — an over-long name is rejected
+                by the server instead.
             roles (list[APIKeyRole | str] | None): New roles for the API key.
-                Replaces all existing roles.
+                Replaces all existing roles. Subject to the same plan-dependent
+                restriction as :meth:`create`.
 
         Returns:
             An :class:`APIKeyModel` with the updated API key details.
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *api_key_id* is empty.
+            :exc:`~pinecone.errors.exceptions.ForbiddenError`: If *roles* names a role
+                the organization's plan does not permit for API keys. Unlike
+                :meth:`create`, no API-key quota check applies here.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:

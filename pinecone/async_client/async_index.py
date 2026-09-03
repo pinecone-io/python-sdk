@@ -7,9 +7,12 @@ import logging
 import os
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import quote
 
 if TYPE_CHECKING:
     import pandas as pd  # type: ignore[import-untyped]
+
+    from pinecone.async_client.documents import AsyncDocuments
 
 from pinecone._internal.adapters.imports_adapter import ImportsAdapter
 from pinecone._internal.adapters.vectors_adapter import VectorsAdapter, extract_response_info
@@ -26,7 +29,27 @@ from pinecone._internal.data_plane_helpers import (
 )
 from pinecone._internal.dataframe import _resolve_on_error, extract_records
 from pinecone._internal.keyword_only import keyword_only_methods
-from pinecone._internal.validation import require_in_range, require_positive
+from pinecone._internal.validation import (
+    DELETE_EMPTY_FILTER_MESSAGE,
+    FETCH_BY_METADATA_EMPTY_FILTER_MESSAGE,
+    QUERY_TOP_K_MAX,
+    UPDATE_EMPTY_FILTER_MESSAGE,
+    require_creatable_namespace_name,
+    require_delete_selectors,
+    require_in_range,
+    require_non_empty_filter,
+    require_query_selectors,
+    require_update_selectors,
+    require_valid_fetch_by_metadata_limit,
+    require_valid_id_prefix,
+    require_valid_list_limit,
+    require_valid_namespace_limit,
+    require_valid_namespace_name,
+    require_valid_namespace_prefix,
+    require_valid_namespace_schema,
+    require_valid_vector_id,
+    require_valid_vector_ids,
+)
 from pinecone._internal.vector_factory import VectorFactory
 from pinecone.errors.exceptions import PineconeValueError, ValidationError
 from pinecone.models.imports.list import ImportList
@@ -77,6 +100,12 @@ class AsyncIndex:
 
     Raises:
         :exc:`PineconeValueError`: If no API key can be resolved or the host is invalid.
+        :exc:`FileNotFoundError`: If ``ssl_ca_certs`` names a path that does not
+            exist, so a mistyped path cannot leave you silently verifying against
+            the default trust store instead. The connection pool is built lazily,
+            so this is raised on the first request rather than at construction. A
+            bundle that exists but cannot be parsed as a certificate raises
+            :exc:`ssl.SSLError` at the same point.
 
     Examples:
 
@@ -134,6 +163,7 @@ class AsyncIndex:
         self._http = AsyncHTTPClient(config, DATA_PLANE_API_VERSION)
         self._adapter = VectorsAdapter()
         self._imports_adapter = ImportsAdapter()
+        self._documents: AsyncDocuments | None = None
 
         logger.info("AsyncIndex client created for host %s", self._host)
 
@@ -141,6 +171,37 @@ class AsyncIndex:
     def host(self) -> str:
         """The data plane host URL for this index."""
         return self._host
+
+    @property
+    def documents(self) -> AsyncDocuments:
+        """Entry point for document operations on a schema-based index.
+
+        A schema-based index stores JSON records instead of raw vectors.
+        Use this namespace for document operations such as ``upsert``,
+        ``search``, and ``fetch``; use the vector methods on this class
+        (:meth:`upsert`, :meth:`query`, etc.) for a vector-based index
+        instead. See :class:`~pinecone.async_client.documents.AsyncDocuments`
+        for the full set of document operations. The namespace instance is
+        built and cached on first access.
+
+        Returns:
+            :class:`~pinecone.async_client.documents.AsyncDocuments` namespace instance.
+
+        Examples:
+
+            >>> from pinecone import AsyncPinecone
+            >>> pc = AsyncPinecone(api_key="your-api-key")
+            >>> idx = await pc.index(name="articles-en")  # doctest: +SKIP
+            >>> await idx.documents.upsert(  # doctest: +SKIP
+            ...     namespace="articles-en",
+            ...     documents=[{"_id": "article-101", "title": "Intro to vectors"}],
+            ... )
+        """
+        if self._documents is None:
+            from pinecone.async_client.documents import AsyncDocuments as _AsyncDocuments
+
+            self._documents = _AsyncDocuments(http=self._http, host=self._host)
+        return self._documents
 
     async def upsert_records(
         self,
@@ -168,7 +229,8 @@ class AsyncIndex:
         Raises:
             :exc:`PineconeValueError`: If namespace is not a string or is empty/whitespace,
                 records is empty, or a record is missing an identifier field.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -193,7 +255,7 @@ class AsyncIndex:
            - :meth:`upsert` — for indexes where you provide your own vectors
              (no server-side embedding).
            - :meth:`start_import` — for bulk loading millions of vectors
-             from cloud storage (S3, GCS).
+             from cloud storage.
         """
         if not isinstance(namespace, str):
             raise ValidationError("namespace must be a string")
@@ -206,7 +268,7 @@ class AsyncIndex:
             if "_id" not in record and "id" not in record:
                 raise ValidationError(f"Record at index {i} must contain an '_id' or 'id' field")
 
-        import orjson
+        from pinecone._internal.http_client import _encode_ndjson
 
         normalized: list[dict[str, Any]] = []
         for i, record in enumerate(records):
@@ -221,14 +283,13 @@ class AsyncIndex:
                 raise ValidationError(f"Record at index {i}: '_id' must be a string, got {got!r}")
             normalized.append(r)
 
-        ndjson_lines = [orjson.dumps(r).decode("utf-8") for r in normalized]
-        ndjson_body = "\n".join(ndjson_lines) + "\n"
+        ndjson_body = _encode_ndjson(normalized)
 
         logger.info("Upserting %d records into namespace %r (NDJSON)", len(records), namespace)
         response = await self._http.post(
-            f"/records/namespaces/{namespace}/upsert",
+            f"/records/namespaces/{quote(namespace, safe='')}/upsert",
             timeout=timeout,
-            content=ndjson_body.encode("utf-8"),
+            content=ndjson_body,
             headers={"Content-Type": "application/x-ndjson"},
         )
         result = UpsertRecordsResponse(record_count=len(records))
@@ -255,6 +316,11 @@ class AsyncIndex:
 
         If a vector with the same ID already exists in the namespace, it is
         overwritten.
+
+        Each request is capped on both vector count and encoded payload size;
+        wide vectors or large metadata tend to hit the size cap first. Pass
+        ``batch_size`` to split a long sequence of vectors into requests that
+        stay under both limits.
 
         Args:
             vectors: Sequence of vectors to upsert. Each element can be a
@@ -288,7 +354,11 @@ class AsyncIndex:
             :exc:`PineconeValueError`: If a vector element is malformed.
             :exc:`PineconeValueError`: If *batch_size* is not a positive integer.
             :exc:`PineconeValueError`: If *max_concurrency* is outside [1, 64].
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If one request exceeds the server's cap on vectors
+                per request or on encoded request size. Lower ``batch_size``
+                and retry.
+            :exc:`ApiError`: If the API returns an error response (e.g. authentication
+                failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -337,7 +407,7 @@ class AsyncIndex:
            - :meth:`upsert_records` — for indexes with integrated inference
              (text in, server-side embedding).
            - :meth:`start_import` — for bulk loading millions of vectors
-             from cloud storage (S3, GCS).
+             from cloud storage.
         """
         if batch_size is None:
             return await self._upsert_one_batch(
@@ -562,8 +632,15 @@ class AsyncIndex:
     ) -> QueryResponse:
         """Query a namespace for the nearest neighbors of a vector.
 
+        .. note::
+           Use this method for vector-based indexes, where you supply your
+           own vectors. For indexes with integrated inference, use
+           :meth:`search`, which embeds text server-side. For schema-based
+           indexes, which store JSON records instead of raw vectors, use
+           :attr:`documents`.
+
         Args:
-            top_k (int): Number of results to return (must be >= 1).
+            top_k (int): Number of results to return, 1-10000.
             vector (list[float] | None): Dense query vector values.
             id (str | None): ID of a stored vector to use as the query.
             namespace (str): Namespace to query. Defaults to the default namespace.
@@ -571,21 +648,30 @@ class AsyncIndex:
             include_values (bool): Whether to include vector values in results.
             include_metadata (bool): Whether to include metadata in results.
             sparse_vector (SparseValues | dict[str, Any] | None): Sparse query vector
-                with indices and values.
-            scan_factor (float | None): DRN optimization — adjusts how much of the
-                index is scanned. Range 0.5–4.0. Only supported for dedicated read
-                node indexes. None uses server default.
-            max_candidates (int | None): DRN optimization — caps candidate vectors to
-                rerank. Range 1–100000. Only supported for dedicated read node indexes.
-                None uses server default.
+                with indices and values. Can be combined with *vector* for a
+                hybrid query on indexes that support both.
+            scan_factor (float | None): Recall/latency trade for dedicated read
+                node (DRN) indexes — a multiplier on how much of the index is
+                scanned. Above 1 scans more and favours recall; below 1 scans
+                less and favours latency. Omit to let the server choose.
+            max_candidates (int | None): Recall/latency trade for dedicated read
+                node (DRN) indexes — caps how many candidates are reranked before
+                ``top_k`` is taken. Must be at least ``top_k``: a smaller value is
+                rejected rather than clamped, since it could not fill the page.
 
         Returns:
             :class:`QueryResponse` with matches, namespace, and usage info.
 
         Raises:
-            :exc:`PineconeValueError`: If top_k < 1, both vector and id are provided,
-                or none of vector, id, or sparse_vector are provided.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeValueError`: If top_k is not between 1 and 10000, if
+                ``id`` is combined with either ``vector`` or ``sparse_vector``,
+                if none of ``vector``, ``id``, or ``sparse_vector`` is provided,
+                or if ``id`` is not a legal vector ID.
+            :exc:`ApiError`: If ``scan_factor`` or ``max_candidates`` is out of
+                range, or the index is not a dense DRN index — both knobs are
+                rejected on on-demand indexes and on sparse indexes.
+            :exc:`ApiError`: If the API returns an error response (e.g. authentication
+                failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -612,16 +698,10 @@ class AsyncIndex:
                     namespace="movies-en",
                 )
         """
-        if top_k < 1:
-            raise ValidationError(f"top_k must be a positive integer, got {top_k}")
-
-        has_vector = vector is not None
-        has_id = id is not None
-        has_sparse = sparse_vector is not None
-        if has_vector and has_id:
-            raise ValidationError("Exactly one of vector or id must be provided, not both")
-        if not has_vector and not has_id and not has_sparse:
-            raise ValidationError("At least one of vector, id, or sparse_vector must be provided")
+        require_in_range("top_k", top_k, 1, QUERY_TOP_K_MAX)
+        require_query_selectors(vector=vector, id=id, sparse_vector=sparse_vector)
+        if id is not None:
+            require_valid_vector_id("id", id)
 
         body: dict[str, Any] = {
             "topK": top_k,
@@ -673,7 +753,7 @@ class AsyncIndex:
     ) -> QueryNamespacesResults:
         """Query multiple namespaces concurrently and return merged top results.
 
-        Fans out individual ``query()`` calls across all given namespaces
+        Fans out individual :meth:`query` calls across all given namespaces
         using ``asyncio.gather``, then merges results via a heap-based
         aggregator that returns the overall top-k matches ranked by the
         specified metric.
@@ -691,20 +771,22 @@ class AsyncIndex:
             include_metadata: Whether to include metadata in results.
             sparse_vector: Sparse query vector with indices and values.
                 Required for sparse-only indexes when *vector* is omitted.
-            scan_factor: DRN performance tuning — controls how much of the
-                index is scanned during a query. Higher values scan more
-                data and may improve recall at the cost of latency.
-            max_candidates: DRN performance tuning — maximum number of
-                candidate vectors to consider during the search phase.
+            scan_factor: Recall/latency trade for dedicated read node (DRN)
+                indexes — a multiplier on how much of the index is scanned.
+                Above 1 scans more and favours recall; below 1 scans less and
+                favours latency. Applied to every namespace queried.
+            max_candidates: Recall/latency trade for dedicated read node (DRN)
+                indexes — caps how many candidates are reranked before ``top_k``
+                is taken, per namespace. Must be at least ``top_k``.
 
         Returns:
             :class:`QueryNamespacesResults` with the merged top-k matches, total
             usage, and per-namespace usage.
 
         Raises:
-            :exc:`PineconeValueError`: If *namespaces* is empty, or if both
-                *vector* and *sparse_vector* are absent/empty.
-            :exc:`ValueError`: If *metric* is not a recognized value.
+            :exc:`PineconeValueError`: If *namespaces* is empty, if both
+                *vector* and *sparse_vector* are absent/empty, or if *metric*
+                is not one of ``"cosine"``, ``"euclidean"``, or ``"dotproduct"``.
             :exc:`ApiError`: If any individual namespace query fails.
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
@@ -820,8 +902,11 @@ class AsyncIndex:
         """Fetch vectors by their IDs from a namespace.
 
         Args:
-            ids (list[str]): List of vector IDs to fetch (must be non-empty).
+            ids (list[str]): List of vector IDs to fetch. Must be non-empty, and
+                every ID must be 1-512 ASCII characters without a NUL.
             namespace (str): Namespace to fetch from. Defaults to the default namespace.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             :class:`FetchResponse` with a map of vector IDs to Vector objects, namespace,
@@ -829,8 +914,10 @@ class AsyncIndex:
             than raising an error.
 
         Raises:
-            :exc:`PineconeValueError`: If ids is empty.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeValueError`: If ids is empty or contains an ID that is
+                not 1-512 ASCII characters without a NUL.
+            :exc:`ApiError`: If the API returns an error response (e.g. authentication
+                failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -843,8 +930,7 @@ class AsyncIndex:
                 for vid, vec in response.vectors.items():
                     print(vid, vec.values)
         """
-        if not ids:
-            raise ValidationError("ids must be a non-empty list")
+        require_valid_vector_ids("ids", ids)
 
         params: dict[str, Any] = {"ids": ids}
         if namespace:
@@ -869,33 +955,40 @@ class AsyncIndex:
         """Fetch vectors matching a metadata filter expression.
 
         Returns vectors whose metadata satisfies the given filter, with
-        pagination support. The server returns up to 100 vectors per page
-        when no limit is specified.
+        pagination support.
 
         Args:
-            filter: Metadata filter expression (required).
-            namespace: Namespace to fetch from. Defaults to the default
+            filter (dict[str, Any]): Metadata filter expression. Must carry at
+                least one condition.
+            namespace (str): Namespace to fetch from. Defaults to the default
                 namespace.
-            limit: Maximum number of vectors to return per page. When
-                ``None``, the server default (100) is used.
-            pagination_token: Token from a previous response to fetch the
-                next page. When ``None``, fetches the first page.
+            limit (int | None): Maximum number of vectors to return per page,
+                1-10000. Omit to let the server choose the page size.
+            pagination_token (str | None): Token from a previous response to
+                fetch the next page. When ``None``, fetches the first page.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             :class:`FetchByMetadataResponse` with matched vectors, namespace, usage,
             and pagination token for the next page (if any).
 
         Raises:
+            :exc:`PineconeValueError`: If ``filter`` is empty or ``limit`` falls
+                outside 1-10000.
             :exc:`ApiError`: If the API returns an error response (e.g. authentication
                 failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
 
             .. code-block:: python
 
                 response = await idx.fetch_by_metadata(
-                    filter={"genre": {"$eq": "comedy"}},
-                    namespace="movies",
+                    filter={"genre": "comedy", "year": {"$gte": 2020}},
+                    namespace="movies-en",
                 )
                 for vid, vec in response.vectors.items():
                     print(vid, vec.values)
@@ -904,14 +997,17 @@ class AsyncIndex:
                 token = response.pagination.next if response.pagination else None
                 while token:
                     response = await idx.fetch_by_metadata(
-                        filter={"genre": {"$eq": "comedy"}},
-                        namespace="movies",
+                        filter={"genre": "comedy", "year": {"$gte": 2020}},
+                        namespace="movies-en",
                         pagination_token=token,
                     )
                     token = response.pagination.next if response.pagination else None
         """
         if limit is not None:
-            require_positive("limit", limit)
+            require_valid_fetch_by_metadata_limit("limit", limit)
+        require_non_empty_filter(
+            "filter", filter, server_message=FETCH_BY_METADATA_EMPTY_FILTER_MESSAGE
+        )
         body: dict[str, Any] = {"filter": filter}
         if namespace:
             body["namespace"] = namespace
@@ -940,18 +1036,41 @@ class AsyncIndex:
         Exactly one of ``ids``, ``delete_all``, or ``filter`` must be specified.
         Deleting IDs that do not exist does not raise an error.
 
+        ``ids`` alongside ``filter`` is rejected here rather than sent: a filter
+        takes precedence over ``ids``, so the request would delete everything the
+        filter matches rather than the intersection of the two. Query with the
+        filter first, then delete the returned ids.
+
+        A by-filter delete selects on metadata alone, so a text-match operator
+        (``$match_phrase``, ``$match_all``, ``$match_any``) in the filter is
+        rejected rather than ignored — evaluated there it would match everything
+        and widen the delete to every record the rest of the filter admits. Text
+        matching belongs in :meth:`search`.
+
+        A by-filter delete also reads before it writes, so a dedicated index
+        scaled to zero replicas refuses it; add replicas first. Deleting by ID or
+        with ``delete_all`` is unaffected.
+
         Args:
-            ids (list[str] | None): List of vector IDs to delete.
+            ids (list[str] | None): List of vector IDs to delete. Every ID must be
+                1-512 ASCII characters without a NUL.
             delete_all (bool): If True, delete all vectors in the namespace.
-            filter (dict[str, Any] | None): Metadata filter expression selecting vectors to delete.
+            filter (dict[str, Any] | None): Metadata filter expression selecting vectors
+                to delete. Must carry at least one condition.
             namespace (str): Namespace to delete from. Defaults to the default namespace.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             None — a successful delete returns no payload.
 
         Raises:
-            :exc:`PineconeValueError`: If zero or more than one deletion mode is specified.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeValueError`: If zero or more than one deletion mode is
+                specified, if ``filter`` is empty, or if an ID is not legal.
+            :exc:`ApiError`: If a by-filter delete uses a text-match operator, or
+                the index is a dedicated index scaled to zero replicas.
+            :exc:`ApiError`: If the API returns an error response (e.g. authentication
+                failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -969,13 +1088,11 @@ class AsyncIndex:
                 # Delete by metadata filter
                 await idx.delete(filter={"category": {"$eq": "obsolete"}})
         """
-        mode_count = sum([ids is not None, delete_all, filter is not None])
-        if mode_count == 0:
-            raise ValidationError("Must specify one of ids, delete_all, or filter")
-        if mode_count > 1:
-            raise ValidationError(
-                "Cannot combine ids, delete_all, and filter — specify exactly one"
-            )
+        require_delete_selectors(ids=ids, delete_all=delete_all, filter=filter)
+        if ids is not None:
+            require_valid_vector_ids("ids", ids)
+        if filter is not None:
+            require_non_empty_filter("filter", filter, server_message=DELETE_EMPTY_FILTER_MESSAGE)
 
         body: dict[str, Any] = {"namespace": namespace}
         if ids is not None:
@@ -1002,24 +1119,50 @@ class AsyncIndex:
     ) -> UpdateResponse:
         """Update vectors by ID or metadata filter.
 
-        Exactly one of ``id`` or ``filter`` must be specified.
+        Updates a single vector's dense values, sparse values, or metadata by
+        identifier, or bulk-updates metadata on all vectors matching a filter.
+
+        Exactly one of ``id`` or ``filter`` must be specified. A by-filter update
+        is metadata-only — it spans every record the filter matches, so it cannot
+        carry ``values`` or ``sparse_values``, which belong to one record.
+
+        A by-filter update selects on metadata alone, so a text-match operator
+        (``$match_phrase``, ``$match_all``, ``$match_any``) in the filter is
+        rejected rather than ignored — evaluated there it would match everything
+        and widen the patch to every record the rest of the filter admits. Text
+        matching belongs in :meth:`search`.
+
+        A by-filter update also reads before it writes, so a dedicated index
+        scaled to zero replicas refuses it; add replicas first. Updating by ID is
+        unaffected.
 
         Args:
-            id (str | None): ID of the vector to update.
-            values (list[float] | None): New dense vector values.
-            sparse_values (SparseValues | dict[str, Any] | None): New sparse vector.
+            id (str | None): ID of the vector to update. Must be 1-512 ASCII
+                characters without a NUL.
+            values (list[float] | None): New dense vector values. Only with ``id``.
+            sparse_values (SparseValues | dict[str, Any] | None): New sparse vector with ``indices``
+                and ``values`` keys. Only with ``id``.
             set_metadata (dict[str, Any] | None): Metadata fields to set or overwrite.
             namespace (str): Namespace to target. Defaults to the default namespace.
-            filter (dict[str, Any] | None): Metadata filter expression selecting vectors to update.
+            filter (dict[str, Any] | None): Metadata filter expression selecting vectors
+                to update. Must carry at least one condition.
             dry_run (bool): If True, return the count of records that would be
-                affected without applying changes.
+                affected without applying changes. Only applies to filter-based
+                updates.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             :class:`UpdateResponse` with matched_records count (when available).
 
         Raises:
-            :exc:`PineconeValueError`: If both or neither of id and filter are provided.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeValueError`: If both or neither of ``id`` and ``filter``
+                are provided, if ``filter`` is combined with ``values`` or
+                ``sparse_values``, or if ``filter`` is empty.
+            :exc:`ApiError`: If a by-filter update uses a text-match operator, or
+                the index is a dedicated index scaled to zero replicas.
+            :exc:`ApiError`: If the API returns an error response (e.g. authentication
+                failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1029,7 +1172,7 @@ class AsyncIndex:
             .. code-block:: python
 
                 # Update by ID
-                # truncated values; use your actual dimension
+                # truncated; use your actual dimension
                 await idx.update(id="article-101", values=[0.012, -0.087, 0.153])
 
                 # Bulk-update metadata by filter
@@ -1038,12 +1181,11 @@ class AsyncIndex:
                     set_metadata={"year": 2020},
                 )
         """
-        has_id = id is not None
-        has_filter = filter is not None
-        if has_id and has_filter:
-            raise ValidationError("Exactly one of id or filter must be provided, not both")
-        if not has_id and not has_filter:
-            raise ValidationError("Exactly one of id or filter must be provided, got neither")
+        require_update_selectors(id=id, filter=filter, values=values, sparse_values=sparse_values)
+        if id is not None:
+            require_valid_vector_id("id", id)
+        if filter is not None:
+            require_non_empty_filter("filter", filter, server_message=UPDATE_EMPTY_FILTER_MESSAGE)
 
         body: dict[str, Any] = {"namespace": namespace}
         if id is not None:
@@ -1091,6 +1233,11 @@ class AsyncIndex:
         Searches a namespace using integrated inference (text inputs embedded
         server-side), a raw vector, or an existing record ID as the query.
 
+        .. note::
+           Use this method for indexes with integrated inference. For
+           vector-based indexes, where you supply your own vectors, use
+           :meth:`query`.
+
         Args:
             namespace (str): Namespace to search in (required).
             top_k (int): Number of results to return (must be >= 1).
@@ -1114,12 +1261,16 @@ class AsyncIndex:
                 keys. Use :class:`RerankConfig` for IDE autocompletion.
             match_terms (dict[str, Any] | None): Term-matching constraint for
                 sparse search. Requires keys ``"strategy"`` (currently only
-                ``"all"``) and ``"terms"`` (list of strings). Only supported
-                for sparse indexes using ``pinecone-sparse-english-v0``.
-                ``None`` disables term matching.
+                ``"all"``) and ``"terms"`` (list of strings).
+                Valid only on a text query — combined with ``vector`` or ``id``
+                it is rejected — and only on a sparse index whose embedding model
+                supports it; the server names the supported model when it
+                refuses. ``None`` disables term matching.
             query (dict[str, Any] | None): Legacy query body containing
                 ``top_k`` plus one of ``inputs``, ``vector``, or ``id``. Prefer
                 passing these fields directly.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             :class:`SearchRecordsResponse` with hits and usage statistics.
@@ -1127,7 +1278,8 @@ class AsyncIndex:
         Raises:
             :exc:`PineconeValueError`: If ``namespace`` is not a string, ``top_k < 1``,
                 or ``rerank`` is missing required keys.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g. authentication
+                failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1143,6 +1295,24 @@ class AsyncIndex:
                 )
                 for hit in response.result.hits:
                     print(hit.id, hit.score)
+
+                response = await idx.search(
+                    namespace="articles-en",
+                    top_k=10,
+                    inputs={"text": "benefits of vector databases"},
+                    rerank={
+                        "model": "bge-reranker-v2-m3",
+                        "rank_fields": ["text"],
+                        "top_n": 5,
+                    },
+                )
+                for hit in response.result.hits:
+                    print(hit.id, hit.score)
+
+        .. note::
+           Use inline ``rerank`` when searching and reranking in a single call.
+           Use ``pc.inference.rerank()`` when reranking results from a different
+           source or when you need to rerank without searching.
         """
         if not isinstance(namespace, str):
             raise ValidationError("namespace must be a string")
@@ -1163,7 +1333,7 @@ class AsyncIndex:
 
         logger.info("Searching namespace %r with top_k=%d", namespace, body["query"]["top_k"])
         response = await self._http.post(
-            f"/records/namespaces/{namespace}/search", timeout=timeout, json=body
+            f"/records/namespaces/{quote(namespace, safe='')}/search", timeout=timeout, json=body
         )
         result = self._adapter.to_search_response(response.content)
         result.response_info = extract_response_info(response)
@@ -1213,17 +1383,25 @@ class AsyncIndex:
         """Fetch a single page of vector IDs from a namespace.
 
         Args:
-            prefix (str | None): Return only IDs starting with this prefix.
-            limit (int | None): Maximum number of IDs to return in this page.
+            prefix (str | None): Return only IDs starting with this prefix. At most
+                512 ASCII characters without a NUL; the empty prefix matches everything.
+            limit (int | None): Maximum number of IDs to return in this page, 1-100.
             pagination_token (str | None): Token from a previous response to fetch the next page.
             namespace (str): Namespace to list from. Defaults to the default namespace.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             :class:`ListResponse` with vector IDs, pagination info, namespace, and usage.
 
         Raises:
-            :exc:`PineconeValueError`: If inputs are invalid.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeValueError`: If ``prefix`` is not legal or ``limit``
+                falls outside 1-100.
+            :exc:`ApiError`: If the API returns an error response (e.g. authentication
+                failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
 
@@ -1233,6 +1411,11 @@ class AsyncIndex:
                 for item in response.vectors:
                     print(item.id)
         """
+        if prefix is not None:
+            require_valid_id_prefix("prefix", prefix)
+        if limit is not None:
+            require_valid_list_limit("limit", limit)
+
         params: dict[str, Any] = {"namespace": namespace}
         if prefix is not None:
             params["prefix"] = prefix
@@ -1261,12 +1444,25 @@ class AsyncIndex:
         follows pagination tokens until all pages have been retrieved.
 
         Args:
-            prefix (str | None): Return only IDs starting with this prefix.
-            limit (int | None): Maximum number of IDs to return per page.
+            prefix (str | None): Return only IDs starting with this prefix. At most
+                512 ASCII characters without a NUL; the empty prefix matches everything.
+            limit (int | None): Maximum number of IDs to return per page, 1-100.
             namespace (str): Namespace to list from. Defaults to the default namespace.
+            timeout (float | None): Per-request timeout in seconds, applied to
+                each underlying page request. Overrides the client-level
+                default for this call only.
 
         Yields:
             :class:`ListResponse` for each page of results.
+
+        Raises:
+            :exc:`PineconeValueError`: If ``prefix`` is not legal or ``limit``
+                falls outside 1-100.
+            :exc:`ApiError`: If the API returns an error response (e.g. authentication
+                failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
 
@@ -1304,15 +1500,21 @@ class AsyncIndex:
         per-namespace vector counts, dimension, and index fullness.
 
         Args:
-            filter (dict[str, Any] | None): Metadata filter expression. When
-                provided, only vectors matching the filter are counted.
+            filter (dict[str, Any] | None): Metadata filter expression. Accepted
+                for API compatibility, but a non-empty filter is rejected for
+                every index type, so the call fails instead of returning
+                filtered counts. Leave it unset: the statistics returned always
+                describe the whole index.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             :class:`DescribeIndexStatsResponse` with namespace summaries, dimension,
             total vector count, and fullness metrics.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g. authentication
+                failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1323,11 +1525,6 @@ class AsyncIndex:
 
                 stats = await idx.describe_index_stats()
                 print(stats.total_vector_count, stats.dimension)
-
-                # With filter — only count vectors matching the expression
-                stats = await idx.describe_index_stats(
-                    filter={"genre": {"$eq": "drama"}}
-                )
         """
         body: dict[str, Any] = {}
         if filter is not None:
@@ -1348,17 +1545,31 @@ class AsyncIndex:
         """Create a named namespace in the index.
 
         Args:
-            name (str): Name for the new namespace (must be non-empty).
-            schema (dict[str, Any] | None): Optional schema configuration
-                with metadata field indexing settings.
+            name (str): Name for the new namespace. Must be ASCII, must not
+                contain the NUL character, and must be 1-512 characters long.
+                ``__default__`` is reserved and cannot be created: it names the
+                namespace requests address when they omit a namespace, so it
+                always exists.
+            schema (dict[str, Any] | None): Optional metadata-index configuration,
+                ``{"fields": {<field>: {"filterable": True}}}``. Omitting it does
+                not mean "index everything": the namespace inherits the index's
+                own metadata-index configuration, so an index that restricts which
+                fields are indexed passes that restriction on. Supply *schema* to
+                override the inherited configuration for this namespace, indexing
+                exactly the fields listed. ``filterable`` is required on each field
+                and must be ``True`` — to leave a field unindexed, omit it from
+                ``fields``.
 
         Returns:
-            :class:`NamespaceDescription` with the namespace name and record count.
+            :class:`NamespaceDescription` with the namespace name, record count,
+            schema, indexed fields, and ``size_bytes``.
 
         Raises:
-            :exc:`PineconeValueError`: If the name is not a string or is empty/whitespace.
-            :exc:`ApiError`: If the API returns an error response (e.g. 409 conflict
-                when namespace already exists).
+            :exc:`PineconeValueError`: If *name* violates the rules above, or *schema*
+                is malformed. Raised before any HTTP request is made.
+            :exc:`ConflictError`: a namespace of that name already exists.
+            :exc:`ApiError`: If the API returns any other error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1367,16 +1578,19 @@ class AsyncIndex:
 
             .. code-block:: python
 
-                ns = await idx.create_namespace(name="my-ns")
-                print(ns.name, ns.record_count)
+                ns = await idx.create_namespace(name="movies-en")
+                print(ns.name, ns.record_count, ns.size_bytes)
+
+                ns = await idx.create_namespace(
+                    name="movies-en",
+                    schema={"fields": {"genre": {"filterable": True}}},
+                )
         """
-        if not isinstance(name, str):
-            raise ValidationError("namespace name must be a string")
-        if not name or not name.strip():
-            raise ValidationError("namespace name must be a non-empty string")
+        require_creatable_namespace_name("name", name)
 
         body: dict[str, Any] = {"name": name}
         if schema is not None:
+            require_valid_namespace_schema("schema", schema)
             body["schema"] = schema
 
         logger.info("Creating namespace %r", name)
@@ -1391,16 +1605,32 @@ class AsyncIndex:
     ) -> NamespaceDescription:
         """Describe a namespace by name.
 
+        This operation is rate limited per index, independently of the other
+        namespace operations. Prefer :meth:`list_namespaces` when describing more
+        than one namespace: it returns the same information for every namespace
+        in a single request and is not subject to that limit.
+
         Args:
-            name (str): Name of the namespace to describe.
+            name (str): Name of the namespace to describe. Must be ASCII, must not
+                contain the NUL character, and must be 1-512 characters long. Pass
+                ``__default__`` to describe the namespace that requests address
+                when they omit a namespace.
 
         Returns:
             :class:`NamespaceDescription` with the namespace name, record count,
-            and schema information.
+            schema, indexed fields, and ``size_bytes``. ``size_bytes`` is
+            approximate: data written before size tracking reads as 0, and
+            recently deleted data may still be counted; compaction converges the
+            value.
 
         Raises:
-            :exc:`PineconeValueError`: If the name is not a string or is empty/whitespace.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeValueError`: If *name* violates the rules above. Raised
+                before any HTTP request is made.
+            :exc:`NotFoundError`: no namespace of that name exists on the index.
+            :exc:`RateLimitError`: this operation's per-index limit was
+                exceeded. Use :meth:`list_namespaces` to describe many namespaces.
+            :exc:`ApiError`: If the API returns any other error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1409,8 +1639,10 @@ class AsyncIndex:
 
             .. code-block:: python
 
-                ns = await idx.describe_namespace(name="my-ns")
-                print(ns.name, ns.record_count)
+                ns = await idx.describe_namespace(name="movies-en")
+                print(ns.name, ns.record_count, ns.size_bytes)
+
+                default_ns = await idx.describe_namespace(name="__default__")
         """
         legacy_namespace: str | None = kwargs.pop("namespace", None)
         if kwargs:
@@ -1420,13 +1652,10 @@ class AsyncIndex:
         if name is not None and legacy_namespace is not None:
             raise ValidationError("Provide either name= or namespace=, not both")
         effective: str = name if name is not None else (legacy_namespace or "")
-        if not isinstance(effective, str):
-            raise ValidationError("namespace name must be a string")
-        if not effective or not effective.strip():
-            raise ValidationError("namespace name must be a non-empty string")
+        require_valid_namespace_name("name", effective)
 
         logger.info("Describing namespace %r", effective)
-        response = await self._http.get(f"/namespaces/{effective}")
+        response = await self._http.get(f"/namespaces/{quote(effective, safe='')}")
         return self._adapter.to_namespace_description(response.content)
 
     async def delete_namespace(
@@ -1438,15 +1667,23 @@ class AsyncIndex:
     ) -> None:
         """Delete a namespace by name, removing all its vectors.
 
+        Deleting a namespace is irreversible; all data in it is permanently deleted.
+
         Args:
-            name (str): Name of the namespace to delete.
+            name (str): Name of the namespace to delete. Must be ASCII, must not
+                contain the NUL character, and must be 1-512 characters long.
+            timeout (float | None): Per-request timeout in seconds. Overrides
+                the client-level default for this call only.
 
         Returns:
             None — a successful delete returns no payload.
 
         Raises:
-            :exc:`PineconeValueError`: If the name is not a string or is empty/whitespace.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeValueError`: If *name* violates the rules above. Raised
+                before any HTTP request is made.
+            :exc:`NotFoundError`: no namespace of that name exists on the index.
+            :exc:`ApiError`: If the API returns any other error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1455,7 +1692,7 @@ class AsyncIndex:
 
             .. code-block:: python
 
-                await idx.delete_namespace(name="old-data")
+                await idx.delete_namespace(name="movies-deprecated")
         """
         legacy_namespace: str | None = kwargs.pop("namespace", None)
         if kwargs:
@@ -1465,13 +1702,10 @@ class AsyncIndex:
         if name is not None and legacy_namespace is not None:
             raise ValidationError("Provide either name= or namespace=, not both")
         effective: str = name if name is not None else (legacy_namespace or "")
-        if not isinstance(effective, str):
-            raise ValidationError("namespace name must be a string")
-        if not effective or not effective.strip():
-            raise ValidationError("namespace name must be a non-empty string")
+        require_valid_namespace_name("name", effective)
 
         logger.info("Deleting namespace %r", effective)
-        await self._http.delete(f"/namespaces/{effective}", timeout=timeout)
+        await self._http.delete(f"/namespaces/{quote(effective, safe='')}", timeout=timeout)
 
     async def list_namespaces_paginated(
         self,
@@ -1483,16 +1717,25 @@ class AsyncIndex:
         """Fetch a single page of namespace descriptions.
 
         Args:
-            prefix (str | None): Return only namespaces whose names start with this prefix.
-            limit (int | None): Maximum number of namespaces to return in this page.
+            prefix (str | None): Return only namespaces whose names start with this
+                prefix. Must be ASCII, must not contain the NUL character, and must
+                be at most 512 characters. The empty prefix matches every namespace.
+            limit (int | None): Maximum number of namespaces to return in this page,
+                1-100.
             pagination_token (str | None): Token from a previous response to fetch the next page.
 
         Returns:
             :class:`ListNamespacesResponse` with namespace descriptions, pagination info,
-            and total count.
+            and total count. Each description carries ``size_bytes``.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeValueError`: If *prefix* or *limit* violates the rules
+                above. Raised before any HTTP request is made.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
 
@@ -1500,12 +1743,14 @@ class AsyncIndex:
 
                 response = await idx.list_namespaces_paginated(prefix="prod-", limit=10)
                 for ns in response.namespaces:
-                    print(ns.name, ns.record_count)
+                    print(ns.name, ns.record_count, ns.size_bytes)
         """
         params: dict[str, Any] = {}
         if prefix is not None:
+            require_valid_namespace_prefix("prefix", prefix)
             params["prefix"] = prefix
         if limit is not None:
+            require_valid_namespace_limit("limit", limit)
             params["limit"] = limit
         if pagination_token is not None:
             params["paginationToken"] = pagination_token
@@ -1526,12 +1771,28 @@ class AsyncIndex:
         automatically follows pagination tokens until all pages have been
         retrieved.
 
+        Because it describes every namespace in one request per page, this is the
+        operation to reach for over repeated :meth:`describe_namespace` calls,
+        which are rate limited per index.
+
         Args:
-            prefix (str | None): Return only namespaces whose names start with this prefix.
-            limit (int | None): Maximum number of namespaces to return per page.
+            prefix (str | None): Return only namespaces whose names start with this
+                prefix. Must be ASCII, must not contain the NUL character, and must
+                be at most 512 characters. The empty prefix matches every namespace.
+            limit (int | None): Maximum number of namespaces to return per page, 1-100.
 
         Yields:
-            :class:`ListNamespacesResponse` for each page of results.
+            :class:`ListNamespacesResponse` for each page of results. Each
+            :class:`NamespaceDescription` carries ``size_bytes``.
+
+        Raises:
+            :exc:`PineconeValueError`: If *prefix* or *limit* violates the rules
+                above. Raised on first iteration, before any HTTP request is made.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
 
@@ -1539,7 +1800,7 @@ class AsyncIndex:
 
                 async for page in idx.list_namespaces(prefix="prod-"):
                     for ns in page.namespaces:
-                        print(ns.name, ns.record_count)
+                        print(ns.name, ns.record_count, ns.size_bytes)
         """
         pagination_token: str | None = None
         while True:
@@ -1590,17 +1851,22 @@ class AsyncIndex:
 
         .. note::
            The import URI must point to a directory of Parquet files in cloud
-           storage (``s3://`` or ``gs://``). Each Parquet file must follow the
-           Pinecone-required schema. See
+           storage. Each Parquet file must follow the Pinecone-required schema.
+           See
            `Pinecone import docs <https://docs.pinecone.io/guides/data/understanding-imports>`_
            for the required Parquet schema and supported storage formats.
 
         Args:
-            uri (str): Source URI for the import data (e.g.
-                ``"s3://my-bucket/vectors/"`` or ``"gs://my-bucket/vectors/"``).
-            error_mode (str | None): How to handle errors during import. Must be
-                ``"continue"`` or ``"abort"`` when supplied. Case-insensitive.
-                Optional; when omitted the backend default (abort) applies.
+            uri (str): Directory prefix holding the Parquet files, not a single
+                file. Three forms are accepted: ``s3://`` for Amazon S3,
+                ``gs://`` for Google Cloud Storage, and an ``https://`` URL
+                naming an Azure Blob Storage container. ``s3://`` additionally
+                requires that the index itself be hosted on AWS.
+            error_mode (str | None): How to handle a record the import cannot
+                read. ``"continue"`` skips it and imports the rest; ``"abort"``
+                ends the whole import at the first such record. Case-insensitive.
+                Defaults to ``"abort"`` when omitted, so an unreadable record
+                fails the import unless you opt into skipping.
             integration_id (str | None): Optional integration ID for the import.
 
         Returns:
@@ -1610,7 +1876,12 @@ class AsyncIndex:
         Raises:
             :exc:`PineconeValueError`: If ``error_mode`` is supplied but not
                 ``"continue"`` or ``"abort"``.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If ``uri`` is empty or longer than the server
+                accepts, uses an unsupported scheme, is an ``s3://`` URI on an
+                index not hosted on AWS, or names an S3 directory bucket, which
+                imports do not support.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1633,10 +1904,10 @@ class AsyncIndex:
 
             .. code-block:: python
 
-                # Abort on first error instead of continuing
+                # Skip unreadable records instead of failing the import
                 response = await idx.start_import(
                     uri="s3://my-bucket/vectors/",
-                    error_mode="abort",
+                    error_mode="continue",
                 )
 
         .. seealso::
@@ -1644,6 +1915,8 @@ class AsyncIndex:
              batches (single request per call).
            - :meth:`upsert_records` — for indexes with integrated inference
              (text in, server-side embedding).
+           - :meth:`upsert_from_dataframe` — for loading vectors from a
+             pandas DataFrame with automatic batching.
         """
         if error_mode is not None:
             error_mode = error_mode.lower()
@@ -1673,7 +1946,8 @@ class AsyncIndex:
 
         Raises:
             :exc:`PineconeValueError`: If the ID is empty or exceeds 1000 characters.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1687,7 +1961,7 @@ class AsyncIndex:
         """
         str_id = self._validate_import_id(id)
         logger.info("Describing import %s", str_id)
-        response = await self._http.get(f"/bulk/imports/{str_id}")
+        response = await self._http.get(f"/bulk/imports/{quote(str_id, safe='')}")
         return self._imports_adapter.to_import_model(response.content)
 
     async def cancel_import(self, id: str | int) -> None:
@@ -1701,7 +1975,8 @@ class AsyncIndex:
 
         Raises:
             :exc:`PineconeValueError`: If the ID is empty or exceeds 1000 characters.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
             :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
@@ -1714,7 +1989,7 @@ class AsyncIndex:
         """
         str_id = self._validate_import_id(id)
         logger.info("Cancelling import %s", str_id)
-        await self._http.delete(f"/bulk/imports/{str_id}")
+        await self._http.delete(f"/bulk/imports/{quote(str_id, safe='')}")
 
     async def list_imports(
         self,
@@ -1728,8 +2003,8 @@ class AsyncIndex:
         pages transparently until all results have been returned.
 
         Args:
-            limit (int | None): Maximum number of imports per page
-                (max 100, server default 100).
+            limit (int | None): Maximum number of imports per page. Omit to let
+                the server choose the page size.
             pagination_token (str | None): Token to resume pagination
                 from a previous call.
 
@@ -1737,7 +2012,11 @@ class AsyncIndex:
             :class:`ImportModel` for each import operation.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
 
@@ -1782,7 +2061,11 @@ class AsyncIndex:
             :class:`ImportList` with the import operations for the requested page.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If the API returns an error response (e.g.
+                authentication failure or server error).
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
 
@@ -1802,13 +2085,44 @@ class AsyncIndex:
         return self._imports_adapter.to_import_list(response.content)
 
     async def close(self) -> None:
-        """Close the underlying HTTP client and release resources."""
+        """Close the underlying HTTP client and release its resources.
+
+        Call this when you are done making requests through this index, or
+        use the index as an async context manager so it closes automatically.
+
+        Returns:
+            None.
+
+        Examples:
+            .. code-block:: python
+
+                idx = await pc.index(name="articles-en")
+                async with idx:
+                    await idx.upsert(namespace="articles-en", vectors=[...])
+        """
         await self._http.close()
 
     async def __aenter__(self) -> AsyncIndex:
+        """Enter the async context manager, returning this index.
+
+        Returns:
+            This :class:`AsyncIndex` instance.
+
+        Examples:
+            .. code-block:: python
+
+                idx = await pc.index(name="articles-en")
+                async with idx:
+                    await idx.upsert(namespace="articles-en", vectors=[...])
+        """
         return self
 
     async def __aexit__(self, *args: Any) -> None:
+        """Exit the async context manager, calling :meth:`close`.
+
+        Returns:
+            None.
+        """
         await self.close()
 
     def __repr__(self) -> str:

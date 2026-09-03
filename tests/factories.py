@@ -14,26 +14,31 @@ from typing import Any
 
 
 def make_index_response(**overrides: Any) -> dict[str, Any]:
-    """Return a single IndexModel dict (db_control ``GET /indexes/{name}``)."""
+    """Return a single IndexModel dict (db_control 2026-07 ``GET /indexes/{name}``)."""
     base: dict[str, Any] = {
         "name": "test-index",
-        "dimension": 1536,
-        "metric": "cosine",
         "host": "test-index-abc1234.svc.us-east1-gcp.pinecone.io",
         "deletion_protection": "disabled",
-        "tags": {},
-        "spec": {
-            "serverless": {
-                "cloud": "aws",
-                "region": "us-east-1",
-                "read_capacity": {
-                    "mode": "OnDemand",
-                    "status": {"state": "Ready"},
+        "tags": None,
+        "deployment": {
+            "deployment_type": "managed",
+            "cloud": "aws",
+            "region": "us-east-1",
+        },
+        "schema": {
+            "fields": {
+                "embedding": {
+                    "type": "dense_vector",
+                    "dimension": 1536,
+                    "metric": "cosine",
                 },
             },
         },
+        "read_capacity": {
+            "mode": "OnDemand",
+            "status": {"state": "Ready", "current_shards": None, "current_replicas": None},
+        },
         "status": {"ready": True, "state": "Ready"},
-        "vector_type": "dense",
     }
     base.update(overrides)
     return base
@@ -163,6 +168,40 @@ def make_describe_index_stats_response(**overrides: Any) -> dict[str, Any]:
         "dimension": 128,
         "indexFullness": 0.5,
         "totalVectorCount": 300,
+    }
+    base.update(overrides)
+    return base
+
+
+def make_namespace_description_response(**overrides: Any) -> dict[str, Any]:
+    """Return a NamespaceDescription dict (db_data 2026-07 ``GET /namespaces/{ns}``)."""
+    base: dict[str, Any] = {
+        "name": "test-namespace",
+        "record_count": 42,
+        "schema": {"fields": {"genre": {"filterable": True}}},
+        "indexed_fields": {"fields": ["genre", "year"]},
+        "size_bytes": 1048576,
+    }
+    base.update(overrides)
+    return base
+
+
+def make_namespace_description_grpc_dict(**overrides: Any) -> dict[str, Any]:
+    """Return the same namespace as :func:`make_namespace_description_response`, in
+    the shape ``GrpcChannel`` hands to ``_dict_to_namespace_description``.
+
+    The two shapes are not interchangeable: ``namespace_description_to_py_dict``
+    (rust/src/transport.rs) emits ``indexed_fields`` as a bare list of names,
+    where the REST JSON nests it under a ``fields`` key. Anything decoding one
+    shape with the other's reader silently loses the indexed fields, so the
+    parity tests compare the resulting models rather than the input dicts.
+    """
+    base: dict[str, Any] = {
+        "name": "test-namespace",
+        "record_count": 42,
+        "schema": {"fields": {"genre": {"filterable": True}}},
+        "indexed_fields": ["genre", "year"],
+        "size_bytes": 1048576,
     }
     base.update(overrides)
     return base
@@ -322,6 +361,7 @@ def make_assistant_response(**overrides: Any) -> dict[str, Any]:
         "metadata": {},
         "instructions": None,
         "host": "test-assistant-abc123.svc.pinecone.io",
+        "region": "us",
     }
     base.update(overrides)
     return base
@@ -333,6 +373,9 @@ def make_assistant_file_response(**overrides: Any) -> dict[str, Any]:
     The wire key for the file hash is ``crc32c_hash`` (not ``content_hash``).
     The SDK struct maps this to the Python attribute ``content_hash`` via a
     ``rename={"content_hash": "crc32c_hash"}`` directive on ``AssistantFileModel``.
+
+    ``percent_done`` and ``error_message`` are absent: ``2026-07`` does not
+    return them (see ``docs/migration/v10-migration.md``).
     """
     base: dict[str, Any] = {
         "name": "test-file.pdf",
@@ -345,8 +388,6 @@ def make_assistant_file_response(**overrides: Any) -> dict[str, Any]:
         "multimodal": False,
         "signed_url": None,
         "crc32c_hash": None,
-        "percent_done": None,
-        "error_message": None,
     }
     base.update(overrides)
     return base
@@ -367,6 +408,49 @@ def make_operation_response(**overrides: Any) -> dict[str, Any]:
     }
     base.update(overrides)
     return base
+
+
+def make_file_operation_response(**overrides: Any) -> dict[str, Any]:
+    """Return the full ``2026-07`` OperationModel dict a file endpoint answers with.
+
+    This is the 202 envelope ``POST /files/{name}``, ``PUT /files/{name}/{id}``
+    and ``DELETE /files/{name}/{id}`` return, and the body
+    ``GET /operations/{name}/{id}`` repeats while polling. Unlike
+    :func:`make_operation_response` — kept deliberately minimal as the
+    ``2026-04`` backward-compatibility fixture — this carries every field the
+    ``2026-07`` schema requires, so it can back a conformance claim.
+    """
+    base: dict[str, Any] = {
+        "id": "op-abc123",
+        "operation_type": "upload_file",
+        "file_id": "file-abc123",
+        "status": "Processing",
+        "created_on": "2026-07-01T12:00:00Z",
+        "completed_on": None,
+        "percent_complete": 0,
+        "error_message": None,
+        "ingestion_units": None,
+    }
+    base.update(overrides)
+    return base
+
+
+def make_operation_list_response(
+    operations: list[dict[str, Any]] | None = None,
+    next_token: str | None = None,
+) -> dict[str, Any]:
+    """Return the ``OperationList`` dict ``GET /operations/{name}`` answers with.
+
+    ``pagination`` is omitted entirely when *next_token* is ``None``: the
+    backend declares it ``skip_serializing_if = Option::is_none``, so an
+    exhausted listing has no key rather than a null one.
+    """
+    body: dict[str, Any] = {
+        "operations": operations if operations is not None else [make_file_operation_response()],
+    }
+    if next_token is not None:
+        body["pagination"] = {"next": next_token}
+    return body
 
 
 def make_context_response(**overrides: Any) -> dict[str, Any]:

@@ -14,8 +14,14 @@ from pinecone.models.assistant.evaluation import (
     EntailmentResult,
 )
 from pinecone.models.assistant.file_model import AssistantFileModel
-from pinecone.models.assistant.list import ListAssistantsResponse, ListFilesResponse, _Pagination
+from pinecone.models.assistant.list import (
+    ListAssistantsResponse,
+    ListFilesResponse,
+    ListOperationsResponse,
+    _Pagination,
+)
 from pinecone.models.assistant.model import AssistantModel
+from pinecone.models.assistant.operation import OperationModel
 
 
 def _usage() -> ChatUsage:
@@ -36,6 +42,19 @@ def _text_snippet() -> TextSnippet:
 
 def _context_response() -> ContextResponse:
     return ContextResponse(snippets=[_text_snippet()], usage=_usage())
+
+
+def _operation() -> OperationModel:
+    return OperationModel(
+        operation_id="op-1",
+        status="Completed",
+        operation_type="upload_file",
+        file_id="file-1",
+        created_at="2026-07-01T12:30:00Z",
+        completed_on="2026-07-01T12:35:00Z",
+        percent_complete=100,
+        ingestion_units=50.0,
+    )
 
 
 class TestContextResponseToDict:
@@ -169,7 +188,64 @@ class TestListFilesResponseToDict:
         assert result["pagination"]["next"] == "page2"
 
 
+class TestOperationModelToDict:
+    def test_operation_to_dict_uses_python_field_names(self) -> None:
+        result = _operation().to_dict()
+        assert result == {
+            "operation_id": "op-1",
+            "status": "Completed",
+            "operation_type": "upload_file",
+            "file_id": "file-1",
+            "created_at": "2026-07-01T12:30:00Z",
+            "completed_on": "2026-07-01T12:35:00Z",
+            "percent_complete": 100,
+            "error": None,
+            "ingestion_units": 50.0,
+        }
+
+    def test_operation_to_dict_with_all_optional_fields_absent(self) -> None:
+        result = OperationModel(operation_id="op-2", status="Processing").to_dict()
+        assert result == {
+            "operation_id": "op-2",
+            "status": "Processing",
+            "operation_type": None,
+            "file_id": None,
+            "created_at": None,
+            "completed_on": None,
+            "percent_complete": None,
+            "error": None,
+            "ingestion_units": None,
+        }
+
+
+class TestListOperationsResponseToDict:
+    def test_list_operations_response_to_dict(self) -> None:
+        resp = ListOperationsResponse(operations=[])
+        result = resp.to_dict()
+        assert isinstance(result, dict)
+        assert "operations" in result
+        assert "pagination" in result
+        assert result["operations"] == []
+        assert result["pagination"] is None
+
+    def test_list_operations_response_nested_operations(self) -> None:
+        resp = ListOperationsResponse(
+            operations=[_operation()], pagination=_Pagination(next="ops2")
+        )
+        result = resp.to_dict()
+        assert isinstance(result["operations"][0], dict)
+        assert not isinstance(result["operations"][0], OperationModel)
+        assert result["operations"][0]["operation_id"] == "op-1"
+        assert result["pagination"]["next"] == "ops2"
+
+
 class TestToDictIsPureRead:
+    def test_operation_to_dict_is_pure_read(self) -> None:
+        op = _operation()
+        result = op.to_dict()
+        result["status"] = "mutated"
+        assert op.status == "Completed"
+
     def test_context_response_to_dict_is_pure_read(self) -> None:
         resp = ContextResponse(snippets=[_text_snippet()], usage=_usage())
         result = resp.to_dict()

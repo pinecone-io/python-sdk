@@ -5,13 +5,13 @@ transport backed by a native Rust extension (`pinecone._grpc`). For bulk upsert 
 high-throughput workloads, gRPC typically delivers better performance than the default
 REST client because it uses binary serialization and HTTP/2 multiplexing.
 
-gRPC transport is included in the base `pinecone` package — no extra install required.
+gRPC transport is included in the base `pinecone` package. No extra install is required.
 
 ## Creating a GrpcIndex
 
 You can obtain a `GrpcIndex` in two ways.
 
-**Via `Pinecone.index()` with `grpc=True`** (recommended — resolves the host automatically):
+**Via `Pinecone.index()` with `grpc=True`** (recommended, since it resolves the host automatically):
 
 ```python
 from pinecone import Pinecone
@@ -37,6 +37,27 @@ index = GrpcIndex(
 with GrpcIndex(host="product-search-abc123.svc.pinecone.io") as index:
     index.upsert(vectors=[("product-42", [0.1, 0.2, ...])])
 ```
+
+## Endpoint scheme
+
+The channel dials `https`. A data plane reached over something else — a plaintext
+gateway, an egress proxy fronting a private endpoint, or a local simulator — needs
+`grpc_scheme` set, on the client or on the index:
+
+```python
+pc = Pinecone(grpc_scheme="http")
+index = pc.index(name="product-search", grpc=True)
+
+index = GrpcIndex(host="http://10.0.0.7:50051", grpc_scheme="http")
+```
+
+`PINECONE_GRPC_SCHEME` sets the same thing through the environment; the keyword
+argument wins over it.
+
+The scheme decides whether the wire carries TLS, and `secure` supplies the material
+for the handshake, so `grpc_scheme="http"` is plaintext whatever `secure` says.
+`grpc_scheme="https"` with `secure=False` cannot connect and is refused when the
+index is built. Leaving `grpc_scheme` unset takes the scheme from `secure`.
 
 ## Basic Operations
 
@@ -65,8 +86,8 @@ for match in results.matches:
 
 ## Async (Non-Blocking) Operations with PineconeFuture
 
-Every data-plane method has an `_async` variant that returns a
-{class}`~pinecone.grpc.future.PineconeFuture` immediately without blocking:
+`upsert`, `query`, `fetch`, `delete`, `update`, and `query_namespaces` each have an
+`_async` variant that returns a `PineconeFuture` immediately without blocking:
 
 ```python
 from concurrent.futures import as_completed
@@ -102,7 +123,8 @@ result = future.result(timeout=None)
 ## Bulk Upsert from a DataFrame
 
 For large-scale ingestion, `upsert_from_dataframe()` splits a pandas `DataFrame` into
-batches and submits them via `upsert_async()`:
+batches and submits them concurrently from a thread pool. pandas is not a dependency
+of the SDK. Install it yourself (`pip install pandas`) before using this method:
 
 ```python
 import pandas as pd
@@ -135,9 +157,9 @@ with GrpcIndex(host="product-search-abc123.svc.pinecone.io") as index:
 
 | Scenario | Recommendation |
 |----------|---------------|
-| Bulk upsert (thousands of vectors) | gRPC — lower per-call overhead |
+| Bulk upsert (thousands of vectors) | gRPC, lower per-call overhead |
 | High-throughput query loops | gRPC with `*_async()` |
-| Async Python frameworks (FastAPI, asyncio) | Use `AsyncIndex` instead — `GrpcIndex` does not support `async/await` |
+| Async Python frameworks (FastAPI, asyncio) | Use `AsyncIndex` instead. `GrpcIndex` does not support `async/await` |
 | Simple scripts and CLI tools | Either works; HTTP `Index` has no extra dependency |
 
 ## Limitations

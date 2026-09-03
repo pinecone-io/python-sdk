@@ -9,6 +9,7 @@ import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import quote
 
 if TYPE_CHECKING:
     import pandas as pd  # type: ignore[import-untyped]
@@ -18,12 +19,37 @@ from pinecone._internal.adapters.vectors_adapter import VectorsAdapter, extract_
 from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
 from pinecone._internal.batching import validate_batch_size
 from pinecone._internal.bulk import bulk_execute_sync
-from pinecone._internal.config import PineconeConfig, RetryConfig
+from pinecone._internal.config import (
+    GRPC_SCHEMES,
+    PineconeConfig,
+    RetryConfig,
+    resolve_grpc_scheme,
+)
 from pinecone._internal.constants import DATA_PLANE_API_VERSION, DEFAULT_MAX_CONCURRENCY
 from pinecone._internal.data_plane_helpers import _build_search_records_body, _validate_host
 from pinecone._internal.dataframe import _resolve_on_error, extract_records
 from pinecone._internal.keyword_only import keyword_only_methods
-from pinecone._internal.validation import require_in_range, require_positive
+from pinecone._internal.validation import (
+    DELETE_EMPTY_FILTER_MESSAGE,
+    FETCH_BY_METADATA_EMPTY_FILTER_MESSAGE,
+    QUERY_TOP_K_MAX,
+    UPDATE_EMPTY_FILTER_MESSAGE,
+    require_creatable_namespace_name,
+    require_delete_selectors,
+    require_in_range,
+    require_non_empty_filter,
+    require_query_selectors,
+    require_update_selectors,
+    require_valid_fetch_by_metadata_limit,
+    require_valid_id_prefix,
+    require_valid_list_limit,
+    require_valid_namespace_limit,
+    require_valid_namespace_name,
+    require_valid_namespace_prefix,
+    require_valid_namespace_schema,
+    require_valid_vector_id,
+    require_valid_vector_ids,
+)
 from pinecone._internal.vector_factory import VectorFactory, validate_vector_dict
 from pinecone.errors.exceptions import (
     PineconeTimeoutError,
@@ -69,19 +95,41 @@ from pinecone.models.vectors.vector import ScoredVector, Vector
 logger = logging.getLogger(__name__)
 
 
-def _build_grpc_endpoint(host: str, secure: bool) -> str:
+def _build_grpc_endpoint(host: str, *, secure: bool, scheme: str | None) -> str:
     """Build a gRPC endpoint URL from a host string.
 
-    Strips any existing scheme and applies the correct one for gRPC.
+    Strips any existing scheme and applies *scheme*, or the one implied by
+    *secure* when no scheme was configured.
+
+    The scheme, not *secure*, is what decides whether the wire carries TLS:
+    tonic runs a handshake only for an ``https`` endpoint, so a ``http``
+    endpoint stays plaintext even with TLS material configured, and an
+    ``https`` one without that material cannot connect at all. That pairing is
+    rejected here rather than at the first call.
+
+    Raises:
+        PineconeValueError: If *scheme* is ``"https"`` while *secure* is
+            ``False``, or names anything other than ``http`` or ``https``.
     """
+    if scheme is not None and scheme not in GRPC_SCHEMES:
+        raise PineconeValueError(
+            f"Invalid gRPC scheme {scheme!r}. Must be one of: {', '.join(GRPC_SCHEMES)}."
+        )
+    if scheme == "https" and not secure:
+        raise PineconeValueError(
+            'grpc_scheme="https" requires secure=True: an https endpoint needs the TLS '
+            "material secure=False withholds, so the channel could not connect. Pass "
+            'secure=True for a TLS data plane, or grpc_scheme="http" for a plaintext one.'
+        )
+
     bare = host
     for prefix in ("https://", "http://"):
         if bare.startswith(prefix):
             bare = bare[len(prefix) :]
             break
 
-    scheme = "https" if secure else "http"
-    return f"{scheme}://{bare}"
+    resolved = scheme if scheme is not None else ("https" if secure else "http")
+    return f"{resolved}://{bare}"
 
 
 def _vector_to_grpc_dict(v: Vector) -> dict[str, Any]:
@@ -139,6 +187,11 @@ def _dict_to_namespace_description(data: dict[str, Any]) -> NamespaceDescription
     Shared by create_namespace, describe_namespace, and list_namespaces_paginated
     to convert the dict payload returned by the Rust-backed GrpcChannel into a
     typed NamespaceDescription, including optional schema and indexed_fields.
+
+    ``indexed_fields`` arrives as a bare list of names here, where the REST JSON
+    nests the same names under a ``fields`` key — see
+    ``namespace_description_to_py_dict`` in rust/src/transport.rs. Both shapes
+    have to produce the same model, so the two readers cannot be collapsed.
     """
     schema: NamespaceSchema | None = None
     raw_schema = data.get("schema")
@@ -160,6 +213,7 @@ def _dict_to_namespace_description(data: dict[str, Any]) -> NamespaceDescription
         record_count=data.get("record_count", 0),
         schema=schema,
         indexed_fields=indexed_fields,
+        size_bytes=data.get("size_bytes", 0),
     )
 
 
@@ -259,7 +313,21 @@ class GrpcIndex:
         api_key (str | None): Pinecone API key. Falls back to ``PINECONE_API_KEY`` env var.
         api_version (str): API version string. Defaults to the current data plane version.
         source_tag (str | None): Tag appended to the User-Agent string for request attribution.
-        secure (bool): Whether to use TLS encryption. Defaults to ``True``.
+        secure (bool): Whether the channel is given TLS material — system root
+            certificates for gRPC, certificate verification for the REST calls this
+            client makes alongside it. Defaults to ``True``. It supplies the default
+            for ``grpc_scheme``, and ``grpc_scheme`` is what decides whether the wire
+            is actually encrypted.
+        grpc_scheme ("http" | "https" | None): URL scheme used to dial the data plane.
+            State it when the data plane is reached over something other than public
+            TLS — a plaintext gateway, an egress proxy, a private endpoint, or a local
+            simulator — rather than leaving the SDK to assume one. ``None`` (default)
+            takes the scheme from ``secure``: ``https`` when ``True``, ``http`` when
+            ``False``. Falls back to the ``PINECONE_GRPC_SCHEME`` env var before that
+            default applies. ``"https"`` requires ``secure=True``, since an https
+            endpoint cannot connect without the TLS material ``secure=False``
+            withholds. ``"http"`` with ``secure=True`` is a plaintext channel: the
+            scheme, not the TLS material, decides what goes on the wire.
         timeout (float): Deadline in seconds for a **single attempt** of a request, not
             for the call as a whole. Defaults to ``20.0``. A per-call ``timeout=`` does not
             replace it — the channel keeps this one too, so the shorter of the two governs.
@@ -277,7 +345,9 @@ class GrpcIndex:
             :meth:`Pinecone.index`; not intended for user configuration.
 
     Raises:
-        :exc:`ValidationError`: If no API key can be resolved or the host is invalid.
+        :exc:`PineconeValueError`: If no API key can be resolved, the host is invalid,
+            ``grpc_scheme`` names a scheme other than ``http`` or ``https``, or
+            ``grpc_scheme="https"`` is combined with ``secure=False``.
 
     Note:
         **Four timeout layers apply to every gRPC call**, and only the first three bound a
@@ -311,6 +381,17 @@ class GrpcIndex:
             from pinecone.grpc import GrpcIndex
 
             idx = GrpcIndex(host="movie-recs-abc123.svc.pinecone.io", api_key="...")
+
+        A data plane fronted by a plaintext gateway or served by a local
+        simulator is dialled over ``http`` by saying so:
+
+        .. code-block:: python
+
+            idx = GrpcIndex(
+                host="http://127.0.0.1:5085",
+                api_key="...",
+                grpc_scheme="http",
+            )
     """
 
     def __init__(
@@ -321,6 +402,7 @@ class GrpcIndex:
         api_version: str = DATA_PLANE_API_VERSION,
         source_tag: str | None = None,
         secure: bool = True,
+        grpc_scheme: Literal["http", "https"] | None = None,
         timeout: float = 20.0,
         connect_timeout: float = 1.0,
         retry_config: RetryConfig | None = None,
@@ -347,7 +429,9 @@ class GrpcIndex:
         self._source_tag = source_tag
 
         # Build gRPC endpoint and create the Rust-backed channel
-        endpoint = _build_grpc_endpoint(self._host, secure)
+        endpoint = _build_grpc_endpoint(
+            self._host, secure=secure, scheme=resolve_grpc_scheme(grpc_scheme)
+        )
 
         from pinecone import __version__
         from pinecone._grpc import GrpcChannel  # type: ignore[import-not-found]
@@ -432,6 +516,11 @@ class GrpcIndex:
         If a vector with the same ID already exists in the namespace, it is
         overwritten.
 
+        One request is capped both on the number of vectors it carries and on
+        its encoded size, and with wide vectors or heavy metadata the size cap
+        is usually the one reached first. Pass ``batch_size`` to split a long
+        sequence into requests that stay under both.
+
         Args:
             vectors: Sequence of vectors to upsert. Each element can be a
                 ``Vector`` instance, a tuple of ``(id, values)`` or
@@ -440,9 +529,9 @@ class GrpcIndex:
             namespace (str): Target namespace. Defaults to the default
                 (empty-string) namespace.
             batch_size (int | None): If set, splits ``vectors`` into batches of
-                this size and submits them in **parallel** via a
-                ``ThreadPoolExecutor``. ``None`` (default) sends all vectors in
-                a single channel call. Must be a positive integer when set.
+                this size and submits them in **parallel**. ``None`` (default)
+                sends all vectors in a single request. Must be a positive
+                integer when set.
             max_concurrency (int): Number of parallel threads used when
                 ``batch_size`` is set. Default ``8``, range ``[1, 64]``. Ignored
                 when ``batch_size`` is ``None``.
@@ -462,12 +551,15 @@ class GrpcIndex:
             :class:`UpsertResponse` with the count of vectors upserted.
 
         Raises:
-            :exc:`TypeError`: If a vector element is not a recognized format.
-            :exc:`ValueError`: If a vector element is malformed.
-            :exc:`PineconeValueError`: If ``batch_size`` is not a positive integer
-                or ``max_concurrency`` is outside ``[1, 64]``.
-            :exc:`PineconeTimeoutError`: If the call exceeds *timeout* or the server
-                returns CANCELLED with a timeout cause.
+            :exc:`PineconeTypeError`: If a vector element is not a recognized format.
+            :exc:`PineconeValueError`: If a vector element is malformed, if
+                ``batch_size`` is not a positive integer, or if
+                ``max_concurrency`` is outside ``[1, 64]``.
+            :exc:`ApiError`: If one request exceeds the server's cap on vectors
+                per request or on encoded request size. Lower ``batch_size``
+                and retry.
+            :exc:`PineconeTimeoutError`: If the call does not complete before
+                *timeout* elapses.
 
         Notes:
             When ``batch_size`` is set, batches are submitted **in parallel** via a
@@ -554,8 +646,14 @@ class GrpcIndex:
     ) -> QueryResponse:
         """Query a namespace for the nearest neighbors of a vector.
 
+        .. note::
+           Vector operations remain available for indexes created before 2026-07,
+           where you supply your own vectors. An index created at 2026-07 carries
+           a document schema instead, and its reads and writes go through the
+           document operations.
+
         Args:
-            top_k (int): Number of results to return (must be >= 1).
+            top_k (int): Number of results to return, 1-10000.
             vector (list[float] | None): Dense query vector values.
             id (str | None): ID of a stored vector to use as the query.
             namespace (str): Namespace to query. Defaults to the default namespace.
@@ -564,22 +662,29 @@ class GrpcIndex:
             include_metadata (bool): Whether to include metadata in results.
             sparse_vector (SparseValues | dict[str, Any] | None): Sparse query vector
                 with indices and values.
-            scan_factor (float | None): DRN optimization — adjusts how much of the
-                index is scanned. Range 0.5–4.0. Only supported for dedicated read
-                node indexes. None uses server default.
-            max_candidates (int | None): DRN optimization — caps candidate vectors to
-                rerank. Range 1–100000. Only supported for dedicated read node indexes.
-                None uses server default.
+            scan_factor (float | None): Recall/latency trade for dedicated read
+                node (DRN) indexes — a multiplier on how much of the index is
+                scanned. Above 1 scans more and favours recall; below 1 scans
+                less and favours latency. Omit to let the server choose.
+            max_candidates (int | None): Recall/latency trade for dedicated read
+                node (DRN) indexes — caps how many candidates are reranked before
+                ``top_k`` is taken. Must be at least ``top_k``: a smaller value is
+                rejected rather than clamped, since it could not fill the page.
             timeout (float | None): Per-call timeout in seconds. None uses the client-level default.
 
         Returns:
             :class:`QueryResponse` with matches, namespace, and usage info.
 
         Raises:
-            :exc:`ValidationError`: If top_k is not between 1 and 10000, both vector
-                and id are provided, or none of vector, id, or sparse_vector are provided.
-            :exc:`PineconeTimeoutError`: If the call exceeds *timeout* or the server
-                returns CANCELLED with a timeout cause.
+            :exc:`PineconeValueError`: If top_k is not between 1 and 10000, ``id``
+                is combined with ``vector`` or ``sparse_vector``, none of
+                ``vector``, ``id``, or ``sparse_vector`` is provided, or ``id``
+                is not a legal vector ID.
+            :exc:`ApiError`: If ``scan_factor`` or ``max_candidates`` is out of
+                range, or the index is not a dense DRN index — both knobs are
+                rejected on on-demand indexes and on sparse indexes.
+            :exc:`PineconeTimeoutError`: If the call does not complete before
+                *timeout* elapses.
 
         Examples:
 
@@ -592,15 +697,10 @@ class GrpcIndex:
                 for match in response.matches:
                     print(match.id, match.score)
         """
-        require_in_range("top_k", top_k, 1, 10_000)
-
-        has_vector = vector is not None
-        has_id = id is not None
-        has_sparse = sparse_vector is not None
-        if has_vector and has_id:
-            raise ValidationError("Exactly one of vector or id must be provided, not both")
-        if not has_vector and not has_id and not has_sparse:
-            raise ValidationError("At least one of vector, id, or sparse_vector must be provided")
+        require_in_range("top_k", top_k, 1, QUERY_TOP_K_MAX)
+        require_query_selectors(vector=vector, id=id, sparse_vector=sparse_vector)
+        if id is not None:
+            require_valid_vector_id("id", id)
 
         # Convert SparseValues model to dict for GrpcChannel
         sv_dict: Mapping[str, Any] | None = None
@@ -670,24 +770,27 @@ class GrpcIndex:
             include_metadata: Whether to include metadata in results.
             sparse_vector: Sparse query vector with indices and values.
                 Required for sparse-only indexes when *vector* is omitted.
-            scan_factor: DRN performance tuning — controls how much of the
-                index is scanned during a query. Higher values scan more
-                data and may improve recall at the cost of latency.
-            max_candidates: DRN performance tuning — maximum number of
-                candidate vectors to consider during the search phase.
+            scan_factor: Recall/latency trade for dedicated read node (DRN)
+                indexes — a multiplier on how much of the index is scanned.
+                Above 1 scans more and favours recall; below 1 scans less and
+                favours latency. Applied to every namespace queried.
+            max_candidates: Recall/latency trade for dedicated read node (DRN)
+                indexes — caps how many candidates are reranked before ``top_k``
+                is taken, per namespace. Must be at least ``top_k``.
 
         Returns:
             :class:`QueryNamespacesResults` with the merged top-k matches, total
             usage, and per-namespace usage.
 
         Raises:
-            :exc:`PineconeValueError`: If *namespaces* is empty, or if both
-                *vector* and *sparse_vector* are absent/empty.
-            :exc:`ValueError`: If *metric* is not a recognized value.
+            :exc:`PineconeValueError`: If *namespaces* is empty, if both
+                *vector* and *sparse_vector* are absent/empty, or if *metric*
+                is not a recognized value.
             :exc:`ApiError`: If any individual namespace query fails.
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
-            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
+            :exc:`PineconeTimeoutError`: If the request does not complete
+                before the configured timeout elapses.
 
         Examples:
 
@@ -766,9 +869,10 @@ class GrpcIndex:
             and usage info.
 
         Raises:
-            :exc:`ValidationError`: If ids is empty.
-            :exc:`PineconeTimeoutError`: If the call exceeds *timeout* or the server
-                returns CANCELLED with a timeout cause.
+            :exc:`PineconeValueError`: If ids is empty or any ID is not 1-512
+                ASCII characters without a NUL.
+            :exc:`PineconeTimeoutError`: If the call does not complete before
+                *timeout* elapses.
 
         Examples:
 
@@ -778,8 +882,7 @@ class GrpcIndex:
                 for vid, vec in response.vectors.items():
                     print(vid, vec.values)
         """
-        if not ids:
-            raise ValidationError("ids must be a non-empty list")
+        require_valid_vector_ids("ids", ids)
 
         logger.info("Fetching %d vectors via gRPC", len(ids))
         result = self._channel.fetch(ids, namespace=namespace or None, timeout_s=timeout)
@@ -806,14 +909,11 @@ class GrpcIndex:
     ) -> FetchByMetadataResponse:
         """Fetch vectors matching a metadata filter expression.
 
-        Delegates to the REST endpoint because the Pinecone gRPC API does not
-        expose a fetch-by-metadata operation.
-
         Args:
-            filter: Metadata filter expression (required).
+            filter: Metadata filter expression (required, at least one condition).
             namespace: Namespace to fetch from. Defaults to the default namespace.
-            limit: Maximum number of vectors to return per page. When ``None``,
-                the server default (100) is used.
+            limit: Maximum number of vectors to return per page, 1-10000.
+                Omit to let the server choose the page size.
             pagination_token: Token from a previous response to fetch the next page.
             timeout (float | None): Per-call timeout in seconds.
 
@@ -822,23 +922,53 @@ class GrpcIndex:
             and pagination token for the next page (if any).
 
         Raises:
+            :exc:`PineconeValueError`: If ``filter`` is empty or ``limit`` falls
+                outside 1-10000.
             :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeTimeoutError`: If the call does not complete before
+                *timeout* elapses.
+
+        Examples:
+
+            .. code-block:: python
+
+                response = idx.fetch_by_metadata(
+                    filter={"category": {"$eq": "science"}},
+                    limit=50,
+                )
+                for vid, vec in response.vectors.items():
+                    print(vid, vec.metadata)
         """
         if limit is not None:
-            require_positive("limit", limit)
-        body: dict[str, Any] = {"filter": filter}
-        if namespace:
-            body["namespace"] = namespace
-        if limit is not None:
-            body["limit"] = limit
-        if pagination_token is not None:
-            body["paginationToken"] = pagination_token
+            require_valid_fetch_by_metadata_limit("limit", limit)
+        require_non_empty_filter(
+            "filter", filter, server_message=FETCH_BY_METADATA_EMPTY_FILTER_MESSAGE
+        )
 
-        logger.info("Fetching vectors by metadata (via REST)")
-        response = self._http.post("/vectors/fetch_by_metadata", timeout=timeout, json=body)
-        result = self._adapter.to_fetch_by_metadata_response(response.content)
-        result.response_info = extract_response_info(response)
-        return result
+        logger.info("Fetching vectors by metadata via gRPC")
+        result = self._channel.fetch_by_metadata(
+            namespace=namespace or None,
+            filter=filter,
+            limit=limit,
+            pagination_token=pagination_token,
+            timeout_s=timeout,
+        )
+
+        vectors: dict[str, Vector] = {}
+        for vid, vdata in result.get("vectors", {}).items():
+            vectors[vid] = _dict_to_vector(vid, vdata)
+
+        pagination_data = result.get("pagination")
+        pagination = None
+        if pagination_data is not None:
+            pagination = Pagination(next=pagination_data.get("next"))
+
+        return FetchByMetadataResponse(
+            vectors=vectors,
+            namespace=result.get("namespace", ""),
+            usage=_dict_to_usage(result.get("usage")),
+            pagination=pagination,
+        )
 
     def delete(
         self,
@@ -853,6 +983,16 @@ class GrpcIndex:
 
         Exactly one of ``ids``, ``delete_all``, or ``filter`` must be specified.
 
+        A by-filter delete selects on metadata alone, so a text-match operator
+        (``$match_phrase``, ``$match_all``, ``$match_any``) in the filter is
+        rejected rather than ignored — evaluated there it would match everything
+        and widen the delete to every record the rest of the filter admits. Text
+        matching belongs in :meth:`search`.
+
+        A by-filter delete also reads before it writes, so a dedicated index
+        scaled to zero replicas refuses it; add replicas first. Deleting by ID or
+        with ``delete_all`` is unaffected.
+
         Args:
             ids (list[str] | None): List of vector IDs to delete.
             delete_all (bool): If True, delete all vectors in the namespace.
@@ -864,9 +1004,12 @@ class GrpcIndex:
             None
 
         Raises:
-            :exc:`ValidationError`: If zero or more than one deletion mode is specified.
-            :exc:`PineconeTimeoutError`: If the call exceeds *timeout* or the server
-                returns CANCELLED with a timeout cause.
+            :exc:`PineconeValueError`: If zero or more than one deletion mode is
+                specified, any ID is not a legal vector ID, or ``filter`` is empty.
+            :exc:`ApiError`: If a by-filter delete uses a text-match operator, or
+                the index is a dedicated index scaled to zero replicas.
+            :exc:`PineconeTimeoutError`: If the call does not complete before
+                *timeout* elapses.
 
         Examples:
 
@@ -881,13 +1024,11 @@ class GrpcIndex:
                 # Delete by metadata filter
                 idx.delete(filter={"category": {"$eq": "obsolete"}})
         """
-        mode_count = sum([ids is not None, delete_all, filter is not None])
-        if mode_count == 0:
-            raise ValidationError("Must specify one of ids, delete_all, or filter")
-        if mode_count > 1:
-            raise ValidationError(
-                "Cannot combine ids, delete_all, and filter — specify exactly one"
-            )
+        require_delete_selectors(ids=ids, delete_all=delete_all, filter=filter)
+        if ids is not None:
+            require_valid_vector_ids("ids", ids)
+        if filter is not None:
+            require_non_empty_filter("filter", filter, server_message=DELETE_EMPTY_FILTER_MESSAGE)
 
         logger.info("Deleting vectors via gRPC from namespace %r", namespace)
         self._channel.delete(
@@ -912,6 +1053,16 @@ class GrpcIndex:
     ) -> UpdateResponse:
         """Update vectors by ID or metadata filter.
 
+        A by-filter update selects on metadata alone, so a text-match operator
+        (``$match_phrase``, ``$match_all``, ``$match_any``) in the filter is
+        rejected rather than ignored — evaluated there it would match everything
+        and widen the patch to every record the rest of the filter admits. Text
+        matching belongs in :meth:`search`.
+
+        A by-filter update also reads before it writes, so a dedicated index
+        scaled to zero replicas refuses it; add replicas first. Updating by ID is
+        unaffected.
+
         Args:
             id (str | None): ID of the vector to update.
             values (list[float] | None): New dense vector values.
@@ -927,9 +1078,14 @@ class GrpcIndex:
             :class:`UpdateResponse` with matched_records count (when available).
 
         Raises:
-            :exc:`ValidationError`: If both or neither of id and filter are provided.
-            :exc:`PineconeTimeoutError`: If the call exceeds *timeout* or the server
-                returns CANCELLED with a timeout cause.
+            :exc:`PineconeValueError`: If both or neither of id and filter are
+                provided, if ``filter`` is combined with ``values`` or
+                ``sparse_values``, if ``filter`` is empty, or if ``id`` is not
+                a legal vector ID.
+            :exc:`ApiError`: If a by-filter update uses a text-match operator, or
+                the index is a dedicated index scaled to zero replicas.
+            :exc:`PineconeTimeoutError`: If the call does not complete before
+                *timeout* elapses.
 
         Examples:
 
@@ -944,12 +1100,11 @@ class GrpcIndex:
                     set_metadata={"year": 2020},
                 )
         """
-        has_id = id is not None
-        has_filter = filter is not None
-        if has_id and has_filter:
-            raise ValidationError("Exactly one of id or filter must be provided, not both")
-        if not has_id and not has_filter:
-            raise ValidationError("Exactly one of id or filter must be provided, got neither")
+        require_update_selectors(id=id, filter=filter, values=values, sparse_values=sparse_values)
+        if id is not None:
+            require_valid_vector_id("id", id)
+        if filter is not None:
+            require_non_empty_filter("filter", filter, server_message=UPDATE_EMPTY_FILTER_MESSAGE)
 
         # Convert SparseValues model to dict for GrpcChannel
         sv_dict: Mapping[str, Any] | None = None
@@ -992,7 +1147,7 @@ class GrpcIndex:
 
         Args:
             prefix (str | None): Return only IDs starting with this prefix.
-            limit (int | None): Maximum number of IDs to return in this page.
+            limit (int | None): Maximum number of IDs to return in this page, 1-100.
             pagination_token (str | None): Token from a previous response to fetch the next page.
             namespace (str): Namespace to list from. Defaults to the default namespace.
             timeout (float | None): Per-call timeout in seconds. None uses the client-level default.
@@ -1001,8 +1156,10 @@ class GrpcIndex:
             :class:`ListResponse` with vector IDs, pagination info, namespace, and usage.
 
         Raises:
-            :exc:`PineconeTimeoutError`: If the call exceeds *timeout* or the server
-                returns CANCELLED with a timeout cause.
+            :exc:`PineconeValueError`: If ``prefix`` is not legal or ``limit``
+                falls outside 1-100.
+            :exc:`PineconeTimeoutError`: If the call does not complete before
+                *timeout* elapses.
 
         Examples:
 
@@ -1012,6 +1169,11 @@ class GrpcIndex:
                 for item in response.vectors:
                     print(item.id)
         """
+        if prefix is not None:
+            require_valid_id_prefix("prefix", prefix)
+        if limit is not None:
+            require_valid_list_limit("limit", limit)
+
         logger.info("Listing vectors via gRPC in namespace %r", namespace)
         result = self._channel.list(
             prefix=prefix,
@@ -1058,8 +1220,10 @@ class GrpcIndex:
             :class:`ListResponse` for each page of results.
 
         Raises:
-            :exc:`PineconeTimeoutError`: If any page call exceeds *timeout* or the
-                server returns CANCELLED with a timeout cause.
+            :exc:`PineconeValueError`: If ``prefix`` is not legal or ``limit``
+                falls outside 1-100.
+            :exc:`PineconeTimeoutError`: If a page request does not complete
+                before *timeout* elapses.
 
         Examples:
 
@@ -1094,12 +1258,23 @@ class GrpcIndex:
         """Return statistics for this index.
 
         Args:
-            filter (dict[str, Any] | None): Metadata filter expression. When
-                provided, only vectors matching the filter are counted.
+            filter (dict[str, Any] | None): Metadata filter expression. Accepted
+                for API compatibility, but a non-empty filter is rejected for
+                every index type, so the call fails instead of returning
+                filtered counts. Leave it unset: the statistics returned always
+                describe the whole index.
+            timeout (float | None): Per-call timeout in seconds. None uses the
+                client-level default.
 
         Returns:
             :class:`DescribeIndexStatsResponse` with namespace summaries, dimension,
             total vector count, and fullness metrics.
+
+        Raises:
+            :exc:`ApiError`: If a non-empty ``filter`` is provided, since it is
+                rejected for every index type.
+            :exc:`PineconeTimeoutError`: If the call does not complete before
+                *timeout* elapses.
 
         Examples:
 
@@ -1107,11 +1282,6 @@ class GrpcIndex:
 
                 stats = idx.describe_index_stats()
                 print(stats.total_vector_count, stats.dimension)
-
-                # With filter — only count vectors matching the expression
-                stats = idx.describe_index_stats(
-                    filter={"genre": {"$eq": "drama"}}
-                )
         """
         logger.info("Describing index stats via gRPC")
         result = self._channel.describe_index_stats(filter=filter, timeout_s=timeout)
@@ -1175,11 +1345,11 @@ class GrpcIndex:
         total_timeout: float | None = None,
         on_error: Literal["raise", "collect"] | None = None,
     ) -> UpsertResponse:
-        """Upsert vectors from a pandas DataFrame using async batching.
+        """Upsert vectors from a pandas DataFrame.
 
-        Splits the DataFrame into batches of ``batch_size`` rows and submits
-        each batch asynchronously via :meth:`upsert_async`, then aggregates
-        the results.
+        Splits the DataFrame into batches of ``batch_size`` rows, submits
+        batches in parallel, and aggregates the results into a single
+        response.
 
         Args:
             df: A ``pandas.DataFrame`` with at least ``id`` and ``values``
@@ -1199,12 +1369,12 @@ class GrpcIndex:
             on_error: What to do when some batches fail. ``"collect"`` returns an
                 :class:`UpsertResponse` carrying ``failed_item_count``, ``errors``
                 and ``failed_items``, so the caller can retry only what failed —
-                the same contract the REST transport has had since v9.0.0.
+                the same contract the REST client has had since v9.0.0.
                 ``"raise"`` re-raises the lowest-indexed batch failure, after all
                 batches have settled, with the partial result attached to the
                 exception's ``response`` attribute. ``None`` (default) behaves as
                 ``"collect"`` and additionally warns once per process when a
-                partial failure occurs, since this transport used to raise; pass
+                partial failure occurs, since this method used to raise; pass
                 ``"collect"`` explicitly to silence that.
             total_timeout: Deadline in seconds for the **whole ingest**, as opposed
                 to *timeout*, which bounds a single attempt of a single batch. On
@@ -1245,8 +1415,8 @@ class GrpcIndex:
         Raises:
             :exc:`RuntimeError`: If ``pandas`` is not installed. It is not an SDK
                 dependency; install it yourself with ``pip install pandas``.
-            :exc:`PineconeValueError`: If *df* is not a ``pandas.DataFrame``.
-            :exc:`PineconeValueError`: If *batch_size* is not a positive integer.
+            :exc:`PineconeValueError`: If *df* is not a ``pandas.DataFrame`` or
+                *batch_size* is not a positive integer.
             :exc:`PineconeTimeoutError`: If a batch exceeds *timeout* on the server,
                 or if *total_timeout* expires before every batch is submitted. In
                 the latter case the exception carries the partial
@@ -1255,7 +1425,7 @@ class GrpcIndex:
         Note:
             **Changed in 9.2.0.** Partial failures are aggregated rather than
             raised, matching :meth:`upsert` with ``batch_size`` and the REST
-            transport. Callers that relied on the raise should pass
+            client. Callers that relied on the raise should pass
             ``on_error="raise"``. The old raise discarded the partial count, so
             no caller could tell what had landed; the new default reports it.
             Because upserts are idempotent by vector ID, re-running the whole
@@ -1371,8 +1541,8 @@ class GrpcIndex:
 
         if batch_result.errors:
             if resolved_on_error == "raise":
-                # All batches have settled by the time batch_execute returns, so
-                # nothing is left running server-side when this propagates.
+                # All batches have settled by the time bulk_execute_sync returns,
+                # so nothing is left running server-side when this propagates.
                 error = min(batch_result.errors, key=lambda err: err.batch_index).error
                 if isinstance(error, PineconeTimeoutError):
                     raise PineconeTimeoutError(
@@ -1565,7 +1735,24 @@ class GrpcIndex:
         dry_run: bool = False,
         timeout: float | None = None,
     ) -> PineconeFuture[UpdateResponse]:
-        """Submit an update call without blocking; returns a :class:`PineconeFuture`."""
+        """Submit an update operation and return a :class:`PineconeFuture`.
+
+        Same parameters as :meth:`update`, including ``timeout (float | None)``
+        which sets a per-call timeout in seconds.
+
+        Returns:
+            :class:`PineconeFuture` [:class:`UpdateResponse`] that resolves to
+            the update result.
+
+        Examples:
+
+            .. code-block:: python
+
+                future = index.update_async(
+                    id="article-101", values=[0.012, -0.087, 0.153]
+                )
+                result = future.result()
+        """
         return PineconeFuture(
             self._executor.submit(
                 self.update,
@@ -1595,7 +1782,29 @@ class GrpcIndex:
         max_candidates: int | None = None,
         timeout: float | None = None,
     ) -> PineconeFuture[QueryNamespacesResults]:
-        """Submit a query_namespaces call and return a :class:`PineconeFuture`."""
+        """Submit a query_namespaces operation and return a :class:`PineconeFuture`.
+
+        Same parameters as :meth:`query_namespaces`, including ``timeout (float | None)``
+        which sets a per-call timeout in seconds.
+
+        Returns:
+            :class:`PineconeFuture` [:class:`QueryNamespacesResults`] that resolves to
+            the merged top-k matches across namespaces.
+
+        Examples:
+
+            .. code-block:: python
+
+                future = idx.query_namespaces_async(
+                    vector=[0.012, -0.087, 0.153],  # truncated; use your actual dimension
+                    namespaces=["articles-en", "articles-fr", "articles-de"],
+                    metric="cosine",
+                    top_k=10,
+                )
+                results = future.result()
+                for match in results.matches:
+                    print(match.id, match.score)
+        """
         return PineconeFuture(
             self._executor.submit(
                 self.query_namespaces,
@@ -1622,9 +1831,9 @@ class GrpcIndex:
     ) -> UpsertRecordsResponse:
         """Upsert records for indexes with integrated inference.
 
-        Records are sent as newline-delimited JSON (NDJSON) over REST. Embeddings
-        are generated server-side. This method delegates to the REST endpoint
-        because the Pinecone gRPC API does not expose a records upsert operation.
+        Embeddings are generated server-side from the fields you provide, so
+        each record carries source data (e.g. text) rather than precomputed
+        vector values.
 
         Args:
             records: List of record dicts. Each must contain an ``_id`` or
@@ -1643,7 +1852,8 @@ class GrpcIndex:
             :exc:`ApiError`: If the API returns an error response.
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
-            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
+            :exc:`PineconeTimeoutError`: If the request does not complete
+                before *timeout* elapses.
 
         Examples:
 
@@ -1687,7 +1897,7 @@ class GrpcIndex:
             "Upserting %d records into namespace %r (NDJSON via REST)", len(records), namespace
         )
         response = self._http.post(
-            f"/records/namespaces/{namespace}/upsert",
+            f"/records/namespaces/{quote(namespace, safe='')}/upsert",
             timeout=timeout,
             content=ndjson_body.encode("utf-8"),
             headers={"Content-Type": "application/x-ndjson"},
@@ -1736,9 +1946,11 @@ class GrpcIndex:
                 keys. Use :class:`RerankConfig` for IDE autocompletion.
             match_terms (dict[str, Any] | None): Term-matching constraint for
                 sparse search. Requires keys ``"strategy"`` (currently only
-                ``"all"``) and ``"terms"`` (list of strings). Only supported
-                for sparse indexes using ``pinecone-sparse-english-v0``.
-                ``None`` disables term matching.
+                ``"all"``) and ``"terms"`` (list of strings).
+                Valid only on a text query — combined with ``vector`` or ``id``
+                it is rejected — and only on a sparse index whose embedding model
+                supports it; the server names the supported model when it
+                refuses. ``None`` disables term matching.
             query (dict[str, Any] | None): Legacy query body containing
                 ``top_k`` plus one of ``inputs``, ``vector``, or ``id``. Prefer
                 passing these fields directly.
@@ -1752,7 +1964,8 @@ class GrpcIndex:
             :exc:`ApiError`: If the API returns an error response.
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
-            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
+            :exc:`PineconeTimeoutError`: If the request does not complete before
+                *timeout* elapses.
 
         Examples:
 
@@ -1811,7 +2024,7 @@ class GrpcIndex:
             body["query"]["top_k"],
         )
         response = self._http.post(
-            f"/records/namespaces/{namespace}/search", timeout=timeout, json=body
+            f"/records/namespaces/{quote(namespace, safe='')}/search", timeout=timeout, json=body
         )
         result = self._adapter.to_search_response(response.content)
         result.response_info = extract_response_info(response)
@@ -1832,9 +2045,19 @@ class GrpcIndex:
         query: SearchQuery | Mapping[str, Any] | None = None,
         timeout: float | None = None,
     ) -> SearchRecordsResponse:
-        """Alias for :meth:`search`.
+        """Alias for :meth:`search`, kept for backwards compatibility.
 
-        Prefer calling :meth:`search` directly — this alias exists for backwards compatibility.
+        Prefer calling :meth:`search` directly.
+
+        Examples:
+
+            .. code-block:: python
+
+                response = idx.search_records(
+                    namespace="articles-en",
+                    top_k=10,
+                    inputs={"text": "benefits of vector databases for search"},
+                )
         """
         return self.search(
             namespace=namespace,
@@ -1858,18 +2081,40 @@ class GrpcIndex:
         pagination_token: str | None = None,
         timeout: float | None = None,
     ) -> ListNamespacesResponse:
-        """Fetch a single page of namespace descriptions via gRPC.
+        """Fetch a single page of namespace descriptions.
 
         Args:
-            prefix (str | None): Return only namespaces whose names start with this prefix.
-            limit (int | None): Maximum number of namespaces to return in this page.
+            prefix (str | None): Return only namespaces whose names start with this
+                prefix. Must be ASCII, must not contain the NUL character, and must
+                be at most 512 characters. The empty prefix matches every namespace.
+            limit (int | None): Maximum number of namespaces to return in this page,
+                1-100.
             pagination_token (str | None): Token from a previous response to fetch the next page.
             timeout (float | None): Per-call timeout in seconds.
 
         Returns:
             :class:`ListNamespacesResponse` with namespace descriptions, pagination info,
-            and total count.
+            and total count. Each description carries ``size_bytes``.
+
+        Raises:
+            :exc:`PineconeValueError`: If *prefix* or *limit* violates the rules
+                above. Raised locally, before the request is sent, with the same
+                message the REST and asyncio clients raise.
+            :exc:`PineconeTimeoutError`: If the request does not complete before
+                *timeout* elapses.
+
+        Examples:
+            .. code-block:: python
+
+                page = idx.list_namespaces_paginated(prefix="prod-", limit=50)
+                for ns in page.namespaces:
+                    print(ns.name, ns.record_count, ns.size_bytes)
         """
+        if prefix is not None:
+            require_valid_namespace_prefix("prefix", prefix)
+        if limit is not None:
+            require_valid_namespace_limit("limit", limit)
+
         logger.info("Listing namespaces (paginated) via gRPC")
         result = self._channel.list_namespaces(
             prefix=prefix,
@@ -1907,19 +2152,28 @@ class GrpcIndex:
         retrieved.
 
         Args:
-            prefix (str | None): Return only namespaces whose names start with this prefix.
-            limit (int | None): Maximum number of namespaces to return per page.
+            prefix (str | None): Return only namespaces whose names start with this
+                prefix. Must be ASCII, must not contain the NUL character, and must
+                be at most 512 characters. The empty prefix matches every namespace.
+            limit (int | None): Maximum number of namespaces to return per page, 1-100.
             timeout (float | None): Per-call timeout in seconds.
 
         Yields:
-            :class:`ListNamespacesResponse` for each page of results.
+            :class:`ListNamespacesResponse` for each page of results. Each
+            :class:`NamespaceDescription` carries ``size_bytes``.
+
+        Raises:
+            :exc:`PineconeValueError`: If *prefix* or *limit* violates the rules
+                above. Raised on the first iteration, before the request is sent.
+            :exc:`PineconeTimeoutError`: If a page request does not complete
+                before *timeout* elapses.
 
         Examples:
             .. code-block:: python
 
                 for page in idx.list_namespaces(prefix="prod-"):
                     for ns in page.namespaces:
-                        print(ns.name, ns.record_count)
+                        print(ns.name, ns.record_count, ns.size_bytes)
         """
         pagination_token: str | None = None
         while True:
@@ -1943,24 +2197,45 @@ class GrpcIndex:
         schema: dict[str, Any] | None = None,
         timeout: float | None = None,
     ) -> NamespaceDescription:
-        """Create a named namespace in the index via gRPC.
+        """Create a named namespace in the index.
 
         Args:
-            name (str): Name for the new namespace (must be non-empty).
-            schema (dict[str, Any] | None): Optional schema configuration
-                with metadata field indexing settings.
+            name (str): Name for the new namespace. Must be ASCII, must not
+                contain the NUL character, and must be 1-512 characters long.
+                ``__default__`` is reserved and cannot be created: it names the
+                namespace requests address when they omit a namespace, so it
+                always exists.
+            schema (dict[str, Any] | None): Optional metadata-index configuration,
+                ``{"fields": {<field>: {"filterable": True}}}``. Omitting it does
+                not mean "index everything": the namespace inherits the index's
+                own metadata-index configuration, so an index that restricts which
+                fields are indexed passes that restriction on. Supply *schema* to
+                override the inherited configuration for this namespace, indexing
+                exactly the fields listed. ``filterable`` is required on each field
+                and must be ``True`` — to leave a field unindexed, omit it from
+                ``fields``.
             timeout (float | None): Per-call timeout in seconds.
 
         Returns:
-            :class:`NamespaceDescription` with the namespace name and record count.
+            :class:`NamespaceDescription` with the namespace name, record count,
+            schema, indexed fields, and ``size_bytes``.
 
         Raises:
-            :exc:`ValidationError`: If the name is not a string or is empty/whitespace.
+            :exc:`PineconeValueError`: If *name* violates the rules above, or
+                *schema* is malformed. Raised locally, before the request is
+                sent, with the same message the REST and asyncio clients raise.
+            :exc:`PineconeTimeoutError`: If the request does not complete before
+                *timeout* elapses.
+
+        Examples:
+            .. code-block:: python
+
+                ns = idx.create_namespace(name="movies-en")
+                print(ns.name, ns.record_count, ns.size_bytes)
         """
-        if not isinstance(name, str):
-            raise ValidationError("namespace name must be a string")
-        if not name or not name.strip():
-            raise ValidationError("namespace name must be a non-empty string")
+        require_creatable_namespace_name("name", name)
+        if schema is not None:
+            require_valid_namespace_schema("schema", schema)
 
         logger.info("Creating namespace %r via gRPC", name)
         result = self._channel.create_namespace(name, schema, timeout_s=timeout)
@@ -1975,17 +2250,35 @@ class GrpcIndex:
     ) -> NamespaceDescription:
         """Describe a namespace by name.
 
+        This operation is rate limited per index, independently of the other
+        namespace operations. Prefer :meth:`list_namespaces` when describing more
+        than one namespace: it returns the same information for every namespace
+        in a single request and is not subject to that limit.
+
         Args:
-            name (str): Name of the namespace to describe.
+            name (str): Name of the namespace to describe. Must be ASCII, must not
+                contain the NUL character, and must be 1-512 characters long.
+                ``__default__`` is accepted and describes the namespace requests
+                address when they omit one.
             timeout (float | None): Per-call timeout in seconds.
 
         Returns:
             :class:`NamespaceDescription` with the namespace name, record count,
-            and schema information.
+            schema, indexed fields, and ``size_bytes``.
 
         Raises:
-            :exc:`ValidationError`: If the name is not a string or is empty/whitespace.
+            :exc:`PineconeValueError`: If *name* violates the rules above.
+                Raised locally, before the request is sent, with the same
+                message the REST and asyncio clients raise.
             :exc:`TypeError`: If unexpected keyword arguments are passed.
+            :exc:`PineconeTimeoutError`: If the request does not complete before
+                *timeout* elapses.
+
+        Examples:
+            .. code-block:: python
+
+                ns = idx.describe_namespace(name="movies-en")
+                print(ns.name, ns.record_count, ns.size_bytes)
         """
         legacy_namespace: str | None = kwargs.pop("namespace", None)
         if kwargs:
@@ -1995,10 +2288,7 @@ class GrpcIndex:
         if name is not None and legacy_namespace is not None:
             raise ValidationError("Provide either name= or namespace=, not both")
         effective: str = name if name is not None else (legacy_namespace or "")
-        if not isinstance(effective, str):
-            raise ValidationError("namespace name must be a string")
-        if not effective or not effective.strip():
-            raise ValidationError("namespace name must be a non-empty string")
+        require_valid_namespace_name("name", effective)
 
         logger.info("Describing namespace %r via gRPC", effective)
         result = self._channel.describe_namespace(effective, timeout_s=timeout)
@@ -2014,15 +2304,25 @@ class GrpcIndex:
         """Delete a namespace by name, removing all its vectors.
 
         Args:
-            name (str): Name of the namespace to delete.
+            name (str): Name of the namespace to delete. Must be ASCII, must not
+                contain the NUL character, and must be 1-512 characters long.
             timeout (float | None): Per-call timeout in seconds.
 
         Returns:
             None — a successful delete returns no payload.
 
         Raises:
-            :exc:`ValidationError`: If the name is not a string or is empty/whitespace.
+            :exc:`PineconeValueError`: If *name* violates the rules above.
+                Raised locally, before the request is sent, with the same
+                message the REST and asyncio clients raise.
             :exc:`TypeError`: If unexpected keyword arguments are passed.
+            :exc:`PineconeTimeoutError`: If the request does not complete before
+                *timeout* elapses.
+
+        Examples:
+            .. code-block:: python
+
+                idx.delete_namespace(name="movies-en")
         """
         legacy_namespace: str | None = kwargs.pop("namespace", None)
         if kwargs:
@@ -2032,10 +2332,7 @@ class GrpcIndex:
         if name is not None and legacy_namespace is not None:
             raise ValidationError("Provide either name= or namespace=, not both")
         effective: str = name if name is not None else (legacy_namespace or "")
-        if not isinstance(effective, str):
-            raise ValidationError("namespace name must be a string")
-        if not effective or not effective.strip():
-            raise ValidationError("namespace name must be a non-empty string")
+        require_valid_namespace_name("name", effective)
 
         logger.info("Deleting namespace %r via gRPC", effective)
         self._channel.delete_namespace(effective, timeout_s=timeout)
@@ -2075,17 +2372,22 @@ class GrpcIndex:
 
         .. note::
            The import URI must point to a directory of Parquet files in cloud
-           storage (``s3://`` or ``gs://``). Each Parquet file must follow the
-           Pinecone-required schema. See
+           storage. Each Parquet file must follow the Pinecone-required schema.
+           See
            `Pinecone import docs <https://docs.pinecone.io/guides/data/understanding-imports>`_
            for the required Parquet schema and supported storage formats.
 
         Args:
-            uri (str): Source URI for the import data (e.g.
-                ``"s3://my-bucket/vectors/"`` or ``"gs://my-bucket/vectors/"``).
-            error_mode (str | None): How to handle errors during import. Must be
-                ``"continue"`` or ``"abort"`` when supplied. Case-insensitive.
-                Optional; when omitted the backend default (``"continue"``) applies.
+            uri (str): Directory prefix holding the Parquet files, not a single
+                file. Three forms are accepted: ``s3://`` for Amazon S3,
+                ``gs://`` for Google Cloud Storage, and an ``https://`` URL
+                naming an Azure Blob Storage container. ``s3://`` additionally
+                requires that the index itself be hosted on AWS.
+            error_mode (str | None): How to handle a record the import cannot
+                read. ``"continue"`` skips it and imports the rest; ``"abort"``
+                ends the whole import at the first such record. Case-insensitive.
+                Defaults to ``"abort"`` when omitted, so an unreadable record
+                fails the import unless you opt into skipping.
             integration_id (str | None): Optional integration ID for the import.
 
         Returns:
@@ -2095,10 +2397,15 @@ class GrpcIndex:
         Raises:
             :exc:`PineconeValueError`: If ``error_mode`` is supplied but not
                 ``"continue"`` or ``"abort"``.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`ApiError`: If ``uri`` is empty or longer than the server
+                accepts, uses an unsupported scheme, is an ``s3://`` URI on an
+                index not hosted on AWS, or names an S3 directory bucket, which
+                imports do not support, or if the API otherwise returns an
+                error response.
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
-            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
+            :exc:`PineconeTimeoutError`: If the request does not complete
+                before the configured timeout elapses.
 
         Examples:
             .. code-block:: python
@@ -2115,10 +2422,10 @@ class GrpcIndex:
                     import_op = idx.describe_import(import_id)
                 print(f"Status: {import_op.status}, records imported: {import_op.records_imported}")
 
-                # Abort on first error instead of continuing
+                # Skip unreadable records instead of failing the import
                 response = idx.start_import(
                     uri="s3://my-bucket/vectors/",
-                    error_mode="abort",
+                    error_mode="continue",
                 )
 
         .. seealso::
@@ -2160,7 +2467,8 @@ class GrpcIndex:
             :exc:`ApiError`: If the API returns an error response.
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
-            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
+            :exc:`PineconeTimeoutError`: If the request does not complete
+                before the configured timeout elapses.
 
         Examples:
             .. code-block:: python
@@ -2170,14 +2478,15 @@ class GrpcIndex:
         """
         str_id = self._validate_import_id(id)
         logger.info("Describing import %s", str_id)
-        response = self._http.get(f"/bulk/imports/{str_id}")
+        response = self._http.get(f"/bulk/imports/{quote(str_id, safe='')}")
         return self._imports_adapter.to_import_model(response.content)
 
     def cancel_import(self, id: str | int) -> None:
-        """Cancel a bulk import operation by ID.
+        """Cancel a running bulk import operation by ID.
 
         Args:
-            id: Import operation ID. Integers are converted to strings silently.
+            id (str | int): ID of the import to cancel, as returned by
+                :meth:`start_import`. Integers are converted to strings silently.
 
         Returns:
             None — a successful cancellation returns no payload.
@@ -2187,7 +2496,8 @@ class GrpcIndex:
             :exc:`ApiError`: If the API returns an error response.
             :exc:`PineconeConnectionError`: If a network-level connection
                 fails (DNS, refused, transport error).
-            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
+            :exc:`PineconeTimeoutError`: If the request does not complete
+                before the configured timeout elapses.
 
         Examples:
             .. code-block:: python
@@ -2196,7 +2506,7 @@ class GrpcIndex:
         """
         str_id = self._validate_import_id(id)
         logger.info("Cancelling import %s", str_id)
-        self._http.delete(f"/bulk/imports/{str_id}")
+        self._http.delete(f"/bulk/imports/{quote(str_id, safe='')}")
 
     def list_imports(
         self,
@@ -2207,11 +2517,12 @@ class GrpcIndex:
         """List bulk import operations, automatically following pagination.
 
         Yields individual :class:`ImportModel` objects, fetching additional
-        pages transparently until all results have been returned.
+        pages transparently until all results have been returned. Prefer
+        :meth:`list_imports_paginated` to control pagination yourself.
 
         Args:
-            limit (int | None): Maximum number of imports per page
-                (max 100, server default 100).
+            limit (int | None): Maximum number of imports per page. Omit to let
+                the server choose the page size.
             pagination_token (str | None): Token to resume pagination
                 from a previous call.
 
@@ -2220,6 +2531,10 @@ class GrpcIndex:
 
         Raises:
             :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If a page request does not complete
+                before the configured timeout elapses.
 
         Examples:
             .. code-block:: python
@@ -2251,7 +2566,8 @@ class GrpcIndex:
         """Fetch a single page of bulk import operations.
 
         Returns an :class:`ImportList` for one page. The caller is responsible
-        for managing the pagination token.
+        for managing the pagination token. Prefer :meth:`list_imports` to have
+        pagination handled automatically.
 
         Args:
             limit (int | None): Maximum number of imports to return in this page.
@@ -2259,18 +2575,25 @@ class GrpcIndex:
                 fetch the next page.
 
         Returns:
-            :class:`ImportList` with the import operations for the requested page.
+            :class:`ImportList` for the requested page, iterable over its
+            :class:`ImportModel` entries. Its ``pagination.next`` field holds
+            the token for the next page, or ``None`` once there are no more.
 
         Raises:
             :exc:`ApiError`: If the API returns an error response.
+            :exc:`PineconeConnectionError`: If a network-level connection
+                fails (DNS, refused, transport error).
+            :exc:`PineconeTimeoutError`: If the request does not complete
+                before the configured timeout elapses.
 
         Examples:
-
             .. code-block:: python
 
                 page = idx.list_imports_paginated(limit=10)
                 for imp in page:
                     print(imp.id, imp.status)
+
+                next_token = page.pagination.next if page.pagination else None
         """
         params: dict[str, Any] = {}
         if limit is not None:
@@ -2282,16 +2605,37 @@ class GrpcIndex:
         return self._imports_adapter.to_import_list(response.content)
 
     def close(self) -> None:
-        """Close the underlying gRPC channel, REST client, and release resources."""
+        """Close the connection to the index and release background resources.
+
+        Waits for any in-flight ``*_async`` submissions to finish, then closes
+        the network connection. Call this when you are done issuing requests
+        through this client and are not using it as a context manager.
+
+        Examples:
+            .. code-block:: python
+
+                idx = pc.index("my-index", grpc=True)
+                idx.upsert(vectors=[...])
+                idx.close()
+        """
         self._executor.shutdown(wait=True)
         self._http.close()
         if hasattr(self._channel, "close"):
             self._channel.close()
 
     def __enter__(self) -> GrpcIndex:
+        """Enter a context manager block, returning this client unchanged.
+
+        Examples:
+            .. code-block:: python
+
+                with pc.index("my-index", grpc=True) as idx:
+                    idx.upsert(vectors=[...])
+        """
         return self
 
     def __exit__(self, *args: Any) -> None:
+        """Exit the context manager block, calling :meth:`close`."""
         self.close()
 
 

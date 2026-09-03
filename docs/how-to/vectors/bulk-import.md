@@ -1,11 +1,18 @@
-# Bulk Importing Vectors
+# Bulk importing vectors
 
 Bulk import loads vectors from cloud storage (Amazon S3, Google Cloud Storage, or Azure Blob
 Storage) into a Pinecone index. The import runs server-side, so it handles millions of vectors
 without keeping a long-lived client connection open.
 
 The source must be a directory of Parquet files formatted to the
-`Pinecone-required schema <https://docs.pinecone.io/guides/data/understanding-imports>`_.
+[Pinecone-required schema](https://docs.pinecone.io/guides/data/understanding-imports).
+
+The `uri` names that directory prefix, never an individual file, and takes one of three
+forms: `s3://` for Amazon S3, `gs://` for Google Cloud Storage, or an `https://` URL
+naming an Azure Blob Storage container. An `s3://` source additionally requires that the
+index itself be hosted on AWS. The same bucket is rejected for an index on another
+cloud. Anything else fails the call, as does an S3 directory bucket, which imports do
+not support.
 
 
 ## Start an import
@@ -24,30 +31,28 @@ import_id = response.id
 print(import_id)  # e.g. "1"
 ```
 
-`uri` points to a directory prefix, not an individual file.
-
 
 ## Handle errors during import
 
-By default, `error_mode` is `"continue"` — the server skips records that fail to parse and
-continues importing the rest. Pass `error_mode="abort"` to stop the entire import on the
-first error:
+`error_mode` decides what happens to a record the import cannot read. It defaults to
+`"abort"`, which ends the whole import at the first such record, so nothing is silently
+dropped. Pass `error_mode="continue"` to skip unreadable records and import the rest:
 
 ```python
 response = index.start_import(
     uri="s3://my-bucket/embeddings/",
-    error_mode="abort",
+    error_mode="continue",
 )
 ```
 
-You can also use the {class}`~pinecone.models.ImportErrorMode` enum:
+You can also use the {class}`~pinecone.models.imports.error_mode.ImportErrorMode` enum:
 
 ```python
 from pinecone.models.imports.error_mode import ImportErrorMode
 
 response = index.start_import(
     uri="s3://my-bucket/embeddings/",
-    error_mode=ImportErrorMode.ABORT,
+    error_mode=ImportErrorMode.CONTINUE,
 )
 ```
 
@@ -96,7 +101,7 @@ for imp in index.list_imports():
     print(imp.id, imp.status, imp.percent_complete)
 ```
 
-Pass `limit` to control the page size (max 100):
+Pass `limit` to control the page size:
 
 ```python
 for imp in index.list_imports(limit=20):
@@ -116,6 +121,6 @@ index.cancel_import(import_id)
 
 ## See also
 
-- {doc}`/how-to/vectors/upsert-and-query` — upsert vectors directly in batches
-- {class}`~pinecone.Index` — full data plane client reference
-- {class}`~pinecone.models.ImportModel` — import operation model
+- {doc}`/how-to/vectors/upsert-and-query`: upsert vectors directly in batches
+- {class}`~pinecone.Index`: full data plane client reference
+- {class}`~pinecone.models.ImportModel`: import operation model

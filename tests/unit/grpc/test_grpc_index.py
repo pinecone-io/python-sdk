@@ -98,8 +98,16 @@ class TestGrpcDescribeNamespace:
         with pytest.raises(ValidationError, match="non-empty"):
             idx.describe_namespace(name="")
 
-        with pytest.raises(ValidationError, match="non-empty"):
-            idx.describe_namespace(name="   ")
+    def test_grpc_describe_namespace_whitespace_name_reaches_channel(self) -> None:
+        """2026-07 accepts any ASCII name, so a whitespace-only one is describable."""
+        mock_channel = MagicMock()
+        mock_channel.describe_namespace.return_value = {"name": "   ", "record_count": 0}
+        idx = _make_grpc_index(mock_channel)
+
+        result = idx.describe_namespace(name="   ")
+
+        mock_channel.describe_namespace.assert_called_once_with("   ", timeout_s=None)
+        assert result.name == "   "
 
     def test_grpc_describe_namespace_with_schema_and_indexed_fields(self) -> None:
         mock_channel = MagicMock()
@@ -184,8 +192,16 @@ class TestGrpcCreateNamespace:
         with pytest.raises(ValidationError, match="non-empty"):
             idx.create_namespace(name="")
 
-        with pytest.raises(ValidationError, match="non-empty"):
-            idx.create_namespace(name="   ")
+    def test_grpc_create_namespace_whitespace_name_reaches_channel(self) -> None:
+        """2026-07 accepts any ASCII name, so a whitespace-only one is creatable."""
+        mock_channel = MagicMock()
+        mock_channel.create_namespace.return_value = {"name": "   ", "record_count": 0}
+        idx = _make_grpc_index(mock_channel)
+
+        result = idx.create_namespace(name="   ")
+
+        mock_channel.create_namespace.assert_called_once_with("   ", None, timeout_s=None)
+        assert result.name == "   "
 
     def test_grpc_create_namespace_non_string_name_raises(self) -> None:
         from pinecone.errors.exceptions import ValidationError
@@ -254,8 +270,14 @@ class TestGrpcDeleteNamespace:
         with pytest.raises(ValidationError, match="non-empty"):
             idx.delete_namespace(name="")
 
-        with pytest.raises(ValidationError, match="non-empty"):
-            idx.delete_namespace(name="   ")
+    def test_grpc_delete_namespace_whitespace_name_reaches_channel(self) -> None:
+        """2026-07 accepts any ASCII name, so a whitespace-only one is deletable."""
+        mock_channel = MagicMock()
+        mock_channel.delete_namespace.return_value = None
+        idx = _make_grpc_index(mock_channel)
+
+        assert idx.delete_namespace(name="   ") is None
+        mock_channel.delete_namespace.assert_called_once_with("   ", timeout_s=None)
 
     def test_grpc_delete_namespace_passes_timeout(self) -> None:
         mock_channel = MagicMock()

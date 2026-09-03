@@ -1,0 +1,594 @@
+syntax = "proto3";
+
+option go_package = "github.com/pinecone-io/go-pinecone/internal/gen/db_data/grpc";
+option java_package = "io.pinecone.proto";
+option java_multiple_files = true;
+
+import "google/protobuf/struct.proto";
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+
+message SparseValues {
+  repeated uint32 indices = 1 [
+    (google.api.field_behavior) = REQUIRED
+  ];
+  repeated float values = 2 [
+    (google.api.field_behavior) = REQUIRED
+  ];
+}
+
+message Vector {
+
+  // This is the vector's unique id.
+  string                 id                                           = 1 [
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // This is the vector data included in the request.
+  repeated float         values                                       = 2;
+
+  // This is the sparse data included in the request. Can only be specified if `sparse` index.
+  SparseValues sparse_values = 4;
+
+  // This is the metadata included in the request.
+  google.protobuf.Struct metadata                                     = 3;
+}
+
+message ScoredVector {
+
+  // This is the vector's unique id.
+  string                 id                                           = 1 [
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // This is a measure of similarity between this vector and the query vector.  The higher the score, the more they are similar.
+  float                  score                                        = 2;
+
+  // This is the vector data, if it is requested.
+  repeated float         values                                       = 3;
+
+  // This is the sparse data, if it is requested.
+  SparseValues sparse_values = 5;
+
+  // This is the metadata, if it is requested.
+  google.protobuf.Struct metadata                                     = 4;
+}
+
+// This is a container to hold mutating vector requests. This is not actually used
+// in any public APIs.
+message RequestUnion {
+  oneof RequestUnionInner {
+    UpsertRequest upsert = 1;
+    DeleteRequest delete = 2;
+    UpdateRequest update = 3;
+  }
+}
+
+// The request for the `upsert` operation.
+message UpsertRequest {
+  // An array containing the vectors to upsert. Recommended batch limit is up to 1000 vectors.
+  repeated Vector vectors   = 1 [
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // The namespace where you upsert records.
+  string          namespace = 2;
+}
+
+// The response for the `upsert` operation.
+message UpsertResponse {
+  // The number of vectors upserted.
+  uint32   upserted_count = 1;
+}
+
+// The request for the `Delete` operation.
+message DeleteRequest {
+  // Vectors to delete.
+  repeated string ids        = 1;
+
+  // This indicates that all vectors in the index namespace should be deleted.
+  bool            delete_all = 2;
+
+  // The namespace to delete records from, if applicable.
+  string          namespace  = 3;
+
+  // If specified, the metadata filter here will be used to select the vectors to delete. This is mutually exclusive
+  // with specifying ids to delete in the ids param or using `delete_all=True`.
+  // For guidance and examples, see [Delete data](https://docs.pinecone.io/guides/manage-data/delete-data#delete-records-by-metadata).
+  google.protobuf.Struct filter = 4;
+}
+
+// The response for the `Delete` operation.
+message DeleteResponse {}
+
+// The request for the `fetch` operation.
+message FetchRequest {
+  // The vector IDs to fetch. Does not accept values containing spaces.
+  repeated string ids       = 1 [
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  string          namespace = 2;
+}
+
+message FetchByMetadataRequest{
+    string namespace = 1;
+    // Metadata filter
+    optional google.protobuf.Struct filter = 2;
+
+    // Max number of ids to return
+    optional uint32 limit = 3;
+
+    // Pagination token to continue a previous listing operation
+    optional string pagination_token = 4;
+}
+
+// The response for the `FetchByMetadata` operation.
+message FetchByMetadataResponse {
+  // The fetched vectors, in the form of a map between the fetched ids and the fetched vectors
+  map<string, Vector> vectors = 1;
+
+  // The namespace of the vectors.
+  string          namespace = 2;
+
+  //  The usage for this operation.
+  optional Usage usage = 3;
+
+  // Pagination token to continue past this listing
+  optional Pagination pagination = 4;
+}
+
+// The response for the `FetchByMetadata` operation.
+message FetchResponse {
+  // The fetched vectors, in the form of a map between the fetched ids and the fetched vectors
+  map<string, Vector> vectors = 1;
+
+  // The namespace of the vectors.
+  string          namespace = 2;
+
+  //  The usage for this operation.
+  optional Usage usage = 3;
+}
+
+
+// The request for the `List` operation.
+message ListRequest {
+  // The vector IDs to fetch. Does not accept values containing spaces.
+  optional string prefix       = 1;
+
+  // Max number of ids to return
+  optional uint32 limit = 2;
+  // Pagination token to continue a previous listing operation
+  optional string pagination_token = 3;
+  string          namespace = 4;
+}
+
+message Pagination {
+  string next = 1;
+}
+
+message ListItem {
+  string id = 1;
+}
+
+// The response for the `List` operation.
+message ListResponse {
+  // A list of ids
+  repeated ListItem vectors = 1;
+
+  // Pagination token to continue past this listing
+  optional Pagination pagination = 2;
+
+  // The namespace of the vectors.
+  string          namespace = 3;
+
+  //  The usage for this operation.
+  optional Usage usage = 4;
+}
+
+// A single query vector within a `QueryRequest`.
+message QueryVector {
+
+  // The query vector. This should be the same length as the dimension of the index being queried. Each request can contain either the `id` or `vector` parameter.
+  repeated float         values    = 1;
+
+  // The query sparse values.
+  SparseValues sparse_values = 5;
+
+  // An override for the number of results to return for this query vector.
+  uint32                 top_k     = 2;
+
+  // An override the namespace to search.
+  string                 namespace = 3;
+
+  // An override for the metadata filter to apply. This replaces the request-level filter.
+  google.protobuf.Struct filter    = 4;
+}
+
+// The request for the `query` operation.
+message QueryRequest {
+  // The namespace to query.
+  string                 namespace        = 1;
+
+  // The number of results to return for each query.
+  uint32                 top_k            = 2 [
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // The filter to apply. You can use vector metadata to limit your search. See [Understanding metadata](https://docs.pinecone.io/guides/index-data/indexing-overview#metadata).
+  google.protobuf.Struct filter           = 3;
+
+  // Indicates whether vector values are included in the response.
+  bool                   include_values     = 4;
+
+  // Indicates whether metadata is included in the response as well as the ids.
+  bool                   include_metadata = 5;
+
+  // DEPRECATED. Use `vector` or `id` instead.
+  repeated QueryVector   queries          = 6 [
+    deprecated = true
+  ];
+
+
+  // The query vector. This should be the same length as the dimension of the index being queried. Each request can contain either the `id` or `vector` parameter.
+  repeated float         vector    = 7;
+
+  // The query sparse values.
+  SparseValues sparse_vector = 9;
+
+  // The unique ID of the vector to be used as a query vector. Each request can contain either the `vector` or `id` parameter.
+  string                 id        = 8;
+
+  // An optimization parameter for IVF dense indexes in dedicated read node indexes.
+  // It adjusts how much of the index is scanned to find vector candidates.
+  // Range: 0.5 – 4 (default).
+  // This parameter is only supported for dedicated (DRN) dense indexes.
+  optional float scan_factor = 10;
+
+  // An optimization parameter that controls the maximum number of candidate dense
+  // vectors to rerank. Reranking computes exact distances to improve recall but
+  // increases query latency.
+  // Range: top_k – 100000.
+  // This parameter is only supported for dedicated (DRN) dense indexes.
+  optional uint32 max_candidates = 11;
+}
+
+// The query results for a single `QueryVector`
+message SingleQueryResults {
+  // The matches for the vectors.
+  repeated ScoredVector matches   = 1;
+
+  // The namespace for the vectors.
+  string                namespace = 2;
+}
+
+// The response for the `query` operation. These are the matches found for a particular query vector. The matches are ordered from most similar to least similar.
+message QueryResponse {
+  // DEPRECATED. The results of each query. The order is the same as `QueryRequest.queries`.
+  repeated SingleQueryResults results = 1 [deprecated=true];
+
+  // The matches for the vectors.
+  repeated ScoredVector       matches = 2;
+
+  // The namespace for the vectors.
+  string                      namespace = 3;
+
+  // The usage for this operation.
+  optional Usage usage                 = 4;
+}
+
+message Usage {
+  // The number of read units consumed by this operation.
+  optional uint32 read_units = 1;
+}
+
+// The request for the `update` operation.
+message UpdateRequest {
+  // The unique ID of the record.
+  string id = 1;
+
+  // Vector data.
+  repeated float values = 2;
+
+  // Sparse vector data.
+  SparseValues sparse_values = 5;
+
+  // Metadata to set for the vector.
+  google.protobuf.Struct set_metadata = 3;
+
+  // The namespace containing the record(s) to update.
+  string namespace = 4;
+
+  // A [metadata filter expression](https://docs.pinecone.io/guides/index-data/indexing-overview#metadata-filter-expressions. When updating metadata across records in a namespace, the update is applied to all records that match the filter.
+  optional google.protobuf.Struct filter = 6;
+
+  // If `true`, return the number of records that match the `filter`, but do not execute the update. Default is `false`.
+  optional bool dry_run = 7;
+}
+
+// The response for the `update` operation.
+message UpdateResponse {
+  optional int32  matched_records = 1;
+}
+
+// The request for the `describe_index_stats` operation.
+message DescribeIndexStatsRequest {
+
+
+  // If this parameter is present, the operation only returns statistics
+  // for vectors that satisfy the filter.
+  // See https://docs.pinecone.io/guides/search/filter-with-metadata.
+  google.protobuf.Struct filter = 1;
+}
+
+// A summary of the contents of a namespace.
+message NamespaceSummary {
+  // The number of vectors stored in this namespace. Note that updates to this field may lag behind updates to the
+  // underlying index and corresponding query results, etc.
+  uint32 vector_count = 1;
+}
+
+// The request for the list namespaces operation.
+message ListNamespacesRequest {
+  // Pagination token to continue a previous listing operation
+  optional string pagination_token = 1;
+  // Max number of namespaces to return
+  optional uint32 limit = 2;
+  // Prefix of the namespaces to list
+  optional string prefix = 3;
+}
+
+// The response for the list namespace operation.
+message ListNamespacesResponse {
+  // The list of namespaces belonging to this index.
+  repeated NamespaceDescription namespaces = 1;
+  // Pagination token to continue past this listing
+  optional Pagination pagination = 2;
+  // The total number of namespaces in the index matching the prefix
+  int32 total_count = 3;
+}
+
+// The request for the describe namespace operation.
+message DescribeNamespaceRequest {
+  // The namespace to describe
+  string namespace = 1;
+}
+
+// The request for the create namespace operation
+message CreateNamespaceRequest {
+  // The name of the namespace to be created
+  string name = 1;
+  // Schema for the behavior of Pinecone's internal metadata index.
+  // By default, all metadata is indexed; when `schema` is present,
+  // only fields which are present in the `fields` object with a
+  // `filterable: true` are indexed.
+  // Note that `filterable: false` is not currently supported.
+  optional MetadataSchema schema = 2;
+}
+
+message IndexedFields {
+  repeated string fields = 1;
+}
+
+message NamespaceDescription {
+  string name = 1;
+  uint64 record_count = 2;
+  optional MetadataSchema schema = 3;
+  // List of indexed fields in the namespace
+  optional IndexedFields indexed_fields = 4;
+  // The total size of the namespace's data, in bytes.
+  uint64 size_bytes = 5;
+}
+
+message DeleteNamespaceRequest {
+  // The namespace to delete
+  string namespace = 1;
+}
+
+
+// The response for the `describe_index_stats` operation.
+message DescribeIndexStatsResponse {
+  // A mapping for each namespace in the index from the namespace name to a
+  // summary of its contents. If a metadata filter expression is present, the
+  // summary will reflect only vectors matching that expression.
+  map<string, NamespaceSummary> namespaces = 1;
+
+  // The dimension of the indexed vectors. Not specified if `sparse` index.
+  optional uint32 dimension  = 2;
+
+  // The fullness of the index, regardless of whether a metadata filter expression was passed. The granularity of this metric is 10%.
+  //
+  // Serverless indexes scale automatically as needed, so index fullness is relevant only for pod-based indexes.
+  //
+  // The index fullness result may be inaccurate during pod resizing; to get the status of a pod resizing process, use [`describe_index`](https://docs.pinecone.io/reference/api/2024-04/control-plane/describe_index).
+  float index_fullness = 3;
+
+  // The total number of vectors in the index, regardless of whether a metadata filter expression was passed
+  uint32 total_vector_count = 4;
+
+  // The metric of the index.
+  optional string metric = 5;
+
+  // The type of the vector the index supports.
+  optional string vector_type = 6;
+
+  // The amount of memory used by a dedicated index
+  optional float memory_fullness = 7;
+
+  // The amount of storage used by a dedicated index
+  optional float storage_fullness = 8;
+}
+
+// Properties for a metadata field that control its indexing behavior.
+message MetadataFieldProperties {
+  // Whether this field should be indexed for filtering.
+  // Only values of true are supported; all other fields will not be indexed.
+  bool filterable = 1;
+}
+
+// Schema for the behavior of Pinecone's internal metadata index.
+// By default, all metadata is indexed; when `schema` is present,
+// only fields which are present in the `fields` object with a
+// `filterable: true` are indexed.
+message MetadataSchema {
+  // A map of field names to their properties.
+  map<string, MetadataFieldProperties> fields = 1;
+}
+
+// The `VectorService` interface is exposed by Pinecone's vector index services.
+// This service could also be called a `gRPC` service or a `REST`-like api.
+service VectorService {
+  // Upsert records
+  //
+  // Upsert records into a namespace. If a new value is upserted for an existing record ID, it will overwrite the previous value.
+  //
+  // For guidance, examples, and limits, see [Upsert data](https://docs.pinecone.io/guides/index-data/upsert-data).
+  rpc Upsert(UpsertRequest) returns (UpsertResponse) {
+    option (google.api.http) = {
+      post: "/vectors/upsert"
+      body: "*"
+    };
+  }
+
+  // Delete records
+  //
+  // Delete records by id or by metadata from a single namespace.
+  //
+  // For guidance and examples, see [Delete data](https://docs.pinecone.io/guides/manage-data/delete-data).
+  rpc Delete(DeleteRequest) returns (DeleteResponse) {
+    option (google.api.http) = {
+      post: "/vectors/delete"
+      body: "*"
+      additional_bindings {
+        delete: "/vectors/delete"
+      }
+    };
+  }
+
+  // Fetch records
+  //
+  // Look up and return records by ID from a single namespace. The returned records include the vector data and/or metadata.
+  //
+  // For guidance and examples, see [Fetch data](https://docs.pinecone.io/guides/manage-data/fetch-data).
+  rpc Fetch(FetchRequest) returns (FetchResponse) {
+    option (google.api.http) = {
+      get: "/vectors/fetch"
+    };
+  }
+
+  // List record IDs
+  //
+  // List the IDs of records in a single namespace of a serverless index. An optional prefix can be passed to limit the results to IDs with a common prefix.
+  //
+  // This returns up to 100 IDs at a time by default in sorted order (bitwise/"C" collation). If the `limit` parameter is set, `list` returns up to that number of IDs instead. Whenever there are additional IDs to return, the response also includes a `pagination_token` that you can use to get the next batch of IDs. When the response does not include a `pagination_token`, there are no more IDs to return.
+  //
+  // For guidance and examples, see [List record IDs](https://docs.pinecone.io/guides/manage-data/list-record-ids).
+  //
+  // **Note:** `list` is supported only for serverless indexes.
+  rpc List(ListRequest) returns (ListResponse) {
+    option (google.api.http) = {
+      get: "/vectors/list"
+    };
+  }
+
+  // Search with a vector
+  //
+  // Search a namespace with a query vector or record ID and return the IDs of the most similar records, along with their similarity scores.
+  //
+  // For guidance, examples, and limits, see [Search](https://docs.pinecone.io/guides/search/search-overview).
+  rpc Query(QueryRequest) returns (QueryResponse) {
+    option (google.api.http) = {
+      post: "/query"
+      body: "*"
+    };
+  }
+
+  // Update a vector
+  //
+  // Update a vector in a namespace. If a value is included, it will overwrite the previous value. If a `set_metadata` is included, the values of the fields specified in it will be added or overwrite the previous value.
+  //
+  // For guidance and examples, see [Update data](https://docs.pinecone.io/guides/manage-data/update-data).
+  rpc Update(UpdateRequest) returns (UpdateResponse) {
+    option (google.api.http) = {
+      post: "/vectors/update"
+      body: "*"
+    };
+  }
+
+  // Get index stats
+  //
+  // Return statistics about the contents of an index, including the vector count per namespace, the number of dimensions, and the index fullness.
+  //
+  // Serverless indexes scale automatically as needed, so index fullness is relevant only for pod-based indexes.
+  rpc DescribeIndexStats(DescribeIndexStatsRequest) returns (DescribeIndexStatsResponse) {
+    option (google.api.http) = {
+      post: "/describe_index_stats"
+      body: "*"
+      additional_bindings {
+        get: "/describe_index_stats"
+      }
+    };
+  }
+
+  // List namespaces
+  //
+  // List all namespaces in a serverless index.
+  //      
+  // Up to 100 namespaces are returned at a time by default, in sorted order (bitwise "C" collation). If the `limit` parameter is set, up to that number of namespaces are returned instead. Whenever there are additional namespaces to return, the response also includes a `pagination_token` that you can use to get the next batch of namespaces. When the response does not include a `pagination_token`, there are no more namespaces to return.
+  //
+  // For guidance and examples, see [Manage namespaces](https://docs.pinecone.io/guides/manage-data/manage-namespaces).
+  //
+  // **Note:** This operation is not supported for pod-based indexes.
+  rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse) {
+    option (google.api.http) = {
+      get: "/namespaces"
+    };
+  }
+
+  // Describe a namespace
+  //
+  // Describe a namespace in a serverless index, including the total number of vectors in the namespace.
+  //
+  // For guidance and examples, see [Manage namespaces](https://docs.pinecone.io/guides/manage-data/manage-namespaces).
+  //
+  // **Note:** This operation is not supported for pod-based indexes.
+  rpc DescribeNamespace(DescribeNamespaceRequest) returns (NamespaceDescription) {
+    option (google.api.http) = {
+      get: "/namespaces/{namespace}"
+    };
+  }
+
+  // Delete a namespace
+  //
+  // Delete a namespace from a serverless index. Deleting a namespace is irreversible; all data in the namespace is permanently deleted.
+  //
+  // For guidance and examples, see [Manage namespaces](https://docs.pinecone.io/guides/manage-data/manage-namespaces).
+  //
+  // **Note:** This operation is not supported for pod-based indexes.
+  rpc DeleteNamespace(DeleteNamespaceRequest) returns (DeleteResponse) {
+    option (google.api.http) = {
+      delete: "/namespaces/{namespace}"
+    };
+  }
+
+  // Create a namespace
+  //
+  // Create a namespace in a serverless index.
+  // 
+  // For guidance and examples, see [Manage namespaces](https://docs.pinecone.io/guides/manage-data/manage-namespaces).
+  //
+  // **Note:** This operation is not supported for pod-based indexes.
+  rpc CreateNamespace(CreateNamespaceRequest) returns (NamespaceDescription) {
+    option (google.api.http) = {
+      post: "/namespaces"
+    };
+  }
+
+
+  rpc FetchByMetadata(FetchByMetadataRequest) returns (FetchByMetadataResponse) {
+    option (google.api.http) = {
+        post: "/vectors/fetch_by_metadata"
+        body: "*"
+    };
+  }
+}

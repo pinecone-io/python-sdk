@@ -12,6 +12,7 @@ def make_full() -> AssistantModel:
         metadata={"k1": "v1", "k2": "v2"},
         instructions="Be helpful.",
         host="https://x.pinecone.io",
+        region="eu",
         created_at="2026-01-01T00:00:00Z",
         updated_at="2026-01-02T00:00:00Z",
     )
@@ -26,6 +27,12 @@ class TestRepr:
         r = repr(make_full())
         assert isinstance(r, str)
         assert "my-assistant" in r
+
+    def test_region_shown(self) -> None:
+        assert "region='eu'" in repr(make_full())
+
+    def test_region_absent_when_none(self) -> None:
+        assert "region" not in repr(make_minimal())
 
     def test_all_optional_none(self) -> None:
         r = repr(make_minimal())
@@ -56,9 +63,15 @@ class TestReprHtml:
         assert "<div" in h
         assert "my-assistant" in h
 
+    def test_region_row(self) -> None:
+        h = make_full()._repr_html_()
+        assert "Region:" in h
+        assert "eu" in h
+
     def test_optional_none(self) -> None:
         h = make_minimal()._repr_html_()
         assert "<div" in h
+        assert "Region:" not in h
 
     def test_large_metadata_truncated(self) -> None:
         m = AssistantModel(name="a", status="Ready", metadata={f"k{i}": i for i in range(100)})

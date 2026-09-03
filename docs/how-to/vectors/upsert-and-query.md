@@ -1,4 +1,4 @@
-# Upserting and Querying Vectors
+# Upserting and querying vectors
 
 Use the {class}`~pinecone.Index` client to insert and retrieve vectors from a Pinecone index.
 Get an index client via {meth}`~pinecone.Pinecone.index`:
@@ -66,8 +66,12 @@ The default namespace is `""`.
 
 ### Large datasets
 
-For datasets larger than a single payload, pass `batch_size` to
-split the upload into chunks. Batches are sent **in parallel**
+A single upsert request is capped both on the number of vectors it carries
+and on its encoded size, and with wide vectors or heavy metadata the size
+cap is usually the one reached first, so a vector count that worked for one
+dataset can be rejected for another. Pass `batch_size` to
+split the upload into chunks that stay under both; lower it and retry if a
+request comes back rejected for size. Batches are sent **in parallel**
 via a `ThreadPoolExecutor` (sync) or `asyncio.Semaphore`
 (async) of `max_concurrency` workers. HTTP-level retries
 happen automatically per batch via the configured
@@ -131,9 +135,9 @@ if response.has_errors:
     print(f"first failure: {first.error_message}")
 ```
 
-If every error has the same HTTP status — especially a 4xx
+If every error has the same HTTP status, especially a 4xx
 like 400 (Bad Request), 401 (Unauthorized), 403 (Forbidden),
-or 422 (Unprocessable Entity) — the failures are about your
+or 422 (Unprocessable Entity), the failures are about your
 data or your credentials, not transient infrastructure.
 Retrying with the same input will fail the same way. Fix the
 data or the credentials and retry the corrected items, or
@@ -142,13 +146,13 @@ stop.
 #### Why surfaced errors are usually persistent
 
 The HTTP transport retries `{408, 429, 500, 502, 503, 504}`
-automatically up to two times (three total attempts) with exponential backoff (see
-{class}`~pinecone.RetryConfig`). That layer absorbs nearly
+automatically up to three times (four total attempts) with decorrelated jitter
+(see {class}`~pinecone.RetryConfig`). That layer absorbs nearly
 all transient infrastructure issues. By the time an error
 reaches `response.errors`, it has either:
 
 - exhausted the retry budget (sustained 5xx, persistent 429), or
-- wasn't retryable in the first place (4xx — bad input, auth,
+- wasn't retryable in the first place (4xx: bad input, auth,
   validation).
 
 Either way, naive retries usually re-create the same problem.
@@ -157,7 +161,7 @@ reading.
 
 #### Batches fail atomically
 
-Any per-batch error fails the **entire batch** — even if only
+Any per-batch error fails the **entire batch**, even if only
 one of its 200 vectors was the actual problem. So
 `response.failed_items` may contain 199 items that would have
 succeeded on their own, plus the one bad row that triggered
@@ -165,7 +169,7 @@ the rejection. The server doesn't surface per-item rejection
 details on the upsert path.
 
 To isolate the bad row, re-batch the failures with a smaller
-`batch_size` (down to `batch_size=1` if needed) — successful
+`batch_size` (down to `batch_size=1` if needed). Successful
 single-item batches narrow the problem to the rejected ones:
 
 ```python
@@ -323,18 +327,19 @@ for namespace, summary in stats.namespaces.items():
     print(namespace, summary.vector_count)
 ```
 
-Pass a `filter` to count only matching vectors:
-
-```python
-stats = index.describe_index_stats(filter={"genre": {"$eq": "action"}})
-print(stats.total_vector_count)
+```{note}
+These counts always cover the whole index. `describe_index_stats` accepts a
+`filter` argument for API compatibility, but a non-empty filter is rejected for
+every index type, so a filtered stats call fails rather than returning a subset
+count. There is no operation that counts only the vectors matching a metadata
+filter.
 ```
 
 
 ## See also
 
-- {doc}`/how-to/vectors/namespaces` — working with namespaces
-- {doc}`/how-to/vectors/bulk-import` — bulk importing from cloud storage
-- {class}`~pinecone.Index` — full data plane client reference
-- {class}`~pinecone.models.QueryResponse` — query response model
-- {class}`~pinecone.models.ScoredVector` — individual match in query results
+- {doc}`/how-to/vectors/namespaces`: working with namespaces
+- {doc}`/how-to/vectors/bulk-import`: bulk importing from cloud storage
+- {class}`~pinecone.Index`: full data plane client reference
+- {class}`~pinecone.models.QueryResponse`: query response model
+- {class}`~pinecone.models.ScoredVector`: individual match in query results

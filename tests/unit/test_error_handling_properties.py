@@ -26,8 +26,10 @@ from pinecone._internal.http_client import (
 from pinecone.errors.exceptions import (
     ApiError,
     ConflictError,
+    FailedPreconditionError,
     ForbiddenError,
     NotFoundError,
+    PaymentRequiredError,
     PineconeError,
     PineconeTypeError,
     PineconeValueError,
@@ -49,9 +51,11 @@ _SPECIAL_HEADERS = frozenset({"x-request-id", "x-pinecone-request-id"})
 def _expected_type(status: int) -> type[ApiError]:
     specific = {
         401: UnauthorizedError,
+        402: PaymentRequiredError,
         403: ForbiddenError,
         404: NotFoundError,
         409: ConflictError,
+        412: FailedPreconditionError,
         429: RateLimitError,
     }.get(status)
     if specific is not None:

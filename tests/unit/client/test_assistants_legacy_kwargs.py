@@ -94,7 +94,7 @@ def test_update_missing_name_raises(mock_assistants: Assistants) -> None:
 
 def test_update_with_name_still_works(mock_assistants: Assistants) -> None:
     """The canonical name= parameter continues to work as before."""
-    result = mock_assistants.update(name="my-assistant")
+    result = mock_assistants.update(name="my-assistant", instructions="be precise")
     assert result.name == "legacy-name"  # canned response from fixture
 
 
@@ -136,7 +136,7 @@ def test_list_page_accepts_legacy_limit(mock_assistants: Assistants) -> None:
         assistants=[]
     )
     mock_assistants.list_page(limit=5)
-    mock_assistants._http_v202604.get.assert_called_once_with(  # type: ignore[attr-defined]
+    mock_assistants._http.get.assert_called_once_with(  # type: ignore[attr-defined]
         "/assistants", params={"limit": 5}
     )
 

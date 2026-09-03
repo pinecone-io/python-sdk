@@ -72,7 +72,7 @@ def bulk_execute_sync(
 ) -> BatchResult:
     """Execute *operation* over *items* in gate-admitted parallel batches.
 
-    Result contract is identical to ``batch_execute``'s: per-batch errors are
+    Result contract: per-batch errors are
     collected (never propagated), ``timed_out`` is set only when something was
     left unsent, errors are ordered by batch index. Batches abandoned by the
     stall detector arrive as errors with an explicit backend-unavailable

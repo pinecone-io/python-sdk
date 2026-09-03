@@ -9,6 +9,17 @@ from msgspec import Struct
 from pinecone.models._display import HtmlBuilder, abbreviate_dict, safe_display, truncate_text
 from pinecone.models.assistant._mixin import StructDictMixin
 
+_REMOVED_FIELD_HINTS: dict[str, str] = {
+    "percent_done": (
+        "processing progress is tracked by the operations API instead — call "
+        "describe_operation() and read OperationModel.status"
+    ),
+    "error_message": (
+        "processing failure detail is reported by the operations API instead — "
+        "call describe_operation() and read OperationModel.error"
+    ),
+}
+
 
 class AssistantFileModel(
     StructDictMixin,
@@ -20,7 +31,8 @@ class AssistantFileModel(
 
     Attributes:
         name: The name of the file.
-        id: Unique identifier for the file.
+        id: Unique identifier for the file. On ``2026-07`` this may be a
+            user-provided identifier, so it is not guaranteed to be a UUID.
         metadata: Optional metadata dictionary associated with the file,
             or ``None`` if not set.
         created_on: ISO 8601 timestamp when the file was created, or ``None``.
@@ -35,10 +47,10 @@ class AssistantFileModel(
         content_hash: Hash of the file content (wire key ``crc32c_hash``), or
             ``None`` when not available.  Legacy callers can also access this
             value via the :attr:`crc32c_hash` property alias.
-        percent_done: Processing progress as a percentage (0.0–100.0), or ``None`` when not
-            available or not applicable.
-        error_message: Error message describing why processing failed, or ``None`` when
-            processing succeeded or is still in progress.
+
+    ``percent_done`` and ``error_message`` were removed in the ``2026-07``
+    API; accessing them raises an :class:`AttributeError` naming
+    ``describe_operation`` as the replacement.
     """
 
     name: str
@@ -51,13 +63,20 @@ class AssistantFileModel(
     multimodal: bool | None = None
     signed_url: str | None = None
     content_hash: str | None = None
-    percent_done: float | None = None
-    error_message: str | None = None
 
     @property
     def crc32c_hash(self) -> str | None:
         """Backwards-compatibility alias for :attr:`content_hash`."""
         return self.content_hash
+
+    def __getattr__(self, name: str) -> Any:
+        if name in _REMOVED_FIELD_HINTS:
+            raise AttributeError(
+                f"AssistantFileModel.{name} was removed in the 2026-07 Pinecone API: "
+                f"{_REMOVED_FIELD_HINTS[name]}. "
+                "See docs/migration/v10-migration.md."
+            )
+        raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
 
     @safe_display
     def __repr__(self) -> str:
@@ -66,10 +85,6 @@ class AssistantFileModel(
             parts.append(f"status={self.status!r}")
         if self.size is not None:
             parts.append(f"size={self.size!r}")
-        if self.percent_done is not None:
-            parts.append(f"percent_done={self.percent_done!r}%")
-        if self.error_message is not None:
-            parts.append(f"error_message={truncate_text(self.error_message, 40)!r}")
         return f"AssistantFileModel({', '.join(parts)})"
 
     @safe_display
@@ -97,12 +112,6 @@ class AssistantFileModel(
             if self.content_hash is not None:
                 p.breakable()
                 p.text(f"content_hash={self.content_hash!r},")
-            if self.percent_done is not None:
-                p.breakable()
-                p.text(f"percent_done={self.percent_done!r},")
-            if self.error_message is not None:
-                p.breakable()
-                p.text(f"error_message={truncate_text(self.error_message, 80)!r},")
             if self.metadata is not None:
                 p.breakable()
                 p.text(f"metadata={abbreviate_dict(self.metadata)},")
@@ -128,21 +137,16 @@ class AssistantFileModel(
             builder.row("Signed URL:", truncate_text(self.signed_url, max_chars=80))
         if self.content_hash is not None:
             builder.row("Content Hash:", self.content_hash)
-        if self.percent_done is not None:
-            builder.row("Percent Done:", self.percent_done)
         if self.metadata is not None:
             builder.row("Metadata:", abbreviate_dict(self.metadata))
         if self.created_on is not None:
             builder.row("Created:", self.created_on)
         if self.updated_on is not None:
             builder.row("Updated:", self.updated_on)
-        failed = self.status is not None and "Failed" in self.status
-        if failed and self.error_message is not None:
+        if self.status is not None and "Failed" in self.status:
             builder.section(
                 "Error",
-                [("Message:", truncate_text(self.error_message, max_chars=80))],
+                [("Detail:", "call describe_operation() for the failure reason")],
                 theme="error",
             )
-        elif self.error_message is not None:
-            builder.row("Error:", truncate_text(self.error_message, max_chars=80))
         return builder.build()

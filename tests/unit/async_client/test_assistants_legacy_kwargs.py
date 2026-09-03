@@ -112,7 +112,7 @@ async def test_async_update_with_name_still_works(
     mock_async_assistants: AsyncAssistants,
 ) -> None:
     """The canonical name= parameter continues to work as before."""
-    result = await mock_async_assistants.update(name="my-assistant")
+    result = await mock_async_assistants.update(name="my-assistant", instructions="be precise")
     assert result.name == "legacy-name"  # canned response from fixture
 
 
@@ -198,7 +198,7 @@ async def test_async_list_page_accepts_legacy_limit(
         ListAssistantsResponse(assistants=[])
     )
     await mock_async_assistants.list_page(limit=5)
-    mock_async_assistants._http_v202604.get.assert_called_once_with(  # type: ignore[attr-defined]
+    mock_async_assistants._http.get.assert_called_once_with(  # type: ignore[attr-defined]
         "/assistants", params={"limit": 5}
     )
 
@@ -234,7 +234,7 @@ async def test_async_list_files_page_accepts_legacy_limit(
     mock_data_response = MagicMock()
     mock_data_response.content = b"{}"
     mock_data_http.get.return_value = mock_data_response
-    mock_async_assistants._list_files_http = AsyncMock(return_value=mock_data_http)  # type: ignore[method-assign]
+    mock_async_assistants._data_plane_http = AsyncMock(return_value=mock_data_http)  # type: ignore[method-assign]
     mock_async_assistants._adapter.to_file_list.return_value = ListFilesResponse(  # type: ignore[attr-defined]
         files=[]
     )

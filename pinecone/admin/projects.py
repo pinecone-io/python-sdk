@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from pinecone._internal.adapters.admin_adapter import AdminAdapter
 from pinecone._internal.validation import require_non_empty
 from pinecone.errors.exceptions import (
+    ForbiddenError,
     NotFoundError,
     PineconeError,
     PineconeValueError,
@@ -25,9 +26,12 @@ logger = logging.getLogger(__name__)
 
 
 class Projects:
-    """Control-plane operations for Pinecone projects.
+    """Operations on Pinecone projects.
 
-    Provides methods to list, create, describe, update, and delete projects.
+    A project is the boundary for resource quotas and API keys within an
+    organization: indexes, collections, backups, and API keys all belong to
+    exactly one project. This namespace lists, creates, describes, updates,
+    and deletes projects.
 
     Args:
         http (HTTPClient): HTTP client for making API requests.
@@ -52,7 +56,7 @@ class Projects:
         """List all projects accessible to the authenticated user.
 
         Returns:
-            A :class:`ProjectList` supporting iteration, len(), and index access.
+            A :class:`ProjectList` supporting iteration, ``len()``, and index access.
 
         Raises:
             :exc:`ApiError`: If the API returns an error response.
@@ -79,17 +83,30 @@ class Projects:
         """Create a new project.
 
         Args:
-            name (str): Name for the new project.
-            max_pods (int | None): Maximum number of pods allowed. Omitted if None.
-            force_encryption_with_cmek (bool | None): Whether to enforce CMEK encryption.
-                Omitted if None.
+            name (str): Name for the new project, e.g. ``"my-project"`` (1-512
+                characters, no null bytes).
+            max_pods (int | None): Maximum number of pods allowed in the project.
+                Pod-based capacity is legacy: unless the organization already has
+                pod access, only ``0`` (the default, meaning serverless-only) is
+                accepted, and a non-zero value is rejected. Omitted if ``None``.
+            force_encryption_with_cmek (bool | None): Whether to enforce CMEK
+                encryption for the project. Requesting ``True`` requires CMEK to
+                be enabled for the organization; ``False`` and ``None`` are
+                always accepted. Omitted if ``None``.
 
         Returns:
             A :class:`ProjectModel` with the created project details.
 
         Raises:
-            :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *name* is empty.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *name* is empty,
+                exceeds 512 characters, or contains null bytes.
+            :exc:`~pinecone.errors.exceptions.PaymentRequiredError`: If the organization's
+                billing state does not permit creating a project.
+            :exc:`~pinecone.errors.exceptions.ForbiddenError`: If the organization has
+                reached its project quota, or if *force_encryption_with_cmek* was
+                requested without CMEK enabled for the organization.
+            :exc:`ApiError`: If the API returns an error response — including a
+                non-zero *max_pods* requested without pod access.
 
         Examples:
             >>> from pinecone import Admin
@@ -117,13 +134,14 @@ class Projects:
         return result
 
     def describe(self, *, project_id: str) -> ProjectModel:
-        """Get detailed information about a project.
+        """Get details for one project.
 
         Args:
-            project_id (str): The identifier of the project.
+            project_id (str): The project's identifier, e.g. ``"proj-abc123"``.
 
         Returns:
-            A :class:`ProjectModel` with full project details.
+            A :class:`ProjectModel` with the project's name, quotas, and
+            organization.
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *project_id* is empty.
@@ -144,20 +162,23 @@ class Projects:
         return result
 
     def describe_by_name(self, *, name: str) -> ProjectModel:
-        """Get detailed information about a project by name.
+        """Get details for one project by name.
 
-        Lists all projects and filters client-side for an exact name match.
+        Lists all projects accessible to the authenticated user and filters
+        client-side for an exact name match.
 
         Args:
-            name (str): The name of the project.
+            name (str): The project's name, e.g. ``"my-project"``.
 
         Returns:
-            A :class:`ProjectModel` with full project details.
+            A :class:`ProjectModel` with the project's name, quotas, and
+            organization.
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *name* is empty.
             :exc:`NotFoundError`: If no project matches *name*.
-            :exc:`PineconeError`: If multiple projects share *name*.
+            :exc:`PineconeError`: If more than one project shares *name* — use
+                :meth:`describe` with *project_id* instead.
 
         Examples:
             .. code-block:: python
@@ -191,8 +212,8 @@ class Projects:
         Exactly one of *project_id* or *name* must be provided.
 
         Args:
-            project_id (str | None): The identifier of the project.
-            name (str | None): The name of the project.
+            project_id (str | None): The project's identifier, e.g. ``"proj-abc123"``.
+            name (str | None): The project's name, e.g. ``"my-project"``.
 
         Returns:
             ``True`` if the project exists, ``False`` otherwise.
@@ -234,10 +255,16 @@ class Projects:
         """Update a project's settings.
 
         Args:
-            project_id (str): The identifier of the project to update.
-            name (str | None): New name for the project.
-            max_pods (int | None): New maximum pod count.
+            project_id (str): The identifier of the project to update, e.g.
+                ``"proj-abc123"``.
+            name (str | None): New name for the project. Left unchanged if omitted.
+            max_pods (int | None): New maximum pod count. Subject to the same
+                pod-access constraint as :meth:`create`. Left unchanged if omitted.
             force_encryption_with_cmek (bool | None): New CMEK enforcement setting.
+                Enabling it requires the same entitlement as :meth:`create`. CMEK is
+                a one-way door: once a project has it enabled, it cannot be turned
+                back off, and passing ``False`` for a project that never had it
+                enabled is a no-op. Left unchanged if omitted.
 
         Returns:
             A :class:`ProjectModel` with the updated project details.
@@ -245,7 +272,12 @@ class Projects:
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *project_id* is empty,
                 or if *name* is empty, exceeds 512 characters, or contains null bytes.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`~pinecone.errors.exceptions.ForbiddenError`: If
+                *force_encryption_with_cmek* is ``True`` and CMEK is not enabled for
+                the organization.
+            :exc:`ApiError`: If the API returns an error response — including a
+                non-zero *max_pods* requested without pod access, or an attempt to
+                turn CMEK back off.
 
         Examples:
             >>> from pinecone import Admin
@@ -282,9 +314,14 @@ class Projects:
         return result
 
     def _cleanup_project_resources(self, *, api_key: str) -> None:
-        """Delete all indexes, collections, and backups in the project scoped to *api_key*.
+        """Delete every index, collection, assistant, and backup in the project scoped to *api_key*.
 
         This is the inner loop of the project-deletion-with-cleanup workflow.
+
+        Each deletion waits for the resource to actually disappear rather than
+        just acknowledging the request, because a resource that is still
+        winding down continues to block the project delete.
+
         Each deletion is wrapped in a try/except for :exc:`NotFoundError` to
         handle race conditions where a resource is deleted between the list
         and delete calls.
@@ -312,6 +349,13 @@ class Projects:
                 except NotFoundError:
                     logger.debug("Cleanup: collection %r already deleted", collection.name)
 
+            for assistant in pc.assistants.list():
+                try:
+                    logger.debug("Cleanup: deleting assistant %r", assistant.name)
+                    pc.assistants.delete(name=assistant.name)
+                except NotFoundError:
+                    logger.debug("Cleanup: assistant %r already deleted", assistant.name)
+
             # Delete all backups
             for backup in pc.backups.list():
                 try:
@@ -332,20 +376,38 @@ class Projects:
         """Delete a project after cleaning up all its resources.
 
         Creates a temporary API key scoped to the project, uses it to delete
-        all indexes, collections, and backups, then deletes the temporary key
-        and finally deletes the project itself.
+        every index, collection, assistant, and backup, then deletes the
+        temporary key and finally deletes the project itself.
 
         The cleanup is retried up to *max_attempts* times with *retry_delay*
         seconds between attempts to handle transient failures.
 
+        Creating the temporary key is the first thing this method does, so a
+        project whose API-key quota is already full cannot be cleaned up: the
+        error names the quota as the blocker and nothing is deleted. Free a key
+        slot and call again.
+
+        Cleanup covers every resource that blocks a project delete. It is not
+        atomic, though: a resource created in the project while cleanup is
+        running can still leave the final delete blocked.
+
         Args:
-            project_id: The identifier of the project to delete.
+            project_id: The identifier of the project to delete, e.g. ``"proj-abc123"``.
             max_attempts: Maximum number of cleanup attempts. Defaults to 5.
             retry_delay: Seconds to wait between retry attempts. Defaults to 30.0.
 
         Raises:
-            :exc:`PineconeError`: If no admin back-reference is available.
+            :exc:`PineconeError`: If no admin back-reference is available — call this
+                through ``admin.projects.delete_with_cleanup(...)`` rather than
+                constructing :class:`Projects` directly.
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *project_id* is empty.
+            :exc:`~pinecone.errors.exceptions.ForbiddenError`: If the temporary API key
+                cannot be created — typically because the project's API-key quota is
+                exhausted. No resources are deleted in this case.
+            :exc:`~pinecone.errors.exceptions.FailedPreconditionError`: If the project
+                is still not empty when the final delete runs, which happens when
+                something is created in it after cleanup finishes. The error names
+                what is blocking.
             :exc:`ApiError`: If resource cleanup or project deletion fails after all retries.
 
         Examples:
@@ -365,11 +427,31 @@ class Projects:
 
         logger.info("Deleting project %r with cleanup (max_attempts=%d)", project_id, max_attempts)
 
-        temp_key = self._admin.api_keys.create(
-            project_id=project_id,
-            name="_cleanup_temp_key",
-            roles=[APIKeyRole.PROJECT_EDITOR],
-        )
+        try:
+            temp_key = self._admin.api_keys.create(
+                project_id=project_id,
+                name="_cleanup_temp_key",
+                roles=[APIKeyRole.PROJECT_EDITOR],
+            )
+        except ForbiddenError as exc:
+            raise ForbiddenError(
+                "delete_with_cleanup could not create the temporary API key it needs to "
+                f"clean up project_id={project_id!r} (server said: {exc.message}). The "
+                "usual blocker is the per-project API-key quota: a project already at its "
+                "limit has no free slot for the temporary key. Nothing was deleted — the "
+                "project and every resource in it are untouched. To proceed, free a slot "
+                f"with admin.api_keys.list(project_id={project_id!r}) followed by "
+                "admin.api_keys.delete(api_key_id=...), then call delete_with_cleanup "
+                "again. If the quota is not the blocker, the credentials in use lack "
+                "permission to create API keys in this project.",
+                status_code=exc.status_code,
+                body=exc.body,
+                reason=exc.reason,
+                headers=exc.headers,
+                error_code=exc.error_code,
+                request_id=exc.request_id,
+            ) from exc
+
         try:
             last_error: Exception | None = None
             for attempt in range(1, max_attempts + 1):
@@ -414,12 +496,22 @@ class Projects:
     def delete(self, *, project_id: str) -> None:
         """Delete a project.
 
+        The project must be empty first. Indexes, collections, assistants, and
+        backups all block deletion, and the error names what is still there. API
+        keys are *not* a blocker — they are deleted along with the project.
+
+        :meth:`delete_with_cleanup` clears all of them for you.
+
         Args:
-            project_id (str): The identifier of the project to delete.
+            project_id (str): The identifier of the project to delete, e.g.
+                ``"proj-abc123"``.
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *project_id* is empty.
-            :exc:`ApiError`: If the API returns an error (project still has indexes or collections).
+            :exc:`~pinecone.errors.exceptions.FailedPreconditionError`: If the project
+                still owns indexes, collections, assistants, or backups. The error
+                names what is blocking.
+            :exc:`ApiError`: If the API returns an error response.
 
         Examples:
             >>> from pinecone import Admin

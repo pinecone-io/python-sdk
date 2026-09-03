@@ -1,4 +1,4 @@
-"""Async Indexes namespace — list, describe, create, delete, configure, and exists operations."""
+"""Async Indexes namespace — schema-based control-plane operations (2026-07 API)."""
 
 from __future__ import annotations
 
@@ -7,44 +7,81 @@ import logging
 import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
+from pinecone._internal.adapters.backups_adapter import BackupsAdapter
 from pinecone._internal.adapters.indexes_adapter import IndexesAdapter
-from pinecone._internal.indexes_helpers import (
-    _validate_deletion_protection,
-    async_poll_index_until_ready,
-    build_byoc_body,
-    build_create_body,
-    build_integrated_body,
-    resolve_enum_value,
-    validate_byoc_inputs,
-    validate_create_inputs,
-    validate_integrated_inputs,
-    validate_read_capacity,
+from pinecone._internal.backups_helpers import backup_list_params
+from pinecone._internal.index_migration import (
+    reject_integrated_spec_create,
+    reject_legacy_configure_kwargs,
+    reject_legacy_create_kwargs,
 )
-from pinecone._internal.validation import require_non_empty
+from pinecone._internal.indexes_helpers import async_poll_index_until_ready, resolve_enum_value
+from pinecone._internal.legacy_index_translation import (
+    legacy_pod_scaling,
+    legacy_vector_schema,
+    spec_to_deployment,
+    spec_to_read_capacity,
+)
+from pinecone._internal.validation import (
+    require_non_empty,
+    require_one_of,
+    require_positive,
+    require_valid_resource_name,
+    validate_index_tags,
+)
+from pinecone.client.indexes import (
+    _DELETION_PROTECTION_VALUES,
+    _JSON_HEADERS,
+    _POLL_INTERVAL_SECONDS,
+    Indexes,
+    _reject_legacy_metadata_schema,
+    _require_fields_dict,
+    _require_non_empty_dict,
+)
 from pinecone.errors.exceptions import (
     NotFoundError,
     PineconeTimeoutError,
-    ValidationError,
+    PineconeValueError,
 )
-from pinecone.models.enums import DeletionProtection, Metric, VectorType
+from pinecone.models.backups.model import BackupModel
+from pinecone.models.enums import Metric, PodType, VectorType
 from pinecone.models.indexes.index import IndexModel
-from pinecone.models.indexes.list import IndexList
-from pinecone.models.indexes.specs import ByocSpec, IntegratedSpec, PodSpec, ServerlessSpec
+from pinecone.models.indexes.requests import ConfigureIndexRequest, CreateIndexRequest
+from pinecone.models.indexes.schema import IndexSchema
+from pinecone.models.pagination import AsyncPaginator, Page
 
 if TYPE_CHECKING:
     from pinecone._internal.http_client import AsyncHTTPClient
 
 logger = logging.getLogger(__name__)
 
-_POLL_INTERVAL_SECONDS = 5
-
 
 class AsyncIndexes:
-    """Async control-plane operations for Pinecone indexes.
+    """Async control-plane operations for Pinecone indexes (2026-07 API).
 
-    Provides ``list``, ``describe``, ``exists``, ``create``, ``delete``,
-    and ``configure`` methods.
+    Provides ``list``, ``describe``, ``exists``, ``create``,
+    ``create_for_model``, ``delete``, and ``configure`` methods, plus the
+    index-scoped backup methods ``create_backup``, ``list_backups``, and
+    ``describe_backup``, mirroring
+    :class:`~pinecone.client.indexes.Indexes` one-for-one.
+
+    .. versionchanged:: 10.0
+       Graduated to the 2026-07 schema-based API. ``create()`` takes
+       ``schema=``/``deployment=`` instead of ``spec=``/``dimension=``/
+       ``metric=``/``vector_type=``; ``configure()`` nests pod scaling under
+       ``deployment=`` and removed ``embed=``; ``list()`` returns an
+       :class:`~pinecone.models.pagination.AsyncPaginator`; the index-scoped
+       backup methods graduated from the preview namespace.
+
+    .. seealso::
+       :class:`~pinecone.async_client.backups.AsyncBackups` (``pc.backups``)
+       covers the project-wide backup listing plus ``delete``, which are not
+       scoped to one index.
+
+       Use :meth:`AsyncPinecone.index(name) <pinecone.AsyncPinecone.index>`
+       to get a data-plane client for vector operations on a specific index.
 
     Args:
         http (AsyncHTTPClient): Async HTTP client for making API requests.
@@ -56,8 +93,7 @@ class AsyncIndexes:
             from pinecone import AsyncPinecone
 
             async with AsyncPinecone(api_key="your-api-key") as pc:
-                for idx in await pc.indexes.list():
-                    print(idx.name)
+                names = [index.name async for index in pc.indexes.list()]
     """
 
     def __init__(self, http: AsyncHTTPClient, host_cache: dict[str, str] | None = None) -> None:
@@ -69,46 +105,73 @@ class AsyncIndexes:
         """Return developer-friendly representation."""
         return "AsyncIndexes()"
 
-    async def list(self) -> IndexList:
+    def list(
+        self,
+        *,
+        limit: int | None = None,
+        pagination_token: str | None = None,
+    ) -> AsyncPaginator[IndexModel]:
         """List all indexes in the project.
 
-        Returns all indexes in a single response without filtering,
-        sorting, or pagination.
+        The server currently returns every index in one page, so the
+        returned :class:`~pinecone.models.pagination.AsyncPaginator` yields
+        once and stops. It still exposes the paginator interface for
+        consistency with other list methods, and so a future page size
+        increase or signature change isn't needed if the server starts
+        paginating.
+
+        .. versionchanged:: 10.0
+           Returns an :class:`~pinecone.models.pagination.AsyncPaginator`
+           instead of an ``IndexList``, and is no longer a coroutine —
+           replace ``(await pc.indexes.list()).names()`` with
+           ``[index.name async for index in pc.indexes.list()]``.
+
+        Args:
+            limit: Maximum number of items to yield. Must be a positive
+                integer. ``None`` yields all items.
+            pagination_token: Token to resume pagination from a previous call.
+                ``None`` starts from the beginning.
 
         Returns:
-            :class:`IndexList` supporting iteration, len(), index access,
-            and a names() convenience method.
+            :class:`~pinecone.models.pagination.AsyncPaginator` over
+            :class:`IndexModel` instances.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response (e.g. authentication
-                failure or server error).
+            :exc:`PineconeValueError`: If *limit* is zero or negative.
+            :exc:`ApiError`: If the API returns an error response.
 
         Examples:
-
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    indexes = await pc.indexes.list()
-                    print(indexes.names())
+                    async for index in pc.indexes.list():
+                        print(index.name, index.status.state)
         """
-        logger.info("Listing indexes")
-        response = await self._http.get("/indexes")
-        result = self._adapter.to_index_list(response.content)
-        logger.debug("Listed %d indexes", len(result))
-        return result
+        if limit is not None:
+            require_positive("limit", limit)
+
+        async def fetch_page(token: str | None) -> Page[IndexModel]:
+            logger.info("Listing indexes")
+            response = await self._http.get("/indexes")
+            items = list(self._adapter.to_index_list(response.content))
+            logger.debug("Listed %d indexes", len(items))
+            return Page(items=items, pagination_token=None)
+
+        return AsyncPaginator(fetch_page=fetch_page, initial_token=pagination_token, limit=limit)
 
     async def describe(self, name: str) -> IndexModel:
         """Get detailed information about a named index.
 
-        After a successful call the host URL is cached internally for
-        later data-plane client construction.
+        Caches the index's host internally, so a later
+        :meth:`AsyncPinecone.index(name) <pinecone.AsyncPinecone.index>`
+        call for the same name skips its own describe round trip.
 
         Args:
             name (str): The name of the index to describe.
 
         Returns:
-            :class:`IndexModel` with name, dimension, metric, host, spec,
-            status, deletion_protection, vector_type, and tags.
+            :class:`IndexModel` with name, host, schema, deployment,
+            read_capacity, status, deletion_protection, and tags.
 
         Raises:
             :exc:`PineconeValueError`: If *name* is empty.
@@ -116,16 +179,16 @@ class AsyncIndexes:
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
-
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    desc = await pc.indexes.describe("my-index")
-                    print(desc.host)
+                    index = await pc.indexes.describe("my-index")
+                    print(index.host)
+                    print(list(index.schema.fields))
         """
         require_non_empty("name", name)
         logger.info("Describing index %r", name)
-        response = await self._http.get(f"/indexes/{name}")
+        response = await self._http.get(f"/indexes/{quote(name, safe='')}")
         model = self._adapter.to_index_model(response.content)
         if model.host is not None:
             self._host_cache[name] = model.host
@@ -135,29 +198,31 @@ class AsyncIndexes:
     async def exists(self, name: str) -> bool:
         """Check whether a named index exists.
 
-        Uses describe internally; returns ``True`` on success and
-        ``False`` when a 404 is returned.
+        Calls :meth:`describe` internally and returns ``False`` instead of
+        raising when the index isn't found.
+
+        .. versionchanged:: 10.0
+           An empty *name* now raises :exc:`PineconeValueError` instead of
+           returning ``False``.
 
         Args:
             name (str): The name of the index to check.
 
         Returns:
             True if the index exists, False otherwise.
-            Returns False immediately without a network call if *name* is empty or whitespace-only.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error other than 404.
+            :exc:`PineconeValueError`: If *name* is empty.
+            :exc:`ApiError`: If the API returns an error response other than a not-found error.
 
         Examples:
-
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     if await pc.indexes.exists("my-index"):
                         print("Index found")
         """
-        if not name:
-            return False
+        require_non_empty("name", name)
         try:
             await self.describe(name)
             return True
@@ -181,22 +246,33 @@ class AsyncIndexes:
         Raises:
             :exc:`PineconeValueError`: If *name* is empty.
             :exc:`NotFoundError`: If the index does not exist.
+            :exc:`ForbiddenError`: If deletion protection is enabled on the index.
             :exc:`PineconeTimeoutError`: If the index still exists after *timeout* seconds.
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
+            Delete an index and block until it is gone:
 
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     await pc.indexes.delete("my-index")
 
-                    # Wait up to 60 seconds for deletion to complete
+            Or bound the wait, so an index still present after a minute
+            raises :exc:`PineconeTimeoutError` instead of polling forever:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
                     await pc.indexes.delete("my-index", timeout=60)
+
+            Passing ``timeout=-1`` returns as soon as the delete request is
+            accepted, without polling at all — the index is still being torn
+            down when the call returns.
         """
         require_non_empty("name", name)
         logger.info("Deleting index %r", name)
-        await self._http.delete(f"/indexes/{name}")
+        await self._http.delete(f"/indexes/{quote(name, safe='')}")
         self._host_cache.pop(name, None)
         logger.debug("Deleted index %r", name)
 
@@ -216,252 +292,762 @@ class AsyncIndexes:
                     raise PineconeTimeoutError(f"Index '{name}' still exists after {timeout}s")
             await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 
-    async def configure(
+    async def create(
         self,
-        name: str,
         *,
-        replicas: int | None = None,
-        pod_type: str | None = None,
-        deletion_protection: DeletionProtection | str | None = None,
-        tags: Mapping[str, str] | None = None,
-        embed: dict[str, Any] | None = None,
+        schema: dict[str, Any] | IndexSchema | None = None,
+        name: str | None = None,
+        deployment: dict[str, Any] | None = None,
         read_capacity: dict[str, Any] | None = None,
-        serverless_read_capacity: dict[str, Any] | None = None,
-    ) -> None:
-        """Configure an existing index.
+        deletion_protection: str | None = None,
+        tags: Mapping[str, str] | None = None,
+        cmek_id: str | None = None,
+        timeout: int | None = None,
+        spec: Any = None,
+        dimension: int | None = None,
+        metric: Metric | str | None = None,
+        vector_type: VectorType | str | None = None,
+        **legacy_kwargs: Any,
+    ) -> IndexModel:
+        """Create a new index (2026-07 schema-based API).
 
-        Updates mutable properties of an index such as replicas, pod type,
-        deletion protection, tags, and read capacity.
+        An index's field layout is declared as a ``schema`` of named, typed
+        fields. Every field in the schema must be one that gets searched —
+        ``dense_vector``, ``sparse_vector``, or ``string`` with
+        ``full_text_search`` enabled. Metadata-only fields aren't declared
+        here; they're indexed automatically the first time they appear on an
+        upserted record. The schema can't change after the index is created.
+
+        .. versionchanged:: 10.0
+           Replaces the 2025-10 signature. ``spec=``, ``dimension=``,
+           ``metric=``, and ``vector_type=`` are deprecated, keyword-only
+           sugar for the current ``schema=``/``deployment=`` arguments (see
+           below). ``pods=``, ``metadata_config=``, ``source_collection=``,
+           ``source_backup_id=``, and ``spec=IntegratedSpec(...)`` have no
+           equivalent here; use :meth:`create_for_model` for integrated
+           embedding.
 
         Args:
-            name (str): The name of the index to configure.
-            replicas (int | None): Number of replicas for pod-based indexes.
-            pod_type (str | None): Pod type for pod-based indexes (e.g. ``"p1.x2"``).
-            deletion_protection (DeletionProtection | str | None): ``"enabled"`` or ``"disabled"``.
-            tags (dict[str, str] | None): Key-value tags to merge with existing tags.
-                Set a value to ``""`` to remove a tag.
-            embed (dict[str, Any] | None): Integrated index embed configuration updates.
-                Forwarded verbatim as the ``embed`` key in the PATCH body.
-            read_capacity (dict[str, Any] | None): Read capacity configuration for
-                BYOC indexes. Pass ``{"mode": "OnDemand"}`` or
-                ``{"mode": "Dedicated", "dedicated": {"node_type": "t1",
-                "scaling": "Manual", "manual": {"replicas": 2, "shards": 1}}}``.
-            serverless_read_capacity (dict[str, Any] | None): Read capacity configuration
-                for serverless indexes. Pass ``{"mode": "OnDemand"}`` or
-                ``{"mode": "Dedicated", "dedicated": {...}}``.
+            schema: The index's field schema. Required unless the
+                deprecated ``dimension=`` (with optional ``metric=``/
+                ``vector_type=``) is used instead — the two are mutually
+                exclusive. A dict with a ``"fields"`` key mapping field
+                names to typed configurations::
+
+                    {
+                        "fields": {
+                            "embedding": {"type": "dense_vector",
+                                          "dimension": 1536, "metric": "cosine"},
+                            "body": {"type": "string",
+                                     "full_text_search": {"language": "en"}},
+                        }
+                    }
+
+                Also accepts the dict produced by
+                :class:`~pinecone.schema_builder.SchemaBuilder` or an
+                :class:`~pinecone.models.indexes.schema.IndexSchema`.
+                A **hybrid** index must declare its ``sparse_vector`` field
+                explicitly. At 2026-07 a dense field with
+                ``metric="dotproduct"`` no longer accepts sparse values on its
+                own: the create succeeds, and only the sparse upserts are
+                refused later. The field cannot be added by ``configure()``, so
+                an index created without one has to be recreated. See
+                ``docs/migration/v10-migration.md``.
+                ``full_text_search.language`` accepts a fixed set of language
+                codes (or their English names, default ``en``), but
+                ``stop_words=True`` is not supported for every language — the
+                server's 400 names the unsupported language, by its English
+                name rather than the code you sent.
+            name: Name for the index — 1-45 characters, lowercase
+                alphanumerics and hyphens (e.g. ``"movie-recommendations"``).
+                The server assigns a name when omitted.
+            deployment: Deployment configuration, discriminated on
+                ``"deployment_type"``. For a managed index:
+                ``{"deployment_type": "managed", "cloud": "aws", "region":
+                "us-east-1"}``. For a pod-based index, ``"deployment_type":
+                "pod"`` plus ``environment``, ``pod_type``, ``replicas``,
+                and ``shards``. Defaults to a managed index on AWS
+                ``us-east-1`` when omitted. Mutually exclusive with the
+                deprecated ``spec=``.
+            read_capacity: Read capacity for a managed or BYOC index —
+                ``{"mode": "OnDemand"}`` or ``{"mode": "Dedicated",
+                "dedicated": {"node_type": ..., "scaling": ..., "manual":
+                {"replicas": ..., "shards": ...}}}``.
+            deletion_protection: ``"enabled"`` to block :meth:`delete` on
+                this index until it's set back to ``"disabled"`` (the
+                default).
+            tags: Key-value tags to attach, e.g. ``{"env": "prod"}``, up to
+                20 pairs. Pass ``None`` (the default) to attach none.
+            cmek_id: ID of a customer-managed encryption key to encrypt the
+                index with.
+            timeout: How long to wait, in seconds, for the index to become
+                ready before returning. ``None`` (default) waits
+                indefinitely; ``-1`` returns immediately without waiting.
+            spec: **Deprecated.** A
+                :class:`~pinecone.models.indexes.specs.ServerlessSpec`,
+                :class:`~pinecone.models.indexes.specs.PodSpec`,
+                :class:`~pinecone.models.indexes.specs.ByocSpec`, or the
+                equivalent dict, translated into ``deployment=`` (and
+                ``read_capacity=`` when the spec carries one). Mutually
+                exclusive with ``deployment=``. Use :meth:`create_for_model`
+                for ``IntegratedSpec``.
+
+                .. deprecated:: 10.0
+                   Pass ``deployment=`` directly instead.
+            dimension: **Deprecated.** Dense vector width for the legacy
+                path, translated into a single-field ``schema=``. Required
+                when creating a dense index this way.
+
+                .. deprecated:: 10.0
+                   Declare a named field in ``schema=`` instead.
+            metric: **Deprecated.** Similarity metric for the legacy dense
+                path — ``"cosine"`` (default), ``"euclidean"``, or
+                ``"dotproduct"``.
+
+                .. deprecated:: 10.0
+                   Set ``metric`` inside the ``schema=`` field declaration
+                   instead.
+            vector_type: **Deprecated.** ``"dense"`` (default) or
+                ``"sparse"``, for the legacy path.
+
+                .. deprecated:: 10.0
+                   Declare a named ``dense_vector``/``sparse_vector`` field
+                   in ``schema=`` instead.
+
+        Returns:
+            :class:`IndexModel` describing the created index — ready,
+            unless ``timeout=-1`` was passed.
 
         Raises:
-            :exc:`PineconeValueError`: If *name* is empty or *read_capacity* is invalid.
-            :exc:`NotFoundError`: If the index does not exist.
+            :exc:`PineconeValueError`: If neither ``schema=`` nor
+                ``dimension=`` is given, or mutually exclusive arguments
+                (``schema=`` with a legacy vector kwarg, or ``deployment=``
+                with ``spec=``) are combined.
+            :exc:`PineconeTypeError`: If an unsupported legacy keyword (e.g.
+                ``pods=``) or ``spec=IntegratedSpec(...)`` is passed.
+            :exc:`IndexInitFailedError`: If the index fails to initialize.
+            :exc:`PineconeTimeoutError`: If the index isn't ready before
+                *timeout* elapses.
             :exc:`ApiError`: If the API returns another error response.
 
         Examples:
+            A dense index on the default deployment — managed, AWS
+            ``us-east-1``:
 
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    await pc.indexes.configure("my-index", replicas=4)
-                    await pc.indexes.configure("my-index", tags={"env": "prod"})
-                    await pc.indexes.configure(
-                        "my-index", serverless_read_capacity={"mode": "OnDemand"}
+                    await pc.indexes.create(
+                        name="movie-recommendations",
+                        schema={"fields": {"embedding": {
+                            "type": "dense_vector", "dimension": 1536, "metric": "cosine"}}},
                     )
+
+            A hybrid index, in a region of your choosing. The
+            ``sparse_vector`` field has to be declared here: ``configure()``
+            cannot add one later, so an index that needs sparse search and
+            was created without it has to be recreated:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    index = await pc.indexes.create(
+                        name="support-articles",
+                        schema={"fields": {
+                            "embedding": {"type": "dense_vector",
+                                          "dimension": 1024, "metric": "cosine"},
+                            "keywords": {"type": "sparse_vector"},
+                            "body": {"type": "string",
+                                     "full_text_search": {"language": "en"}},
+                        }},
+                        deployment={"deployment_type": "managed",
+                                    "cloud": "aws", "region": "us-west-2"},
+                        tags={"env": "prod"},
+                    )
+                    print(index.host)
         """
-        require_non_empty("name", name)
-        logger.info("Configuring index %r", name)
+        reject_legacy_create_kwargs(legacy_kwargs, name)
+        reject_integrated_spec_create(spec, name)
 
-        body: dict[str, Any] = {}
+        legacy_vector_kwargs_given = (
+            dimension is not None or metric is not None or vector_type is not None
+        )
 
-        # Pod spec fields
-        pod_fields: dict[str, Any] = {}
-        if replicas is not None:
-            pod_fields["replicas"] = replicas
-        if pod_type is not None:
-            pod_fields["pod_type"] = pod_type
-
-        # BYOC read capacity — mutually exclusive with pod fields
-        if pod_fields and read_capacity is not None:
-            raise ValidationError(
-                "Cannot specify both pod fields (replicas, pod_type) and"
-                " read_capacity in the same configure call — they apply"
-                " to different index types"
+        if schema is not None and legacy_vector_kwargs_given:
+            conflicting = [
+                kw
+                for kw, val in (
+                    ("dimension", dimension),
+                    ("metric", metric),
+                    ("vector_type", vector_type),
+                )
+                if val is not None
+            ]
+            raise PineconeValueError(
+                "create() got both schema= and "
+                f"{', '.join(f'{kw}=' for kw in conflicting)}: schema= is the 2026-07 "
+                "field declaration and cannot be combined with the deprecated "
+                "dimension=/metric=/vector_type= sugar. Pass one or the other."
             )
 
-        if pod_fields:
-            body["spec"] = {"pod": pod_fields}
+        if deployment is not None and spec is not None:
+            raise PineconeValueError(
+                "create() got both deployment= and spec=: deployment= is the 2026-07 "
+                "deployment configuration and cannot be combined with the deprecated "
+                "spec= sugar. Pass one or the other."
+            )
 
-        if read_capacity is not None:
-            validate_read_capacity(read_capacity)
-            body["spec"] = {"byoc": {"read_capacity": read_capacity}}
+        if schema is None and not legacy_vector_kwargs_given:
+            raise PineconeValueError(
+                "schema is required: pass schema={'fields': {'<field-name>': {...}}} "
+                "declaring at least one searched field (dense_vector, sparse_vector, "
+                "or string with full_text_search), or, for backward compatibility, "
+                "the deprecated dimension= keyword argument (optionally with metric= "
+                "and vector_type=)."
+            )
 
-        if serverless_read_capacity is not None:
-            if pod_fields or read_capacity is not None:
-                raise ValidationError(
-                    "Cannot specify serverless_read_capacity alongside pod fields or byoc read_capacity"  # noqa: E501
-                )
-            validate_read_capacity(serverless_read_capacity)
-            body["spec"] = {"serverless": {"read_capacity": serverless_read_capacity}}
+        resolved_schema: dict[str, Any] | IndexSchema
+        if schema is None:
+            resolved_schema = legacy_vector_schema(
+                dimension=dimension, metric=metric, vector_type=vector_type
+            )
+        else:
+            _reject_legacy_metadata_schema(schema)
+            resolved_schema = schema
+        _require_fields_dict("schema", resolved_schema)
 
-        # Deletion protection — only include when explicitly specified
+        if name is not None:
+            require_valid_resource_name("name", name)
+
+        resolved_deployment = deployment
+        resolved_read_capacity = read_capacity
+        if spec is not None:
+            resolved_deployment = spec_to_deployment(spec)
+            if resolved_read_capacity is None:
+                resolved_read_capacity = spec_to_read_capacity(spec)
+
+        _require_non_empty_dict("deployment", resolved_deployment)
+        _require_non_empty_dict("read_capacity", resolved_read_capacity)
+        if tags is not None and not tags:
+            raise PineconeValueError("tags cannot be an empty dict")
+        validate_index_tags(tags)
+        resolved_dp: str | None = None
         if deletion_protection is not None:
-            _validate_deletion_protection(deletion_protection)
-            body["deletion_protection"] = resolve_enum_value(deletion_protection)
+            resolved_dp = resolve_enum_value(deletion_protection)
+            require_one_of("deletion_protection", resolved_dp, _DELETION_PROTECTION_VALUES)
 
-        # Tags — sent as a sparse patch; backend merges with existing tags
-        if tags is not None:
-            body["tags"] = tags
+        request = CreateIndexRequest(
+            schema=resolved_schema,
+            name=name,
+            deployment=resolved_deployment,
+            read_capacity=resolved_read_capacity,
+            deletion_protection=resolved_dp,
+            tags=dict(tags) if tags is not None else None,
+            cmek_id=cmek_id,
+        )
 
-        # Integrated embed config update
-        if embed is not None:
-            body["embed"] = embed
+        logger.info("Creating index name=%r", name)
+        response = await self._http.post(
+            "/indexes",
+            content=self._adapter.to_create_request(request),
+            headers=_JSON_HEADERS,
+        )
+        model = self._adapter.to_index_model(response.content)
+        logger.debug("Created index %r", model.name)
 
-        await self._http.patch(f"/indexes/{name}", json=body)
-        logger.debug("Configured index %r", name)
+        if timeout != -1:
+            model = await self._poll_until_ready(model.name, timeout)
+        return model
 
-    async def create(
+    async def create_for_model(
         self,
         *,
         name: str,
-        spec: ServerlessSpec | PodSpec | ByocSpec | IntegratedSpec | dict[str, Any],
-        dimension: int | None = None,
-        metric: Metric | str = "cosine",
-        vector_type: VectorType | str = "dense",
-        deletion_protection: DeletionProtection | str = "disabled",
+        cloud: str,
+        region: str,
+        embed: Mapping[str, Any] | Any,
+        deletion_protection: str | None = None,
         tags: Mapping[str, str] | None = None,
         schema: dict[str, Any] | None = None,
         read_capacity: dict[str, Any] | None = None,
         timeout: int | None = None,
     ) -> IndexModel:
-        """Create a new Pinecone index.
+        """Create a serverless index with an integrated embedding model.
 
-        Supports serverless, pod-based, BYOC (bring your own cloud), and
-        integrated (model-backed) index creation. Integrated indexes use
-        Pinecone's built-in embedding models so dimension and metric are
-        inferred from the model.
+        Pinecone embeds text written to the mapped field automatically at
+        upsert time and embeds queries at read time using the same model. In
+        the returned index, the embedding configuration surfaces as a
+        ``semantic_text`` field in ``schema``, named after the ``field_map``
+        text entry.
 
         Args:
-            name (str): Name for the new index.
-            spec (ServerlessSpec | PodSpec | ByocSpec | IntegratedSpec | dict[str, Any]):
-                Deployment spec — a ServerlessSpec, PodSpec, ByocSpec,
-                IntegratedSpec, or raw dict.
-            dimension (int | None): Vector dimension (required for dense
-                non-integrated indexes).
-            metric (Metric | str): Similarity metric (cosine, euclidean, dotproduct).
-            vector_type (VectorType | str): Vector type (dense or sparse).
-            deletion_protection (DeletionProtection | str): Whether deletion protection is enabled.
-            tags (dict[str, str] | None): Optional key-value tags.
-            schema (dict[str, Any] | None): Optional metadata schema defining
-                field types for indexing. Accepts both flat format
-                (``{"field": {"type": "str"}}``) and nested format
-                (``{"fields": {"field": {"type": "str"}}}``).
-            read_capacity (dict[str, Any] | None): Optional read capacity
-                configuration for integrated indexes. For example,
-                ``{"mode": "OnDemand"}`` or a dedicated capacity dict.
-            timeout (int | None): Seconds to wait for the index to become ready.
-                Use ``None`` (default) to poll indefinitely every 5 seconds
-                with no upper time bound. Use a positive int to poll with a
-                deadline. Use ``-1`` to return immediately without polling.
-                Raises ``PineconeTimeoutError`` if the index is not ready
-                before the deadline. ``IndexInitFailedError`` if
-                initialization fails.
+            name: Required name for the index (1-45 characters,
+                ``^[a-z0-9]([a-z0-9-]*[a-z0-9])?$``).
+            cloud: Public cloud provider — ``"aws"``, ``"gcp"``, or ``"azure"``.
+            region: Cloud region (e.g. ``"us-east-1"``).
+            embed: Embedding configuration. A dict (or
+                :class:`~pinecone.models.indexes.specs.EmbedConfig` /
+                :class:`~pinecone.inference.models.index_embed.IndexEmbed`)
+                with required ``model`` and ``field_map`` (e.g.
+                ``{"text": "chunk_text"}``) and optional ``metric``,
+                ``dimension``, ``read_parameters``, ``write_parameters``.
+                The model cannot be changed after creation.
+            deletion_protection: ``"enabled"`` or ``"disabled"``.
+            tags: Optional key-value tags (same limits as :meth:`create`).
+            schema: Optional metadata schema dict for filterable metadata
+                fields, e.g. ``{"fields": {"genre": {"filterable": True}}}``.
+                A bare field map is wrapped in ``{"fields": ...}``.
+            read_capacity: Optional read capacity dict (see :meth:`create`).
+            timeout: Readiness polling — same semantics as :meth:`create`.
 
         Returns:
             :class:`IndexModel` describing the created index.
 
         Raises:
-            :exc:`PineconeValueError`: If inputs fail client-side validation.
-            :exc:`NotFoundError`: If the index disappears during readiness polling.
-            :exc:`IndexInitFailedError`: If the index fails to initialise.
-            :exc:`PineconeTimeoutError`: If the index is not ready before the deadline.
-            :exc:`ApiError`: If the API returns another error response.
+            :exc:`PineconeValueError`: If *name*, *cloud*, *region*, or
+                *embed* fail client-side validation.
+            :exc:`ApiError`: If the API returns an error response.
 
         Examples:
+            The ``field_map`` text entry names the record field Pinecone
+            embeds, and that same name is what the field is called in the
+            returned schema — ``chunk_text`` below:
 
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    await pc.indexes.create(
-                        name="my-index",
-                        dimension=1536,
-                        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+                    index = await pc.indexes.create_for_model(
+                        name="semantic-search",
+                        cloud="aws",
+                        region="us-east-1",
+                        embed={"model": "multilingual-e5-large",
+                               "field_map": {"text": "chunk_text"}},
                     )
-
-                    await pc.indexes.create(
-                        name="my-integrated-index",
-                        spec=IntegratedSpec(
-                            cloud="aws",
-                            region="us-east-1",
-                            embed=EmbedConfig(
-                                model="multilingual-e5-large",
-                                field_map={"text": "my_text_field"},
-                            ),
-                        ),
-                    )
+                    print(index.schema.fields["chunk_text"])
         """
-        if isinstance(spec, IntegratedSpec):
-            validate_integrated_inputs(
-                name=name, spec=spec, deletion_protection=deletion_protection
-            )
-            body = build_integrated_body(
-                name=name,
-                spec=spec,
-                deletion_protection=deletion_protection,
-                tags=tags,
-                schema=schema,
-                read_capacity=read_capacity,
-            )
-        elif isinstance(spec, ByocSpec):
-            validate_byoc_inputs(
-                name=name,
-                spec=spec,
-                dimension=dimension,
-                deletion_protection=deletion_protection,
-            )
-            body = build_byoc_body(
-                name=name,
-                spec=spec,
-                dimension=dimension,
-                metric=metric,
-                vector_type=vector_type,
-                deletion_protection=deletion_protection,
-                tags=tags,
-                schema=schema,
-            )
-        else:
-            validate_create_inputs(
-                name=name,
-                spec=spec,
-                dimension=dimension,
-                metric=metric,
-                vector_type=vector_type,
-                deletion_protection=deletion_protection,
-            )
-            body = build_create_body(
-                name=name,
-                spec=spec,
-                dimension=dimension,
-                metric=metric,
-                vector_type=vector_type,
-                deletion_protection=deletion_protection,
-                tags=tags,
-                schema=schema,
-            )
+        require_valid_resource_name("name", name)
+        cloud_str = resolve_enum_value(cloud)
+        region_str = resolve_enum_value(region)
+        require_non_empty("cloud", cloud_str)
+        require_non_empty("region", region_str)
 
-        logger.info("Creating index %r", name)
-        if isinstance(spec, IntegratedSpec):
-            response = await self._http.post("/indexes/create-for-model", json=body)
-        else:
-            response = await self._http.post("/indexes", json=body)
+        embed_body = Indexes._embed_to_body(embed)
+        if tags is not None and not tags:
+            raise PineconeValueError("tags cannot be an empty dict")
+        validate_index_tags(tags)
+        _require_non_empty_dict("read_capacity", read_capacity)
+
+        body: dict[str, Any] = {
+            "name": name,
+            "cloud": cloud_str,
+            "region": region_str,
+            "embed": embed_body,
+        }
+        if deletion_protection is not None:
+            resolved_dp = resolve_enum_value(deletion_protection)
+            require_one_of("deletion_protection", resolved_dp, _DELETION_PROTECTION_VALUES)
+            body["deletion_protection"] = resolved_dp
+        if tags is not None:
+            body["tags"] = dict(tags)
+        if schema is not None:
+            if not schema:
+                raise PineconeValueError("schema cannot be an empty dict")
+            wrapped = schema if list(schema.keys()) == ["fields"] else {"fields": schema}
+            body["schema"] = wrapped
+        if read_capacity is not None:
+            body["read_capacity"] = read_capacity
+
+        logger.info("Creating integrated index name=%r", name)
+        response = await self._http.post("/indexes/create-for-model", json=body)
         model = self._adapter.to_index_model(response.content)
-        logger.debug("Created index %r", name)
+        logger.debug("Created integrated index %r", model.name)
 
         if timeout != -1:
-            model = await self._poll_until_ready(name, timeout)
-
+            model = await self._poll_until_ready(model.name, timeout)
         return model
 
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
+    async def configure(
+        self,
+        name: str,
+        *,
+        deployment: dict[str, Any] | None = None,
+        schema: dict[str, Any] | IndexSchema | None = None,
+        read_capacity: dict[str, Any] | None = None,
+        deletion_protection: str | None = None,
+        tags: Mapping[str, str] | None = None,
+        replicas: int | None = None,
+        pod_type: PodType | str | None = None,
+        serverless_read_capacity: dict[str, Any] | None = None,
+        **legacy_kwargs: Any,
+    ) -> IndexModel:
+        """Configure an existing index (2026-07 API).
+
+        Only the fields you provide are updated; omitted parameters are left
+        unchanged on the server.
+
+        .. versionchanged:: 10.0
+           Before/after:
+
+           .. code-block:: python
+
+               # 9.x
+               await pc.indexes.configure("my-index", replicas=4, pod_type="p1.x2")
+               # 10.x
+               await pc.indexes.configure("my-index",
+                                          deployment={"replicas": 4, "pod_type": "p1.x2"})
+
+           ``embed=`` is gone entirely (the 2025-10 convert-to-integrated
+           flow no longer exists); ``replicas=``/``pod_type=``/
+           ``serverless_read_capacity=`` remain available below as
+           deprecated keyword-only sugar for ``deployment=``/
+           ``read_capacity=``; and the method returns the updated
+           :class:`IndexModel` instead of ``None``.
+
+        .. deprecated:: 10.0
+           ``replicas=``, ``pod_type=``, and ``serverless_read_capacity=`` are
+           translated into ``deployment=``/``read_capacity=`` rather than sent
+           as-is, and cannot be combined with the 2026-07 argument they
+           translate to — passing both raises :exc:`PineconeValueError`. New
+           code should use ``deployment=``/``read_capacity=`` directly.
+
+        .. note::
+           Only ``semantic_text`` field parameters (``read_parameters``/
+           ``write_parameters``) can be updated through ``schema=``; other
+           field types can't be added, removed, or retyped after creation.
+           Since ``create()`` cannot declare a ``semantic_text`` field
+           directly, this only applies to indexes created with
+           :meth:`create_for_model`.
+
+        Args:
+            name: Name of the index to configure.
+            deployment: Pod-scaling updates for pod-based indexes —
+                ``{"replicas": int, "pod_type": str}`` (either or both). Must
+                not include ``"deployment_type"``: deployment type,
+                cloud/region, and environment cannot be changed after
+                creation.
+            schema: Schema updates. Only ``semantic_text`` field parameters
+                (``read_parameters``/``write_parameters``) are updatable
+                server-side; see note above.
+            read_capacity: Updated read capacity dict —
+                ``{"mode": "OnDemand"}`` or ``{"mode": "Dedicated",
+                "dedicated": {...}}``. Applies to managed and BYOC indexes.
+            deletion_protection: ``"enabled"`` or ``"disabled"``.
+            tags: Tag updates, merged with existing tags on the server. Set a
+                value to ``""`` to delete that key; keys you do not mention are
+                left unchanged. The 20-tag cap is applied to the **merged**
+                total rather than to this request, so adding tags to an index
+                that already carries several can be rejected even though the
+                request on its own is well within the cap. When the merge
+                leaves no tags the index stores no tag map at all rather than
+                an empty one. ``{}`` is rejected client-side.
+            replicas: **Deprecated.** Legacy pod-scaling replica count,
+                translated into ``deployment={"replicas": ...}``. Mutually
+                exclusive with *deployment*.
+            pod_type: **Deprecated.** Legacy pod type, translated into
+                ``deployment={"pod_type": ...}`` alongside *replicas*.
+                Mutually exclusive with *deployment*.
+            serverless_read_capacity: **Deprecated.** Legacy read-capacity
+                keyword for managed indexes, translated straight into
+                *read_capacity*. Mutually exclusive with *read_capacity*.
+
+        Returns:
+            :class:`IndexModel` reflecting the updated index state. Some
+            changes (read capacity, pod scaling) apply asynchronously — check
+            ``status``.
+
+        Raises:
+            :exc:`PineconeValueError`: If *name* is empty, all kwargs are
+                ``None``, any dict kwarg is empty, *deployment* includes
+                ``deployment_type``, tags/deletion_protection are invalid, or
+                *deployment*/*read_capacity* is combined with the deprecated
+                keyword argument it translates to.
+            :exc:`PineconeTypeError`: If ``embed=`` or ``spec=`` is passed;
+                neither has a 2026-07 translation and the message shows the
+                equivalent 2026-07 call where one exists.
+            :exc:`NotFoundError`: If the index does not exist.
+            :exc:`ApiError`: If the API returns another error response.
+
+        Examples:
+            Scale a pod-based index. Pod scaling is applied in the
+            background, so the returned model reports the state of the
+            change rather than its result:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    index = await pc.indexes.configure(
+                        "legacy-recommender", deployment={"replicas": 4, "pod_type": "p1.x2"}
+                    )
+                    print(index.status.state)
+
+            Tag updates merge into the tags the index already carries. Given
+            an index tagged ``{"env": "staging", "team": "search"}``, the
+            call below sets ``env``, deletes ``team`` — an empty value
+            removes a key — and leaves every other tag as it was:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    index = await pc.indexes.configure(
+                        "my-index", tags={"env": "prod", "team": ""}
+                    )
+                    print(index.tags)
+        """
+        require_non_empty("name", name)
+        reject_legacy_configure_kwargs(legacy_kwargs)
+
+        if deployment is not None and (replicas is not None or pod_type is not None):
+            raise PineconeValueError(
+                "configure() cannot accept deployment= together with the deprecated "
+                "replicas=/pod_type= pod-scaling keywords: pass pod scaling only one "
+                "way, either deployment={'replicas': ..., 'pod_type': ...} or "
+                "replicas=/pod_type=, not both."
+            )
+        if read_capacity is not None and serverless_read_capacity is not None:
+            raise PineconeValueError(
+                "configure() cannot accept read_capacity= together with the "
+                "deprecated serverless_read_capacity= keyword: pass read capacity "
+                "only one way, not both."
+            )
+
+        if replicas is not None or pod_type is not None:
+            deployment = legacy_pod_scaling(replicas=replicas, pod_type=pod_type)
+        if serverless_read_capacity is not None:
+            read_capacity = serverless_read_capacity
+
+        if (
+            deployment is None
+            and schema is None
+            and read_capacity is None
+            and deletion_protection is None
+            and tags is None
+        ):
+            raise PineconeValueError(
+                "at least one configuration parameter must be provided: "
+                "deployment, schema, read_capacity, deletion_protection, or tags"
+            )
+
+        _require_non_empty_dict("deployment", deployment)
+        if deployment is not None and "deployment_type" in deployment:
+            raise PineconeValueError(
+                "configure() deployment must not include 'deployment_type': the "
+                "deployment type, cloud/region, and environment cannot be changed "
+                "after creation. Pass only {'replicas': ..., 'pod_type': ...}."
+            )
+        if isinstance(schema, dict) and not schema:
+            raise PineconeValueError("schema cannot be an empty dict")
+        _require_non_empty_dict("read_capacity", read_capacity)
+        if tags is not None and not tags:
+            raise PineconeValueError("tags cannot be an empty dict")
+        validate_index_tags(tags)
+        resolved_dp: str | None = None
+        if deletion_protection is not None:
+            resolved_dp = resolve_enum_value(deletion_protection)
+            require_one_of("deletion_protection", resolved_dp, _DELETION_PROTECTION_VALUES)
+
+        request = ConfigureIndexRequest(
+            deployment=deployment,
+            schema=schema,
+            read_capacity=read_capacity,
+            deletion_protection=resolved_dp,
+            tags=dict(tags) if tags is not None else None,
+        )
+
+        logger.info("Configuring index %r", name)
+        response = await self._http.patch(
+            f"/indexes/{quote(name, safe='')}",
+            content=self._adapter.to_configure_request(request),
+            headers=_JSON_HEADERS,
+        )
+        model = self._adapter.to_index_model(response.content)
+        logger.debug("Configured index %r", name)
+        return model
+
+    async def create_backup(
+        self,
+        index_name: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> BackupModel:
+        """Create a backup of an index.
+
+        Index-scoped shortcut for :meth:`AsyncPinecone.backups.create` — pass
+        the same arguments either way.
+
+        .. versionadded:: 10.0
+           Graduated from ``pc.preview.indexes.create_backup``, now returning
+           the single top-level
+           :class:`~pinecone.models.backups.model.BackupModel`.
+
+        Args:
+            index_name: Name of the index to back up.
+            name: Optional user-defined name for the backup.
+            description: Optional description providing context for the backup.
+
+        Returns:
+            :class:`~pinecone.models.backups.model.BackupModel` describing the
+            new backup. ``status`` is typically ``"Initializing"`` right after
+            creation; poll :meth:`describe_backup` until it reads ``"Ready"``
+            before restoring from it.
+
+        Raises:
+            :exc:`PineconeValueError`: If *index_name* is empty.
+            :exc:`NotFoundError`: If the index does not exist.
+            :exc:`ApiError`: If the API returns another error response.
+
+        Examples:
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    backup = await pc.indexes.create_backup(
+                        "my-index", name="nightly-20240115"
+                    )
+                    print(backup.backup_id, backup.status)
+        """
+        require_non_empty("index_name", index_name)
+
+        body: dict[str, str] = {}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+
+        logger.info("Creating backup for index %r", index_name)
+        response = await self._http.post(
+            f"/indexes/{quote(index_name, safe='')}/backups", json=body
+        )
+        result = BackupsAdapter.to_backup(response.content)
+        logger.debug("Created backup %r", result.backup_id)
+        return result
+
+    def list_backups(
+        self,
+        index_name: str,
+        *,
+        limit: int | None = None,
+        pagination_token: str | None = None,
+        include_deleted: bool | None = None,
+    ) -> AsyncPaginator[BackupModel]:
+        """List the backups of one index.
+
+        .. versionadded:: 10.0
+           Graduated from ``pc.preview.indexes.list_backups``, and gained
+           *include_deleted*. For the project-wide listing use
+           :meth:`AsyncPinecone.backups.list` with no ``index_name``.
+
+        .. important::
+           :exc:`NotFoundError` here does not necessarily mean *index_name*
+           was never used. With *include_deleted* omitted or ``False``,
+           *index_name* must resolve to an **active** index: if every index
+           that used the name has since been deleted, this raises
+           :exc:`NotFoundError` rather than returning an empty list. Retry
+           with ``include_deleted=True`` to get those backups back; a
+           :exc:`NotFoundError` there means the name was never used in this
+           project.
+
+        Args:
+            index_name: Name of the index whose backups to list.
+            limit: Maximum number of backups to yield across all pages. Must
+                be a positive integer. ``None`` yields all backups. It also
+                sets the requested page size, but only on a request that
+                carries no pagination token: every later page is sized by the
+                token, which already encodes it.
+            pagination_token: Token to resume pagination from a previous call.
+                *limit* still caps the total yield, but it is not sent
+                alongside a token — see above.
+            include_deleted: When ``True``, include backups of every index
+                that has ever used *index_name*, deleted ones included; those
+                backups carry a non-``None``
+                :attr:`~pinecone.models.backups.model.BackupModel.source_index_deleted_at`.
+                When ``None`` (the default) the parameter is omitted entirely
+                and the server's default (``false``) applies.
+
+        Returns:
+            :class:`~pinecone.models.pagination.AsyncPaginator` over
+            :class:`~pinecone.models.backups.model.BackupModel` instances.
+            Iteration stops when the response carries no pagination envelope.
+
+        Raises:
+            :exc:`PineconeValueError`: If *index_name* is empty or *limit* is
+                zero or negative.
+            :exc:`NotFoundError`: If *index_name* does not resolve to an
+                active index — see above.
+            :exc:`ApiError`: If the API returns another error response.
+
+        Examples:
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    async for backup in pc.indexes.list_backups("my-index"):
+                        print(backup.backup_id, backup.status)
+
+            Once every index that used a name has been deleted, that name's
+            backups come back only with ``include_deleted=True`` — without
+            it this raises :exc:`NotFoundError`. They are the ones carrying
+            a ``source_index_deleted_at``:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    backups = await pc.indexes.list_backups(
+                        "legacy-catalog", include_deleted=True
+                    ).to_list()
+                    print([b.backup_id for b in backups if b.source_index_deleted_at])
+        """
+        require_non_empty("index_name", index_name)
+        if limit is not None:
+            require_positive("limit", limit)
+
+        async def fetch_page(token: str | None) -> Page[BackupModel]:
+            params = backup_list_params(
+                limit=limit,
+                pagination_token=token,
+                include_deleted=include_deleted,
+            )
+            logger.info("Listing backups for index %r", index_name)
+            response = await self._http.get(
+                f"/indexes/{quote(index_name, safe='')}/backups", params=params
+            )
+            result = BackupsAdapter.to_backup_list(response.content)
+            next_token = result.pagination.next if result.pagination is not None else None
+            return Page(items=list(result), pagination_token=next_token)
+
+        return AsyncPaginator(fetch_page=fetch_page, initial_token=pagination_token, limit=limit)
+
+    async def describe_backup(self, backup_id: str) -> BackupModel:
+        """Describe a backup by its ID.
+
+        Alias of :meth:`AsyncPinecone.backups.describe`. Backups are
+        identified independently of any index, so despite living on
+        ``indexes`` this takes a backup ID rather than an index name.
+
+        .. versionadded:: 10.0
+           Graduated from ``pc.preview.indexes.describe_backup``.
+
+        Args:
+            backup_id: The unique identifier of the backup to describe.
+
+        Returns:
+            :class:`~pinecone.models.backups.model.BackupModel` with the
+            current state of the backup.
+
+        Raises:
+            :exc:`PineconeValueError`: If *backup_id* is empty.
+            :exc:`NotFoundError`: If the backup does not exist.
+            :exc:`ApiError`: If the API returns another error response.
+
+        Examples:
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    backup = await pc.indexes.describe_backup("bk-daily-20240115")
+                    print(backup.status, backup.record_count)
+        """
+        require_non_empty("backup_id", backup_id)
+        logger.info("Describing backup %r", backup_id)
+        response = await self._http.get(f"/backups/{quote(backup_id, safe='')}")
+        return BackupsAdapter.to_backup(response.content)
 
     async def _poll_until_ready(self, name: str, timeout: int | None) -> IndexModel:
         """Poll describe() until the index is ready or timeout is reached."""

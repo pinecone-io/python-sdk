@@ -25,10 +25,24 @@ class StreamMessageStart(
         type: Discriminator value ``"message_start"``.
         model: The model used to generate the response.
         role: The role of the message author (e.g. ``"assistant"``).
+        id: Unique identifier for this chat response, shared by every chunk in
+            the stream, or ``None`` if the server did not report it.
+        context_snippet_count: Number of retrieved context snippets that were
+            provided to the model, or ``None`` if the server did not report it.
+            Arrives before any content, so a value of ``0`` lets callers react
+            to "no relevant context found" without waiting for the full stream.
+        content_filter_results: Safety classifications reported by the LLM
+            provider, or ``None`` when the provider returned none. The payload
+            carries a ``spec`` key naming the provider (e.g. ``"openai"``,
+            ``"gemini"``) and a ``results`` value whose structure is defined by
+            that provider, so it is left as a plain dict.
     """
 
     model: str
     role: str
+    id: str | None = None
+    context_snippet_count: int | None = None
+    content_filter_results: dict[str, Any] | None = None
 
     @property
     def type(self) -> str:
@@ -37,7 +51,15 @@ class StreamMessageStart(
 
     @safe_display
     def __repr__(self) -> str:
-        return f"StreamMessageStart(model={self.model!r}, role={self.role!r})"
+        id_part = f"id={self.id!r}, " if self.id is not None else ""
+        snippet_part = (
+            f", context_snippet_count={self.context_snippet_count}"
+            if self.context_snippet_count is not None
+            else ""
+        )
+        return (
+            f"StreamMessageStart({id_part}model={self.model!r}, role={self.role!r}{snippet_part})"
+        )
 
     @safe_display
     def _repr_pretty_(self, p: Any, cycle: bool) -> None:
@@ -45,17 +67,35 @@ class StreamMessageStart(
             p.text("StreamMessageStart(...)")
             return
         with p.group(2, "StreamMessageStart(", ")"):
+            if self.id is not None:
+                p.breakable()
+                p.text(f"id={self.id!r},")
             p.breakable()
             p.text(f"model={self.model!r},")
             p.breakable()
             p.text(f"role={self.role!r},")
+            if self.context_snippet_count is not None:
+                p.breakable()
+                p.text(f"context_snippet_count={self.context_snippet_count},")
+            if self.content_filter_results is not None:
+                p.breakable()
+                filter_text = truncate_text(str(self.content_filter_results), 200)
+                p.text(f"content_filter_results={filter_text},")
 
     @safe_display
     def _repr_html_(self) -> str:
         builder = HtmlBuilder("StreamMessageStart")
         builder.row("Type:", self.type)
+        if self.id is not None:
+            builder.row("Id:", self.id)
         builder.row("Model:", self.model)
         builder.row("Role:", self.role)
+        if self.context_snippet_count is not None:
+            builder.row("Context snippets:", self.context_snippet_count)
+        if self.content_filter_results is not None:
+            builder.row(
+                "Content filter results:", truncate_text(str(self.content_filter_results), 500)
+            )
         return builder.build()
 
 
@@ -98,11 +138,17 @@ class StreamContentChunk(
         id: Unique identifier for this chunk.
         delta: The delta object containing the text fragment.
         model: The model used to generate this response, or ``None`` if not provided.
+        content_filter_results: Safety classifications reported by the LLM
+            provider for this fragment, or ``None`` when the provider returned
+            none. The payload carries a ``spec`` key naming the provider (e.g.
+            ``"openai"``, ``"gemini"``) and a ``results`` value whose structure
+            is defined by that provider, so it is left as a plain dict.
     """
 
     id: str
     delta: StreamContentDelta
     model: str | None = None
+    content_filter_results: dict[str, Any] | None = None
 
     @property
     def type(self) -> str:
@@ -127,6 +173,10 @@ class StreamContentChunk(
                 p.text(f"model={self.model!r},")
             p.breakable()
             p.text(f"delta={self.delta!r},")
+            if self.content_filter_results is not None:
+                p.breakable()
+                filter_text = truncate_text(str(self.content_filter_results), 200)
+                p.text(f"content_filter_results={filter_text},")
 
     @safe_display
     def _repr_html_(self) -> str:
@@ -136,6 +186,10 @@ class StreamContentChunk(
         if self.model is not None:
             builder.row("Model:", self.model)
         builder.row("Content:", truncate_text(self.delta.content, 500))
+        if self.content_filter_results is not None:
+            builder.row(
+                "Content filter results:", truncate_text(str(self.content_filter_results), 500)
+            )
         return builder.build()
 
 
@@ -197,11 +251,27 @@ class StreamMessageEnd(StructDictMixin, Struct, kw_only=True, tag="message_end",
         id: Unique identifier for this chunk.
         usage: Token usage statistics for the request.
         model: The model used to generate this response, or ``None`` if not provided.
+        finish_reason: The reason generation stopped — one of ``"stop"`` (the
+            model finished), ``"length"`` (the token limit was reached),
+            ``"content_filter"`` (content filtering rules blocked the output),
+            ``"tool_calls"`` (a tool call was triggered), or the literal string
+            ``"null"``. The backend enum carries that fifth ``null`` variant
+            and serializes it as the JSON string ``"null"``, not as JSON
+            ``null``; the 2026-07 OAS ``x-enum`` omits it. Python ``None`` is
+            distinct, and only appears for payloads recorded before the field
+            was documented.
+        content_filter_results: Safety classifications reported by the LLM
+            provider, or ``None`` when the provider returned none. The payload
+            carries a ``spec`` key naming the provider (e.g. ``"openai"``,
+            ``"gemini"``) and a ``results`` value whose structure is defined by
+            that provider, so it is left as a plain dict.
     """
 
     id: str
     usage: ChatUsage | None = None
     model: str | None = None
+    finish_reason: str | None = None
+    content_filter_results: dict[str, Any] | None = None
 
     @property
     def type(self) -> str:
@@ -212,7 +282,10 @@ class StreamMessageEnd(StructDictMixin, Struct, kw_only=True, tag="message_end",
     def __repr__(self) -> str:
         model_part = f", model={self.model!r}" if self.model is not None else ""
         usage_part = f", usage={self.usage!r}" if self.usage is not None else ""
-        return f"StreamMessageEnd(id={self.id!r}{usage_part}{model_part})"
+        finish_part = (
+            f", finish_reason={self.finish_reason!r}" if self.finish_reason is not None else ""
+        )
+        return f"StreamMessageEnd(id={self.id!r}{finish_part}{usage_part}{model_part})"
 
     @safe_display
     def _repr_pretty_(self, p: Any, cycle: bool) -> None:
@@ -225,9 +298,16 @@ class StreamMessageEnd(StructDictMixin, Struct, kw_only=True, tag="message_end",
             if self.model is not None:
                 p.breakable()
                 p.text(f"model={self.model!r},")
+            if self.finish_reason is not None:
+                p.breakable()
+                p.text(f"finish_reason={self.finish_reason!r},")
             if self.usage is not None:
                 p.breakable()
                 p.text(f"usage={self.usage!r},")
+            if self.content_filter_results is not None:
+                p.breakable()
+                filter_text = truncate_text(str(self.content_filter_results), 200)
+                p.text(f"content_filter_results={filter_text},")
 
     @safe_display
     def _repr_html_(self) -> str:
@@ -236,10 +316,16 @@ class StreamMessageEnd(StructDictMixin, Struct, kw_only=True, tag="message_end",
         builder.row("Id:", self.id)
         if self.model is not None:
             builder.row("Model:", self.model)
+        if self.finish_reason is not None:
+            builder.row("Finish reason:", self.finish_reason)
         if self.usage is not None:
             builder.row("Prompt tokens:", self.usage.prompt_tokens)
             builder.row("Completion tokens:", self.usage.completion_tokens)
             builder.row("Total tokens:", self.usage.total_tokens)
+        if self.content_filter_results is not None:
+            builder.row(
+                "Content filter results:", truncate_text(str(self.content_filter_results), 500)
+            )
         return builder.build()
 
 
@@ -767,8 +853,14 @@ class ChatCompletionStreamChoice(StructDictMixin, Struct, kw_only=True):
     Attributes:
         index: The index of this choice in the choices list.
         delta: The delta message for this choice.
-        finish_reason: The reason the model stopped generating,
-            or ``None`` if generation is ongoing.
+        finish_reason: The reason the model stopped generating, or ``None`` if
+            generation is ongoing. When set it is one of ``"stop"`` (the model
+            finished), ``"length"`` (the token limit was reached),
+            ``"content_filter"`` (content filtering rules blocked the output),
+            ``"tool_calls"`` (a tool call was triggered), or the literal string
+            ``"null"`` — the backend enum's fifth variant, serialized as the
+            JSON string ``"null"`` rather than JSON ``null``, and absent from
+            the 2026-07 OAS ``x-enum``. Python ``None`` is distinct from it.
     """
 
     index: int

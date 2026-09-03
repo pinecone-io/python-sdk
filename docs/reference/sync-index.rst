@@ -29,6 +29,10 @@ Obtain an ``Index`` instance via :meth:`pinecone.Pinecone.index`.
   :meth:`~pinecone.index.Index.list`,
   :meth:`~pinecone.index.Index.list_paginated`
 - **Stats** — :meth:`~pinecone.index.Index.describe_index_stats`
+- **Documents** — :attr:`~pinecone.index.Index.documents`, a lazily-instantiated
+  :class:`~pinecone.client.documents.Documents` namespace for schema-based indexes
+  (``index.documents.upsert``, ``.search``, ``.fetch``, ``.delete``, ``.update``,
+  ``.list``, ``.batch_upsert``).
 - **Integrated Inference** — :meth:`~pinecone.index.Index.search`,
   :meth:`~pinecone.index.Index.search_records`
 - **Namespaces** — :meth:`~pinecone.index.Index.create_namespace`,
@@ -49,3 +53,12 @@ Obtain an ``Index`` instance via :meth:`pinecone.Pinecone.index`.
    :show-inheritance:
    :special-members: __init__, __enter__, __exit__
    :member-order: bysource
+
+
+Documents
+---------
+
+.. autoclass:: pinecone.client.documents.Documents
+   :members:
+   :undoc-members: False
+   :show-inheritance:

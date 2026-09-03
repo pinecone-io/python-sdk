@@ -2,7 +2,7 @@
 
 Punchlist coverage (sync):
 
-- pc.indexes.create with ``IntegratedSpec``
+- pc.indexes.create_for_model
 - Index.upsert_records
 - Index.search
 - Index.search_records (alias of search)
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from pinecone import EmbedConfig, IntegratedSpec, Pinecone
+from pinecone import EmbedConfig, Pinecone
 from tests.smoke.conftest import (
     SMOKE_PREFIX,
     ensure_index_deleted,
@@ -32,15 +32,13 @@ def test_serverless_integrated_smoke(client: Pinecone) -> None:
     name = unique_name(f"{SMOKE_PREFIX}-srv-int")
 
     try:
-        client.indexes.create(
+        client.indexes.create_for_model(
             name=name,
-            spec=IntegratedSpec(
-                cloud=CLOUD,
-                region=REGION,
-                embed=EmbedConfig(
-                    model=EMBED_MODEL,
-                    field_map={"text": "chunk_text"},
-                ),
+            cloud=CLOUD,
+            region=REGION,
+            embed=EmbedConfig(
+                model=EMBED_MODEL,
+                field_map={"text": "chunk_text"},
             ),
         )
 
@@ -57,6 +55,7 @@ def test_serverless_integrated_smoke(client: Pinecone) -> None:
             ]
             r = idx.upsert_records(namespace=NS, records=records)
             assert r.record_count == 4
+            known_ids = {record["_id"] for record in records}
 
             wait_for_vector_count(idx, NS, expected=4)
 
@@ -69,6 +68,9 @@ def test_serverless_integrated_smoke(client: Pinecone) -> None:
             assert response.result is not None
             hits = response.result.hits
             assert len(hits) > 0
+            # Never assert order (#368: query results are unsorted server-side) —
+            # just that every returned id is one we actually upserted.
+            assert {hit.id for hit in hits} <= known_ids
 
             # search_records is an alias — same behavior
             alias = idx.search_records(
@@ -78,6 +80,7 @@ def test_serverless_integrated_smoke(client: Pinecone) -> None:
             )
             assert alias.result is not None
             assert len(alias.result.hits) > 0
+            assert {hit.id for hit in alias.result.hits} <= known_ids
         finally:
             idx.close()
     finally:

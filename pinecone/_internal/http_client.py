@@ -8,11 +8,13 @@ import logging
 import os
 import random
 import socket
+import ssl
 import sys
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator, Generator, Mapping, Sequence
+from enum import Enum
 from typing import Any, NoReturn
 from urllib.parse import urlsplit
 
@@ -26,10 +28,13 @@ from pinecone._internal.user_agent import build_user_agent
 from pinecone.errors.exceptions import (
     ApiError,
     ConflictError,
+    FailedPreconditionError,
     ForbiddenError,
     NotFoundError,
+    PaymentRequiredError,
     PineconeConnectionError,
     PineconeTimeoutError,
+    PineconeTypeError,
     RateLimitError,
     ServiceError,
     UnauthorizedError,
@@ -63,14 +68,184 @@ def _build_socket_options() -> list[tuple[int, int, int]]:
     return opts
 
 
+def _build_ssl_verify(config: PineconeConfig) -> ssl.SSLContext | bool:
+    """Resolve the caller's SSL settings into an httpx ``verify`` value.
+
+    ``ssl_ca_certs`` is turned into a context here rather than handed to httpx
+    as a path, because httpx deprecated ``verify=<str>`` in 0.28 and drops the
+    form entirely in 1.0. Raises ``FileNotFoundError`` if the bundle does not
+    exist, since a CA path that cannot be loaded means the caller does not have
+    the trust they asked for.
+    """
+    ca_certs = config.ssl_ca_certs
+    if not ca_certs:
+        return config.ssl_verify
+    if os.path.isdir(ca_certs):
+        return ssl.create_default_context(capath=ca_certs)
+    return ssl.create_default_context(cafile=ca_certs)
+
+
+def _build_proxy(config: PineconeConfig) -> httpx.Proxy | str | None:
+    """Resolve the caller's proxy settings into an httpx ``proxy`` value.
+
+    Returned for use on our own transport, not on ``httpx.Client``/
+    ``httpx.AsyncClient``: handing it to the Client instead makes httpx mount a
+    second, separate transport for proxied requests that carries none of
+    ``_RetryTransport``'s retries and none of ``_build_socket_options()``'s
+    socket tuning, since that mount is never the transport we built.
+    """
+    if not config.proxy_url:
+        return None
+    if config.proxy_headers:
+        return httpx.Proxy(url=config.proxy_url, headers=config.proxy_headers)
+    return config.proxy_url
+
+
 def _default_pool_size() -> int:
     """Return the default connection pool size: 5x CPU count with a floor of 20."""
     return max(5 * (os.cpu_count() or 1), 20)
 
 
-def _encode_json(body: Any) -> bytes:
-    """Serialize *body* to JSON bytes using orjson (2-3x faster than stdlib json)."""
-    return orjson.dumps(body)
+# Asymmetric on purpose: orjson accepts a signed 64-bit minimum through an
+# unsigned 64-bit maximum, and rejects either side of that.
+_JSON_INT_MIN = -(2**63)
+_JSON_INT_MAX = 2**64 - 1
+
+# An out-of-range integer can carry thousands of digits; a diagnostic does not
+# need all of them.
+_VALUE_REPR_MAX_LEN = 60
+
+# orjson gives up around 255 levels of nesting, so a body deeper than this
+# failed for its depth, not for a value the walk could name.
+_ENCODE_WALK_MAX_DEPTH = 256
+
+
+def _clip_repr(value: Any) -> str:
+    try:
+        text = repr(value)
+    except Exception:
+        return "<unrenderable>"
+    if len(text) > _VALUE_REPR_MAX_LEN:
+        return text[:_VALUE_REPR_MAX_LEN] + "..."
+    return text
+
+
+def _describe_int(value: int) -> str:
+    """Render *value* for a diagnostic without tripping over its own size.
+
+    ``str()`` on an integer wider than ``sys.get_int_max_str_digits()`` raises,
+    so an absurd value would otherwise turn its own error message into a second
+    error. ``bit_length`` has no such limit.
+    """
+    try:
+        text = str(value)
+    except ValueError:
+        return f"<{value.bit_length()}-bit integer>"
+    if len(text) > _VALUE_REPR_MAX_LEN:
+        return f"{text[:_VALUE_REPR_MAX_LEN]}... ({len(text)} digits)"
+    return text
+
+
+def _locate_unencodable(body: Any, path_prefix: str = "") -> tuple[str, str] | None:
+    """Find the value in *body* that orjson refused, as ``(path, reason)``.
+
+    Depth-first in document order, so the reported path is the first offender a
+    reader would find by eye. Iterative rather than recursive: a body deep
+    enough to trip orjson's nesting limit would also overflow a recursive walk,
+    turning one diagnostic into a ``RecursionError``. Returns ``None`` when the
+    cause cannot be pinned to a single value (nesting depth, or an orjson
+    rejection this walk does not model).
+
+    *path_prefix* locates *body* within the request the caller made, for
+    encoders that serialize one piece at a time: an NDJSON line is its own
+    ``orjson.dumps`` call, but only ``records[2].x`` is actionable.
+
+    Only ever called after ``orjson.dumps`` has already failed, so its cost
+    stays off the success path entirely.
+    """
+    stack: list[tuple[Any, str, int]] = [(body, path_prefix, 0)]
+    while stack:
+        value, path, depth = stack.pop()
+        if depth > _ENCODE_WALK_MAX_DEPTH:
+            return None
+        where = path or "<body>"
+        # bool is an int subclass and always encodes, so it must be excluded
+        # before the range check.
+        if value is None or isinstance(value, (bool, str, float)):
+            continue
+        if isinstance(value, int):
+            if not _JSON_INT_MIN <= value <= _JSON_INT_MAX:
+                return where, (
+                    f"integer {_describe_int(value)} is outside the range JSON encoding "
+                    f"supports ({_JSON_INT_MIN} to {_JSON_INT_MAX}). Send it as a "
+                    f"string, or use a value within that range"
+                )
+            continue
+        if isinstance(value, dict):
+            items = list(value.items())
+            for key, _ in items:
+                if not isinstance(key, str):
+                    return where, (
+                        f"dict key {_clip_repr(key)} is not a string. JSON object keys "
+                        f"must be strings"
+                    )
+            for key, item in reversed(items):
+                child = f"{path}.{key}" if path else str(key)
+                stack.append((item, child, depth + 1))
+            continue
+        if isinstance(value, (list, tuple)):
+            stack.extend(
+                (value[index], f"{path}[{index}]", depth + 1)
+                for index in reversed(range(len(value)))
+            )
+            continue
+        return where, (
+            f"value of type {type(value).__name__} is not JSON-serializable. Convert it "
+            f"to a str, int, float, bool, list, dict, or None first"
+        )
+    return None
+
+
+def _encode_error(body: Any, exc: TypeError, path_prefix: str = "") -> PineconeTypeError:
+    """Build the Pinecone-typed replacement for an orjson encode ``TypeError``.
+
+    ``PineconeTypeError`` subclasses both ``PineconeError`` and the built-in
+    ``TypeError``, so this swap is strictly additive: callers who were catching
+    the bare ``TypeError`` still catch it, and ``except PineconeError`` now
+    works too.
+    """
+    located = _locate_unencodable(body, path_prefix)
+    if located is None:
+        return PineconeTypeError(f"Request body cannot be JSON-encoded: {exc}", path_prefix or None)
+    path, reason = located
+    return PineconeTypeError(f"Request body cannot be JSON-encoded: {reason} ({exc})", path)
+
+
+def _encode_json(body: Any, path_prefix: str = "") -> bytes:
+    """Serialize *body* to JSON bytes using orjson (2-3x faster than stdlib json).
+
+    orjson reports an unencodable body as a bare ``TypeError`` that names
+    neither the offending field nor the limit it broke — "Integer exceeds
+    64-bit range" and nothing else. Locate the value and re-raise it as a
+    Pinecone error carrying the path, so the caller learns which document key
+    or metadata field to fix (issue #187).
+    """
+    try:
+        return orjson.dumps(body)
+    except TypeError as exc:
+        raise _encode_error(body, exc, path_prefix) from exc
+
+
+def _encode_ndjson(records: Sequence[Mapping[str, Any]]) -> bytes:
+    """Serialize *records* as an NDJSON request body, one JSON object per line.
+
+    Each record is its own encode call, so a rejected value is reported against
+    the index the caller passed it at — ``records[2].metadata.n`` rather than an
+    offset into a concatenated blob (issue #196).
+    """
+    return b"".join(
+        _encode_json(record, f"records[{index}]") + b"\n" for index, record in enumerate(records)
+    )
 
 
 def _prepare_json_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -85,6 +260,95 @@ def _prepare_json_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
         headers["Content-Type"] = "application/json"
         kwargs["headers"] = headers
     return kwargs
+
+
+def _resolve_query_value(value: Any) -> Any:
+    """Return the wire form of one query-parameter value.
+
+    ``Enum`` members stand for their ``.value``; every other value is passed
+    through untouched so httpx keeps encoding ints and bools as it always has.
+    """
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, (list, tuple)):
+        return [_resolve_query_value(item) for item in value]
+    return value
+
+
+def _prepare_params(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """If *kwargs* contains ``params=``, replace enum members with their values.
+
+    httpx encodes every query value with ``str()``, and a ``(str, Enum)`` member
+    stringifies to ``"VectorType.DENSE"`` rather than ``"dense"`` — so a member
+    that reaches this boundary unresolved goes on the wire mangled. Bodies are
+    not exposed to this: orjson and msgspec both serialize a member by its value.
+    Normalizing here rather than at each call site covers every query parameter
+    on every surface, including ones added later (issue #371).
+
+    An already-encoded ``params`` — a query string, or an ``httpx.QueryParams``,
+    which stringifies its values on construction — is left alone. There is no
+    member left in it to resolve, and rebuilding one as a dict would drop
+    repeated keys.
+    """
+    params = kwargs.get("params")
+    if params is None or isinstance(params, (str, bytes, httpx.QueryParams)):
+        return kwargs
+    if isinstance(params, Mapping):
+        kwargs["params"] = {key: _resolve_query_value(value) for key, value in params.items()}
+    elif isinstance(params, (list, tuple)):
+        kwargs["params"] = [(key, _resolve_query_value(value)) for key, value in params]
+    return kwargs
+
+
+_DOT_SEGMENT_WIRE_FORMS = {".": "%2E", "..": "%2E%2E"}
+
+
+def _split_off_query_and_fragment(url: str) -> tuple[str, str]:
+    """Split *url* into its path and the query/fragment suffix that follows it.
+
+    Dot-segment normalization applies only to the path, so the suffix must be
+    handed back unexamined.
+    """
+    end = len(url)
+    for delimiter in "?#":
+        found = url.find(delimiter)
+        if found != -1:
+            end = min(end, found)
+    return url[:end], url[end:]
+
+
+def _prepare_path(path: str) -> str:
+    """Percent-encode any ``.`` or ``..`` segment of *path* so it survives to the server.
+
+    ``quote(value, safe="")`` — the encoding the path parameters in this client
+    apply — deliberately leaves ``.`` alone, because ``.`` is an RFC 3986
+    unreserved character. But httpx normalizes a URL on construction, and that
+    normalization includes RFC 3986 ``remove_dot_segments``: a segment of ``.``
+    is dropped and a segment of ``..`` removes the segment before it. So a
+    caller-supplied value of ``.`` or ``..`` never reaches the server. It
+    silently rewrites the request to address a different endpoint, which for the
+    collapsing verbs is a defined route rather than a 404.
+
+    ``%2E`` is the wire form of a literal ``.`` segment: httpx does not decode
+    percent-escapes before removing dot segments, so an encoded segment survives
+    normalization and the server decodes it back to the caller's value.
+
+    Only a segment that is *entirely* ``.`` or ``..`` is rewritten, so a value
+    that merely contains dots (``a..b``, ``my.index``) is returned untouched and
+    an already-encoded segment is never double-encoded.
+
+    The path must arrive as a ``str``; anything else is returned unchanged. An
+    ``httpx.URL`` cannot be repaired here because it normalizes on construction,
+    so its dot segments are gone before this boundary sees it.
+    """
+    if not isinstance(path, str) or "." not in path:
+        return path
+    head, suffix = _split_off_query_and_fragment(path)
+    segments = head.split("/")
+    if not any(segment in _DOT_SEGMENT_WIRE_FORMS for segment in segments):
+        return path
+    encoded = "/".join(_DOT_SEGMENT_WIRE_FORMS.get(segment, segment) for segment in segments)
+    return encoded + suffix
 
 
 def _build_headers(config: PineconeConfig, api_version: str) -> dict[str, str]:
@@ -298,7 +562,7 @@ class _RetryTransport(httpx.BaseTransport):
     ) -> None:
         self._transport = transport
         self._config = retry_config or RetryConfig()
-        self._budgets = budget_registry if budget_registry is not None else _budget_registry
+        self._budgets = budget_registry if budget_registry is not None else get_budget_registry()
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         budget = self._budgets.get(request.url.host)
@@ -366,7 +630,7 @@ class _AsyncRetryTransport(httpx.AsyncBaseTransport):
     ) -> None:
         self._transport = transport
         self._config = retry_config or RetryConfig()
-        self._budgets = budget_registry if budget_registry is not None else _budget_registry
+        self._budgets = budget_registry if budget_registry is not None else get_budget_registry()
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         budget = self._budgets.get(request.url.host)
@@ -516,8 +780,28 @@ def _raise_for_status(response: httpx.Response) -> None:
             error_code=error_code,
             request_id=request_id,
         )
+    if status == 402:
+        raise PaymentRequiredError(
+            message=message,
+            status_code=status,
+            body=body,
+            reason=reason,
+            headers=headers,
+            error_code=error_code,
+            request_id=request_id,
+        )
     if status == 404:
         raise NotFoundError(
+            message=message,
+            status_code=status,
+            body=body,
+            reason=reason,
+            headers=headers,
+            error_code=error_code,
+            request_id=request_id,
+        )
+    if status == 412:
+        raise FailedPreconditionError(
             message=message,
             status_code=status,
             body=body,
@@ -600,7 +884,7 @@ class HTTPClient:
     def __init__(self, config: PineconeConfig, api_version: str) -> None:
         self._config = config
         self._headers = _build_headers(config, api_version)
-        verify: str | bool = config.ssl_ca_certs or config.ssl_verify
+        verify = _build_ssl_verify(config)
         pool_size = (
             config.connection_pool_maxsize
             if config.connection_pool_maxsize > 0
@@ -610,25 +894,27 @@ class HTTPClient:
             max_connections=pool_size,
             max_keepalive_connections=pool_size // 2,
         )
+        # httpx.Client discards its own verify= when an explicit transport is
+        # supplied, so the transport must carry it. The proxy goes on the same
+        # transport rather than on the Client: a proxy passed to the Client
+        # makes httpx mount a second transport for proxied requests, and that
+        # mount — not this one — is what Client._transport_for_url returns, so
+        # _RetryTransport and its socket options would never be reached.
         transport = _RetryTransport(
             transport=httpx.HTTPTransport(
-                http2=False, limits=limits, socket_options=_build_socket_options()
+                verify=verify,
+                http2=False,
+                limits=limits,
+                proxy=_build_proxy(config),
+                socket_options=_build_socket_options(),
             ),
             retry_config=config.retry_config,
         )
-        proxy: httpx.Proxy | str | None = None
-        if config.proxy_url:
-            if config.proxy_headers:
-                proxy = httpx.Proxy(url=config.proxy_url, headers=config.proxy_headers)
-            else:
-                proxy = config.proxy_url
         self._client = httpx.Client(
             base_url=config.host or DEFAULT_BASE_URL,
             headers=self._headers,
             timeout=config.timeout,
             transport=transport,
-            proxy=proxy,
-            verify=verify,
         )
         # Pre-built per-request constants for the POST hot path. Lets us
         # bypass httpx.Client.build_request's URL/header/cookie/queryparam
@@ -670,10 +956,11 @@ class HTTPClient:
     def get(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        path = _prepare_path(path)
         _log_curl("GET", self._build_url(path), dict(self._headers))
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = self._client.get(path, timeout=effective_timeout, **kwargs)
+            response = self._client.get(path, timeout=effective_timeout, **_prepare_params(kwargs))
         except httpx.TransportError as exc:
             _raise_transport_error(exc)
         _raise_for_status(response)
@@ -683,6 +970,7 @@ class HTTPClient:
     def post(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        path = _prepare_path(path)
         # Fast path: callers only pass json= (and rarely timeout=). When
         # nothing else is in kwargs we can construct the httpx.Request
         # directly and skip Client.build_request's _merge_url/_merge_headers/
@@ -742,7 +1030,7 @@ class HTTPClient:
             return response
 
         # Slow path: caller passed params=, files=, headers=, content=, etc.
-        kwargs = _prepare_json_kwargs(kwargs)
+        kwargs = _prepare_params(_prepare_json_kwargs(kwargs))
         body = kwargs.get("content") if isinstance(kwargs.get("content"), bytes) else None
         merged_headers = {**self._headers, **kwargs.get("headers", {})}
         _log_curl("POST", self._build_url(path), merged_headers, body=body)
@@ -765,13 +1053,14 @@ class HTTPClient:
     def put(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        path = _prepare_path(path)
         kwargs = _prepare_json_kwargs(kwargs)
         body = kwargs.get("content") if isinstance(kwargs.get("content"), bytes) else None
         merged_headers = {**self._headers, **kwargs.get("headers", {})}
         _log_curl("PUT", self._build_url(path), merged_headers, body=body)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = self._client.put(path, timeout=effective_timeout, **kwargs)
+            response = self._client.put(path, timeout=effective_timeout, **_prepare_params(kwargs))
         except httpx.TransportError as exc:
             _raise_transport_error(exc)
         _raise_for_status(response)
@@ -781,13 +1070,16 @@ class HTTPClient:
     def patch(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        path = _prepare_path(path)
         kwargs = _prepare_json_kwargs(kwargs)
         body = kwargs.get("content") if isinstance(kwargs.get("content"), bytes) else None
         merged_headers = {**self._headers, **kwargs.get("headers", {})}
         _log_curl("PATCH", self._build_url(path), merged_headers, body=body)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = self._client.patch(path, timeout=effective_timeout, **kwargs)
+            response = self._client.patch(
+                path, timeout=effective_timeout, **_prepare_params(kwargs)
+            )
         except httpx.TransportError as exc:
             _raise_transport_error(exc)
         _raise_for_status(response)
@@ -797,10 +1089,13 @@ class HTTPClient:
     def delete(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        path = _prepare_path(path)
         _log_curl("DELETE", self._build_url(path), dict(self._headers))
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = self._client.delete(path, timeout=effective_timeout, **kwargs)
+            response = self._client.delete(
+                path, timeout=effective_timeout, **_prepare_params(kwargs)
+            )
         except httpx.TransportError as exc:
             _raise_transport_error(exc)
         _raise_for_status(response)
@@ -826,6 +1121,7 @@ class HTTPClient:
         connection time or during response iteration are caught and re-raised as
         :exc:`PineconeTimeoutError` or :exc:`PineconeConnectionError`.
         """
+        path = _prepare_path(path)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             with self._client.stream(
@@ -863,7 +1159,7 @@ class AsyncHTTPClient:
     def _ensure_client(self) -> httpx.AsyncClient:
         """Return the underlying client, creating it on first use."""
         if self._client is None:
-            verify: str | bool = self._config.ssl_ca_certs or self._config.ssl_verify
+            verify = _build_ssl_verify(self._config)
             pool_size = (
                 self._config.connection_pool_maxsize
                 if self._config.connection_pool_maxsize > 0
@@ -875,34 +1171,31 @@ class AsyncHTTPClient:
             )
             transport = _AsyncRetryTransport(
                 transport=httpx.AsyncHTTPTransport(
-                    http2=False, limits=limits, socket_options=_build_socket_options()
+                    verify=verify,
+                    http2=False,
+                    limits=limits,
+                    proxy=_build_proxy(self._config),
+                    socket_options=_build_socket_options(),
                 ),
                 retry_config=self._config.retry_config,
             )
-            proxy: httpx.Proxy | str | None = None
-            if self._config.proxy_url:
-                if self._config.proxy_headers:
-                    proxy = httpx.Proxy(
-                        url=self._config.proxy_url, headers=self._config.proxy_headers
-                    )
-                else:
-                    proxy = self._config.proxy_url
             self._client = httpx.AsyncClient(
                 base_url=self._config.host or DEFAULT_BASE_URL,
                 headers=self._headers,
                 timeout=self._config.timeout,
                 transport=transport,
-                proxy=proxy,
-                verify=verify,
             )
         return self._client
 
     async def get(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        path = _prepare_path(path)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = await self._ensure_client().get(path, timeout=effective_timeout, **kwargs)
+            response = await self._ensure_client().get(
+                path, timeout=effective_timeout, **_prepare_params(kwargs)
+            )
         except httpx.TransportError as exc:
             _raise_transport_error(exc)
         _raise_for_status(response)
@@ -912,10 +1205,11 @@ class AsyncHTTPClient:
     async def post(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        path = _prepare_path(path)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = await self._ensure_client().post(
-                path, timeout=effective_timeout, **_prepare_json_kwargs(kwargs)
+                path, timeout=effective_timeout, **_prepare_params(_prepare_json_kwargs(kwargs))
             )
         except httpx.TransportError as exc:
             _raise_transport_error(exc)
@@ -926,10 +1220,11 @@ class AsyncHTTPClient:
     async def put(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        path = _prepare_path(path)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = await self._ensure_client().put(
-                path, timeout=effective_timeout, **_prepare_json_kwargs(kwargs)
+                path, timeout=effective_timeout, **_prepare_params(_prepare_json_kwargs(kwargs))
             )
         except httpx.TransportError as exc:
             _raise_transport_error(exc)
@@ -940,10 +1235,11 @@ class AsyncHTTPClient:
     async def patch(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        path = _prepare_path(path)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = await self._ensure_client().patch(
-                path, timeout=effective_timeout, **_prepare_json_kwargs(kwargs)
+                path, timeout=effective_timeout, **_prepare_params(_prepare_json_kwargs(kwargs))
             )
         except httpx.TransportError as exc:
             _raise_transport_error(exc)
@@ -954,9 +1250,12 @@ class AsyncHTTPClient:
     async def delete(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
+        path = _prepare_path(path)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = await self._ensure_client().delete(path, timeout=effective_timeout, **kwargs)
+            response = await self._ensure_client().delete(
+                path, timeout=effective_timeout, **_prepare_params(kwargs)
+            )
         except httpx.TransportError as exc:
             _raise_transport_error(exc)
         _raise_for_status(response)
@@ -982,6 +1281,7 @@ class AsyncHTTPClient:
         connection time or during response iteration are caught and re-raised as
         :exc:`PineconeTimeoutError` or :exc:`PineconeConnectionError`.
         """
+        path = _prepare_path(path)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             async with self._ensure_client().stream(

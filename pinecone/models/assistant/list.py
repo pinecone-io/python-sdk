@@ -10,6 +10,7 @@ from pinecone.models._display import HtmlBuilder, abbreviate_list, safe_display
 from pinecone.models.assistant._mixin import StructDictMixin
 from pinecone.models.assistant.file_model import AssistantFileModel
 from pinecone.models.assistant.model import AssistantModel
+from pinecone.models.assistant.operation import OperationModel
 
 
 class _Pagination(Struct, kw_only=True):
@@ -123,4 +124,58 @@ class ListFilesResponse(StructDictMixin, Struct, kw_only=True):
         if len(self.files) > 5:
             section_rows.append(("...", f"{len(self.files) - 5} more"))
         builder.section("Files", section_rows)
+        return builder.build()
+
+
+class ListOperationsResponse(StructDictMixin, Struct, kw_only=True):
+    """Paginated response for listing assistant operations.
+
+    Attributes:
+        operations: The operations returned in this page.
+        pagination: Nested pagination object from the v202604 API, or ``None``
+            when no more pages exist.
+    """
+
+    operations: list[OperationModel]
+    pagination: _Pagination | None = None
+
+    @property
+    def next(self) -> str | None:
+        """Continuation token for the next page, or ``None`` when exhausted."""
+        return self.pagination.next if self.pagination is not None else None
+
+    @property
+    def next_token(self) -> str | None:
+        """Backwards-compatibility alias for :attr:`next`."""
+        return self.next
+
+    @safe_display
+    def __repr__(self) -> str:
+        return f"ListOperationsResponse(count={len(self.operations)}, next={self.next!r})"
+
+    @safe_display
+    def _repr_pretty_(self, p: Any, cycle: bool) -> None:
+        if cycle:
+            p.text("ListOperationsResponse(...)")
+            return
+        preview = abbreviate_list(self.operations, head=3, formatter=lambda o: o.operation_id)
+        with p.group(2, "ListOperationsResponse(", ")"):
+            p.breakable()
+            p.text(f"count={len(self.operations)},")
+            p.breakable()
+            p.text(f"next={self.next!r},")
+            p.breakable()
+            p.text(f"operations={preview}")
+
+    @safe_display
+    def _repr_html_(self) -> str:
+        next_display = self.next if self.next is not None else "—"
+        builder = HtmlBuilder("ListOperationsResponse")
+        builder.row("Count:", len(self.operations))
+        builder.row("Next page token:", next_display)
+        shown = self.operations[:5]
+        section_rows: list[tuple[str, Any]] = [(o.operation_id, o.status) for o in shown]
+        if len(self.operations) > 5:
+            section_rows.append(("...", f"{len(self.operations) - 5} more"))
+        builder.section("Operations", section_rows)
         return builder.build()

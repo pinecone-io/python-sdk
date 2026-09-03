@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from pinecone import AsyncPinecone, EmbedConfig, IntegratedSpec
+from pinecone import AsyncPinecone, EmbedConfig
 from tests.smoke.conftest import (
     SMOKE_PREFIX,
     async_ensure_index_deleted,
@@ -29,15 +29,13 @@ async def test_serverless_integrated_smoke_async(api_key: str) -> None:
     name = unique_name(f"{SMOKE_PREFIX}-srv-int-async")
 
     try:
-        await pc.indexes.create(
+        await pc.indexes.create_for_model(
             name=name,
-            spec=IntegratedSpec(
-                cloud=CLOUD,
-                region=REGION,
-                embed=EmbedConfig(
-                    model=EMBED_MODEL,
-                    field_map={"text": "chunk_text"},
-                ),
+            cloud=CLOUD,
+            region=REGION,
+            embed=EmbedConfig(
+                model=EMBED_MODEL,
+                field_map={"text": "chunk_text"},
             ),
         )
 
@@ -54,6 +52,7 @@ async def test_serverless_integrated_smoke_async(api_key: str) -> None:
             ]
             r = await idx.upsert_records(namespace=NS, records=records)
             assert r.record_count == 4
+            known_ids = {record["_id"] for record in records}
 
             await async_wait_for_vector_count(idx, NS, expected=4)
 
@@ -64,6 +63,7 @@ async def test_serverless_integrated_smoke_async(api_key: str) -> None:
             )
             assert response.result is not None
             assert len(response.result.hits) > 0
+            assert {hit.id for hit in response.result.hits} <= known_ids
 
             alias = await idx.search_records(
                 namespace=NS,
@@ -72,6 +72,7 @@ async def test_serverless_integrated_smoke_async(api_key: str) -> None:
             )
             assert alias.result is not None
             assert len(alias.result.hits) > 0
+            assert {hit.id for hit in alias.result.hits} <= known_ids
         finally:
             await idx.close()
     finally:

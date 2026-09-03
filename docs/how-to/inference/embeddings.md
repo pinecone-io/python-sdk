@@ -1,4 +1,4 @@
-# Generating Embeddings
+# Generating embeddings
 
 Pinecone hosts embedding models so you can generate vectors without managing your own
 embedding infrastructure. Call ``pc.inference.embed`` and pass your text inputs directly.
@@ -22,8 +22,8 @@ for embedding in result:
 
 The ``parameters`` dict is model-specific. Common keys:
 
-- ``input_type`` — ``"query"`` for search queries, ``"passage"`` for documents being indexed.
-- ``truncate`` — ``"END"`` (default) or ``"NONE"`` to raise an error on overlong input.
+- ``input_type``: ``"query"`` for search queries, ``"passage"`` for documents being indexed.
+- ``truncate``: ``"END"`` (default) or ``"NONE"`` to raise an error on overlong input.
 
 Discover supported parameters for any model:
 
@@ -36,20 +36,13 @@ print(info.supported_parameters)
 
 ``embed`` returns an {class}`~pinecone.models.inference.embed.EmbeddingsList` containing:
 
-- ``.data`` — list of {class}`~pinecone.models.inference.embed.DenseEmbedding` or
+- ``.data``: list of {class}`~pinecone.models.inference.embed.DenseEmbedding` or
   {class}`~pinecone.models.inference.embed.SparseEmbedding` objects (one per input).
-- ``.model`` — model name used.
-- ``.usage.total_tokens`` — token count consumed.
+- ``.model``: model name used.
+- ``.usage.total_tokens``: token count consumed.
 
-Iterate to access individual embeddings:
-
-```python
-for emb in result:
-    print(emb.values)       # DenseEmbedding: list of floats
-```
-
-For sparse embeddings (e.g. ``pinecone-sparse-english-v0``), access ``sparse_indices``
-and ``sparse_values`` instead:
+It also supports iteration, as shown above. For sparse embeddings (e.g.
+``pinecone-sparse-english-v0``), access ``sparse_indices`` and ``sparse_values`` instead:
 
 ```python
 result = pc.inference.embed(
@@ -61,7 +54,9 @@ print(sparse.sparse_indices)
 print(sparse.sparse_values)
 ```
 
-Some models return hybrid (dense + sparse) embeddings as two separate items per input.
+A given ``embed`` call returns either all-dense or all-sparse results, never a mix. To
+build a hybrid (dense + sparse) index, call ``embed`` once per model and combine the two
+result sets yourself.
 
 ## Using the EmbedModel enum
 
@@ -82,13 +77,14 @@ result = pc.inference.embed(
 
 ## Batch size
 
-Send multiple inputs in a single call to amortize network overhead. The API enforces a
-per-call token limit; for large batches, split inputs into chunks and iterate:
+Send multiple inputs in a single call to amortize network overhead. Each model caps how
+many inputs it accepts per call, reported as ``max_batch_size`` on the model info (see
+``pc.inference.model.get`` above). For larger batches, split inputs into chunks and iterate:
 
 ```python
 texts = [...]   # potentially hundreds of documents
 
-batch_size = 96
+batch_size = 96   # multilingual-e5-large's max_batch_size
 all_embeddings = []
 for i in range(0, len(texts), batch_size):
     batch = texts[i : i + batch_size]
@@ -103,6 +99,11 @@ Extract raw values and upsert into a standard (non-integrated) index:
 ```python
 index = pc.index("product-search")
 
+result = pc.inference.embed(
+    model="multilingual-e5-large",
+    inputs=["The quick brown fox", "A second piece of text"],
+    parameters={"input_type": "passage"},
+)
 vectors = [
     (f"doc-{i}", emb.values)
     for i, emb in enumerate(result.data)
@@ -111,8 +112,7 @@ index.upsert(vectors=vectors)
 ```
 
 For server-side embedding (no manual embed step), use an integrated index and
-{meth}`~pinecone.Index.upsert_records` instead — see
-{doc}`/how-to/integrated-records`.
+{meth}`~pinecone.Index.upsert_records` instead. See {doc}`/how-to/integrated-records`.
 
 ## List available models
 

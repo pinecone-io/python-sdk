@@ -35,10 +35,13 @@ if TYPE_CHECKING:
 
 
 class AssistantModelLegacyMethodsMixin:
-    """Legacy method aliases for :class:`AssistantModel`.
+    """Data-plane methods available directly on :class:`AssistantModel`.
 
-    Individual methods are added by BC-0016..BC-0023. This base scaffolds
-    the ``_assistants`` back-reference and a helper to resolve it.
+    Each method here delegates to the matching method on the
+    :class:`Assistants` namespace, passing ``self.name`` as
+    ``assistant_name``. Call them on an assistant object returned by
+    :meth:`Assistants.describe`, :meth:`Assistants.create`, or
+    :meth:`Assistants.list`.
     """
 
     # Declared ClassVar so msgspec ignores it when reading __struct_fields__.
@@ -81,10 +84,23 @@ class AssistantModelLegacyMethodsMixin:
         include_url: bool = False,
         **kwargs: Any,
     ) -> AssistantFileModel:
-        """Describe a file associated with this assistant.
+        """Get the status and metadata of a file uploaded to this assistant.
 
         .. deprecated:: 9.0.0
             Use :meth:`Assistants.describe_file` instead.
+
+        Args:
+            file_id: Unique identifier of the file to retrieve.
+            include_url: If ``True``, include a signed download URL in the
+                response.
+
+        Returns:
+            :class:`AssistantFileModel` with file metadata and status.
+
+        Examples:
+            >>> file = assistant.describe_file(file_id="file-abc123")  # doctest: +SKIP
+            >>> file.status  # doctest: +SKIP
+            'Available'
         """
         ns = self._resolve_assistants()
         return ns.describe_file(
@@ -104,11 +120,34 @@ class AssistantModelLegacyMethodsMixin:
         file_id: str | None = None,
         **kwargs: Any,
     ) -> AssistantFileModel:
-        """Upload a byte stream as a file to this assistant.
+        """Upload an in-memory byte stream as a file to this assistant.
 
         .. deprecated:: 9.0.0
             Use :meth:`Assistants.upload_file` with ``file_stream=`` and
             ``file_name=`` instead.
+
+        Args:
+            stream: An open byte stream to upload.
+            file_name: Filename to associate with the upload. Must include a
+                supported extension (``.txt``, ``.pdf``, ``.json``, ``.md``,
+                or ``.docx``), since the extension determines how the file
+                is processed.
+            metadata: Optional metadata to attach to the file, e.g.
+                ``{"department": "research"}``.
+            multimodal: Whether to enable multimodal processing for PDFs.
+            timeout: Seconds to wait for processing to complete. ``None``
+                (default) polls indefinitely. Use ``-1`` to return
+                immediately after upload with one describe call.
+            file_id: Optional identifier for the uploaded file. When given,
+                any existing file with that id is replaced.
+
+        Returns:
+            :class:`AssistantFileModel` describing the uploaded file, once
+            processing completes.
+
+        Examples:
+            >>> with open("report.pdf", "rb") as f:  # doctest: +SKIP
+            ...     file = assistant.upload_bytes_stream(f, file_name="report.pdf")
         """
         ns = self._resolve_assistants()
         return ns.upload_file(
@@ -127,11 +166,23 @@ class AssistantModelLegacyMethodsMixin:
         filter: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> list[AssistantFileModel]:
-        """Return a materialized list of files for this assistant.
+        """Return every file for this assistant as a plain list.
 
         .. deprecated:: 9.0.0
-            Use :meth:`Assistants.list_files` instead. Note that the namespace
-            method returns a lazy paginator; iterate over it to get all files.
+            Use :meth:`Assistants.list_files` instead, which returns a lazy
+            paginator rather than a materialized list.
+
+        Args:
+            filter: Optional metadata filter restricting which files are
+                returned.
+
+        Returns:
+            List of :class:`AssistantFileModel` objects.
+
+        Examples:
+            >>> files = assistant.list_files()  # doctest: +SKIP
+            >>> [f.name for f in files]  # doctest: +SKIP
+            ['report.pdf', 'notes.md']
         """
         ns = self._resolve_assistants()
         return list(
@@ -153,10 +204,26 @@ class AssistantModelLegacyMethodsMixin:
         """Return a single page of files for this assistant.
 
         .. deprecated:: 9.0.0
-            Use :meth:`Assistants.list_files_page` instead. The ``limit`` and
-            ``page_size`` parameters are accepted for backwards compatibility but
-            are not forwarded; the underlying endpoint does not support page-size
-            control.
+            Use :meth:`Assistants.list_files_page` instead. ``limit`` and
+            ``page_size`` are accepted here for backwards compatibility but
+            are not forwarded to the request.
+
+        Args:
+            filter: Optional metadata filter restricting which files are
+                returned.
+            limit: Accepted but not forwarded to the request.
+            pagination_token: Token from a previous response to fetch the
+                next page.
+            page_size: Accepted but not forwarded to the request.
+
+        Returns:
+            :class:`ListFilesResponse` with a ``files`` list and an optional
+            ``next`` continuation token.
+
+        Examples:
+            >>> page = assistant.list_files_paginated()  # doctest: +SKIP
+            >>> [f.name for f in page.files]  # doctest: +SKIP
+            ['report.pdf']
         """
         ns = self._resolve_assistants()
         return ns.list_files_page(
@@ -174,10 +241,30 @@ class AssistantModelLegacyMethodsMixin:
         file_id: str | None = None,
         **kwargs: Any,
     ) -> AssistantFileModel:
-        """Upload a file to this assistant.
+        """Upload a local file to this assistant.
 
         .. deprecated:: 9.0.0
             Use :meth:`Assistants.upload_file` instead.
+
+        Args:
+            file_path: Path to a local file to upload.
+            metadata: Optional metadata to attach to the file, e.g.
+                ``{"department": "research"}``.
+            multimodal: Whether to enable multimodal processing for PDFs.
+            timeout: Seconds to wait for processing to complete. ``None``
+                (default) polls indefinitely. Use ``-1`` to return
+                immediately after upload with one describe call.
+            file_id: Optional identifier for the uploaded file. When given,
+                any existing file with that id is replaced.
+
+        Returns:
+            :class:`AssistantFileModel` describing the uploaded file, once
+            processing completes.
+
+        Examples:
+            >>> file = assistant.upload_file(file_path="/data/report.pdf")  # doctest: +SKIP
+            >>> file.status  # doctest: +SKIP
+            'Available'
         """
         ns = self._resolve_assistants()
         return ns.upload_file(
@@ -200,6 +287,23 @@ class AssistantModelLegacyMethodsMixin:
 
         .. deprecated:: 9.0.0
             Use :meth:`Assistants.delete_file` instead.
+
+        Args:
+            file_id: Unique identifier of the file to delete.
+            timeout: Seconds to wait for the deletion to finish. ``None``
+                (default) polls indefinitely. Use ``-1`` to return as soon
+                as the request is accepted — the file may still exist when
+                this returns.
+
+        Returns:
+            ``None``
+
+        Raises:
+            :exc:`PineconeTimeoutError`: If the deletion has not finished
+                before *timeout* seconds elapse.
+
+        Examples:
+            >>> assistant.delete_file(file_id="file-abc123")  # doctest: +SKIP
         """
         ns = self._resolve_assistants()
         ns.delete_file(
@@ -218,10 +322,34 @@ class AssistantModelLegacyMethodsMixin:
         temperature: float | None = None,
         **kwargs: Any,
     ) -> ChatCompletionResponse | ChatCompletionStream:
-        """Send a chat-completions request to this assistant.
+        """Chat with this assistant using an OpenAI-compatible interface.
 
         .. deprecated:: 9.0.0
             Use :meth:`Assistants.chat_completions` instead.
+
+        Args:
+            messages: Conversation messages. Dicts are converted to
+                :class:`Message` objects; role defaults to ``"user"`` when
+                not present.
+            filter: Metadata filter restricting which documents are used as
+                context.
+            stream: If ``True``, return a :class:`ChatCompletionStream`.
+            model: Large language model to use, e.g. ``"gpt-4o"``. If
+                omitted, ``None`` is sent to the API rather than a default
+                model name, so pass one explicitly.
+            temperature: Controls randomness. Lower values produce more
+                deterministic responses.
+
+        Returns:
+            :class:`ChatCompletionResponse` for non-streaming requests, or a
+            :class:`ChatCompletionStream` for streaming requests.
+
+        Examples:
+            >>> response = assistant.chat_completions(  # doctest: +SKIP
+            ...     messages=[{"content": "What is Pinecone?"}],
+            ...     model="gpt-4o",
+            ... )
+            >>> response.choices[0].message.content  # doctest: +SKIP
         """
         ns = self._resolve_assistants()
         return ns.chat_completions(
@@ -246,16 +374,38 @@ class AssistantModelLegacyMethodsMixin:
         context_options: ContextOptions | dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> ContextResponse:
-        """Retrieve context snippets from this assistant.
+        """Retrieve relevant context snippets from this assistant.
 
         .. deprecated:: 9.0.0
-            Use :meth:`Assistants.context` instead. Exactly one of ``query``
-            or ``messages`` must be provided; the namespace validates this
-            and raises :class:`PineconeValueError` otherwise. The
-            ``context_options`` parameter is a v9 convenience that unpacks
-            into ``multimodal``, ``include_binary_content``, ``top_k``, and
-            ``snippet_size``; explicit kwargs override values from
-            ``context_options``.
+            Use :meth:`Assistants.context` instead. Exactly one of *query*
+            or *messages* must be provided; the namespace method raises
+            :exc:`PineconeValueError` otherwise.
+
+        Args:
+            query: Text query to use for context retrieval. Mutually
+                exclusive with *messages*.
+            messages: Conversation messages to use for context retrieval.
+                Mutually exclusive with *query*.
+            filter: Metadata filter restricting which documents contribute
+                context.
+            top_k: Maximum number of context snippets to return.
+            snippet_size: Maximum snippet size in tokens.
+            multimodal: Whether to include image-related context snippets.
+            include_binary_content: Whether image snippets include base64
+                image data. Only meaningful when *multimodal* is ``True``.
+            context_options: Convenience bundle for *multimodal*,
+                *include_binary_content*, *top_k*, and *snippet_size*. Any
+                of those four passed explicitly override the matching value
+                from *context_options*.
+
+        Returns:
+            :class:`ContextResponse` containing the matching context
+            snippets.
+
+        Examples:
+            >>> response = assistant.context(query="What is Pinecone?")  # doctest: +SKIP
+            >>> for snippet in response.snippets:  # doctest: +SKIP
+            ...     print(snippet.content)
         """
         ns = self._resolve_assistants()
         # Unpack context_options. Explicit kwargs win over context_options values.
@@ -301,10 +451,38 @@ class AssistantModelLegacyMethodsMixin:
         context_options: ContextOptions | dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> ChatResponse | ChatStream:
-        """Send a chat request to this assistant.
+        """Chat with this assistant and receive citations in Pinecone-native format.
 
         .. deprecated:: 9.0.0
             Use :meth:`Assistants.chat` instead.
+
+        Args:
+            messages: Conversation messages. Dicts are converted to
+                :class:`Message` objects; role defaults to ``"user"`` when
+                not present.
+            filter: Metadata filter restricting which documents are used as
+                context.
+            stream: If ``True``, return a :class:`ChatStream`.
+            model: Large language model to use, e.g. ``"gpt-4o"``. If
+                omitted, ``None`` is sent to the API rather than a default
+                model name, so pass one explicitly.
+            temperature: Controls randomness. Lower values produce more
+                deterministic responses.
+            json_response: If ``True``, instruct the assistant to return a
+                JSON response. Cannot be combined with ``stream=True``.
+            include_highlights: If ``True``, include highlight snippets from
+                referenced documents in citations.
+            context_options: Options controlling context retrieval.
+
+        Returns:
+            :class:`ChatResponse` for non-streaming requests, or a
+            :class:`ChatStream` for streaming requests.
+
+        Examples:
+            >>> response = assistant.chat(  # doctest: +SKIP
+            ...     messages=[{"content": "What is Pinecone?"}],
+            ...     model="gpt-4o",
+            ... )
         """
         ns = self._resolve_assistants()
         return ns.chat(

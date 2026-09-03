@@ -6,6 +6,19 @@ name: Release Readiness
 #
 # A green run within the last 7 days is the manual go/no-go signal for a
 # real release.
+#
+# What the install jobs below cover, and what they don't (#431):
+# `install-tests` and `multi-python-install-verify` install the dev wheel
+# most recently published to Artifact Registry by Dev Build & Publish, which
+# only ever builds from `main` (see resolve-dev-version). Dispatching this
+# workflow against a different ref does not change which wheel those two
+# jobs install, so a green run from them is publish-path and cross-Python
+# compatibility signal for main's latest wheel, never for the ref this
+# workflow happens to be running against. For signal about a specific
+# branch, read `wheel-install-verify` in on-push.yml instead — it builds the
+# wheel from that ref's checkout. multi-python-install-verify's job name
+# spells out "main dev wheel" so this scope is legible without opening this
+# comment; install-tests' own header carries the same note.
 
 on:
   workflow_dispatch:
@@ -98,6 +111,21 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Integration tests against a real Pinecone backend.
+  #
+  # This job is advisory by construction: Release Readiness has no
+  # pull_request trigger, so nothing here gates a merge or a publish. It is
+  # deliberately NOT a gate — per the release constraint that no CI gate may
+  # depend on a live API key. Unit tests (on-push.yml) are the gate.
+  #
+  # `secrets.PINECONE_API_KEY` does not currently exist at repo or org level,
+  # so it expands to the empty string and every keyed test skips itself: a
+  # keyless run reports success with ~543/648 (~94%) of the suite inert. The
+  # preflight step below turns that silent green into a loud red, because an
+  # inert pass is worse than an honest failure when this workflow's green
+  # result is the manual release go/no-go signal. Remediation is a one-time
+  # human action: add a repo secret PINECONE_API_KEY scoped to a
+  # test/CI Pinecone project, or dispatch with skip_integration=true.
+  # Tracked in #295.
   # ---------------------------------------------------------------------------
   integration-tests:
     name: Integration tests (real backend)
@@ -109,6 +137,20 @@ jobs:
     env:
       PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
     steps:
+      - name: Preflight — integration credentials must be present
+        run: |
+          if [ -z "${PINECONE_API_KEY}" ]; then
+            echo "::error::PINECONE_API_KEY is empty — ~94% of tests/integration would skip themselves and the job would report a meaningless success. Add a repo secret PINECONE_API_KEY, or dispatch with skip_integration=true to acknowledge the gap."
+            {
+              echo "### Integration tests: NOT RUN"
+              echo
+              echo "\`PINECONE_API_KEY\` is unset, so the suite would have been ~94% inert."
+              echo "Failing loudly instead of reporting a green run with no coverage (#295)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "PINECONE_API_KEY present (${#PINECONE_API_KEY} chars)"
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Install protoc
@@ -141,7 +183,7 @@ jobs:
         run: uv sync --group dev
 
       - name: pytest tests/integration
-        run: uv run --no-sync pytest tests/integration -m "not preview_integration" -n 6 --dist=loadfile -v --junitxml=integration-results.xml
+        run: uv run --no-sync pytest tests/integration -n 6 --dist=loadfile -v --junitxml=integration-results.xml
 
       - name: Upload integration results
         if: always()
@@ -153,7 +195,23 @@ jobs:
   # ---------------------------------------------------------------------------
   # Install the latest dev wheel from GCP Artifact Registry and smoke-test it.
   # Validates the publish/install path end-to-end (not just that the wheel was
-  # built — the smoke job in dev-publish already covers that).
+  # built — the smoke job in dev-publish already covers that). Like
+  # multi-python-install-verify below, the wheel installed here is always
+  # main's, independent of the ref this workflow is dispatched against (#431).
+  #
+  # Same missing secret as integration-tests above: `secrets.PINECONE_API_KEY`
+  # exists at neither repo nor org level, so it expands to the empty string and
+  # all 15 smoke tests this job collects (pod collections are ignored below)
+  # skip themselves — the smoke step exits 0 and
+  # the job reports success having validated the install path but exercised
+  # none of the wheel's behaviour. The preflight below turns that into an
+  # honest red. It sits *after* the install/pip-check steps on purpose: those
+  # are real signal that does not need a key, and killing the job before them
+  # would trade one blind spot for another. Advisory by construction (this
+  # workflow has no pull_request trigger), so failing on a missing key does not
+  # make a gate depend on a live key. Remediation is a one-time human action:
+  # add a repo secret PINECONE_API_KEY scoped to a test/CI Pinecone project.
+  # Tracked in #315.
   # ---------------------------------------------------------------------------
   install-tests:
     name: Install from Artifact Registry + smoke
@@ -197,8 +255,19 @@ jobs:
           # the smoke suite exercises the wheel built from current main, not a
           # higher-versioned PyPI prerelease that pip would otherwise prefer.
           # --pre still required because the version specifier itself contains .dev.
+          #
+          # pytest-timeout and anyio are not optional: they own the `timeout`
+          # and `anyio_mode` keys in [tool.pytest.ini_options], and #306's
+          # `--strict-config` turns an ini key whose owning plugin is absent
+          # into a usage error. In pytest 9 it fires after collection, so the
+          # step reported "FAILED, 7 skipped" — the suite's collect-time skips
+          # followed by exit 4, with none of the 12 collected tests run (#399).
+          # anyio also arrives transitively via httpx; naming it keeps that
+          # from being load-bearing. Held to the ini block by
+          # tests/unit/tooling/test_smoke_ci_plugin_deps.py.
           pip install --pre --extra-index-url "${INDEX_URL}" \
-            "pinecone==${DEV_VERSION}" pytest pytest-asyncio python-dotenv
+            "pinecone==${DEV_VERSION}" \
+            pytest pytest-asyncio "pytest-timeout>=2.3" "anyio>=4.13.0" python-dotenv
 
       - name: Show installed version
         run: pip show pinecone | grep -E '^(Name|Version|Location):'
@@ -214,6 +283,22 @@ jobs:
       - name: Move source pinecone/ aside (avoid shadowing installed wheel)
         run: mv pinecone _pinecone_source
 
+      - name: Preflight — smoke credentials must be present
+        run: |
+          if [ -z "${PINECONE_API_KEY}" ]; then
+            echo "::error::PINECONE_API_KEY is empty — all 15 smoke tests this job collects would skip themselves and this job would report success having exercised none of the installed wheel. Add a repo secret PINECONE_API_KEY scoped to a test/CI Pinecone project."
+            {
+              echo "### Install + smoke: install path validated, smoke NOT RUN"
+              echo
+              echo "The wheel installed cleanly and \`pip check\` passed, so the publish/install"
+              echo "path is verified. \`PINECONE_API_KEY\` is unset, so the smoke suite itself was"
+              echo "skipped in full — failing loudly instead of reporting a green run with no"
+              echo "behavioural coverage (#315)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "PINECONE_API_KEY present (${#PINECONE_API_KEY} chars)"
+
       - name: Run smoke suite
         id: smoke
         run: |
@@ -223,10 +308,37 @@ jobs:
             --ignore=tests/smoke/test_pod_collections_async.py \
             --junitxml=install-smoke-results.xml
 
+      # `python -m`, not `python tests/smoke/scripts/cleanup_orphans.py`: the
+      # plain-path form makes sys.path[0] the *script's* directory, so
+      # `from tests.live_suite import load_env` cannot resolve and the step
+      # died before deleting anything. It reported success for its entire
+      # existence because `|| true` rewrote the exit code and continue-on-error
+      # swallowed what was left (#412). A local `uv run` on that same path form
+      # works only because the editable install drops a `pinecone.pth` naming
+      # the project root — a property these wheel-install jobs do not have.
+      #
+      # `|| true` is gone deliberately. continue-on-error already keeps a
+      # cleanup failure from failing the job; the `|| true` on top of it only
+      # bought silence. The summary block is what makes a leak legible without
+      # opening the log.
       - name: Orphan cleanup
         if: always()
         continue-on-error: true
-        run: python tests/smoke/scripts/cleanup_orphans.py || true
+        run: |
+          set -o pipefail
+          status=0
+          python -m tests.smoke.scripts.cleanup_orphans 2>&1 | tee orphan-cleanup.log || status=$?
+          {
+            echo "### Orphan cleanup"
+            echo
+            echo '```'
+            cat orphan-cleanup.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${status}" -ne 0 ]; then
+            echo "::warning::Orphan cleanup exited ${status}; leaked smoke resources may remain in the test project."
+          fi
+          exit "${status}"
 
       - name: Upload install-smoke results
         if: always()
@@ -237,11 +349,15 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Multi-Python install verify: exercises the abi3 promise on every supported
-  # Python version (3.10–3.14). The published wheel is cp310-abi3, so it must
+  # Python version (3.10–3.14) using the dev wheel resolved above, which is
+  # always built from main regardless of what ref this workflow runs against
+  # (#431) — read this job's result as "main's latest published wheel loads
+  # its Rust extension and resolves its declared deps on py3.10-3.14", not as
+  # signal about any other ref. The published wheel is cp310-abi3, so it must
   # install and load the Rust extension on each Python we claim to support.
   # ---------------------------------------------------------------------------
   multi-python-install-verify:
-    name: Multi-Python install verify (py${{ matrix.python-version }})
+    name: Multi-Python install verify, main dev wheel (py${{ matrix.python-version }})
     needs: resolve-dev-version
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -292,11 +408,26 @@ jobs:
       # Move the source aside so `import pinecone` resolves to site-packages.
       - name: Move source pinecone/ aside (avoid shadowing installed wheel)
         run: mv pinecone _pinecone_source
+      # `import pinecone` on its own proves almost nothing: __init__ is lazy, so
+      # it reaches none of the modules that import third-party code. #411 was a
+      # missing runtime dependency that made every lazy attribute unreachable on
+      # 3.13/3.14 while this job stayed green on all five versions. Touching the
+      # attributes is what exercises the imports. No API key needed.
       - name: Verify import + Rust extension on this Python version
         run: |
           python -c "
           import pinecone
           print('OK: import pinecone on Python', __import__('sys').version_info[:2])
+          names = sorted(pinecone._LAZY_IMPORTS)
+          assert len(names) >= 100, f'only {len(names)} lazy exports found'
+          broken = []
+          for name in names:
+              try:
+                  getattr(pinecone, name)
+              except ModuleNotFoundError as exc:
+                  broken.append(f'{name}: missing {exc.name}')
+          assert not broken, 'undeclared runtime dependency: ' + '; '.join(broken[:8])
+          print('OK:', len(names), 'lazy exports resolved')
           import pinecone._grpc
           print('OK: import pinecone._grpc')
           ch = pinecone._grpc.GrpcChannel(

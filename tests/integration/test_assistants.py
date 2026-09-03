@@ -2215,6 +2215,13 @@ def test_pagination_next_token_populated(client: Pinecone) -> None:
 
     Also verifies that the backwards-compatibility ``next_token`` property alias
     returns the same value as ``next``.
+
+    The raw call and the SDK call are two independent listings of a
+    project-wide, concurrently-mutated collection, and the token is a cursor
+    naming the last row of whichever page each one saw — so their tokens are
+    allowed to differ and comparing them for equality tests nothing. Each call
+    is therefore checked against itself: the raw body for which key carries the
+    token, and the SDK response for a token that actually advances the cursor.
     """
     import json as _json
 
@@ -2236,12 +2243,8 @@ def test_pagination_next_token_populated(client: Pinecone) -> None:
                 description=f"assistant {n}",
             )
 
-        # --- SDK call ---
-        page = client.assistants.list_page(page_size=2)
-        assert isinstance(page, ListAssistantsResponse)
-
-        # --- Raw HTTP inspection to verify wire-format key (v202604 endpoint) ---
-        raw_response = client.assistants._http_v202604.get("/assistants", params={"limit": 2})
+        # --- Raw HTTP inspection to verify wire-format key ---
+        raw_response = client.assistants._http.get("/assistants", params={"limit": 2})
         raw_body = _json.loads(raw_response.content)
 
         has_nested_pagination = "pagination" in raw_body and isinstance(
@@ -2249,18 +2252,41 @@ def test_pagination_next_token_populated(client: Pinecone) -> None:
         )
 
         # v202604 wire format: {"assistants": [...], "pagination": {"next": "token"}}
-        if len(page.assistants) == 2 and has_nested_pagination:
-            raw_next = raw_body["pagination"].get("next")
-            if raw_next:
-                assert page.next == raw_next, (
-                    f"SDK next={page.next!r} does not match raw pagination.next={raw_next!r}"
-                )
-                assert isinstance(page.next, str)
-                assert len(page.next) > 0, "page.next must be non-empty when more pages exist"
+        if len(raw_body.get("assistants", [])) == 2:
+            assert has_nested_pagination, (
+                f"expected a nested 'pagination' object on a full page, got keys {sorted(raw_body)}"
+            )
+            assert raw_body["pagination"].get("next"), (
+                f"expected the token under pagination.next, got "
+                f"{raw_body['pagination']!r} — a rename to next_token would be needed"
+            )
+            assert "next_token" not in raw_body, (
+                f"token also present at the top level: {sorted(raw_body)}"
+            )
+
+        # --- SDK call ---
+        page = client.assistants.list_page(page_size=2)
+        assert isinstance(page, ListAssistantsResponse)
 
         # backwards-compat alias must mirror next regardless of pagination state
         assert page.next_token == page.next, (
             f"next_token alias mismatch: next_token={page.next_token!r}, next={page.next!r}"
+        )
+
+        # The three assistants above guarantee a second page, so the SDK must
+        # surface a token, and following it must move the cursor forward.
+        assert len(page.assistants) == 2, f"expected a full page, got {len(page.assistants)}"
+        assert isinstance(page.next, str) and page.next, (
+            f"page.next must be a non-empty string when more pages exist, got {page.next!r}"
+        )
+
+        second = client.assistants.list_page(page_size=2, pagination_token=page.next)
+        assert isinstance(second, ListAssistantsResponse)
+        first_names = {a.name for a in page.assistants}
+        second_names = {a.name for a in second.assistants}
+        assert not (first_names & second_names), (
+            f"following page.next re-returned rows from page 1: "
+            f"{sorted(first_names & second_names)}"
         )
 
         # --- List files: verify next_token alias on ListFilesResponse ---
@@ -2571,8 +2597,9 @@ def test_assistant_model_dict_mixin_operations_rest(client: Pinecone) -> None:
     - unified-model-0005: model.get(key, default) returns value or default
     - unified-model-0006: model.to_dict() recursively converts to a plain dict
 
-    AssistantModel declares 7 fields: name, status, metadata, instructions,
-    host, created_at, updated_at.
+    AssistantModel declares 8 fields, one per property of the 2026-07
+    ``Assistant`` schema: name, status, metadata, instructions, host, region,
+    created_at, updated_at.
     """
     name = unique_name("asst")
     try:
@@ -2594,28 +2621,52 @@ def test_assistant_model_dict_mixin_operations_rest(client: Pinecone) -> None:
         assert isinstance(model, AssistantModel)
 
         # --- unified-model-0003: len(model) returns field count ---
-        # AssistantModel has 7 declared fields
-        assert len(model) == 7, f"AssistantModel has 7 declared fields; got len()={len(model)}"
+        # Spelled out instead of read back from AssistantModel.__struct_fields__:
+        # StructDictMixin derives len() and keys() from exactly that attribute, so
+        # comparing against it would hold whichever fields the model declared. These
+        # eight are the properties of the 2026-07 ``Assistant`` schema; ``region`` is
+        # the one this API version added.
+        expected_fields = {
+            "name",
+            "status",
+            "metadata",
+            "instructions",
+            "host",
+            "region",
+            "created_at",
+            "updated_at",
+        }
+        assert len(model) == len(expected_fields), (
+            f"AssistantModel should declare {len(expected_fields)} fields; "
+            f"got len()={len(model)} ({sorted(model.keys())})"
+        )
 
         # --- unified-model-0004: keys(), values(), items() ---
         keys = model.keys()
         assert isinstance(keys, tuple), f"keys() should return tuple, got {type(keys).__name__}"
-        assert "name" in keys, "keys() must include 'name'"
-        assert "status" in keys, "keys() must include 'status'"
-        assert "metadata" in keys, "keys() must include 'metadata'"
-        assert "instructions" in keys, "keys() must include 'instructions'"
-        assert len(keys) == 7, f"keys() length should be 7, got {len(keys)}"
+        assert set(keys) == expected_fields, (
+            "keys() drifted from the 2026-07 Assistant schema: "
+            f"missing={sorted(expected_fields - set(keys))}, "
+            f"unexpected={sorted(set(keys) - expected_fields)}"
+        )
+        assert len(keys) == len(expected_fields), (
+            f"keys() should have {len(expected_fields)} entries, got {len(keys)}: {keys}"
+        )
 
         values = model.values()
         assert isinstance(values, list), f"values() should return list, got {type(values).__name__}"
-        assert len(values) == 7, f"values() length should be 7, got {len(values)}"
+        assert len(values) == len(expected_fields), (
+            f"values() length should be {len(expected_fields)}, got {len(values)}"
+        )
         # values() is ordered by field declaration: name, status, metadata, ...
         assert values[0] == model.name, "values()[0] (name) should match model.name"
         assert values[1] == model.status, "values()[1] (status) should match model.status"
 
         items = model.items()
         assert isinstance(items, list), f"items() should return list, got {type(items).__name__}"
-        assert len(items) == 7, f"items() length should be 7, got {len(items)}"
+        assert len(items) == len(expected_fields), (
+            f"items() length should be {len(expected_fields)}, got {len(items)}"
+        )
         items_dict = dict(items)
         assert items_dict["name"] == model.name, "items() 'name' should match model.name"
         assert items_dict["status"] == model.status, "items() 'status' should match model.status"
@@ -2751,13 +2802,13 @@ def test_chat_completions_streaming_finish_reason_rest(client: Pinecone) -> None
 # Path to test fixture files (same directory as this test file).
 _FIXTURES_DIR = os.path.dirname(os.path.realpath(__file__))
 
-# All assistant chat models supported by the API as of 2025-10.
+# The chat models assistant_data_2026-07 documents on POST /chat/{assistant_name}.
 _SUPPORTED_CHAT_MODELS = (
     "gpt-4o",
     "gpt-4.1",
+    "gpt-5",
     "o4-mini",
-    "claude-3-5-sonnet",
-    "claude-3-7-sonnet",
+    "claude-sonnet-4-5",
     "gemini-2.5-pro",
 )
 

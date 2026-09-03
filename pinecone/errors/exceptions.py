@@ -177,6 +177,78 @@ class ForbiddenError(ApiError):
         )
 
 
+class PaymentRequiredError(ApiError):
+    """402 Payment Required.
+
+    The organization's billing state blocks the operation. Raised where the
+    control plane gates resource creation on payment — notably
+    ``admin.projects.create`` and ``admin.api_keys.create``, which require the
+    organization to have an active payment method or a plan that permits the
+    request.
+
+    Retrying will not help: the caller (or an organization owner) has to resolve
+    the billing state first. ``message`` carries the server's explanation
+    verbatim, so it is the authoritative description of what needs fixing.
+    """
+
+    def __init__(
+        self,
+        message: str = "Payment required",
+        status_code: int = 402,
+        body: dict[str, Any] | None = None,
+        *,
+        reason: str | None = None,
+        headers: dict[str, str] | None = None,
+        error_code: str | None = None,
+        request_id: str | None = None,
+    ) -> None:
+        super().__init__(
+            message=message,
+            status_code=status_code,
+            body=body,
+            reason=reason,
+            headers=headers,
+            error_code=error_code,
+            request_id=request_id,
+        )
+
+
+class FailedPreconditionError(ApiError):
+    """412 Precondition Failed.
+
+    The request was well-formed but the target resource is not in a state that
+    permits it. This is the dominant admin failure class: deleting a project or
+    organization that still owns resources, or deleting a backup with a restore
+    job still in flight, all answer 412.
+
+    The precondition is usually satisfiable — delete the blocking resources, or
+    wait for the in-flight operation to finish, then retry. ``message`` carries
+    the server's explanation verbatim and typically names the specific resources
+    or job ids that are in the way.
+    """
+
+    def __init__(
+        self,
+        message: str = "Precondition failed",
+        status_code: int = 412,
+        body: dict[str, Any] | None = None,
+        *,
+        reason: str | None = None,
+        headers: dict[str, str] | None = None,
+        error_code: str | None = None,
+        request_id: str | None = None,
+    ) -> None:
+        super().__init__(
+            message=message,
+            status_code=status_code,
+            body=body,
+            reason=reason,
+            headers=headers,
+            error_code=error_code,
+            request_id=request_id,
+        )
+
+
 class RateLimitError(ApiError):
     """429 Too Many Requests.
 

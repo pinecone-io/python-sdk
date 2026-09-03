@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from pinecone import AsyncPinecone, EmbedConfig, IntegratedSpec
+from pinecone import AsyncPinecone, Pinecone
 from pinecone.errors.exceptions import PineconeValueError
 from pinecone.models.vectors.search import (
     Hit,
@@ -21,7 +21,37 @@ from pinecone.models.vectors.search import (
     SearchResult,
     SearchUsage,
 )
-from tests.integration.conftest import async_cleanup_resource, async_poll_until, unique_name
+from tests.integration.conftest import (
+    async_cleanup_resource,
+    async_poll_until,
+    unique_name,
+    wait_for_ready,
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+async def _create_integrated_index(async_client: AsyncPinecone, name: str) -> None:
+    await async_client.indexes.create_for_model(
+        name=name,
+        cloud="aws",
+        region="us-east-1",
+        embed={"model": "multilingual-e5-large", "field_map": {"text": "text"}},
+    )
+
+
+async def _create_integrated_sparse_index(async_client: AsyncPinecone, name: str) -> None:
+    """The model name alone selects sparse/dotproduct — create_for_model takes no
+    vector_type or metric, and the 2026-07 server rejects both."""
+    await async_client.indexes.create_for_model(
+        name=name,
+        cloud="aws",
+        region="us-east-1",
+        embed={"model": "pinecone-sparse-english-v0", "field_map": {"text": "text"}},
+    )
+
 
 # ---------------------------------------------------------------------------
 # search-records — REST async
@@ -30,19 +60,23 @@ from tests.integration.conftest import async_cleanup_resource, async_poll_until,
 
 @pytest.mark.integration
 @pytest.mark.anyio
-async def test_search_records_rest_async(async_client: AsyncPinecone) -> None:
+async def test_search_records_rest_async(async_client: AsyncPinecone, client: Pinecone) -> None:
     """search() with text inputs on an integrated index returns SearchRecordsResponse (async)."""
     name = unique_name("idx")
     namespace = "srch-ns"
     try:
-        desc = await async_client.indexes.create(
-            name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(model="multilingual-e5-large", field_map={"text": "text"}),
-            ),
+        await _create_integrated_index(async_client, name)
+
+        # Wait for the index to become ready using the sync client (async describe can't be
+        # called from sync wait_for_ready)
+        wait_for_ready(
+            lambda: client.indexes.describe(name).status.ready,
+            timeout=300,
+            description=f"integrated index {name!r}",
         )
+
+        # Populate the async client's host cache before calling index()
+        desc = await async_client.indexes.describe(name)
         index = await async_client.index(host=desc.host)
 
         # Upsert records: text fields are embedded server-side
@@ -101,19 +135,22 @@ async def test_search_records_rest_async(async_client: AsyncPinecone) -> None:
 
 @pytest.mark.integration
 @pytest.mark.anyio
-async def test_search_with_rerank_rest_async(async_client: AsyncPinecone) -> None:
+async def test_search_with_rerank_rest_async(async_client: AsyncPinecone, client: Pinecone) -> None:
     """search() with inline rerank parameter re-ranks hits and populates usage.rerank_units (async)."""
     name = unique_name("idx")
     namespace = "rerank-ns"
     try:
-        desc = await async_client.indexes.create(
-            name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(model="multilingual-e5-large", field_map={"text": "text"}),
-            ),
+        await _create_integrated_index(async_client, name)
+
+        # Wait for the index to become ready using the sync client
+        wait_for_ready(
+            lambda: client.indexes.describe(name).status.ready,
+            timeout=300,
+            description=f"integrated index {name!r}",
         )
+
+        # Populate the async client's host cache before calling index()
+        desc = await async_client.indexes.describe(name)
         index = await async_client.index(host=desc.host)
 
         # Upsert records with varied text content
@@ -188,7 +225,7 @@ async def test_search_with_rerank_rest_async(async_client: AsyncPinecone) -> Non
 
 @pytest.mark.integration
 @pytest.mark.anyio
-async def test_search_by_id_rest_async(async_client: AsyncPinecone) -> None:
+async def test_search_by_id_rest_async(async_client: AsyncPinecone, client: Pinecone) -> None:
     """search(id=...) uses a stored record's embedding as the query vector (async).
 
     Verifies that search-by-id returns a SearchRecordsResponse with the same
@@ -198,14 +235,17 @@ async def test_search_by_id_rest_async(async_client: AsyncPinecone) -> None:
     name = unique_name("idx")
     namespace = "sid-ns"
     try:
-        desc = await async_client.indexes.create(
-            name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(model="multilingual-e5-large", field_map={"text": "text"}),
-            ),
+        await _create_integrated_index(async_client, name)
+
+        # Wait for the index to become ready using the sync client
+        wait_for_ready(
+            lambda: client.indexes.describe(name).status.ready,
+            timeout=300,
+            description=f"integrated index {name!r}",
         )
+
+        # Populate the async client's host cache before calling index()
+        desc = await async_client.indexes.describe(name)
         index = await async_client.index(host=desc.host)
 
         # Upsert records — embeddings are generated server-side from the text field
@@ -259,7 +299,7 @@ async def test_search_by_id_rest_async(async_client: AsyncPinecone) -> None:
 
 @pytest.mark.integration
 @pytest.mark.anyio
-async def test_search_with_filter_rest_async(async_client: AsyncPinecone) -> None:
+async def test_search_with_filter_rest_async(async_client: AsyncPinecone, client: Pinecone) -> None:
     """search() with a metadata filter returns only records matching the filter (async).
 
     Upserts records with two distinct category values ('science' and 'history').
@@ -270,14 +310,17 @@ async def test_search_with_filter_rest_async(async_client: AsyncPinecone) -> Non
     name = unique_name("idx")
     namespace = "swf-ns"
     try:
-        desc = await async_client.indexes.create(
-            name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(model="multilingual-e5-large", field_map={"text": "text"}),
-            ),
+        await _create_integrated_index(async_client, name)
+
+        # Wait for the index to become ready using the sync client
+        wait_for_ready(
+            lambda: client.indexes.describe(name).status.ready,
+            timeout=300,
+            description=f"integrated index {name!r}",
         )
+
+        # Populate the async client's host cache before calling index()
+        desc = await async_client.indexes.describe(name)
         index = await async_client.index(host=desc.host)
 
         # Upsert records with a 'category' metadata field for filtering
@@ -432,7 +475,9 @@ async def test_search_input_validation_rest_async(async_client: AsyncPinecone) -
 
 @pytest.mark.integration
 @pytest.mark.anyio
-async def test_search_records_alias_with_typed_inputs_async(async_client: AsyncPinecone) -> None:
+async def test_search_records_alias_with_typed_inputs_async(
+    async_client: AsyncPinecone, client: Pinecone
+) -> None:
     """AsyncIndex.search_records() alias works with typed SearchInputs and RerankConfig objects.
 
     Verifies:
@@ -443,14 +488,15 @@ async def test_search_records_alias_with_typed_inputs_async(async_client: AsyncP
     name = unique_name("idx")
     namespace = "alias-async-ns"
     try:
-        desc = await async_client.indexes.create(
-            name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(model="multilingual-e5-large", field_map={"text": "text"}),
-            ),
+        await _create_integrated_index(async_client, name)
+
+        wait_for_ready(
+            lambda: client.indexes.describe(name).status.ready,
+            timeout=300,
+            description=f"integrated index {name!r}",
         )
+
+        desc = await async_client.indexes.describe(name)
         index = await async_client.index(host=desc.host)
 
         await index.upsert_records(
@@ -511,7 +557,7 @@ async def test_search_records_alias_with_typed_inputs_async(async_client: AsyncP
 
 @pytest.mark.integration
 @pytest.mark.anyio
-async def test_search_with_match_terms_async(async_client: AsyncPinecone) -> None:
+async def test_search_with_match_terms_async(async_client: AsyncPinecone, client: Pinecone) -> None:
     """search() with match_terms restricts results to records containing all specified terms (async).
 
     Creates an integrated sparse index (pinecone-sparse-english-v0), upserts three records
@@ -527,17 +573,17 @@ async def test_search_with_match_terms_async(async_client: AsyncPinecone) -> Non
     name = unique_name("idx")
     namespace = "mt-ns"
     try:
-        desc = await async_client.indexes.create(
-            name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(model="pinecone-sparse-english-v0", field_map={"text": "text"}),
-            ),
-            vector_type="sparse",
-            metric="dotproduct",
+        await _create_integrated_sparse_index(async_client, name)
+
+        # Wait for the index to become ready using the sync client
+        wait_for_ready(
+            lambda: client.indexes.describe(name).status.ready,
             timeout=300,
+            description=f"integrated sparse index {name!r}",
         )
+
+        # Populate the async client's host cache before calling index()
+        desc = await async_client.indexes.describe(name)
         index = await async_client.index(host=desc.host)
 
         # mt-r1 and mt-r3 contain "astronaut"; mt-r2 does not
@@ -607,7 +653,9 @@ async def test_search_with_match_terms_async(async_client: AsyncPinecone) -> Non
 
 @pytest.mark.integration
 @pytest.mark.anyio
-async def test_search_all_fields_default_and_restricted_async(async_client: AsyncPinecone) -> None:
+async def test_search_all_fields_default_and_restricted_async(
+    async_client: AsyncPinecone, client: Pinecone
+) -> None:
     """search() without fields= returns ALL record fields in hit.fields (async);
     with fields=["category"] returns ONLY that field.
 
@@ -618,14 +666,16 @@ async def test_search_all_fields_default_and_restricted_async(async_client: Asyn
     name = unique_name("idx")
     namespace = "af-ns"
     try:
-        desc = await async_client.indexes.create(
-            name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(model="multilingual-e5-large", field_map={"text": "text"}),
-            ),
+        await _create_integrated_index(async_client, name)
+
+        wait_for_ready(
+            lambda: client.indexes.describe(name).status.ready,
+            timeout=300,
+            description=f"integrated index {name!r}",
         )
+
+        # Populate the async client's host cache before calling index()
+        desc = await async_client.indexes.describe(name)
         index = await async_client.index(host=desc.host)
 
         await index.upsert_records(

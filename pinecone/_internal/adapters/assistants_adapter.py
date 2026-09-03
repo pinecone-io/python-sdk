@@ -2,17 +2,60 @@
 
 from __future__ import annotations
 
-import orjson
+from msgspec import Struct
 
-from pinecone._internal.adapters._decode import decode_response
-from pinecone.errors.exceptions import ResponseParsingError
+from pinecone._internal.adapters._decode import decode_response, decode_response_lax
 from pinecone.models.assistant.chat import ChatCompletionResponse, ChatResponse, ChatUsage
 from pinecone.models.assistant.context import ContextResponse
 from pinecone.models.assistant.evaluation import AlignmentResult, AlignmentScores, EntailmentResult
 from pinecone.models.assistant.file_model import AssistantFileModel
-from pinecone.models.assistant.list import ListAssistantsResponse, ListFilesResponse
+from pinecone.models.assistant.list import (
+    ListAssistantsResponse,
+    ListFilesResponse,
+    ListOperationsResponse,
+)
 from pinecone.models.assistant.model import AssistantModel
 from pinecone.models.assistant.operation import OperationModel
+
+
+class _Fact(Struct, kw_only=True):
+    content: str
+
+
+class _EvaluatedFact(Struct, kw_only=True):
+    fact: _Fact
+    entailment: str
+    # Not in assistant_evaluation_2026-07.oas.yaml's EvaluatedFact, but the
+    # evaluation service returns it and EntailmentResult.reasoning exposes it.
+    reasoning: str = ""
+
+
+class _Reasoning(Struct, kw_only=True):
+    evaluated_facts: list[_EvaluatedFact]
+
+
+class _Metrics(Struct, kw_only=True):
+    correctness: float
+    completeness: float
+    alignment: float
+
+
+class _TokenCounts(Struct, kw_only=True):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+class _AlignmentResponse(Struct, kw_only=True):
+    """Wire shape of the 200 body of ``POST /evaluation/metrics/alignment``.
+
+    Kept separate from :class:`AlignmentResult` because the SDK-facing model
+    renames ``metrics`` to ``scores`` and flattens ``reasoning`` to ``facts``.
+    """
+
+    metrics: _Metrics
+    reasoning: _Reasoning
+    usage: _TokenCounts
 
 
 class AssistantsAdapter:
@@ -37,6 +80,11 @@ class AssistantsAdapter:
     def to_operation(data: bytes) -> OperationModel:
         """Decode raw JSON bytes into an OperationModel."""
         return decode_response(data, OperationModel)
+
+    @staticmethod
+    def to_operation_list(data: bytes) -> ListOperationsResponse:
+        """Decode raw JSON bytes into a ListOperationsResponse."""
+        return decode_response(data, ListOperationsResponse)
 
     @staticmethod
     def to_file_list(data: bytes) -> ListFilesResponse:
@@ -65,43 +113,24 @@ class AssistantsAdapter:
         Transforms the API response shape (``metrics``, ``reasoning``, ``usage``)
         into the SDK model shape (``scores``, ``facts``, ``usage``).
         """
-        try:
-            raw: dict[str, object] = orjson.loads(data)
-            metrics = raw["metrics"]
-            if not isinstance(metrics, dict):
-                raise TypeError(f"Expected dict for 'metrics', got {type(metrics).__name__}")
-            scores = AlignmentScores(
-                correctness=float(metrics["correctness"]),
-                completeness=float(metrics["completeness"]),
-                alignment=float(metrics["alignment"]),
-            )
-            reasoning = raw["reasoning"]
-            if not isinstance(reasoning, dict):
-                raise TypeError(f"Expected dict for 'reasoning', got {type(reasoning).__name__}")
-            evaluated_facts = reasoning["evaluated_facts"]
-            if not isinstance(evaluated_facts, list):
-                raise TypeError(
-                    f"Expected list for 'evaluated_facts', got {type(evaluated_facts).__name__}"
-                )
-            facts = [
+        wire = decode_response_lax(data, _AlignmentResponse)
+        return AlignmentResult(
+            scores=AlignmentScores(
+                correctness=wire.metrics.correctness,
+                completeness=wire.metrics.completeness,
+                alignment=wire.metrics.alignment,
+            ),
+            facts=[
                 EntailmentResult(
-                    fact=str(item["fact"]["content"]),
-                    entailment=str(item["entailment"]),
-                    reasoning=str(item.get("reasoning", "")),
+                    fact=item.fact.content,
+                    entailment=item.entailment,
+                    reasoning=item.reasoning,
                 )
-                for item in evaluated_facts
-            ]
-            u = raw["usage"]
-            if not isinstance(u, dict):
-                raise TypeError(f"Expected dict for 'usage', got {type(u).__name__}")
-            usage = ChatUsage(
-                prompt_tokens=int(u["prompt_tokens"]),
-                completion_tokens=int(u["completion_tokens"]),
-                total_tokens=int(u["total_tokens"]),
-            )
-            return AlignmentResult(scores=scores, facts=facts, usage=usage)
-        except (KeyError, TypeError, ValueError, AssertionError) as exc:
-            raise ResponseParsingError(
-                f"Failed to parse API response as AlignmentResult: {exc}",
-                cause=exc,
-            ) from exc
+                for item in wire.reasoning.evaluated_facts
+            ],
+            usage=ChatUsage(
+                prompt_tokens=wire.usage.prompt_tokens,
+                completion_tokens=wire.usage.completion_tokens,
+                total_tokens=wire.usage.total_tokens,
+            ),
+        )

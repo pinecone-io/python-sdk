@@ -34,7 +34,7 @@ from pinecone.errors import ApiError, NotFoundError
 from pinecone.models.admin.api_key import APIKeyList, APIKeyModel
 from pinecone.models.admin.organization import OrganizationList, OrganizationModel
 from pinecone.models.admin.project import ProjectList, ProjectModel
-from pinecone.models.indexes.specs import ServerlessSpec
+from tests.integration.index_shapes import MANAGED_AWS, dense_schema
 
 
 @pytest.fixture(scope="module")
@@ -758,9 +758,8 @@ def test_project_delete_with_cleanup_nukes_indexes_and_project(admin: Admin) -> 
         pc = Pinecone(api_key=key.value)
         pc.indexes.create(
             name=index_name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=dense_schema(2, "cosine"),
+            deployment=MANAGED_AWS,
             timeout=300,
         )
 
@@ -825,9 +824,8 @@ def test_admin_to_pinecone_end_to_end_bridge(admin: Admin) -> None:
 
         pc.indexes.create(
             name=index_name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=dense_schema(2, "cosine"),
+            deployment=MANAGED_AWS,
             timeout=300,
         )
 

@@ -373,8 +373,27 @@ fn prost_value_to_py(py: Python<'_>, value: &prost_types::Value) -> PyResult<Py<
     }
 }
 
+/// How Python `None` values inside dicts are converted to prost.
+///
+/// Mirrors the REST backend's `json_to_prost` (`pinecone-db`
+/// `pc-utils/src/prost_util.rs` @ f6fd0a40): the JSON path strips null-valued
+/// object entries from **write metadata** before validation ever sees them,
+/// but preserves them in **filters** so downstream validation rejects them.
+/// Building the `Struct` here without the same split made the same upsert
+/// succeed over REST and fail over gRPC (#203).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NullHandling {
+    /// Drop dict entries whose value is `None` (write metadata).
+    Strip,
+    /// Keep `None` as a `NullValue` so the server can reject it (filters).
+    Preserve,
+}
+
 /// Convert a Python object to a `prost_types::Value`.
-fn py_to_prost_value(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<prost_types::Value> {
+fn py_to_prost_value(
+    obj: &Bound<'_, pyo3::PyAny>,
+    nulls: NullHandling,
+) -> PyResult<prost_types::Value> {
     use prost_types::value::Kind;
 
     if obj.is_none() {
@@ -399,13 +418,16 @@ fn py_to_prost_value(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<prost_types::Valu
     }
     if let Ok(dict) = obj.cast::<PyDict>() {
         return Ok(prost_types::Value {
-            kind: Some(Kind::StructValue(py_dict_to_struct(dict)?)),
+            kind: Some(Kind::StructValue(py_dict_to_struct(dict, nulls)?)),
         });
     }
     if let Ok(list) = obj.cast::<pyo3::types::PyList>() {
+        // `None` inside a list is deliberately NOT stripped, matching
+        // `json_to_prost`, which only drops null-valued *object entries*; a
+        // null list element survives to be rejected by server-side validation.
         let values: Vec<prost_types::Value> = list
             .iter()
-            .map(|item| py_to_prost_value(&item))
+            .map(|item| py_to_prost_value(&item, nulls))
             .collect::<PyResult<_>>()?;
         return Ok(prost_types::Value {
             kind: Some(Kind::ListValue(prost_types::ListValue { values })),
@@ -422,11 +444,19 @@ fn py_to_prost_value(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<prost_types::Valu
 }
 
 /// Convert a Python dict to a `prost_types::Struct`.
-fn py_dict_to_struct(dict: &Bound<'_, PyDict>) -> PyResult<prost_types::Struct> {
+fn py_dict_to_struct(
+    dict: &Bound<'_, PyDict>,
+    nulls: NullHandling,
+) -> PyResult<prost_types::Struct> {
+    use prost_types::value::Kind;
     let mut fields = std::collections::BTreeMap::new();
     for (key, value) in dict.iter() {
         let key_str: String = key.extract()?;
-        fields.insert(key_str, py_to_prost_value(&value)?);
+        let converted = py_to_prost_value(&value, nulls)?;
+        if nulls == NullHandling::Strip && matches!(converted.kind, Some(Kind::NullValue(_))) {
+            continue;
+        }
+        fields.insert(key_str, converted);
     }
     Ok(prost_types::Struct { fields })
 }
@@ -490,6 +520,9 @@ fn namespace_description_to_py_dict(
     let dict = PyDict::new(py);
     dict.set_item("name", &ns.name)?;
     dict.set_item("record_count", ns.record_count)?;
+    // Unconditional, unlike the two below: `size_bytes` is a non-optional proto
+    // `uint64`, so there is no absent-vs-zero signal on the wire to forward.
+    dict.set_item("size_bytes", ns.size_bytes)?;
     if let Some(ref schema) = ns.schema {
         let schema_dict = metadata_schema_to_py_dict(py, schema)?;
         dict.set_item("schema", schema_dict)?;
@@ -551,7 +584,7 @@ impl GrpcChannel {
     /// Args:
     ///     endpoint: The gRPC endpoint URL (e.g. "https://my-index-abc123.svc.pinecone.io:443")
     ///     api_key: The Pinecone API key for authentication.
-    ///     api_version: The Pinecone API version string (e.g. "2025-10").
+    ///     api_version: The Pinecone API version string (e.g. "2026-07").
     ///     version: The SDK version string (e.g. "0.1.0") used in the User-Agent header.
     ///     secure: Whether to use TLS encryption (default true).
     ///     timeout_s: Request timeout in seconds (default 20.0).
@@ -709,7 +742,10 @@ impl GrpcChannel {
                 None => None,
             };
             let metadata = match v.get_item("metadata")? {
-                Some(md) => Some(py_dict_to_struct(&md.cast_into::<PyDict>()?)?),
+                Some(md) => Some(py_dict_to_struct(
+                    &md.cast_into::<PyDict>()?,
+                    NullHandling::Strip,
+                )?),
                 None => None,
             };
             proto_vectors.push(proto::Vector {
@@ -730,6 +766,9 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: this closure's return type is `Result<Response<_>, tonic::Status>`
+        // (from `retry_on_transient_request`); the lint fires on the closure itself, not just
+        // fn signatures, so the statement-level allow below is load-bearing, not vestigial.
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
@@ -796,7 +835,9 @@ impl GrpcChannel {
         let request = proto::QueryRequest {
             namespace: namespace.unwrap_or("").to_string(),
             top_k,
-            filter: filter.map(|f| py_dict_to_struct(&f)).transpose()?,
+            filter: filter
+                .map(|f| py_dict_to_struct(&f, NullHandling::Preserve))
+                .transpose()?,
             include_values,
             include_metadata,
             queries: vec![],
@@ -814,6 +855,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
@@ -875,6 +917,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
@@ -933,7 +976,9 @@ impl GrpcChannel {
             ids: ids.unwrap_or_default(),
             delete_all,
             namespace: namespace.unwrap_or("").to_string(),
-            filter: filter.map(|f| py_dict_to_struct(&f)).transpose()?,
+            filter: filter
+                .map(|f| py_dict_to_struct(&f, NullHandling::Preserve))
+                .transpose()?,
         };
 
         let timeout = timeout_s
@@ -941,6 +986,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         py.detach(|| {
             self.runtime
@@ -994,9 +1040,13 @@ impl GrpcChannel {
             sparse_values: sparse_values
                 .map(|sv| py_dict_to_sparse_values(&sv))
                 .transpose()?,
-            set_metadata: set_metadata.map(|md| py_dict_to_struct(&md)).transpose()?,
+            set_metadata: set_metadata
+                .map(|md| py_dict_to_struct(&md, NullHandling::Strip))
+                .transpose()?,
             namespace: namespace.unwrap_or("").to_string(),
-            filter: filter.map(|f| py_dict_to_struct(&f)).transpose()?,
+            filter: filter
+                .map(|f| py_dict_to_struct(&f, NullHandling::Preserve))
+                .transpose()?,
             dry_run,
         };
 
@@ -1005,6 +1055,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
@@ -1063,6 +1114,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
@@ -1126,7 +1178,9 @@ impl GrpcChannel {
         timeout_s: Option<f64>,
     ) -> PyResult<Py<PyDict>> {
         let request = proto::DescribeIndexStatsRequest {
-            filter: filter.map(|f| py_dict_to_struct(&f)).transpose()?,
+            filter: filter
+                .map(|f| py_dict_to_struct(&f, NullHandling::Preserve))
+                .transpose()?,
         };
 
         let timeout = timeout_s
@@ -1134,6 +1188,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
@@ -1212,6 +1267,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
@@ -1254,7 +1310,8 @@ impl GrpcChannel {
     ///     timeout_s: Per-call timeout in seconds. None uses the client-level default.
     ///
     /// Returns:
-    ///     Dict with "name", "record_count", and optional "schema" and "indexed_fields".
+    ///     Dict with "name", "record_count", "size_bytes", and optional "schema"
+    ///     and "indexed_fields".
     #[pyo3(signature = (namespace, timeout_s=None))]
     fn describe_namespace(
         &self,
@@ -1271,6 +1328,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
@@ -1316,6 +1374,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         py.detach(|| {
             self.runtime
@@ -1345,7 +1404,8 @@ impl GrpcChannel {
     ///     timeout_s: Per-call timeout in seconds. None uses the client-level default.
     ///
     /// Returns:
-    ///     Dict with "name", "record_count", and optional "schema" and "indexed_fields".
+    ///     Dict with "name", "record_count", "size_bytes", and optional "schema"
+    ///     and "indexed_fields".
     #[pyo3(signature = (name, schema=None, timeout_s=None))]
     fn create_namespace(
         &self,
@@ -1366,6 +1426,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
@@ -1411,7 +1472,9 @@ impl GrpcChannel {
     ) -> PyResult<Py<PyDict>> {
         let request = proto::FetchByMetadataRequest {
             namespace: namespace.unwrap_or("").to_string(),
-            filter: filter.map(|f| py_dict_to_struct(&f)).transpose()?,
+            filter: filter
+                .map(|f| py_dict_to_struct(&f, NullHandling::Preserve))
+                .transpose()?,
             limit,
             pagination_token: pagination_token.map(|s| s.to_string()),
         };
@@ -1421,6 +1484,7 @@ impl GrpcChannel {
             .transpose()?;
         let client = self.client.clone();
         let retry_config = self.retry_config.clone();
+        // result_large_err: same closure-return pattern as the first site in `upsert` above.
         #[allow(clippy::result_large_err)]
         let response = py
             .detach(|| {
@@ -1468,6 +1532,195 @@ mod tests {
     use std::time::Duration;
     use tonic::service::Interceptor;
 
+    fn size_bytes_through_converter(size_bytes: u64) -> u64 {
+        Python::initialize();
+        Python::attach(|py| {
+            let ns = proto::NamespaceDescription {
+                name: "movies-en".to_string(),
+                record_count: 42,
+                size_bytes,
+                ..Default::default()
+            };
+            let dict = namespace_description_to_py_dict(py, &ns).expect("converter succeeds");
+            dict.bind(py)
+                .get_item("size_bytes")
+                .expect("lookup succeeds")
+                .expect("size_bytes is always emitted")
+                .extract::<u64>()
+                .expect("size_bytes extracts as u64")
+        })
+    }
+
+    #[test]
+    fn namespace_description_to_py_dict_emits_zero_size_bytes() {
+        assert_eq!(size_bytes_through_converter(0), 0);
+    }
+
+    #[test]
+    fn namespace_description_to_py_dict_does_not_truncate_size_bytes() {
+        for value in [
+            u64::from(u32::MAX),
+            u64::from(u32::MAX) + 1,
+            1_099_511_627_776,
+            u64::MAX - 1,
+            u64::MAX,
+        ] {
+            assert_eq!(
+                size_bytes_through_converter(value),
+                value,
+                "size_bytes {value} truncated crossing the PyO3 boundary"
+            );
+        }
+    }
+
+    #[test]
+    fn namespace_description_to_py_dict_emits_the_full_key_set() {
+        Python::initialize();
+        Python::attach(|py| {
+            let ns = proto::NamespaceDescription {
+                name: "movies-en".to_string(),
+                record_count: 42,
+                size_bytes: 1_048_576,
+                schema: Some(proto::MetadataSchema {
+                    fields: std::collections::HashMap::new(),
+                }),
+                indexed_fields: Some(proto::IndexedFields {
+                    fields: vec!["genre".to_string(), "year".to_string()],
+                }),
+            };
+            let dict = namespace_description_to_py_dict(py, &ns).expect("converter succeeds");
+            let bound = dict.bind(py);
+            let mut keys: Vec<String> = bound
+                .keys()
+                .iter()
+                .map(|k| k.extract::<String>().expect("keys are strings"))
+                .collect();
+            keys.sort();
+            assert_eq!(
+                keys,
+                [
+                    "indexed_fields",
+                    "name",
+                    "record_count",
+                    "schema",
+                    "size_bytes"
+                ]
+            );
+            assert_eq!(
+                bound
+                    .get_item("indexed_fields")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<Vec<String>>()
+                    .expect("indexed_fields is a bare list of names"),
+                ["genre", "year"]
+            );
+        });
+    }
+
+    #[test]
+    fn namespace_description_to_py_dict_omits_absent_optionals() {
+        Python::initialize();
+        Python::attach(|py| {
+            let dict =
+                namespace_description_to_py_dict(py, &proto::NamespaceDescription::default())
+                    .expect("converter succeeds");
+            let bound = dict.bind(py);
+            let mut keys: Vec<String> = bound
+                .keys()
+                .iter()
+                .map(|k| k.extract::<String>().expect("keys are strings"))
+                .collect();
+            keys.sort();
+            assert_eq!(keys, ["name", "record_count", "size_bytes"]);
+        });
+    }
+
+    // Null-metadata convergence with the REST path (#203): write metadata
+    // strips None-valued keys exactly the way pinecone-db's json_to_prost
+    // does for JSON writes, while filters keep the NullValue so the server
+    // rejects it on both transports alike.
+
+    fn py_metadata_struct(
+        pairs: &[(&str, Option<&str>)],
+        nulls: NullHandling,
+    ) -> prost_types::Struct {
+        Python::initialize();
+        Python::attach(|py| {
+            let dict = PyDict::new(py);
+            for (key, value) in pairs {
+                match value {
+                    Some(v) => dict.set_item(key, v).unwrap(),
+                    None => dict.set_item(key, py.None()).unwrap(),
+                }
+            }
+            py_dict_to_struct(&dict, nulls).expect("conversion succeeds")
+        })
+    }
+
+    #[test]
+    fn strip_drops_none_valued_keys_from_write_metadata() {
+        let s = py_metadata_struct(
+            &[("tag", None), ("genre", Some("comedy"))],
+            NullHandling::Strip,
+        );
+        assert!(!s.fields.contains_key("tag"), "None value must be stripped");
+        assert_eq!(s.fields.len(), 1);
+        assert!(s.fields.contains_key("genre"));
+    }
+
+    #[test]
+    fn preserve_keeps_none_as_null_value_for_filters() {
+        use prost_types::value::Kind;
+        let s = py_metadata_struct(&[("tag", None)], NullHandling::Preserve);
+        assert!(
+            matches!(s.fields["tag"].kind, Some(Kind::NullValue(_))),
+            "filters must carry the null through for server-side rejection"
+        );
+    }
+
+    #[test]
+    fn strip_recurses_into_nested_dicts() {
+        use prost_types::value::Kind;
+        Python::initialize();
+        Python::attach(|py| {
+            let inner = PyDict::new(py);
+            inner.set_item("gone", py.None()).unwrap();
+            inner.set_item("kept", 1).unwrap();
+            let outer = PyDict::new(py);
+            outer.set_item("nested", inner).unwrap();
+
+            let s = py_dict_to_struct(&outer, NullHandling::Strip).unwrap();
+            let Some(Kind::StructValue(ref nested)) = s.fields["nested"].kind else {
+                panic!("nested dict should convert to a StructValue");
+            };
+            assert!(!nested.fields.contains_key("gone"));
+            assert!(nested.fields.contains_key("kept"));
+        });
+    }
+
+    #[test]
+    fn strip_preserves_none_inside_lists() {
+        use prost_types::value::Kind;
+        Python::initialize();
+        Python::attach(|py| {
+            let items: Vec<Py<PyAny>> = vec![
+                "a".into_pyobject(py).unwrap().into_any().unbind(),
+                py.None(),
+            ];
+            let list = pyo3::types::PyList::new(py, items).unwrap();
+            let dict = PyDict::new(py);
+            dict.set_item("tags", list).unwrap();
+
+            let s = py_dict_to_struct(&dict, NullHandling::Strip).unwrap();
+            let Some(Kind::ListValue(ref lv)) = s.fields["tags"].kind else {
+                panic!("list should convert to a ListValue");
+            };
+            assert_eq!(lv.values.len(), 2, "null list elements must survive");
+            assert!(matches!(lv.values[1].kind, Some(Kind::NullValue(_))));
+        });
+    }
+
     #[test]
     fn normalize_source_tag_lowercases_and_strips() {
         assert_eq!(normalize_source_tag("MyApp"), "myapp");
@@ -1509,7 +1762,7 @@ mod tests {
 
     #[test]
     fn interceptor_attaches_all_metadata_headers() {
-        let mut interceptor = MetadataInterceptor::new("test-api-key-123", "2025-10").unwrap();
+        let mut interceptor = MetadataInterceptor::new("test-api-key-123", "2026-07").unwrap();
         let request = tonic::Request::new(());
         let result = interceptor.call(request).unwrap();
         let metadata = result.metadata();
@@ -1524,7 +1777,7 @@ mod tests {
                 .unwrap()
                 .to_str()
                 .unwrap(),
-            "2025-10"
+            "2026-07"
         );
 
         let request_id = metadata.get("x-request-id").unwrap().to_str().unwrap();
@@ -1688,7 +1941,7 @@ mod tests {
 
     #[test]
     fn each_call_gets_distinct_request_id() {
-        let mut interceptor = MetadataInterceptor::new("key", "2025-10").unwrap();
+        let mut interceptor = MetadataInterceptor::new("key", "2026-07").unwrap();
         let mut ids = HashSet::new();
 
         for _ in 0..100 {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 from pinecone._internal.adapters.collections_adapter import CollectionsAdapter
 from pinecone._internal.validation import require_non_empty, require_valid_resource_name
@@ -32,7 +33,7 @@ class AsyncCollections:
 
             async with AsyncPinecone(api_key="your-api-key") as pc:
                 for col in await pc.collections.list():
-                    print(col.name)
+                    print(col.name, col.status)
     """
 
     def __init__(self, http: AsyncHTTPClient) -> None:
@@ -44,29 +45,64 @@ class AsyncCollections:
         return "AsyncCollections()"
 
     async def create(self, *, name: str, source: str) -> CollectionModel:
-        """Create a collection from an existing index.
+        """Create a collection from an existing pod-based index.
 
-        Returns immediately after the API call without polling for
-        readiness.
+        A collection is a static copy of an index's vector data, held outside
+        the index as a snapshot of its contents at the moment it was taken.
+        Only a pod-based index can be used as a source, and it must already
+        be ready. The call returns as soon as creation starts — it does not
+        wait for the collection to become ready.
+
+        .. note::
+           The 2026-07 API has no path from a collection back to an index.
+           :meth:`AsyncPinecone.indexes.create` rejects
+           ``source_collection=`` with a :exc:`PineconeTypeError`, and the
+           backend rejects the request with ``400 Creating an index from
+           collection or backup is not yet supported``. Passing
+           ``source_collection`` inside a
+           :class:`~pinecone.models.indexes.specs.PodSpec` (via the
+           deprecated ``spec=`` argument) is worse: it is silently dropped,
+           and the new index comes back empty. Use
+           :meth:`AsyncPinecone.create_index_from_backup` for the supported
+           restore path.
 
         Args:
-            name (str): Name for the new collection.
-            source (str): Name of the source index.
+            name (str): Name for the new collection. 1-45 characters,
+                lowercase alphanumeric and hyphens only, and can't start or
+                end with a hyphen (e.g. ``"movie-embeddings-snapshot"``).
+            source (str): Name of the pod-based index to copy.
 
         Returns:
             A CollectionModel describing the created collection.
 
         Raises:
-            ValidationError: If *name* is empty, longer than 45 characters, contains
-                characters outside ``[a-z0-9-]``, or starts/ends with a hyphen.
-                Also raised if *source* is empty.
+            PineconeValueError: If *name* or *source* is empty, or *name*
+                doesn't meet the naming rules above.
+            NotFoundError: If *source* does not name an index in this
+                project.
 
         Examples:
+            The collection is still being built when the call returns, so its
+            status is ``"Initializing"`` rather than ``"Ready"``:
 
             .. code-block:: python
 
-                col = await pc.collections.create(name="my-collection", source="my-index")
+                col = await pc.collections.create(
+                    name="movie-embeddings-snapshot", source="movie-recommendations"
+                )
                 print(col.status)
+
+            There is no ``timeout=`` argument to wait on. Poll
+            :meth:`describe` until the status leaves ``"Initializing"``, then
+            read ``col.status`` to see where it settled:
+
+            .. code-block:: python
+
+                import asyncio
+
+                while col.status == "Initializing":
+                    await asyncio.sleep(5)
+                    col = await pc.collections.describe(col.name)
         """
         require_valid_resource_name("name", name)
         require_non_empty("source", source)
@@ -77,10 +113,10 @@ class AsyncCollections:
         return result
 
     async def list(self) -> CollectionList:
-        """List all collections in the project.
+        """List every collection in the project.
 
-        Returns all collections in a single response without filtering,
-        sorting, or pagination.
+        There's no filtering, sorting, or pagination — all collections come
+        back at once.
 
         Returns:
             A CollectionList supporting iteration, len(), index access,
@@ -102,50 +138,59 @@ class AsyncCollections:
         return result
 
     async def describe(self, name: str) -> CollectionModel:
-        """Get detailed information about a named collection.
+        """Get details about a collection.
 
         Args:
-            name (str): The name of the collection to describe.
+            name (str): Name of the collection to describe.
 
         Returns:
-            A CollectionModel with name, status, size, dimension,
-            vector_count, and environment.
+            A CollectionModel with the collection's name, status, size,
+            dimension, vector_count, and environment.
 
         Raises:
-            ValidationError: If *name* is empty.
+            PineconeValueError: If *name* is empty.
             NotFoundError: If the collection does not exist.
 
         Examples:
+            ``size`` is how much space the snapshot occupies, in bytes — not
+            the dimension of its vectors. It, ``dimension``, and
+            ``vector_count`` are ``None`` until the collection finishes
+            initializing:
 
             .. code-block:: python
 
-                desc = await pc.collections.describe("my-collection")
-                print(desc.size)
+                desc = await pc.collections.describe("movie-embeddings-snapshot")
+                print(desc.status, desc.dimension, desc.vector_count, desc.size)
         """
         require_non_empty("name", name)
         logger.info("Describing collection %r", name)
-        response = await self._http.get(f"/collections/{name}")
+        response = await self._http.get(f"/collections/{quote(name, safe='')}")
         result = self._adapter.to_collection(response.content)
         logger.debug("Described collection %r", name)
         return result
 
     async def delete(self, name: str) -> None:
-        """Delete a collection by name.
+        """Delete a collection permanently.
+
+        Deletion is asynchronous: the call returns as soon as the request is
+        accepted, and the collection can still show up in :meth:`list` for a
+        short time afterwards. The source index can't be deleted until the
+        collection is really gone.
 
         Args:
-            name (str): The name of the collection to delete.
+            name (str): Name of the collection to delete.
 
         Raises:
-            ValidationError: If *name* is empty.
+            PineconeValueError: If *name* is empty.
             NotFoundError: If the collection does not exist.
 
         Examples:
 
             .. code-block:: python
 
-                await pc.collections.delete("my-collection")
+                await pc.collections.delete("movie-embeddings-snapshot")
         """
         require_non_empty("name", name)
         logger.info("Deleting collection %r", name)
-        await self._http.delete(f"/collections/{name}")
+        await self._http.delete(f"/collections/{quote(name, safe='')}")
         logger.debug("Deleted collection %r", name)

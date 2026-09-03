@@ -1,9 +1,22 @@
-"""Integration tests for data-plane vector operations (sync REST + gRPC)."""
+"""Integration tests for data-plane vector operations (sync REST + gRPC).
+
+The shared indexes come from :func:`legacy_index_factory`, not from
+``pc.indexes.create``: 2026-07 has no way to create an index the vectors API
+will serve, and every call in this module is a vectors-API call. See
+:mod:`tests.integration.legacy_index` for the sanctioned pattern and why the
+SDK's own create path is bypassed.
+
+Each shared-index fixture calls ``assert_serves_vectors_api`` once, because a
+document-schema index would not fail this module loudly — writes are refused
+but ``query`` / ``fetch`` / ``describe_index_stats`` succeed and return
+**empty**, so a read-only assertion would pass against data that was never
+there. Every test that reads live data writes first and asserts
+``upserted_count``, which is the other half of that defence.
+"""
 
 from __future__ import annotations
 
 import uuid
-from collections.abc import Generator
 from concurrent.futures import as_completed
 from typing import Any
 
@@ -13,10 +26,9 @@ import pytest
 import respx
 
 from pinecone import GrpcIndex, Index, Pinecone
-from pinecone.errors import ApiError, ConflictError, PineconeValueError
+from pinecone.errors import ApiError, ConflictError, NotFoundError, PineconeValueError
 from pinecone.errors.exceptions import ValidationError
 from pinecone.grpc.future import PineconeFuture
-from pinecone.models.indexes.specs import ServerlessSpec
 from pinecone.models.namespaces.models import ListNamespacesResponse, NamespaceDescription
 from pinecone.models.vectors.responses import (
     DescribeIndexStatsResponse,
@@ -30,11 +42,11 @@ from pinecone.models.vectors.responses import (
 )
 from pinecone.models.vectors.vector import ScoredVector, Vector
 from tests.integration.conftest import (
+    LegacyIndexFactory,
     cleanup_resource,
-    ensure_index_deleted,
     poll_until,
-    unique_name,
 )
+from tests.integration.legacy_index import assert_serves_vectors_api
 
 # ---------------------------------------------------------------------------
 # Module-scoped shared indexes
@@ -42,37 +54,19 @@ from tests.integration.conftest import (
 
 
 @pytest.fixture(scope="module")
-def shared_index_dim2(client: Pinecone) -> Generator[str, None, None]:
-    """Shared serverless index (dim=2, cosine) reused across all dim=2 tests in this module."""
-    name = unique_name("idx-shared-dim2")
-    client.indexes.create(
-        name=name,
-        dimension=2,
-        metric="cosine",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        timeout=300,
-    )
-    try:
-        yield name
-    finally:
-        ensure_index_deleted(client, name)
+def shared_index_dim2(client: Pinecone, legacy_index_factory: LegacyIndexFactory) -> str:
+    """Shared legacy index (dim=2, cosine) reused across all dim=2 tests in this module."""
+    index = legacy_index_factory(dimension=2)
+    assert_serves_vectors_api(client, index)
+    return index.name
 
 
 @pytest.fixture(scope="module")
-def shared_index_dim3(client: Pinecone) -> Generator[str, None, None]:
-    """Shared serverless index (dim=3, cosine) reused across all dim=3 tests in this module."""
-    name = unique_name("idx-shared-dim3")
-    client.indexes.create(
-        name=name,
-        dimension=3,
-        metric="cosine",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        timeout=300,
-    )
-    try:
-        yield name
-    finally:
-        ensure_index_deleted(client, name)
+def shared_index_dim3(client: Pinecone, legacy_index_factory: LegacyIndexFactory) -> str:
+    """Shared legacy index (dim=3, cosine) reused across all dim=3 tests in this module."""
+    index = legacy_index_factory(dimension=3)
+    assert_serves_vectors_api(client, index)
+    return index.name
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +81,7 @@ def test_delete_vectors_rest(client: Pinecone, shared_index_dim2: str) -> None:
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     index = client.index(name=shared_index_dim2)
 
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "del-v1", "values": [0.1, 0.2]},
             {"id": "del-v2", "values": [0.3, 0.4]},
@@ -95,6 +89,7 @@ def test_delete_vectors_rest(client: Pinecone, shared_index_dim2: str) -> None:
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait for all 3 vectors to be fetchable (eventual consistency)
     poll_until(
@@ -136,13 +131,14 @@ def test_delete_vectors_grpc(client: Pinecone, shared_index_dim2: str) -> None:
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     index = client.index(name=shared_index_dim2, grpc=True)
 
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "del-v1", "values": [0.1, 0.2]},
             {"id": "del-v2", "values": [0.3, 0.4]},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     index.delete(ids=["del-v1"], namespace=ns)
 
@@ -188,7 +184,7 @@ def test_query_by_vector_rest(client: Pinecone, shared_index_dim2: str) -> None:
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     index = client.index(name=shared_index_dim2)
 
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "v1", "values": [0.1, 0.2]},
             {"id": "v2", "values": [0.3, 0.4]},
@@ -196,6 +192,7 @@ def test_query_by_vector_rest(client: Pinecone, shared_index_dim2: str) -> None:
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait for all 3 vectors to be queryable (eventual consistency)
     poll_until(
@@ -213,18 +210,14 @@ def test_query_by_vector_rest(client: Pinecone, shared_index_dim2: str) -> None:
         assert isinstance(match, ScoredVector)
         assert isinstance(match.id, str)
         assert isinstance(match.score, float)
-    # The self-match vector (v1) must be in the top-k results with a score ≈ 1.0.
-    # Strict sorted() comparison is avoided because cosine backends occasionally return
-    # matches in non-descending order when scores are close (RC2 from CI-0059).
-    ids = {m.id for m in result.matches}
-    assert "v1" in ids, f"Self-match v1 should be in top-2 results, got ids={ids}"
-    v1_score = next(m.score for m in result.matches if m.id == "v1")
-    assert abs(v1_score - 1.0) < 0.01, f"v1 self-match score should be ~1.0, got {v1_score}"
-    import itertools
-
-    scores = [m.score for m in result.matches]
-    for a, b in itertools.pairwise(scores):
-        assert a >= b - 0.02, f"Scores should be in roughly descending order, got {scores}"
+    # Keyed by id, never by position: the server returns matches unsorted by
+    # score (#368), so asserting an order would encode a server bug as our
+    # contract and break when it is fixed. The set and the argmax are checked
+    # instead, which is what "the right neighbours, scored right" means.
+    by_match = {m.id: m for m in result.matches}
+    assert "v1" in by_match, f"Self-match v1 should be in top-2 results, got ids={set(by_match)}"
+    assert by_match["v1"].score == pytest.approx(1.0, abs=1e-2)
+    assert max(by_match, key=lambda i: by_match[i].score) == "v1"
 
 
 # ---------------------------------------------------------------------------
@@ -264,13 +257,14 @@ def test_query_by_vector_grpc(client: Pinecone, shared_index_dim2: str) -> None:
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     index = client.index(name=shared_index_dim2, grpc=True)
 
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "v1", "values": [0.1, 0.2]},
             {"id": "v2", "values": [0.3, 0.4]},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     poll_until(
         query_fn=lambda: index.query(vector=[0.1, 0.2], top_k=1, namespace=ns),
@@ -282,8 +276,11 @@ def test_query_by_vector_grpc(client: Pinecone, shared_index_dim2: str) -> None:
     result = index.query(vector=[0.1, 0.2], top_k=1, namespace=ns)
 
     assert isinstance(result, QueryResponse)
-    assert len(result.matches) >= 1
-    assert result.matches[0].id == "v1"
+    # Keyed by id, never by position: the server returns matches unsorted by
+    # score (#368), so asserting an order would encode a server bug as our
+    # contract and break when it is fixed.
+    assert len(result.matches) == 1
+    assert {m.id for m in result.matches} == {"v1"}
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +295,7 @@ def test_fetch_vectors_rest(client: Pinecone, shared_index_dim2: str) -> None:
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     index = client.index(name=shared_index_dim2)
 
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "v1", "values": [0.1, 0.2]},
             {"id": "v2", "values": [0.3, 0.4]},
@@ -306,6 +303,7 @@ def test_fetch_vectors_rest(client: Pinecone, shared_index_dim2: str) -> None:
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait for vectors to be fetchable (eventual consistency)
     poll_until(
@@ -344,13 +342,14 @@ def test_fetch_vectors_grpc(client: Pinecone, shared_index_dim2: str) -> None:
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     index = client.index(name=shared_index_dim2, grpc=True)
 
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "v1", "values": [0.1, 0.2]},
             {"id": "v2", "values": [0.3, 0.4]},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     poll_until(
         query_fn=lambda: index.fetch(ids=["v1", "v2"], namespace=ns),
@@ -379,7 +378,7 @@ def test_list_vectors_rest(client: Pinecone, shared_index_dim2: str) -> None:
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     index = client.index(name=shared_index_dim2)
 
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "lst-v1", "values": [0.1, 0.2]},
             {"id": "lst-v2", "values": [0.3, 0.4]},
@@ -387,6 +386,7 @@ def test_list_vectors_rest(client: Pinecone, shared_index_dim2: str) -> None:
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait for all 3 vectors to appear in list results (eventual consistency)
     def _collect_ids() -> list[str]:
@@ -434,13 +434,14 @@ def test_list_vectors_grpc(client: Pinecone, shared_index_dim2: str) -> None:
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     index = client.index(name=shared_index_dim2, grpc=True)
 
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "lst-v1", "values": [0.1, 0.2]},
             {"id": "lst-v2", "values": [0.3, 0.4]},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     poll_until(
         query_fn=lambda: index.fetch(ids=["lst-v1", "lst-v2"], namespace=ns),
@@ -473,13 +474,14 @@ def test_update_vectors_rest(client: Pinecone, shared_index_dim2: str) -> None:
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     index = client.index(name=shared_index_dim2)
 
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "upd-v1", "values": [0.1, 0.2]},
             {"id": "upd-v2", "values": [0.3, 0.4]},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     # Wait for vectors to be fetchable (eventual consistency)
     poll_until(
@@ -525,12 +527,13 @@ def test_update_vectors_grpc(client: Pinecone, shared_index_dim2: str) -> None:
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     index = client.index(name=shared_index_dim2, grpc=True)
 
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "upd-v1", "values": [0.1, 0.2]},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 1
 
     poll_until(
         query_fn=lambda: index.fetch(ids=["upd-v1"], namespace=ns),
@@ -565,13 +568,14 @@ def test_describe_index_stats_rest(client: Pinecone, shared_index_dim3: str) -> 
     index = client.index(name=shared_index_dim3)
 
     # Upsert a few vectors so stats are non-trivial
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "st-v1", "values": [0.1, 0.2, 0.3]},
             {"id": "st-v2", "values": [0.4, 0.5, 0.6]},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     # Wait until our namespace appears in stats (eventual consistency)
     poll_until(
@@ -613,12 +617,13 @@ def test_describe_index_stats_grpc(client: Pinecone, shared_index_dim3: str) -> 
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     index = client.index(name=shared_index_dim3, grpc=True)
 
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "st-v1", "values": [0.1, 0.2, 0.3]},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 1
 
     poll_until(
         query_fn=lambda: index.describe_index_stats(),
@@ -714,13 +719,14 @@ def test_namespaces_grpc(client: Pinecone, shared_index_dim2: str) -> None:
     named_ns = f"{ns}-alpha"
     index = client.index(name=shared_index_dim2, grpc=True)
 
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "ns-v1", "values": [0.1, 0.2]},
             {"id": "ns-v2", "values": [0.3, 0.4]},
         ],
         namespace=named_ns,
     )
+    assert upserted.upserted_count == 2
 
     poll_until(
         query_fn=lambda: index.query(vector=[0.1, 0.2], top_k=10, namespace=named_ns),
@@ -749,7 +755,7 @@ def test_list_paginated_returns_single_page_rest(client: Pinecone, shared_index_
     index = client.index(name=shared_index_dim2)
 
     # Upsert 4 vectors with a shared prefix so we can filter and verify limit
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "pg-v1", "values": [0.1, 0.2]},
             {"id": "pg-v2", "values": [0.3, 0.4]},
@@ -758,6 +764,7 @@ def test_list_paginated_returns_single_page_rest(client: Pinecone, shared_index_
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 4
 
     # Wait until all 4 vectors appear in list results
     poll_until(
@@ -807,7 +814,7 @@ def test_list_paginated_returns_single_page_grpc(client: Pinecone, shared_index_
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     index = client.index(name=shared_index_dim2, grpc=True)
 
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "pg-v1", "values": [0.1, 0.2]},
             {"id": "pg-v2", "values": [0.3, 0.4]},
@@ -815,6 +822,7 @@ def test_list_paginated_returns_single_page_grpc(client: Pinecone, shared_index_
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait until all 3 vectors are listable
     poll_until(
@@ -852,7 +860,8 @@ def test_describe_index_stats_filter_unsupported_on_serverless_rest(
     index = client.index(name=shared_index_dim3)
 
     # Upsert one vector so the index has some content
-    index.upsert(vectors=[{"id": "fs-v1", "values": [0.1, 0.2, 0.3]}], namespace=ns)
+    upserted = index.upsert(vectors=[{"id": "fs-v1", "values": [0.1, 0.2, 0.3]}], namespace=ns)
+    assert upserted.upserted_count == 1
 
     # The filter parameter is not supported on serverless/starter indexes —
     # the API returns 400 and the SDK should surface it as ApiError.
@@ -876,7 +885,8 @@ def test_describe_index_stats_filter_unsupported_on_serverless_grpc(
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     index = client.index(name=shared_index_dim3, grpc=True)
 
-    index.upsert(vectors=[{"id": "fg-v1", "values": [0.1, 0.2, 0.3]}], namespace=ns)
+    upserted = index.upsert(vectors=[{"id": "fg-v1", "values": [0.1, 0.2, 0.3]}], namespace=ns)
+    assert upserted.upserted_count == 1
 
     # The filter parameter is not supported on serverless/starter indexes via gRPC either.
     with pytest.raises(Exception):
@@ -900,6 +910,10 @@ def test_namespace_crud_lifecycle_rest(client: Pinecone, shared_index_dim2: str)
     - unified-ns-0004: Can delete a namespace by name.
     - unified-ns-0005: Can list all namespaces with optional prefix filtering.
     - unified-ns-0008: Namespace list response omits pagination token on the final page.
+
+    ``size_bytes`` is asserted as a non-negative int rather than an exact value:
+    the backend documents it as approximate (see #198), so a fresh namespace may
+    report 0 whether or not size tracking has caught up.
     """
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     ns_name = f"{ns}-alpha"
@@ -910,18 +924,36 @@ def test_namespace_crud_lifecycle_rest(client: Pinecone, shared_index_dim2: str)
     assert isinstance(created, NamespaceDescription)
     assert created.name == ns_name
     assert created.record_count == 0  # unified-ns-0002
+    assert isinstance(created.size_bytes, int) and created.size_bytes >= 0
 
-    # 2. Describe namespace — returns same details
-    described = index.describe_namespace(name=ns_name)
+    # 2. Describe namespace — poll for eventual consistency after create
+    described = poll_until(
+        query_fn=lambda: index.describe_namespace(name=ns_name),
+        check_fn=lambda r: isinstance(r, NamespaceDescription),
+        timeout=60,
+        description=f"namespace {ns_name} visible after create",
+    )
     assert isinstance(described, NamespaceDescription)
     assert described.name == ns_name
     assert isinstance(described.record_count, int)
+    assert isinstance(described.size_bytes, int) and described.size_bytes >= 0
+
+    # 2b. Creating the reserved default namespace is refused client-side
+    with pytest.raises(ValidationError, match="reserved and cannot be created"):
+        index.create_namespace(name="__default__")
+
+    # 2c. Describing a namespace that does not exist is a 404
+    with pytest.raises(NotFoundError):
+        index.describe_namespace(name=f"{ns}-absent")
 
     # 3. Namespace appears in list_namespaces_paginated with prefix match
-    list_resp = index.list_namespaces_paginated(prefix=f"{ns}-", limit=100)
+    list_resp = poll_until(
+        query_fn=lambda: index.list_namespaces_paginated(prefix=f"{ns}-", limit=100),
+        check_fn=lambda r: ns_name in [ns_item.name for ns_item in r.namespaces],
+        timeout=60,
+        description=f"namespace {ns_name} visible in listing after create",
+    )
     assert isinstance(list_resp, ListNamespacesResponse)
-    ns_names = [ns_item.name for ns_item in list_resp.namespaces]
-    assert ns_name in ns_names
 
     # Each entry is a NamespaceDescription with a string name
     for ns_item in list_resp.namespaces:
@@ -1029,8 +1061,10 @@ def test_list_namespaces_generator_rest(client: Pinecone, shared_index_dim2: str
     index = client.index(name=shared_index_dim2)
 
     # Upsert one vector into each namespace to create them implicitly
-    index.upsert(vectors=[{"id": "lnsg-v1", "values": [0.1, 0.2]}], namespace=ns_a)
-    index.upsert(vectors=[{"id": "lnsg-v2", "values": [0.3, 0.4]}], namespace=ns_b)
+    upserted = index.upsert(vectors=[{"id": "lnsg-v1", "values": [0.1, 0.2]}], namespace=ns_a)
+    assert upserted.upserted_count == 1
+    upserted = index.upsert(vectors=[{"id": "lnsg-v2", "values": [0.3, 0.4]}], namespace=ns_b)
+    assert upserted.upserted_count == 1
 
     # Poll until both namespaces appear in list_namespaces_paginated
     poll_until(
@@ -1080,8 +1114,10 @@ def test_list_namespaces_generator_grpc(client: Pinecone, shared_index_dim2: str
     index = client.index(name=shared_index_dim2, grpc=True)
 
     # Upsert one vector into each namespace to create them implicitly
-    index.upsert(vectors=[{"id": "lnsg-v1", "values": [0.1, 0.2]}], namespace=ns_a)
-    index.upsert(vectors=[{"id": "lnsg-v2", "values": [0.3, 0.4]}], namespace=ns_b)
+    upserted = index.upsert(vectors=[{"id": "lnsg-v1", "values": [0.1, 0.2]}], namespace=ns_a)
+    assert upserted.upserted_count == 1
+    upserted = index.upsert(vectors=[{"id": "lnsg-v2", "values": [0.3, 0.4]}], namespace=ns_b)
+    assert upserted.upserted_count == 1
 
     # Poll until both namespaces appear
     poll_until(
@@ -1131,7 +1167,7 @@ def test_list_paginated_multi_page_rest(client: Pinecone, shared_index_dim2: str
     index = client.index(name=shared_index_dim2)
 
     # Upsert 4 vectors with a shared prefix
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "mp-v1", "values": [0.1, 0.2]},
             {"id": "mp-v2", "values": [0.3, 0.4]},
@@ -1140,6 +1176,7 @@ def test_list_paginated_multi_page_rest(client: Pinecone, shared_index_dim2: str
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 4
 
     # Wait until all 4 vectors appear in list results
     poll_until(
@@ -1210,7 +1247,7 @@ def test_list_paginated_multi_page_grpc(client: Pinecone, shared_index_dim2: str
     index = client.index(name=shared_index_dim2, grpc=True)
 
     # Upsert 4 vectors with a shared prefix so limit=2 forces ≥ 2 pages
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "gmp-v1", "values": [0.1, 0.2]},
             {"id": "gmp-v2", "values": [0.3, 0.4]},
@@ -1219,6 +1256,7 @@ def test_list_paginated_multi_page_grpc(client: Pinecone, shared_index_dim2: str
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 4
 
     # Wait until all 4 vectors appear in list results (eventual consistency)
     poll_until(
@@ -1286,7 +1324,8 @@ def test_delete_nonexistent_ids_returns_none_rest(client: Pinecone, shared_index
     index = client.index(name=shared_index_dim2)
 
     # Establish the namespace by upserting a sentinel vector
-    index.upsert(vectors=[{"id": "dn-v1", "values": [0.1, 0.9]}], namespace=ns)
+    upserted = index.upsert(vectors=[{"id": "dn-v1", "values": [0.1, 0.9]}], namespace=ns)
+    assert upserted.upserted_count == 1
     poll_until(
         query_fn=lambda: index.fetch(ids=["dn-v1"], namespace=ns),
         check_fn=lambda r: len(r.vectors) == 1,
@@ -1315,7 +1354,8 @@ def test_delete_nonexistent_ids_returns_none_grpc(client: Pinecone, shared_index
     index = client.index(name=shared_index_dim2, grpc=True)
 
     # Establish namespace by upserting a sentinel vector
-    index.upsert(vectors=[{"id": "dn-g1", "values": [0.2, 0.8]}], namespace=ns)
+    upserted = index.upsert(vectors=[{"id": "dn-g1", "values": [0.2, 0.8]}], namespace=ns)
+    assert upserted.upserted_count == 1
     poll_until(
         query_fn=lambda: index.fetch(ids=["dn-g1"], namespace=ns),
         check_fn=lambda r: len(r.vectors) == 1,
@@ -1357,15 +1397,24 @@ def test_index_context_manager_rest(client: Pinecone, shared_index_dim2: str) ->
     Area tag: context-manager
     Transport: rest
     """
+    ns = f"ns-{uuid.uuid4().hex[:8]}"
     rest_idx = client.index(name=shared_index_dim2)
     with rest_idx as idx:
         # __enter__ must return the same object
         assert idx is rest_idx, "__enter__ must return self"
         assert isinstance(idx, Index)
-        # Operations work inside the context
-        stats = idx.describe_index_stats()
+        # Write first: describe_index_stats succeeds and reports zero on an
+        # index that refuses vector writes, so a bare shape assertion would
+        # hold against data that never landed (#322).
+        upserted = idx.upsert(vectors=[{"id": "cm-v1", "values": [0.1, 0.2]}], namespace=ns)
+        assert upserted.upserted_count == 1
+        stats = poll_until(
+            query_fn=lambda: idx.describe_index_stats(),
+            check_fn=lambda s: ns in s.namespaces and s.namespaces[ns].vector_count == 1,
+            timeout=120,
+            description="context-manager namespace visible in stats",
+        )
         assert isinstance(stats, DescribeIndexStatsResponse)
-        assert isinstance(stats.total_vector_count, int)
     # After __exit__ called close(), calling close() again must not raise
     rest_idx.close()
 
@@ -1381,13 +1430,20 @@ def test_index_context_manager_grpc(client: Pinecone, shared_index_dim2: str) ->
     Area tag: context-manager
     Transport: grpc
     """
+    ns = f"ns-{uuid.uuid4().hex[:8]}"
     grpc_idx = client.index(name=shared_index_dim2, grpc=True)
     with grpc_idx as gidx:
         assert gidx is grpc_idx, "__enter__ must return self"
         assert isinstance(gidx, GrpcIndex)
-        stats = gidx.describe_index_stats()
+        upserted = gidx.upsert(vectors=[{"id": "cmg-v1", "values": [0.1, 0.2]}], namespace=ns)
+        assert upserted.upserted_count == 1
+        stats = poll_until(
+            query_fn=lambda: gidx.describe_index_stats(),
+            check_fn=lambda s: ns in s.namespaces and s.namespaces[ns].vector_count == 1,
+            timeout=120,
+            description="context-manager namespace visible in stats (gRPC)",
+        )
         assert isinstance(stats, DescribeIndexStatsResponse)
-        assert isinstance(stats.total_vector_count, int)
     grpc_idx.close()
 
 
@@ -1440,8 +1496,7 @@ def test_grpc_async_futures_upsert_query_fetch_grpc(
     for fut in as_completed(upsert_futures, timeout=60):
         result = fut.result(timeout=30.0)
         assert isinstance(result, UpsertResponse), f"Expected UpsertResponse, got {type(result)}"
-        assert isinstance(result.upserted_count, int)
-        assert result.upserted_count >= 0
+        assert result.upserted_count == 2
 
     # --- 2. Poll until vectors are queryable (eventual consistency) ---
     poll_until(
@@ -1506,7 +1561,8 @@ def test_fetch_nonexistent_ids_returns_empty_vectors_rest(
     idx = client.index(name=shared_index_dim3)
 
     # Upsert one real vector to establish the namespace
-    idx.upsert(vectors=[{"id": "real-v1", "values": [0.1, 0.2, 0.3]}], namespace=ns)
+    upserted = idx.upsert(vectors=[{"id": "real-v1", "values": [0.1, 0.2, 0.3]}], namespace=ns)
+    assert upserted.upserted_count == 1
     poll_until(
         query_fn=lambda: idx.fetch(ids=["real-v1"], namespace=ns),
         check_fn=lambda r: "real-v1" in r.vectors,
@@ -1540,7 +1596,8 @@ def test_fetch_nonexistent_ids_returns_empty_vectors_grpc(
     idx = client.index(name=shared_index_dim3, grpc=True)
 
     # Upsert one real vector to establish the namespace
-    idx.upsert(vectors=[{"id": "real-v1", "values": [0.1, 0.2, 0.3]}], namespace=ns)
+    upserted = idx.upsert(vectors=[{"id": "real-v1", "values": [0.1, 0.2, 0.3]}], namespace=ns)
+    assert upserted.upserted_count == 1
     poll_until(
         query_fn=lambda: idx.fetch(ids=["real-v1"], namespace=ns),
         check_fn=lambda r: "real-v1" in r.vectors,
@@ -1595,7 +1652,8 @@ def test_grpc_delete_async_future_resolves_to_none(
         {"id": "da-v2", "values": [0.4, 0.5, 0.6]},
         {"id": "da-v3", "values": [0.7, 0.8, 0.9]},
     ]
-    grpc_idx.upsert(vectors=vectors, namespace=ns)
+    upserted = grpc_idx.upsert(vectors=vectors, namespace=ns)
+    assert upserted.upserted_count == len(vectors)
 
     # --- 2. Poll until all 3 vectors are fetchable ---
     poll_until(
@@ -1657,22 +1715,32 @@ def test_create_namespace_error_paths_rest(client: Pinecone, shared_index_dim2: 
     """create_namespace() rejects invalid names client-side and raises ConflictError for duplicates.
 
     Verifies claims:
-    - unified-ns-0010: Namespace creation is rejected when name is empty or whitespace-only.
+    - unified-ns-0010: Namespace creation is rejected when the name breaks the
+      ASCII / no-NUL / 1-512 rule, or names the reserved ``__default__``.
     - unified-ns-0012: Creating a namespace that already exists raises a ConflictError (HTTP 409).
 
     No integration test covered these error paths; only unit tests (test-ns-0009) exercised them.
+
+    A whitespace-only name is deliberately absent: the rule is ASCII/no-NUL/1-512,
+    not "non-blank", so ``"   "`` is a legal name the server accepts. Asserting a
+    rejection here would both fail and leave a stray namespace on the shared index.
     """
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     ns_name = f"{ns}-alpha"
     index = client.index(name=shared_index_dim2)
 
-    # unified-ns-0010: empty name → client-side PineconeValueError (no API call made)
+    # unified-ns-0010: each of these is refused client-side, so no API call is made
     with pytest.raises(PineconeValueError):
         index.create_namespace(name="")
 
-    # unified-ns-0010: whitespace-only name → client-side PineconeValueError
     with pytest.raises(PineconeValueError):
-        index.create_namespace(name="   ")
+        index.create_namespace(name="naïve")
+
+    with pytest.raises(PineconeValueError):
+        index.create_namespace(name="a" * 513)
+
+    with pytest.raises(PineconeValueError):
+        index.create_namespace(name="__default__")
 
     # Precondition for ns-0012: create the namespace successfully
     created = index.create_namespace(name=ns_name)
@@ -1830,10 +1898,11 @@ def test_list_namespaces_multi_page_pagination_rest(
 
     # Upsert one vector per namespace to create them implicitly
     for i, ns_label in enumerate(ns_names):
-        index.upsert(
+        upserted = index.upsert(
             vectors=[{"id": f"mpns-v{i}", "values": [0.1 * (i + 1), 0.2 * (i + 1)]}],
             namespace=ns_label,
         )
+        assert upserted.upserted_count == 1
 
     # Wait until all 3 namespaces appear (eventual consistency)
     poll_until(
@@ -1914,13 +1983,14 @@ def test_query_async_req_rest(client_pool: Pinecone, shared_index_dim2: str) -> 
 
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     with client_pool.index(name=shared_index_dim2) as index:
-        index.upsert(
+        upserted = index.upsert(
             vectors=[
                 {"id": "qry-v1", "values": [0.1, 0.2]},
                 {"id": "qry-v2", "values": [0.3, 0.4]},
             ],
             namespace=ns,
         )
+        assert upserted.upserted_count == 2
         poll_until(
             query_fn=lambda: index.fetch(ids=["qry-v1", "qry-v2"], namespace=ns),
             check_fn=lambda r: len(r.vectors) == 2,
@@ -1940,12 +2010,26 @@ def test_describe_index_stats_async_req_rest(client_pool: Pinecone, shared_index
     """async_req=True on describe_index_stats returns ApplyResult."""
     from multiprocessing.pool import ApplyResult
 
+    ns = f"ns-{uuid.uuid4().hex[:8]}"
     with client_pool.index(name=shared_index_dim2) as index:
+        # Write first: stats succeed and report zero on an index that refuses
+        # vector writes, so the shape assertions below would hold against data
+        # that never landed (#322).
+        upserted = index.upsert(vectors=[{"id": "ar-v1", "values": [0.1, 0.2]}], namespace=ns)
+        assert upserted.upserted_count == 1
+        poll_until(
+            query_fn=lambda: index.describe_index_stats(),
+            check_fn=lambda s: ns in s.namespaces and s.namespaces[ns].vector_count == 1,
+            timeout=120,
+            description="async_req namespace visible in stats",
+        )
+
         result: Any = index.describe_index_stats(async_req=True)  # type: ignore[call-arg]
         assert isinstance(result, ApplyResult)
         resolved = result.get(timeout=60)
         assert isinstance(resolved, DescribeIndexStatsResponse)
         assert resolved.dimension == 2
+        assert resolved.namespaces[ns].vector_count == 1
 
 
 @pytest.mark.integration
@@ -1956,7 +2040,7 @@ def test_list_paginated_async_req_rest(client_pool: Pinecone, shared_index_dim2:
 
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     with client_pool.index(name=shared_index_dim2) as index:
-        index.upsert(
+        upserted = index.upsert(
             vectors=[
                 {"id": "lst-v1", "values": [0.1, 0.2]},
                 {"id": "lst-v2", "values": [0.3, 0.4]},
@@ -1964,6 +2048,7 @@ def test_list_paginated_async_req_rest(client_pool: Pinecone, shared_index_dim2:
             ],
             namespace=ns,
         )
+        assert upserted.upserted_count == 3
         poll_until(
             query_fn=lambda: index.fetch(ids=["lst-v1", "lst-v2", "lst-v3"], namespace=ns),
             check_fn=lambda r: len(r.vectors) == 3,
@@ -1985,12 +2070,13 @@ def test_async_req_concurrent_fanout_rest(client_pool: Pinecone, shared_index_di
 
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     with client_pool.index(name=shared_index_dim2) as index:
-        index.upsert(
+        upserted = index.upsert(
             vectors=[
                 {"id": f"con-v{i}", "values": [(i + 1) * 0.1, (i + 1) * 0.2]} for i in range(8)
             ],
             namespace=ns,
         )
+        assert upserted.upserted_count == 8
         poll_until(
             query_fn=lambda: index.fetch(ids=[f"con-v{i}" for i in range(8)], namespace=ns),
             check_fn=lambda r: len(r.vectors) == 8,

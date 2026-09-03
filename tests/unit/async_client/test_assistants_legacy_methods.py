@@ -125,9 +125,17 @@ async def test_async_describe_assistant_legacy_with_name_kwarg(
 async def test_async_describe_assistant_rejects_both_names(
     mock_async_assistants: AsyncAssistants,
 ) -> None:
-    """describe_assistant() raises TypeError when both assistant_name and name are given."""
-    with pytest.raises(TypeError, match="Pass only one"):
+    """describe_assistant() raises PineconeValueError when both assistant_name and name are given.
+
+    Mirrors the sync shim's fix: matches the canonical describe()/create()/etc.
+    convention for this condition instead of the bare TypeError previously raised.
+    """
+    from pinecone.errors.exceptions import PineconeValueError
+
+    with pytest.raises(PineconeValueError, match="Pass only one") as exc_info:
         await mock_async_assistants.describe_assistant("a", name="b")
+    assert type(exc_info.value) is PineconeValueError
+    assert isinstance(exc_info.value, ValueError)
 
 
 async def test_async_describe_assistant_forwards_to_describe(

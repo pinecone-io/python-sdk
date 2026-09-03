@@ -136,6 +136,27 @@ uv sync
 uv run pytest tests/unit/ -x -v
 ```
 
+The unit suite must leave the working tree clean: `git status` is expected to report no
+changes after a bare `uv run pytest tests/unit`. Tests must not write into the checkout —
+use `tmp_path` / `tmp_path_factory` if a test genuinely needs a file on disk. A test that
+writes a tracked file both dirties every contributor's tree and, if anything compares
+against that file, quietly rewrites the thing it is comparing against.
+
+#### Cross-transport storm parity
+
+`tests/unit/_internal/test_storm_parity.py` checks that the sync, async, and gRPC retry
+paths disperse a thundering herd comparably — dispersion widths within 2x and request
+amplifications within 1.5x of each other. It runs all three canonical storm scenarios
+itself, in-process, via `tests/unit/_internal/_storm_parity_scenarios.py`; there are no
+recorded metric files and nothing is a checked-in baseline.
+
+It used to work differently: each transport's storm test wrote a
+`_storm_parity_metrics_*.json` file into `tests/unit/_internal/`, and the parity test read
+all three back. Those files were tracked, so every unit run dirtied them, and because the
+gRPC producer collects *after* the parity consumer, the gRPC comparison always read the
+*previous* run's value — a stale-value failure that the same run then overwrote, so it
+disappeared on retry. Keep the metrics in-process; don't reintroduce the file handoff.
+
 #### Retry/throttle smoke tests (opt-in)
 
 A suite of live-API smoke tests verifies that the retry stack and AIMD adaptive concurrency

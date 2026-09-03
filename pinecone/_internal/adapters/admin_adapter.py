@@ -6,8 +6,16 @@ from msgspec import Struct
 
 from pinecone._internal.adapters._decode import decode_response
 from pinecone.models.admin.api_key import APIKeyList, APIKeyModel, APIKeyWithSecret
+from pinecone.models.admin.invite import InviteList, InviteModel
 from pinecone.models.admin.organization import OrganizationList, OrganizationModel
 from pinecone.models.admin.project import ProjectList, ProjectModel
+from pinecone.models.admin.role_binding import RoleBindingList, RoleBindingModel
+from pinecone.models.admin.service_account import (
+    ServiceAccountList,
+    ServiceAccountModel,
+    ServiceAccountWithSecret,
+)
+from pinecone.models.admin.user import UserList, UserModel
 
 
 class _OrganizationListEnvelope(Struct, kw_only=True):
@@ -141,3 +149,166 @@ class AdminAdapter:
         """
         envelope = decode_response(data, _APIKeyListEnvelope)
         return APIKeyList(envelope.data)
+
+    @staticmethod
+    def to_invite(data: bytes) -> InviteModel:
+        """Decode raw JSON bytes into an :class:`InviteModel`.
+
+        Args:
+            data (bytes): Raw JSON response bytes from the Admin API.
+
+        Returns:
+            :class:`InviteModel`: Decoded invite.
+
+        Raises:
+            :exc:`ResponseParsingError`: If ``data`` cannot be decoded into :class:`InviteModel`.
+        """
+        return decode_response(data, InviteModel)
+
+    @staticmethod
+    def to_invite_list(data: bytes) -> InviteList:
+        """Decode raw JSON bytes from a list-invites response into an :class:`InviteList`.
+
+        Like ``UserList`` and unlike the unpaginated admin list responses,
+        ``InviteList`` is itself the wire schema — it carries the ``pagination``
+        cursor envelope alongside ``data`` — so no internal envelope struct is
+        needed.
+
+        Args:
+            data (bytes): Raw JSON response bytes from the Admin API.
+
+        Returns:
+            :class:`InviteList`: Decoded page of invites plus the next-page cursor.
+
+        Raises:
+            :exc:`ResponseParsingError`: If ``data`` cannot be decoded.
+        """
+        return decode_response(data, InviteList)
+
+    @staticmethod
+    def to_user(data: bytes) -> UserModel:
+        """Decode raw JSON bytes into a :class:`UserModel`.
+
+        Args:
+            data (bytes): Raw JSON response bytes from the Admin API.
+
+        Returns:
+            :class:`UserModel`: Decoded user.
+
+        Raises:
+            :exc:`ResponseParsingError`: If ``data`` cannot be decoded into :class:`UserModel`.
+        """
+        return decode_response(data, UserModel)
+
+    @staticmethod
+    def to_user_list(data: bytes) -> UserList:
+        """Decode raw JSON bytes from a list-users response into a :class:`UserList`.
+
+        Unlike the unpaginated admin list responses, ``UserList`` is itself the
+        wire schema — it carries the ``pagination`` cursor envelope alongside
+        ``data`` — so no internal envelope struct is needed.
+
+        Args:
+            data (bytes): Raw JSON response bytes from the Admin API.
+
+        Returns:
+            :class:`UserList`: Decoded page of users plus the next-page cursor.
+
+        Raises:
+            :exc:`ResponseParsingError`: If ``data`` cannot be decoded.
+        """
+        return decode_response(data, UserList)
+
+    @staticmethod
+    def to_service_account(data: bytes) -> ServiceAccountModel:
+        """Decode raw JSON bytes into a :class:`ServiceAccountModel`.
+
+        Args:
+            data (bytes): Raw JSON response bytes from the Admin API.
+
+        Returns:
+            :class:`ServiceAccountModel`: Decoded service account, without a secret.
+
+        Raises:
+            :exc:`ResponseParsingError`: If ``data`` cannot be decoded into
+                :class:`ServiceAccountModel`.
+        """
+        return decode_response(data, ServiceAccountModel)
+
+    @staticmethod
+    def to_service_account_with_secret(data: bytes) -> ServiceAccountWithSecret:
+        """Decode raw JSON bytes into a :class:`ServiceAccountWithSecret`.
+
+        Only the create and rotate-secret responses carry a secret, so only
+        those two call this. The decoded ``client_secret`` is never logged here:
+        the model's own ``__repr__`` masks it, and this adapter adds no logging.
+
+        Args:
+            data (bytes): Raw JSON response bytes from the Admin API.
+
+        Returns:
+            :class:`ServiceAccountWithSecret`: Decoded service account including
+                the newly issued OAuth client secret.
+
+        Raises:
+            :exc:`ResponseParsingError`: If ``data`` cannot be decoded into
+                :class:`ServiceAccountWithSecret`.
+        """
+        return decode_response(data, ServiceAccountWithSecret)
+
+    @staticmethod
+    def to_service_account_list(data: bytes) -> ServiceAccountList:
+        """Decode raw JSON bytes from a list-service-accounts response.
+
+        Like ``UserList`` and ``InviteList``, ``ServiceAccountList`` is itself
+        the wire schema — it carries the ``pagination`` cursor envelope
+        alongside ``data`` — so no internal envelope struct is needed.
+
+        Args:
+            data (bytes): Raw JSON response bytes from the Admin API.
+
+        Returns:
+            :class:`ServiceAccountList`: Decoded page of service accounts plus
+                the next-page cursor.
+
+        Raises:
+            :exc:`ResponseParsingError`: If ``data`` cannot be decoded.
+        """
+        return decode_response(data, ServiceAccountList)
+
+    @staticmethod
+    def to_role_binding(data: bytes) -> RoleBindingModel:
+        """Decode raw JSON bytes into a :class:`RoleBindingModel`.
+
+        Args:
+            data (bytes): Raw JSON response bytes from the Admin API.
+
+        Returns:
+            :class:`RoleBindingModel`: Decoded role binding.
+
+        Raises:
+            :exc:`ResponseParsingError`: If ``data`` cannot be decoded into
+                :class:`RoleBindingModel`.
+        """
+        return decode_response(data, RoleBindingModel)
+
+    @staticmethod
+    def to_role_binding_list(data: bytes) -> RoleBindingList:
+        """Decode raw JSON bytes from a list-role-bindings response.
+
+        Like ``UserList``, ``InviteList``, and ``ServiceAccountList``,
+        ``RoleBindingList`` is itself the wire schema — it carries the
+        ``pagination`` cursor envelope alongside ``data`` — so no internal
+        envelope struct is needed.
+
+        Args:
+            data (bytes): Raw JSON response bytes from the Admin API.
+
+        Returns:
+            :class:`RoleBindingList`: Decoded page of role bindings plus the
+                next-page cursor.
+
+        Raises:
+            :exc:`ResponseParsingError`: If ``data`` cannot be decoded.
+        """
+        return decode_response(data, RoleBindingList)

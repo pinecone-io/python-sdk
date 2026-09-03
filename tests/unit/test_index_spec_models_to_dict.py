@@ -1,14 +1,19 @@
-"""Unit tests for to_dict() on index spec and info models."""
+"""Unit tests for to_dict() on index sub-models and request specs."""
 
 from __future__ import annotations
 
-from pinecone.models.indexes.index import (
-    ByocSpecInfo,
-    IndexSpec,
-    IndexStatus,
-    ModelIndexEmbed,
-    PodSpecInfo,
-    ServerlessSpecInfo,
+from pinecone.models.indexes.index import IndexStatus
+from pinecone.models.indexes.read_capacity import (
+    ReadCapacityDedicatedConfig,
+    ReadCapacityDedicatedResponse,
+    ReadCapacityStatus,
+    ScalingConfigManual,
+)
+from pinecone.models.indexes.schema import (
+    DenseVectorField,
+    FullTextSearchConfig,
+    IndexSchema,
+    StringField,
 )
 from pinecone.models.indexes.specs import (
     EmbedConfig,
@@ -23,57 +28,36 @@ def test_index_status_to_dict() -> None:
     assert result == {"ready": True, "state": "Ready"}
 
 
-def test_serverless_spec_info_to_dict() -> None:
-    result = ServerlessSpecInfo(cloud="aws", region="us-east-1").to_dict()
-    assert result == {
-        "cloud": "aws",
-        "region": "us-east-1",
-        "read_capacity": None,
-        "source_collection": None,
-        "schema": None,
-    }
+def test_index_schema_to_dict_includes_type_tags() -> None:
+    schema = IndexSchema(
+        fields={
+            "embedding": DenseVectorField(dimension=1536, metric="cosine"),
+            "title": StringField(full_text_search=FullTextSearchConfig(language="en")),
+        }
+    )
+    result = schema.to_dict()
+    assert result["fields"]["embedding"]["type"] == "dense_vector"
+    assert result["fields"]["embedding"]["dimension"] == 1536
+    assert result["fields"]["title"]["type"] == "string"
+    assert result["fields"]["title"]["full_text_search"]["language"] == "en"
 
 
-def test_pod_spec_info_to_dict_with_optional_none() -> None:
-    result = PodSpecInfo(
-        environment="us-east1-gcp",
-        pod_type="p1.x1",
-        replicas=1,
-        shards=1,
-        pods=1,
-        metadata_config=None,
-        source_collection=None,
-    ).to_dict()
-    assert result["metadata_config"] is None
-    assert result["source_collection"] is None
-    assert result["environment"] == "us-east1-gcp"
+def test_dedicated_read_capacity_to_builtins_shape() -> None:
+    import msgspec
 
-
-def test_byoc_spec_info_to_dict() -> None:
-    result = ByocSpecInfo(environment="aws-us-east-1").to_dict()
-    assert "environment" in result
-    assert result["environment"] == "aws-us-east-1"
-
-
-def test_index_spec_to_dict_nested_serverless() -> None:
-    spec = IndexSpec(serverless=ServerlessSpecInfo(cloud="aws", region="us-east-1"))
-    result = spec.to_dict()
-    assert isinstance(result["serverless"], dict)
-    assert result["serverless"]["cloud"] == "aws"
-    assert result["serverless"]["region"] == "us-east-1"
-    assert result["pod"] is None
-    assert result["byoc"] is None
-
-
-def test_model_index_embed_to_dict() -> None:
-    result = ModelIndexEmbed(model="ml-e5").to_dict()
-    assert result["model"] == "ml-e5"
-    assert result["metric"] is None
-    assert result["dimension"] is None
-    assert result["vector_type"] is None
-    assert result["field_map"] is None
-    assert result["read_parameters"] is None
-    assert result["write_parameters"] is None
+    rc = ReadCapacityDedicatedResponse(
+        dedicated=ReadCapacityDedicatedConfig(
+            node_type="t1",
+            scaling="Manual",
+            manual=ScalingConfigManual(shards=2, replicas=3),
+        ),
+        status=ReadCapacityStatus(state="Ready", current_shards=2, current_replicas=3),
+    )
+    result = msgspec.to_builtins(rc)
+    assert result["mode"] == "Dedicated"
+    assert result["dedicated"]["node_type"] == "t1"
+    assert result["dedicated"]["manual"] == {"shards": 2, "replicas": 3}
+    assert result["status"]["current_shards"] == 2
 
 
 def test_serverless_spec_to_dict() -> None:
@@ -112,8 +96,8 @@ def test_integrated_spec_to_dict_nested_embed() -> None:
 
 
 def test_to_dict_is_pure_read() -> None:
-    spec = ServerlessSpecInfo(cloud="aws", region="us-east-1")
-    first = spec.to_dict()
-    first["cloud"] = "mutated"
-    second = spec.to_dict()
-    assert second["cloud"] == "aws"
+    schema = IndexSchema(fields={"embedding": DenseVectorField(dimension=3, metric="cosine")})
+    first = schema.to_dict()
+    first["fields"]["embedding"]["dimension"] = 999
+    second = schema.to_dict()
+    assert second["fields"]["embedding"]["dimension"] == 3

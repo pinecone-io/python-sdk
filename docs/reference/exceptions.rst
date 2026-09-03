@@ -20,11 +20,15 @@ Class Hierarchy
    ├── PineconeTimeoutError  (also TimeoutError)
    ├── ResponseParsingError
    ├── IndexInitFailedError
+   ├── IndexTerminatedError
    └── ApiError
        ├── ConflictError (409)
        ├── NotFoundError (404)
        ├── ForbiddenError (403)
        ├── UnauthorizedError (401)
+       ├── PaymentRequiredError (402)
+       ├── FailedPreconditionError (412)
+       ├── RateLimitError (429)
        └── ServiceError (5xx)
 
 Base & Configuration Errors
@@ -47,6 +51,10 @@ Base & Configuration Errors
    :show-inheritance:
 
 .. autoexception:: pinecone.errors.exceptions.IndexInitFailedError
+   :members:
+   :show-inheritance:
+
+.. autoexception:: pinecone.errors.exceptions.IndexTerminatedError
    :members:
    :show-inheritance:
 
@@ -81,6 +89,18 @@ API Errors
    :show-inheritance:
 
 .. autoexception:: pinecone.errors.exceptions.ForbiddenError
+   :members:
+   :show-inheritance:
+
+.. autoexception:: pinecone.errors.exceptions.PaymentRequiredError
+   :members:
+   :show-inheritance:
+
+.. autoexception:: pinecone.errors.exceptions.FailedPreconditionError
+   :members:
+   :show-inheritance:
+
+.. autoexception:: pinecone.errors.exceptions.RateLimitError
    :members:
    :show-inheritance:
 
@@ -137,6 +157,9 @@ major release.  New code should use the canonical names listed above.
    * - ``ServiceException``
      - :class:`~pinecone.errors.exceptions.ServiceError`
      - Legacy 5xx error
+   * - ``RateLimitException``
+     - :class:`~pinecone.errors.exceptions.RateLimitError`
+     - Legacy 429 error
    * - ``ListConversionException``
      - :class:`~pinecone.errors.exceptions.PineconeError`
      - Legacy list conversion error

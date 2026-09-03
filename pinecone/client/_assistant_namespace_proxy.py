@@ -28,11 +28,41 @@ class _AssistantNamespaceProxy:
         object.__setattr__(self, "_assistants", assistants)
 
     def __call__(self, name: str) -> AssistantModel:
-        """Shortcut for :meth:`Assistants.describe` (legacy ``pc.assistant(name)``)."""
+        """Look up an assistant by name (``pc.assistant(name)``).
+
+        Equivalent to :meth:`Assistants.describe`.
+
+        Args:
+            name: The name of the assistant to look up.
+
+        Returns:
+            :class:`AssistantModel` for the named assistant.
+
+        Examples:
+            >>> assistant = pc.assistant("my-assistant")  # doctest: +SKIP
+            >>> assistant.status  # doctest: +SKIP
+            'Ready'
+        """
         assistants: Assistants = object.__getattribute__(self, "_assistants")
         return assistants.describe(name=name)
 
     def __getattr__(self, attr: str) -> Any:
+        """Forward attribute access to the underlying :class:`Assistants` namespace.
+
+        Lets ``pc.assistant`` act as a stand-in for ``pc.assistants``, so any
+        method available on :class:`Assistants` can also be called through
+        the singular alias.
+
+        Args:
+            attr: Name of the attribute or method to look up on
+                :class:`Assistants`.
+
+        Returns:
+            The attribute from the underlying :class:`Assistants` instance.
+
+        Examples:
+            >>> pc.assistant.create_assistant(assistant_name="my-assistant")  # doctest: +SKIP
+        """
         # Called only for attributes not found on the proxy itself, so
         # forward to the underlying Assistants namespace.
         assistants: Assistants = object.__getattribute__(self, "_assistants")
@@ -52,11 +82,41 @@ class _AsyncAssistantNamespaceProxy:
         object.__setattr__(self, "_assistants", assistants)
 
     async def __call__(self, name: str) -> AssistantModel:
-        """Shortcut for :meth:`AsyncAssistants.describe` (legacy ``await pc.assistant(name)``)."""
+        """Look up an assistant by name (``await pc.assistant(name)``).
+
+        Equivalent to :meth:`AsyncAssistants.describe`.
+
+        Args:
+            name: The name of the assistant to look up.
+
+        Returns:
+            :class:`AssistantModel` for the named assistant.
+
+        Examples:
+            >>> assistant = await pc.assistant("my-assistant")  # doctest: +SKIP
+            >>> assistant.status  # doctest: +SKIP
+            'Ready'
+        """
         assistants: AsyncAssistants = object.__getattribute__(self, "_assistants")
         return await assistants.describe(name=name)
 
     def __getattr__(self, attr: str) -> Any:
+        """Forward attribute access to the underlying :class:`AsyncAssistants` namespace.
+
+        Lets ``pc.assistant`` act as a stand-in for ``pc.assistants``, so any
+        method available on :class:`AsyncAssistants` can also be called
+        through the singular alias.
+
+        Args:
+            attr: Name of the attribute or method to look up on
+                :class:`AsyncAssistants`.
+
+        Returns:
+            The attribute from the underlying :class:`AsyncAssistants` instance.
+
+        Examples:
+            >>> await pc.assistant.create_assistant(assistant_name="my-assistant")  # doctest: +SKIP
+        """
         assistants: AsyncAssistants = object.__getattribute__(self, "_assistants")
         return getattr(assistants, attr)
 

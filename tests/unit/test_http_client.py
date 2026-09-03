@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import random
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -14,6 +15,8 @@ import respx
 from pinecone._internal.config import PineconeConfig, RetryConfig
 from pinecone._internal.constants import API_VERSION_HEADER
 from pinecone._internal.http_client import (
+    _JSON_INT_MAX,
+    _JSON_INT_MIN,
     AsyncHTTPClient,
     HTTPClient,
     _AsyncRetryTransport,
@@ -35,6 +38,7 @@ from pinecone.errors.exceptions import (
     PineconeConnectionError,
     PineconeError,
     PineconeTimeoutError,
+    PineconeTypeError,
     ServiceError,
     UnauthorizedError,
 )
@@ -351,6 +355,127 @@ class TestEncodeJson:
         data = {"a": [1, 2, {"b": True, "c": None}]}
         parsed = orjson.loads(_encode_json(data))
         assert parsed == data
+
+
+class TestEncodeJsonErrors:
+    """Issue #187: an unencodable body must name the field, not leak orjson."""
+
+    def test_out_of_range_int_raises_pinecone_error_naming_the_path(self) -> None:
+        body = {"documents": [{"text": "hi", "count": 2**64}]}
+        with pytest.raises(PineconeTypeError) as excinfo:
+            _encode_json(body)
+        exc = excinfo.value
+        assert exc.path == "documents[0].count"
+        assert str(2**64) in str(exc)
+        assert str(_JSON_INT_MAX) in str(exc)
+        assert "documents[0].count" in str(exc)
+
+    def test_negative_out_of_range_int(self) -> None:
+        with pytest.raises(PineconeTypeError) as excinfo:
+            _encode_json({"metadata": {"n": -(2**63) - 1}})
+        assert excinfo.value.path == "metadata.n"
+        assert str(_JSON_INT_MIN) in str(excinfo.value)
+
+    def test_still_catchable_as_plain_type_error(self) -> None:
+        """The swap is strictly additive — ``except TypeError`` keeps working."""
+        with pytest.raises(TypeError):
+            _encode_json({"n": 2**64})
+        with pytest.raises(PineconeError):
+            _encode_json({"n": 2**64})
+
+    def test_original_orjson_error_is_chained(self) -> None:
+        with pytest.raises(PineconeTypeError) as excinfo:
+            _encode_json({"n": 2**64})
+        assert isinstance(excinfo.value.__cause__, TypeError)
+        assert type(excinfo.value.__cause__) is not PineconeTypeError
+
+    def test_int64_boundaries_still_encode(self) -> None:
+        assert _encode_json({"lo": _JSON_INT_MIN, "hi": _JSON_INT_MAX})
+
+    def test_unserializable_type_names_the_path(self) -> None:
+        with pytest.raises(PineconeTypeError) as excinfo:
+            _encode_json({"a": {"b": [1, {"c": {1, 2}}]}})
+        assert excinfo.value.path == "a.b[1].c"
+        assert "set" in str(excinfo.value)
+
+    def test_non_string_dict_key_names_the_container(self) -> None:
+        with pytest.raises(PineconeTypeError) as excinfo:
+            _encode_json({"filter": {1: "x"}})
+        assert excinfo.value.path == "filter"
+        assert "key" in str(excinfo.value)
+
+    def test_scalar_body_reports_body_placeholder(self) -> None:
+        with pytest.raises(PineconeTypeError) as excinfo:
+            _encode_json(2**64)
+        assert excinfo.value.path == "<body>"
+
+    def test_long_int_is_truncated_with_a_digit_count(self) -> None:
+        with pytest.raises(PineconeTypeError) as excinfo:
+            _encode_json({"n": 10**200})
+        rendered = str(excinfo.value)
+        assert len(rendered) < 400
+        assert "201 digits" in rendered
+
+    def test_int_wider_than_the_str_digit_limit_still_renders(self) -> None:
+        """``str()`` on a 5000-digit int raises; the diagnostic must not."""
+        with pytest.raises(PineconeTypeError) as excinfo:
+            _encode_json({"n": 10**5000})
+        assert "bit integer" in str(excinfo.value)
+
+    def test_deeply_nested_body_falls_back_without_a_path(self) -> None:
+        """Nesting depth is not attributable to one value, and the walk must not
+        blow the Python stack while discovering that."""
+        root: dict[str, Any] = {}
+        node = root
+        for _ in range(400):
+            node["n"] = {}
+            node = node["n"]
+        with pytest.raises(PineconeTypeError) as excinfo:
+            _encode_json(root)
+        assert excinfo.value.path is None
+        assert "Recursion limit" in str(excinfo.value)
+
+
+class TestEncodeJsonErrorsOnTheWire:
+    """Both transports route bodies through ``_encode_json``, so both must
+    surface the typed error rather than one of them leaking a bare TypeError."""
+
+    def test_sync_post_fast_path(self) -> None:
+        client = _make_sync_client()
+        with pytest.raises(PineconeTypeError) as excinfo:
+            client.post("/embed", json={"inputs": [{"n": 2**64}]})
+        assert excinfo.value.path == "inputs[0].n"
+        client.close()
+
+    def test_sync_post_slow_path(self) -> None:
+        client = _make_sync_client()
+        with pytest.raises(PineconeTypeError) as excinfo:
+            client.post("/embed", json={"inputs": [{"n": 2**64}]}, params={"x": "1"})
+        assert excinfo.value.path == "inputs[0].n"
+        client.close()
+
+    @pytest.mark.asyncio
+    async def test_async_post_matches_sync(self) -> None:
+        client = _make_async_client()
+        with pytest.raises(PineconeTypeError) as excinfo:
+            await client.post("/embed", json={"inputs": [{"n": 2**64}]})
+        assert excinfo.value.path == "inputs[0].n"
+        await client.close()
+
+    @pytest.mark.parametrize("method", ["put", "patch"])
+    def test_sync_put_and_patch(self, method: str) -> None:
+        client = _make_sync_client()
+        with pytest.raises(PineconeTypeError):
+            getattr(client, method)("/things", json={"n": 2**64})
+        client.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["put", "patch"])
+    async def test_async_put_and_patch(self, method: str) -> None:
+        client = _make_async_client()
+        with pytest.raises(PineconeTypeError):
+            await getattr(client, method)("/things", json={"n": 2**64})
+        await client.close()
 
 
 class TestPrepareJsonKwargs:

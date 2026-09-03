@@ -11,11 +11,32 @@ if TYPE_CHECKING:
         APIKeyRole,
         APIKeyWithSecret,
     )
+    from pinecone.models.admin.invite import (  # noqa: F401
+        InviteList,
+        InviteModel,
+        InviteStatus,
+    )
     from pinecone.models.admin.organization import (  # noqa: F401
         OrganizationList,
         OrganizationModel,
     )
+    from pinecone.models.admin.pagination import PaginationResponse  # noqa: F401
     from pinecone.models.admin.project import ProjectList, ProjectModel  # noqa: F401
+    from pinecone.models.admin.role_binding import (  # noqa: F401
+        PrincipalType,
+        ResourceType,
+        RoleBindingInput,
+        RoleBindingList,
+        RoleBindingModel,
+        RoleName,
+    )
+    from pinecone.models.admin.service_account import (  # noqa: F401
+        ServiceAccountList,
+        ServiceAccountModel,
+        ServiceAccountWithSecret,
+    )
+    from pinecone.models.admin.token import TokenResponse  # noqa: F401
+    from pinecone.models.admin.user import UserList, UserModel  # noqa: F401
     from pinecone.models.assistant.chat import (  # noqa: F401
         ChatCitation,
         ChatCompletionChoice,
@@ -48,9 +69,11 @@ if TYPE_CHECKING:
     from pinecone.models.assistant.list import (  # noqa: F401
         ListAssistantsResponse,
         ListFilesResponse,
+        ListOperationsResponse,
     )
     from pinecone.models.assistant.message import Message  # noqa: F401
     from pinecone.models.assistant.model import AssistantModel  # noqa: F401
+    from pinecone.models.assistant.operation import OperationModel  # noqa: F401
     from pinecone.models.assistant.options import ContextOptions  # noqa: F401
     from pinecone.models.assistant.streaming import (  # noqa: F401
         ChatCompletionStreamChoice,
@@ -63,15 +86,59 @@ if TYPE_CHECKING:
         StreamMessageEnd,
         StreamMessageStart,
     )
-    from pinecone.models.backups.list import BackupList, RestoreJobList  # noqa: F401
+    from pinecone.models.backups.list import (  # noqa: F401
+        BackupList,
+        BackupScheduleHistoryList,
+        BackupScheduleList,
+        RestoreJobList,
+    )
     from pinecone.models.backups.model import (  # noqa: F401
         BackupModel,
+        CreateIndexFromBackupRequest,
         CreateIndexFromBackupResponse,
         RestoreJobModel,
+    )
+    from pinecone.models.backups.schedules import (  # noqa: F401
+        BackupScheduleHistoryItem,
+        BackupScheduleModel,
+        CreateBackupScheduleRequest,
+        UpdateBackupScheduleRequest,
     )
     from pinecone.models.batch import BatchError, BatchResult  # noqa: F401
     from pinecone.models.collections.list import CollectionList  # noqa: F401
     from pinecone.models.collections.model import CollectionModel  # noqa: F401
+    from pinecone.models.documents.document import (  # noqa: F401
+        Document,
+        DocumentRecord,
+        UpdateDocumentRecord,
+    )
+    from pinecone.models.documents.requests import (  # noqa: F401
+        DeleteDocumentsRequest,
+        FetchDocumentsRequest,
+        ListDocumentsRequest,
+        SearchDocumentsRequest,
+        UpdateDocumentsRequest,
+        UpsertDocumentsRequest,
+    )
+    from pinecone.models.documents.responses import (  # noqa: F401
+        DeleteDocumentsResponse,
+        DocumentFetchUsage,
+        DocumentListUsage,
+        DocumentSearchUsage,
+        FetchDocumentsResponse,
+        ListDocumentsResponse,
+        ListedDocumentRecord,
+        SearchDocumentsResponse,
+        UpdateDocumentsResponse,
+        UpsertDocumentsResponse,
+    )
+    from pinecone.models.documents.score_by import (  # noqa: F401
+        DenseVectorQuery,
+        DocumentScoringMethod,
+        QueryStringQuery,
+        SparseVectorQuery,
+        TextQuery,
+    )
     from pinecone.models.enums import (  # noqa: F401
         CloudProvider,
         DeletionProtection,
@@ -83,15 +150,45 @@ if TYPE_CHECKING:
     )
     from pinecone.models.imports.list import ImportList  # noqa: F401
     from pinecone.models.imports.model import ImportModel, StartImportResponse  # noqa: F401
+    from pinecone.models.indexes.deployment import (  # noqa: F401
+        ByocDeployment,
+        IndexDeployment,
+        ManagedDeployment,
+        PodDeployment,
+    )
     from pinecone.models.indexes.index import (  # noqa: F401
-        ByocSpecInfo,
         IndexModel,
-        IndexSpec,
         IndexStatus,
-        PodSpecInfo,
-        ServerlessSpecInfo,
+        IndexTags,
     )
     from pinecone.models.indexes.list import IndexList  # noqa: F401
+    from pinecone.models.indexes.read_capacity import (  # noqa: F401
+        ReadCapacityDedicatedConfig,
+        ReadCapacityDedicatedResponse,
+        ReadCapacityOnDemandResponse,
+        ReadCapacityResponse,
+        ReadCapacityStatus,
+        ScalingConfigManual,
+    )
+    from pinecone.models.indexes.requests import (  # noqa: F401
+        ConfigureIndexRequest,
+        CreateIndexRequest,
+    )
+    from pinecone.models.indexes.schema import (  # noqa: F401
+        BooleanField,
+        DenseVectorField,
+        FloatField,
+        FullTextSearchConfig,
+        IndexSchema,
+        IndexSchemaField,
+        IntegerField,
+        LegacyMetadataField,
+        NgramConfig,
+        SemanticTextField,
+        SparseVectorField,
+        StringField,
+        StringListField,
+    )
     from pinecone.models.indexes.specs import (  # noqa: F401
         ByocSpec,
         EmbedConfig,
@@ -156,10 +253,26 @@ _LAZY_IMPORTS: dict[str, str] = {
     "APIKeyModel": "pinecone.models.admin.api_key",
     "APIKeyRole": "pinecone.models.admin.api_key",
     "APIKeyWithSecret": "pinecone.models.admin.api_key",
+    "InviteList": "pinecone.models.admin.invite",
+    "InviteModel": "pinecone.models.admin.invite",
+    "InviteStatus": "pinecone.models.admin.invite",
     "OrganizationList": "pinecone.models.admin.organization",
     "OrganizationModel": "pinecone.models.admin.organization",
+    "PaginationResponse": "pinecone.models.admin.pagination",
+    "PrincipalType": "pinecone.models.admin.role_binding",
     "ProjectList": "pinecone.models.admin.project",
     "ProjectModel": "pinecone.models.admin.project",
+    "ResourceType": "pinecone.models.admin.role_binding",
+    "RoleBindingInput": "pinecone.models.admin.role_binding",
+    "RoleBindingList": "pinecone.models.admin.role_binding",
+    "RoleBindingModel": "pinecone.models.admin.role_binding",
+    "RoleName": "pinecone.models.admin.role_binding",
+    "ServiceAccountList": "pinecone.models.admin.service_account",
+    "ServiceAccountModel": "pinecone.models.admin.service_account",
+    "ServiceAccountWithSecret": "pinecone.models.admin.service_account",
+    "TokenResponse": "pinecone.models.admin.token",
+    "UserList": "pinecone.models.admin.user",
+    "UserModel": "pinecone.models.admin.user",
     # Assistant — chat
     "ChatCitation": "pinecone.models.assistant.chat",
     "ChatCompletionChoice": "pinecone.models.assistant.chat",
@@ -189,6 +302,8 @@ _LAZY_IMPORTS: dict[str, str] = {
     "AssistantFileModel": "pinecone.models.assistant.file_model",
     "ListAssistantsResponse": "pinecone.models.assistant.list",
     "ListFilesResponse": "pinecone.models.assistant.list",
+    "ListOperationsResponse": "pinecone.models.assistant.list",
+    "OperationModel": "pinecone.models.assistant.operation",
     "Message": "pinecone.models.assistant.message",
     "AssistantModel": "pinecone.models.assistant.model",
     "ContextOptions": "pinecone.models.assistant.options",
@@ -206,8 +321,16 @@ _LAZY_IMPORTS: dict[str, str] = {
     "BackupList": "pinecone.models.backups.list",
     "RestoreJobList": "pinecone.models.backups.list",
     "BackupModel": "pinecone.models.backups.model",
+    "CreateIndexFromBackupRequest": "pinecone.models.backups.model",
     "CreateIndexFromBackupResponse": "pinecone.models.backups.model",
     "RestoreJobModel": "pinecone.models.backups.model",
+    # Backup schedules
+    "BackupScheduleHistoryList": "pinecone.models.backups.list",
+    "BackupScheduleList": "pinecone.models.backups.list",
+    "BackupScheduleHistoryItem": "pinecone.models.backups.schedules",
+    "BackupScheduleModel": "pinecone.models.backups.schedules",
+    "CreateBackupScheduleRequest": "pinecone.models.backups.schedules",
+    "UpdateBackupScheduleRequest": "pinecone.models.backups.schedules",
     # Collections
     "CollectionList": "pinecone.models.collections.list",
     "CollectionModel": "pinecone.models.collections.model",
@@ -219,18 +342,65 @@ _LAZY_IMPORTS: dict[str, str] = {
     "PodType": "pinecone.models.enums",
     "RerankModel": "pinecone.models.enums",
     "VectorType": "pinecone.models.enums",
+    # Documents
+    "Document": "pinecone.models.documents.document",
+    "DocumentRecord": "pinecone.models.documents.document",
+    "UpdateDocumentRecord": "pinecone.models.documents.document",
+    "DenseVectorQuery": "pinecone.models.documents.score_by",
+    "DocumentScoringMethod": "pinecone.models.documents.score_by",
+    "QueryStringQuery": "pinecone.models.documents.score_by",
+    "SparseVectorQuery": "pinecone.models.documents.score_by",
+    "TextQuery": "pinecone.models.documents.score_by",
+    "DeleteDocumentsRequest": "pinecone.models.documents.requests",
+    "FetchDocumentsRequest": "pinecone.models.documents.requests",
+    "ListDocumentsRequest": "pinecone.models.documents.requests",
+    "SearchDocumentsRequest": "pinecone.models.documents.requests",
+    "UpdateDocumentsRequest": "pinecone.models.documents.requests",
+    "UpsertDocumentsRequest": "pinecone.models.documents.requests",
+    "DeleteDocumentsResponse": "pinecone.models.documents.responses",
+    "DocumentFetchUsage": "pinecone.models.documents.responses",
+    "DocumentListUsage": "pinecone.models.documents.responses",
+    "DocumentSearchUsage": "pinecone.models.documents.responses",
+    "FetchDocumentsResponse": "pinecone.models.documents.responses",
+    "ListDocumentsResponse": "pinecone.models.documents.responses",
+    "ListedDocumentRecord": "pinecone.models.documents.responses",
+    "SearchDocumentsResponse": "pinecone.models.documents.responses",
+    "UpdateDocumentsResponse": "pinecone.models.documents.responses",
+    "UpsertDocumentsResponse": "pinecone.models.documents.responses",
     # Imports
     "ImportList": "pinecone.models.imports.list",
     "ImportModel": "pinecone.models.imports.model",
     "StartImportResponse": "pinecone.models.imports.model",
     # Indexes
-    "ByocSpecInfo": "pinecone.models.indexes.index",
     "IndexModel": "pinecone.models.indexes.index",
-    "IndexSpec": "pinecone.models.indexes.index",
     "IndexStatus": "pinecone.models.indexes.index",
-    "PodSpecInfo": "pinecone.models.indexes.index",
-    "ServerlessSpecInfo": "pinecone.models.indexes.index",
+    "IndexTags": "pinecone.models.indexes.index",
     "IndexList": "pinecone.models.indexes.list",
+    "ByocDeployment": "pinecone.models.indexes.deployment",
+    "IndexDeployment": "pinecone.models.indexes.deployment",
+    "ManagedDeployment": "pinecone.models.indexes.deployment",
+    "PodDeployment": "pinecone.models.indexes.deployment",
+    "ReadCapacityDedicatedConfig": "pinecone.models.indexes.read_capacity",
+    "ReadCapacityDedicatedResponse": "pinecone.models.indexes.read_capacity",
+    "ReadCapacityOnDemandResponse": "pinecone.models.indexes.read_capacity",
+    "ReadCapacityResponse": "pinecone.models.indexes.read_capacity",
+    "ReadCapacityStatus": "pinecone.models.indexes.read_capacity",
+    "ScalingConfigManual": "pinecone.models.indexes.read_capacity",
+    "ConfigureIndexRequest": "pinecone.models.indexes.requests",
+    "CreateIndexRequest": "pinecone.models.indexes.requests",
+    "BooleanField": "pinecone.models.indexes.schema",
+    "DenseVectorField": "pinecone.models.indexes.schema",
+    "FloatField": "pinecone.models.indexes.schema",
+    "FullTextSearchConfig": "pinecone.models.indexes.schema",
+    "IndexSchema": "pinecone.models.indexes.schema",
+    "IndexSchemaField": "pinecone.models.indexes.schema",
+    "IntegerField": "pinecone.models.indexes.schema",
+    "LegacyMetadataField": "pinecone.models.indexes.schema",
+    "NgramConfig": "pinecone.models.indexes.schema",
+    "SemanticTextField": "pinecone.models.indexes.schema",
+    "SparseVectorField": "pinecone.models.indexes.schema",
+    "StringField": "pinecone.models.indexes.schema",
+    "StringListField": "pinecone.models.indexes.schema",
     "ByocSpec": "pinecone.models.indexes.specs",
     "EmbedConfig": "pinecone.models.indexes.specs",
     "IntegratedSpec": "pinecone.models.indexes.specs",

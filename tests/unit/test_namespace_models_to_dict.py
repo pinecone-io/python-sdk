@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import msgspec
 from msgspec import Struct
 
 from pinecone.models.namespaces.models import (
@@ -42,10 +43,37 @@ def test_namespace_description_to_dict_required_only() -> None:
     assert "record_count" in result
     assert "schema" in result
     assert "indexed_fields" in result
+    assert "size_bytes" in result
     assert result["name"] == "ns1"
     assert result["record_count"] == 100
     assert result["schema"] is None
     assert result["indexed_fields"] is None
+    assert result["size_bytes"] == 0
+
+
+def test_namespace_description_to_dict_includes_size_bytes() -> None:
+    result = NamespaceDescription(name="ns1", record_count=100, size_bytes=1048576).to_dict()
+    assert result["size_bytes"] == 1048576
+
+
+def test_namespace_description_to_dict_roundtrip_via_msgspec() -> None:
+    ns = NamespaceDescription(
+        name="ns1",
+        record_count=7,
+        schema=NamespaceSchema(fields={"genre": NamespaceFieldConfig(filterable=True)}),
+        indexed_fields=IndexedFields(fields=["genre"]),
+        size_bytes=987654321,
+    )
+    assert msgspec.convert(ns.to_dict(), NamespaceDescription) == ns
+
+
+def test_list_namespaces_response_to_dict_includes_size_bytes() -> None:
+    response = ListNamespacesResponse(
+        namespaces=[NamespaceDescription(name="ns1", size_bytes=512)],
+        total_count=1,
+    )
+    result = response.to_dict()
+    assert result["namespaces"][0]["size_bytes"] == 512
 
 
 def test_namespace_description_to_dict_nested_schema() -> None:

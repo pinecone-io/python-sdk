@@ -13,18 +13,14 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any, TypedDict
 
-import msgspec
-from typing_extensions import NotRequired
-
 from pinecone._internal.validation import require_non_empty
 
 if TYPE_CHECKING:
     from pinecone.models.indexes.index import IndexModel
-from pinecone.errors.exceptions import PineconeTypeError, ValidationError
+from pinecone.errors.exceptions import ValidationError
 from pinecone.models.enums import DeletionProtection, Metric, VectorType
-from pinecone.models.indexes.specs import ByocSpec, IntegratedSpec, PodSpec, ServerlessSpec
+from pinecone.models.indexes.specs import ByocSpec, IntegratedSpec
 
-_VALID_METRICS = frozenset({"cosine", "euclidean", "dotproduct"})
 _VALID_DELETION_PROTECTION = frozenset({"enabled", "disabled"})
 
 
@@ -54,10 +50,10 @@ class IndexKwargs(TypedDict):
     connection_pool_maxsize: int
 
 
-class _LegacyIndexKwargs(IndexKwargs):
+class _LegacyIndexKwargs(IndexKwargs, total=False):
     """IndexKwargs extended with the legacy pool_threads field (sync client only)."""
 
-    pool_threads: NotRequired[int]
+    pool_threads: int
 
 
 def resolve_enum_value(value: Any) -> Any:
@@ -80,90 +76,6 @@ def validate_read_capacity(read_capacity: dict[str, Any]) -> None:
             manual = dedicated.get("manual")
             if manual is not None and not isinstance(manual, dict):
                 raise ValidationError("dedicated read_capacity manual must be a dict")
-
-
-def validate_create_inputs(
-    *,
-    name: str,
-    spec: ServerlessSpec | PodSpec | ByocSpec | dict[str, Any],
-    dimension: int | None,
-    metric: Metric | str,
-    vector_type: VectorType | str,
-    deletion_protection: DeletionProtection | str,
-) -> None:
-    """Client-side validation for create() arguments."""
-    require_non_empty("name", name)
-    if len(name) > 45:
-        raise ValidationError("index name must not exceed 45 characters")
-    if not re.fullmatch(r"[a-z0-9-]+", name):
-        raise ValidationError("index name must contain only lowercase letters, digits, and hyphens")
-
-    if spec is None:
-        raise ValidationError("spec is required")
-
-    resolved_metric = resolve_enum_value(metric)
-    if resolved_metric not in _VALID_METRICS:
-        raise ValidationError(
-            f"metric must be one of {sorted(_VALID_METRICS)}, got {resolved_metric!r}"
-        )
-
-    _validate_deletion_protection(deletion_protection)
-
-    if isinstance(spec, dict) and not ({"serverless", "pod", "byoc"} & spec.keys()):
-        raise ValidationError("spec dict must contain a 'serverless', 'pod', or 'byoc' key")
-
-    if dimension is not None and not isinstance(dimension, int):
-        raise PineconeTypeError(f"dimension must be an integer, got {type(dimension).__name__!r}")
-
-    resolved_vt = resolve_enum_value(vector_type)
-    if resolved_vt == "sparse" and dimension is not None:
-        raise ValidationError("dimension must not be provided for sparse indexes")
-    if resolved_vt != "sparse" and dimension is None:
-        raise ValidationError("dimension is required for dense indexes")
-
-
-def build_create_body(
-    *,
-    name: str,
-    spec: ServerlessSpec | PodSpec | ByocSpec | dict[str, Any],
-    dimension: int | None,
-    metric: Metric | str,
-    vector_type: VectorType | str,
-    deletion_protection: DeletionProtection | str,
-    tags: Mapping[str, str] | None,
-    schema: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Build the JSON body for POST /indexes."""
-    body: dict[str, Any] = {
-        "name": name,
-        "metric": resolve_enum_value(metric),
-        "vector_type": resolve_enum_value(vector_type),
-        "deletion_protection": resolve_enum_value(deletion_protection),
-    }
-    if dimension is not None:
-        body["dimension"] = dimension
-    if tags is not None:
-        body["tags"] = tags
-
-    if isinstance(spec, ServerlessSpec):
-        serverless_dict: dict[str, Any] = {"cloud": spec.cloud, "region": spec.region}
-        if spec.read_capacity is not None:
-            serverless_dict["read_capacity"] = spec.read_capacity
-        if spec.schema is not None:
-            serverless_dict["schema"] = _normalize_schema(spec.schema)
-        body["spec"] = {"serverless": serverless_dict}
-    elif isinstance(spec, PodSpec):
-        body["spec"] = {"pod": msgspec.to_builtins(spec)}
-    elif isinstance(spec, dict):
-        body["spec"] = {k: dict(v) if isinstance(v, dict) else v for k, v in spec.items()}
-
-    if schema is not None:
-        normalized = _normalize_schema(schema)
-        spec_dict = body["spec"]
-        for key in spec_dict:
-            spec_dict[key]["schema"] = normalized
-
-    return body
 
 
 def validate_byoc_inputs(

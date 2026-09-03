@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from pinecone._internal.adapters.vectors_adapter import VectorsAdapter
@@ -13,6 +15,7 @@ from pinecone.models.namespaces.models import (
     NamespaceSchema,
 )
 from pinecone.models.vectors.responses import Pagination
+from tests.factories import make_namespace_description_response
 
 
 class TestNamespaceDescription:
@@ -43,6 +46,38 @@ class TestNamespaceDescription:
         assert ns.record_count == 0
         assert ns.schema is None
         assert ns.indexed_fields is None
+        assert ns.size_bytes == 0
+
+    def test_namespace_description_size_bytes(self) -> None:
+        ns = NamespaceDescription(name="ns1", record_count=100, size_bytes=1048576)
+        assert ns.size_bytes == 1048576
+
+    def test_namespace_description_size_bytes_bracket_access(self) -> None:
+        ns = NamespaceDescription(name="ns1", size_bytes=2048)
+        assert ns["size_bytes"] == 2048
+        assert ns.get("size_bytes") == 2048
+
+    def test_namespace_description_size_bytes_contains(self) -> None:
+        ns = NamespaceDescription(name="ns1")
+        assert "size_bytes" in ns
+        assert "size_byte" not in ns
+
+    def test_namespace_description_size_bytes_in_keys_and_items(self) -> None:
+        ns = NamespaceDescription(name="ns1", size_bytes=99)
+        assert ns.keys() == ("name", "record_count", "schema", "indexed_fields", "size_bytes")
+        assert ("size_bytes", 99) in ns.items()
+        assert list(ns) == list(ns.keys())
+        assert len(ns) == 5
+
+    def test_namespace_description_repr_includes_size_bytes(self) -> None:
+        ns = NamespaceDescription(name="ns1", record_count=3, size_bytes=4096)
+        assert "size_bytes=4096" in repr(ns)
+
+    def test_namespace_description_size_bytes_uint64_max(self) -> None:
+        """uint64 on the wire; Python ints must carry the full range without truncating."""
+        uint64_max = 2**64 - 1
+        ns = NamespaceDescription(name="ns1", size_bytes=uint64_max)
+        assert ns.size_bytes == uint64_max
 
     def test_namespace_description_with_indexed_fields(self) -> None:
         ns = NamespaceDescription(
@@ -176,3 +211,51 @@ class TestVectorsAdapterNamespaces:
         assert isinstance(response.namespaces[0].record_count, int)
         assert response.namespaces[1].record_count == 0
         assert isinstance(response.namespaces[1].record_count, int)
+
+
+class TestNamespaceDescriptionSizeBytesDecode:
+    def test_decode_size_bytes_present(self) -> None:
+        data = json.dumps(make_namespace_description_response()).encode()
+        ns = VectorsAdapter.to_namespace_description(data)
+        assert ns.size_bytes == 1048576
+
+    def test_decode_size_bytes_absent_defaults_to_zero(self) -> None:
+        """2025-10 fixtures omit size_bytes; decoding them must not raise."""
+        payload = make_namespace_description_response()
+        del payload["size_bytes"]
+        ns = VectorsAdapter.to_namespace_description(json.dumps(payload).encode())
+        assert ns.size_bytes == 0
+        assert ns.name == "test-namespace"
+        assert ns.record_count == 42
+
+    def test_decode_size_bytes_explicit_zero(self) -> None:
+        """A server-sent 0 is a real value, not a missing field — both land on 0."""
+        data = json.dumps(make_namespace_description_response(size_bytes=0)).encode()
+        ns = VectorsAdapter.to_namespace_description(data)
+        assert ns.size_bytes == 0
+
+    def test_decode_size_bytes_string_encoded(self) -> None:
+        """The namespace API string-encodes integers; lax decoding must coerce this one too."""
+        data = b'{"name": "ns1", "record_count": "0", "size_bytes": "1048576"}'
+        ns = VectorsAdapter.to_namespace_description(data)
+        assert ns.size_bytes == 1048576
+        assert isinstance(ns.size_bytes, int)
+
+    def test_decode_size_bytes_uint64_max(self) -> None:
+        uint64_max = 2**64 - 1
+        data = f'{{"name": "ns1", "size_bytes": {uint64_max}}}'.encode()
+        ns = VectorsAdapter.to_namespace_description(data)
+        assert ns.size_bytes == uint64_max
+
+    def test_decode_list_namespaces_size_bytes(self) -> None:
+        payload = {
+            "namespaces": [
+                make_namespace_description_response(name="ns1", size_bytes=100),
+                make_namespace_description_response(name="ns2"),
+            ],
+            "total_count": 2,
+        }
+        del payload["namespaces"][1]["size_bytes"]  # type: ignore[index]
+        response = VectorsAdapter.to_list_namespaces_response(json.dumps(payload).encode())
+        assert response.namespaces[0].size_bytes == 100
+        assert response.namespaces[1].size_bytes == 0

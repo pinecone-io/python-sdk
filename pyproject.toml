@@ -38,13 +38,11 @@ dependencies = [
     "httpx[http2]>=0.27,<1.0",
     "msgspec",
     "orjson",
-    # Imported unconditionally at module scope by
-    # pinecone/_internal/indexes_helpers.py for `NotRequired` (added in 4.0),
-    # so `import pinecone` needs it on every interpreter. It reached 3.10-3.12
-    # transitively through anyio, whose own requirement carries a
-    # `python_full_version < '3.13'` marker -- so the accident evaporated on
-    # 3.13+ and every published wheel failed to import there.
-    "typing-extensions>=4.0",
+    # Imported at module scope by pinecone/async_client/assistants.py for async
+    # file IO. httpx happens to require it too, but every module the package
+    # imports eagerly is declared here rather than left to a transitive accident
+    # — tests/unit/tooling/test_declared_dependencies.py enforces that.
+    "anyio>=4.0",
 ]
 
 [project.optional-dependencies]
@@ -143,10 +141,16 @@ anyio_mode = "auto"
 # Hypothesis examples (~1.4s locally, >5s on CI runners under py3.10), and the
 # retry-storm tests sit in the same band.
 timeout = 60
+# --strict-config turns an unrecognized ini key into a startup error and
+# --strict-markers does the same for an unregistered marker. Both were silent
+# warnings until #306, which is how the `timeout` key and 89
+# `pytest.mark.timeout` markers sat inert for four months after pytest-timeout
+# went missing from the dev dependency group.
+addopts = ["--strict-config", "--strict-markers"]
 markers = [
     "smoke: end-to-end smoke tests that hit a real Pinecone backend (see tests/smoke/README.md)",
     "integration: real-API integration tests against a live Pinecone backend",
-    "preview_integration: real-API tests against 2026-01.alpha preview endpoints (not CI-gating)",
+    "api_op(op_id): conformance claim for a 2026-07 API operation (see tests/unit/conformance/README.md)",
 ]
 
 [tool.coverage.run]
@@ -171,6 +175,11 @@ dev = [
     "pytest>=9.0.3",
     "pytest-anyio>=0.0.0",
     "pytest-asyncio>=0.23",
+    # Backs `timeout = 5` in [tool.pytest.ini_options] and the 89
+    # `pytest.mark.timeout` markers in tests/integration/. It was only ever
+    # added to [project.optional-dependencies].dev, which `uv sync --group dev`
+    # does not install, so none of them did anything (#306).
+    "pytest-timeout>=2.3",
     "python-dotenv>=1.2.2",
     "pytest-benchmark>=5.0.0",
     "pytest-xdist>=3.6",
@@ -180,4 +189,17 @@ dev = [
     "mypy>=1.20.0",
     "ruff>=0.15.9",
     "hypothesis>=6.0",
+    # scripts/api_coverage.py parses the 2026-07 OAS specs to derive the
+    # conformance denominator (epoch #87 gate).
+    "pyyaml>=6.0",
+    # tests/unit/conformance/_registry.py validates response fixtures against
+    # the OAS response schemas vendored into the conformance manifest (#189).
+    "jsonschema>=4.21",
+    # tests/unit/conformance/_grpc_harness.py runs an in-process gRPC server so
+    # the db_data_grpc conformance claims capture the Rust tonic channel's real
+    # rpcs on the wire (#253). grpcio-tools regenerates message/service stubs
+    # from the vendored rust/proto/db_data_2026-07.proto at test time, so the
+    # server decodes with protoc-generated code, independent of prost.
+    "grpcio>=1.76",
+    "grpcio-tools>=1.76",
 ]

@@ -21,12 +21,11 @@ def test_make_index_response_keys() -> None:
     result = make_index_response()
     assert set(result.keys()) >= {
         "name",
-        "dimension",
-        "metric",
         "host",
-        "spec",
+        "deployment",
+        "schema",
         "status",
-        "vector_type",
+        "deletion_protection",
     }
 
 

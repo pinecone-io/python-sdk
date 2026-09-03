@@ -179,9 +179,19 @@ def test_describe_assistant_legacy_with_name_kwarg(mock_assistants: Assistants) 
 
 
 def test_describe_assistant_rejects_both_names(mock_assistants: Assistants) -> None:
-    """describe_assistant() raises TypeError when both assistant_name and name are given."""
-    with pytest.raises(TypeError, match="Pass only one"):
+    """describe_assistant() raises PineconeValueError when both assistant_name and name are given.
+
+    Matches the canonical ``describe()``/``create()``/etc. convention for the identical
+    "received both the legacy and current name" condition (see
+    ``pinecone/_internal/kwargs_aliases.py``), rather than the bare ``TypeError`` this
+    shim previously raised.
+    """
+    from pinecone.errors.exceptions import PineconeValueError
+
+    with pytest.raises(PineconeValueError, match="Pass only one") as exc_info:
         mock_assistants.describe_assistant("a", name="b")
+    assert type(exc_info.value) is PineconeValueError
+    assert isinstance(exc_info.value, ValueError)
 
 
 def test_describe_assistant_legacy_forwards_to_describe(

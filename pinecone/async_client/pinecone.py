@@ -5,18 +5,25 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
 from pinecone._internal.config import PineconeConfig, RetryConfig
 from pinecone._internal.constants import CONTROL_PLANE_API_VERSION, DEFAULT_BASE_URL
+from pinecone._internal.index_migration import (
+    reject_new_only_configure_kwargs,
+    reject_new_only_create_kwargs,
+)
 from pinecone._internal.indexes_helpers import IndexKwargs, async_poll_index_until_ready
 from pinecone._internal.keyword_only import keyword_only_methods
 from pinecone._internal.validation import require_non_empty
 from pinecone.errors.exceptions import ValidationError
+from pinecone.models.indexes.list import IndexList
 
 if TYPE_CHECKING:
     from pinecone.async_client.assistants import AsyncAssistants
     from pinecone.async_client.async_index import AsyncIndex
+    from pinecone.async_client.backup_schedules import AsyncBackupSchedules
     from pinecone.async_client.backups import AsyncBackups
     from pinecone.async_client.collections import AsyncCollections
     from pinecone.async_client.indexes import AsyncIndexes
@@ -39,23 +46,21 @@ if TYPE_CHECKING:
         DeletionProtection,
         GcpRegion,
         Metric,
+        PodType,
         VectorType,
     )
     from pinecone.models.indexes.index import IndexModel
-    from pinecone.models.indexes.list import IndexList
-    from pinecone.models.indexes.specs import (
-        ByocSpec,
-        EmbedConfig,
-        IntegratedSpec,
-        PodSpec,
-        ServerlessSpec,
-    )
-    from pinecone.preview import AsyncPreview
+    from pinecone.models.indexes.specs import EmbedConfig
 
 
 @keyword_only_methods
 class AsyncPinecone:
     """Asynchronous Pinecone client for control-plane operations.
+
+    The async entry point for the SDK. Use the ``indexes``, ``collections``, and
+    ``backups`` namespace properties to create and manage those resources, and
+    await :meth:`index` to get a client for reading and writing vectors on a
+    specific index.
 
     Args:
         api_key (str | None): Pinecone API key. Falls back to ``PINECONE_API_KEY`` env var.
@@ -78,20 +83,33 @@ class AsyncPinecone:
     Raises:
         :exc:`PineconeValueError`: If no API key can be resolved from arguments or
             environment variables.
+        :exc:`FileNotFoundError`: If ``ssl_ca_certs`` names a path that does not
+            exist, so a mistyped path cannot leave you silently verifying against
+            the default trust store instead. Unlike the sync client, this is
+            raised on the first request rather than at construction time. A
+            bundle that exists but cannot be parsed as a certificate raises
+            :exc:`ssl.SSLError` at the same point.
 
     Examples:
+
+        The index client manages its own connections, so it gets its own
+        ``async with`` block. A query vector has to be as wide as the index's
+        dense field — the three floats below stand in for a full
+        1536-dimensional embedding:
 
         .. code-block:: python
 
             from pinecone import AsyncPinecone
 
             async with AsyncPinecone(api_key="your-api-key") as pc:
-                index = await pc.index(name="my-index")
-                async with index:
-                    results = await index.query(
-                        vector=[0.012, -0.087, 0.153, ...],  # 1536-dim embedding
+                idx = await pc.index(name="product-search")
+                async with idx:
+                    results = await idx.query(
+                        vector=[0.012, -0.087, 0.153],
                         top_k=10,
                     )
+                    for match in results.matches:
+                        print(match.id, match.score)
 
     .. note:: **Differences from sync Pinecone**
 
@@ -165,12 +183,20 @@ class AsyncPinecone:
         self._collections: AsyncCollections | None = None
         self._assistants: AsyncAssistants | None = None
         self._backups: AsyncBackups | None = None
+        self._backup_schedules: AsyncBackupSchedules | None = None
         self._restore_jobs: AsyncRestoreJobs | None = None
         self._inference: AsyncInference | None = None
-        self._preview: AsyncPreview | None = None
         self._host_cache: dict[str, str] = {}
 
     def __repr__(self) -> str:
+        """Return a debug-friendly representation with the API key masked.
+
+        Only the last four characters of the API key are shown, so it is safe
+        to include in logs, tracebacks, or ``repr()`` output.
+
+        Returns:
+            A string like ``"AsyncPinecone(api_key='...ab12', host='https://api.pinecone.io')"``.
+        """
         masked = f"...{self._config.api_key[-4:]}" if len(self._config.api_key) >= 4 else "***"
         return f"AsyncPinecone(api_key='{masked}', host='{self._config.host}')"
 
@@ -188,8 +214,8 @@ class AsyncPinecone:
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    for idx in await pc.indexes.list():
-                        print(idx.name)
+                    async for index in pc.indexes.list():
+                        print(index.name, index.status.state)
         """
         if self._indexes is None:
             from pinecone.async_client.indexes import AsyncIndexes as _AsyncIndexes
@@ -212,7 +238,7 @@ class AsyncPinecone:
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     for col in await pc.collections.list():
-                        print(col.name)
+                        print(col.name, col.status)
         """
         if self._collections is None:
             from pinecone.async_client.collections import AsyncCollections as _AsyncCollections
@@ -222,19 +248,27 @@ class AsyncPinecone:
 
     @property
     def assistants(self) -> AsyncAssistants:
-        """Access the AsyncAssistants namespace for assistant operations.
+        """Access the AsyncAssistants namespace for managing Pinecone Assistants.
 
-        Lazily imported and instantiated on first access.
+        A Pinecone Assistant is a hosted, retrieval-augmented chat service:
+        upload files to it and it answers questions grounded in their
+        content. Use this namespace to create, list, and configure
+        assistants. Lazily imported and instantiated on first access.
 
         Returns:
-            :class:`AsyncAssistants` namespace instance.
+            :class:`AsyncAssistants` namespace instance. Call
+            :meth:`~pinecone.async_client.assistants.AsyncAssistants.create`
+            to create an assistant, or
+            :meth:`~pinecone.async_client.assistants.AsyncAssistants.list`
+            to see existing ones.
 
         Examples:
 
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    assistants = await pc.assistants.list()
+                    async for assistant in pc.assistants.list():
+                        print(assistant.name, assistant.status)
         """
         if self._assistants is None:
             from pinecone.async_client.assistants import AsyncAssistants as _AsyncAssistants
@@ -244,16 +278,42 @@ class AsyncPinecone:
 
     @property
     def assistant(self) -> _AsyncAssistantNamespaceProxy:
-        """Convenience alias for :attr:`AsyncPinecone.assistants`.
+        """Access assistants through the singular-form alias for :attr:`AsyncPinecone.assistants`.
 
-        Returns a proxy that supports both namespace-style access
-        (``pc.assistant.create_assistant(...)``) and the convenience call
-        form (``await pc.assistant("my-name")`` — shortcut for
-        ``await pc.assistants.describe(name="my-name")``).
+        :attr:`AsyncPinecone.assistants` is the canonical namespace; this
+        alias exists for ergonomic singular-form access and is not
+        deprecated. It forwards attribute access to that namespace and also
+        supports calling it directly with a name as a shortcut for
+        :meth:`~pinecone.async_client.assistants.AsyncAssistants.describe`.
 
-        The canonical entry point is :attr:`AsyncPinecone.assistants`;
-        this alias is provided for ergonomic singular-form access and is
-        not deprecated.
+        Returns:
+            A proxy that behaves like the :class:`AsyncAssistants` namespace
+            for attribute access (``pc.assistant.create(...)``) and, when
+            awaited with a name, returns that assistant's details.
+
+        Examples:
+
+            Awaiting the proxy with a name is shorthand for
+            :meth:`~pinecone.async_client.assistants.AsyncAssistants.describe`:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    bot = await pc.assistant("acme-support-bot")
+                    print(bot.status, bot.instructions)
+
+            Every other attribute forwards to the plural namespace, so
+            ``pc.assistant.create`` and ``pc.assistants.create`` are the same
+            method reached two ways:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    new_bot = await pc.assistant.create(
+                        name="acme-billing-bot",
+                        instructions="Help users with billing questions.",
+                    )
+                    print(new_bot.status)
         """
         from pinecone.client._assistant_namespace_proxy import _AsyncAssistantNamespaceProxy
 
@@ -273,8 +333,8 @@ class AsyncPinecone:
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    for backup in await pc.backups.list():
-                        print(backup.backup_id)
+                    for backup in await pc.backups.list(limit=100):
+                        print(backup.backup_id, backup.source_index_name, backup.status)
         """
         if self._backups is None:
             from pinecone.async_client.backups import AsyncBackups as _AsyncBackups
@@ -283,21 +343,62 @@ class AsyncPinecone:
         return self._backups
 
     @property
-    def restore_jobs(self) -> AsyncRestoreJobs:
-        """Access the AsyncRestoreJobs namespace for restore job operations.
+    def backup_schedules(self) -> AsyncBackupSchedules:
+        """Access the AsyncBackupSchedules namespace for managing recurring backups.
 
-        Lazily imported and instantiated on first access.
+        A backup schedule attaches a recurring cadence (daily, weekly, or
+        monthly) to an index, so Pinecone creates a backup automatically
+        without you having to trigger one each time. Lazily imported and
+        instantiated on first access.
 
         Returns:
-            :class:`AsyncRestoreJobs` namespace instance.
+            :class:`AsyncBackupSchedules` namespace instance. Call
+            :meth:`~pinecone.async_client.backup_schedules.AsyncBackupSchedules.create`
+            to attach a schedule to an index, or
+            :meth:`~pinecone.async_client.backup_schedules.AsyncBackupSchedules.list`
+            to see existing ones.
 
         Examples:
 
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    for job in await pc.restore_jobs.list():
-                        print(job.restore_job_id)
+                    for schedule in await pc.backup_schedules.list(
+                        index_name="product-search"
+                    ):
+                        print(schedule.name, schedule.frequency, schedule.enabled)
+        """
+        if self._backup_schedules is None:
+            from pinecone.async_client.backup_schedules import (
+                AsyncBackupSchedules as _AsyncBackupSchedules,
+            )
+
+            self._backup_schedules = _AsyncBackupSchedules(http=self._http)
+        return self._backup_schedules
+
+    @property
+    def restore_jobs(self) -> AsyncRestoreJobs:
+        """Access the AsyncRestoreJobs namespace for tracking backup restores.
+
+        A restore job represents an in-progress or completed request to
+        create an index from a backup; use this namespace to check on that
+        request rather than polling the index itself. Lazily imported and
+        instantiated on first access.
+
+        Returns:
+            :class:`AsyncRestoreJobs` namespace instance. Call
+            :meth:`~pinecone.async_client.restore_jobs.AsyncRestoreJobs.list`
+            to see restore jobs, or
+            :meth:`~pinecone.async_client.restore_jobs.AsyncRestoreJobs.describe`
+            for the status of one.
+
+        Examples:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    for job in await pc.restore_jobs.list(limit=10):
+                        print(job.restore_job_id, job.target_index_name, job.status)
         """
         if self._restore_jobs is None:
             from pinecone.async_client.restore_jobs import AsyncRestoreJobs as _AsyncRestoreJobs
@@ -307,52 +408,40 @@ class AsyncPinecone:
 
     @property
     def inference(self) -> AsyncInference:
-        """Access the AsyncInference namespace for embed and rerank operations.
+        """Access the AsyncInference namespace for embedding and reranking text.
 
-        Lazily imported and instantiated on first access.
+        Use this to generate vector embeddings from text or images, or to
+        rerank a list of documents by relevance to a query, without running
+        a model yourself. Lazily imported and instantiated on first access.
 
         Returns:
-            :class:`AsyncInference` namespace instance.
+            :class:`AsyncInference` namespace instance. Call
+            :meth:`~pinecone.async_client.inference.AsyncInference.embed`
+            to generate embeddings, or
+            :meth:`~pinecone.async_client.inference.AsyncInference.rerank`
+            to reorder documents by relevance.
 
         Examples:
+
+            ``multilingual-e5-large`` is asymmetric, so ``input_type`` tells it
+            which side of a search the text belongs to — ``"passage"`` for text
+            you intend to store, ``"query"`` for text you intend to search with:
 
             .. code-block:: python
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     embeddings = await pc.inference.embed(
                         model="multilingual-e5-large",
-                        inputs=["Hello, world!"],
+                        inputs=["Solar panels reduce energy costs and lower carbon emissions."],
+                        parameters={"input_type": "passage"},
                     )
+                    print(len(embeddings.data))
         """
         if self._inference is None:
             from pinecone.async_client.inference import AsyncInference as _AsyncInference
 
             self._inference = _AsyncInference(config=self._config)
         return self._inference
-
-    @property
-    def preview(self) -> AsyncPreview:
-        """Access the Preview namespace for pre-release API features.
-
-        Lazily imported and instantiated on first access. Preview surface is
-        not covered by SemVer — signatures and behavior may change in any
-        minor SDK release.
-
-        Returns:
-            :class:`~pinecone.preview.AsyncPreview` namespace instance.
-
-        Examples:
-
-            .. code-block:: python
-
-                async with AsyncPinecone(api_key="your-api-key") as pc:
-                    await pc.preview.indexes.create(...)  # when a preview area exists
-        """
-        if self._preview is None:
-            from pinecone.preview import AsyncPreview as _AsyncPreview
-
-            self._preview = _AsyncPreview(http=self._http, config=self._config)
-        return self._preview
 
     async def create_index_from_backup(
         self,
@@ -361,12 +450,20 @@ class AsyncPinecone:
         backup_id: str,
         deletion_protection: DeletionProtection | str | None = None,
         tags: Mapping[str, str] | None = None,
+        read_capacity: dict[str, Any] | None = None,
         timeout: int | None = None,
     ) -> CreateIndexFromBackupResponse | IndexModel:
         """Create a new index by restoring from a backup.
 
-        Sends a POST to ``/backups/{backup_id}/create-index`` and then
-        polls until the index is ready (unless *timeout* is ``-1``).
+        Polls until the restored index is ready, unless *timeout* is ``-1``.
+
+        This is the only supported way to restore a backup:
+        :meth:`AsyncPinecone.create_index` rejects ``source_backup_id=`` with
+        a message pointing here.
+
+        .. versionchanged:: 10.0
+           Added *read_capacity*, so a restore can land straight onto
+           dedicated read nodes instead of defaulting to on-demand capacity.
 
         Args:
             name (str): Name for the new index.
@@ -375,6 +472,14 @@ class AsyncPinecone:
             deletion_protection (DeletionProtection | str | None): ``"enabled"`` or
                 ``"disabled"``. Defaults to ``"disabled"`` server-side when omitted.
             tags (Mapping[str, str] | None): Optional key-value tags for the new index.
+                When omitted, the server copies the backup's own tags.
+            read_capacity (dict[str, Any] | None): Optional read capacity for the
+                restored index — ``{"mode": "OnDemand"}`` or ``{"mode": "Dedicated",
+                "dedicated": {"node_type": ..., "scaling": "Manual",
+                "manual": {"shards": ..., "replicas": ...}}}``. Omitted entirely
+                when ``None``, leaving the server's on-demand default in place.
+                Serverless backups only; the server rejects a dedicated
+                configuration too small for the backup.
             timeout (int | None): Seconds to wait for readiness. ``None`` (default)
                 blocks up to 300 s. ``-1`` returns a :class:`CreateIndexFromBackupResponse`
                 immediately (contains ``restore_job_id`` and ``index_id``) without polling.
@@ -385,52 +490,95 @@ class AsyncPinecone:
             the restored index once it is ready.
 
         Raises:
-            :exc:`PineconeValueError`: If *name* or *backup_id* is empty.
+            :exc:`PineconeValueError`: If *name* or *backup_id* is empty, or
+                *read_capacity* is an empty dict.
             :exc:`PineconeTimeoutError`: If the index is not ready within the timeout.
             :exc:`IndexInitFailedError`: If the index enters ``InitializationFailed`` state.
             :exc:`IndexTerminatedError`: If the index enters ``Terminating`` or ``Disabled`` state.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`NotFoundError`: If *backup_id* does not match an existing backup.
+            :exc:`ConflictError`: If an index named *name* already exists.
+            :exc:`ApiError`: If the API returns another error response, for
+                example if the backup is not yet complete.
 
         Examples:
 
+            The default form blocks until the restored index is ready and hands
+            back the index itself, so the next call can use it:
+
             .. code-block:: python
 
-                # Restore an index from a backup
                 from pinecone import AsyncPinecone
+
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     index = await pc.create_index_from_backup(
                         name="product-search-restored",
-                        backup_id="bk-daily-20240115",
+                        backup_id="bk-abc123",
                     )
+                    print(index.status.state)
+
+            ``timeout=-1`` returns as soon as the restore is accepted. What
+            comes back is a :class:`CreateIndexFromBackupResponse`, not an
+            index — the index does not exist yet, so follow the restore through
+            ``pc.restore_jobs`` rather than treating the return value as one:
 
             .. code-block:: python
 
-                # Restore without waiting (returns restore_job_id)
                 async with AsyncPinecone(api_key="your-api-key") as pc:
                     result = await pc.create_index_from_backup(
                         name="product-search-restored",
-                        backup_id="bk-daily-20240115",
+                        backup_id="bk-abc123",
                         timeout=-1,
                     )
-                    print(result.restore_job_id)
+                    job = await pc.restore_jobs.describe(job_id=result.restore_job_id)
+                    print(job.status)
+
+            A restore can land straight onto dedicated read nodes instead of
+            the on-demand default:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    index = await pc.create_index_from_backup(
+                        name="product-search-restored",
+                        backup_id="bk-abc123",
+                        read_capacity={
+                            "mode": "Dedicated",
+                            "dedicated": {
+                                "node_type": "t1",
+                                "scaling": "Manual",
+                                "manual": {"shards": 2, "replicas": 2},
+                            },
+                        },
+                    )
+                    print(index.status.state)
         """
         require_non_empty("name", name)
         require_non_empty("backup_id", backup_id)
+        if read_capacity is not None and not read_capacity:
+            raise ValidationError("read_capacity cannot be an empty dict")
 
-        body: dict[str, Any] = {"name": name}
+        dp_val: str | None = None
         if deletion_protection is not None:
             dp_val = (
                 deletion_protection.value
                 if hasattr(deletion_protection, "value")
                 else deletion_protection
             )
-            body["deletion_protection"] = dp_val
-        if tags is not None:
-            body["tags"] = tags
 
         from pinecone._internal.adapters.backups_adapter import BackupsAdapter
+        from pinecone.models.backups.model import CreateIndexFromBackupRequest
 
-        response = await self._http.post(f"/backups/{backup_id}/create-index", json=body)
+        request = CreateIndexFromBackupRequest(
+            name=name,
+            tags=dict(tags) if tags is not None else None,
+            deletion_protection=dp_val,
+            read_capacity=read_capacity,
+        )
+        response = await self._http.post(
+            f"/backups/{quote(backup_id, safe='')}/create-index",
+            content=BackupsAdapter.to_create_index_from_backup_request(request),
+            headers={"Content-Type": "application/json"},
+        )
         create_response = BackupsAdapter.to_create_index_from_backup_response(response.content)
 
         if timeout == -1:
@@ -441,11 +589,22 @@ class AsyncPinecone:
 
     @property
     def config(self) -> PineconeConfig:
-        """The resolved configuration for this client.
+        """Return the resolved configuration for this client.
 
         Returns:
             :class:`~pinecone._internal.config.PineconeConfig` containing the
             resolved API key, host, timeout, and connection settings.
+
+        Examples:
+
+            The values are the resolved ones, after defaults and environment
+            variables have been folded in, so this is where to confirm which
+            host a client is actually pointed at:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    print(pc.config.host, pc.config.timeout)
         """
         return self._config
 
@@ -453,35 +612,80 @@ class AsyncPinecone:
 
     async def create_index(
         self,
+        *,
         name: str,
-        spec: ServerlessSpec | PodSpec | ByocSpec | IntegratedSpec | dict[str, Any],
+        spec: Any = None,
         dimension: int | None = None,
-        metric: Metric | str | None = "cosine",
-        timeout: int | None = None,
-        deletion_protection: DeletionProtection | str | None = "disabled",
-        vector_type: VectorType | str = "dense",
+        metric: Metric | str | None = None,
+        vector_type: VectorType | str | None = None,
+        deletion_protection: DeletionProtection | str | None = None,
         tags: Mapping[str, str] | None = None,
-        schema: dict[str, Any] | None = None,
+        timeout: int | None = None,
+        **legacy_kwargs: Any,
     ) -> IndexModel:
         """Backwards-compatibility shim for :meth:`AsyncPinecone.indexes.create`.
 
-        Preserved to ease migration from the legacy Pinecone Python SDK. New code
-        should use ``await pc.indexes.create(...)`` instead of
-        ``await pc.create_index(...)``.
+        Preserved to ease migration from the legacy (9.x) Pinecone Python
+        SDK, with the same legacy parameter list. New code should use
+        ``await pc.indexes.create(...)`` instead, which additionally accepts
+        the 2026-07 ``schema=``/``deployment=``/``read_capacity=``/
+        ``cmek_id=`` surface not available here. ``pods=``/``metadata_config=``/
+        ``source_collection=``/``source_backup_id=`` reach
+        :meth:`AsyncPinecone.indexes.create`, which raises for them.
+
+        Args:
+            name (str): Name for the index — 1-45 characters, lowercase
+                alphanumerics and hyphens.
+            spec (Any): A :class:`~pinecone.models.indexes.specs.ServerlessSpec`,
+                :class:`~pinecone.models.indexes.specs.PodSpec`,
+                :class:`~pinecone.models.indexes.specs.ByocSpec`, or equivalent
+                dict, translated into ``deployment=`` by
+                :meth:`AsyncPinecone.indexes.create`.
+            dimension (int | None): Dense vector width, translated into a
+                single-field ``schema=``.
+            metric (Metric | str | None): Similarity metric — ``"cosine"``
+                (default), ``"euclidean"``, or ``"dotproduct"``.
+            vector_type (VectorType | str | None): ``"dense"`` (default) or
+                ``"sparse"``.
+            deletion_protection (DeletionProtection | str | None): ``"enabled"``
+                or ``"disabled"`` (default).
+            tags (Mapping[str, str] | None): Optional key-value tags to attach.
+            timeout (int | None): Seconds to wait for the index to become ready.
+                ``None`` (default) waits indefinitely; ``-1`` returns immediately.
+            **legacy_kwargs: Legacy keywords such as ``pods=``,
+                ``metadata_config=``, ``source_collection=``, and
+                ``source_backup_id=``, forwarded to
+                :meth:`AsyncPinecone.indexes.create`, which rejects them.
+
+        Returns:
+            :class:`IndexModel` describing the created index.
+
+        Raises:
+            :exc:`PineconeTypeError`: If an unsupported legacy keyword is passed.
+            :exc:`IndexInitFailedError`: If the index fails to initialize.
+            :exc:`PineconeTimeoutError`: If the index isn't ready before
+                *timeout* elapses.
+            :exc:`ApiError`: If the API returns another error response.
+
+        Examples:
+            >>> async with AsyncPinecone(api_key="your-api-key") as pc:  # doctest: +SKIP
+            ...     index = await pc.create_index(
+            ...         name="movie-recommendations", dimension=1536, metric="cosine",
+            ...     )
 
         :meta private:
         """
-        resolved_dp = deletion_protection if deletion_protection is not None else "disabled"
+        reject_new_only_create_kwargs(legacy_kwargs)
         return await self.indexes.create(
             name=name,
             spec=spec,
             dimension=dimension,
-            metric=metric if metric is not None else "cosine",
+            metric=metric,
             vector_type=vector_type,
-            deletion_protection=resolved_dp,
+            deletion_protection=deletion_protection,
             tags=tags,
-            schema=schema,
             timeout=timeout,
+            **legacy_kwargs,
         )
 
     async def create_index_for_model(
@@ -496,41 +700,59 @@ class AsyncPinecone:
         schema: dict[str, Any] | None = None,
         timeout: int | None = None,
     ) -> IndexModel:
-        """Backwards-compatibility shim for :meth:`AsyncPinecone.indexes.create`.
+        """Backwards-compatibility shim for :meth:`AsyncPinecone.indexes.create_for_model`.
 
-        Preserved to ease migration from the legacy Pinecone Python SDK. New code
-        should use ``await pc.indexes.create(...)`` with
-        ``IntegratedSpec(cloud=..., region=..., embed=EmbedConfig(...))`` instead of
+        Preserved to ease migration from the legacy Pinecone Python SDK. New
+        code should use ``await pc.indexes.create_for_model(...)`` instead of
         ``await pc.create_index_for_model(...)``.
+
+        Args:
+            name (str): Name for the index — 1-45 characters, lowercase
+                alphanumerics and hyphens.
+            cloud (CloudProvider | str): Public cloud provider — ``"aws"``,
+                ``"gcp"``, or ``"azure"``.
+            region (AwsRegion | GcpRegion | AzureRegion | str): Cloud region,
+                e.g. ``"us-east-1"``.
+            embed (IndexEmbed | EmbedConfig | dict[str, Any]): Embedding
+                configuration with required ``model`` and ``field_map``, and
+                optional ``metric``, ``dimension``, ``read_parameters``,
+                ``write_parameters``. The model cannot be changed after creation.
+            tags (Mapping[str, str] | None): Optional key-value tags to attach.
+            deletion_protection (DeletionProtection | str | None): ``"enabled"``
+                or ``"disabled"`` (default).
+            read_capacity (dict[str, Any] | None): Optional read capacity dict.
+            schema (dict[str, Any] | None): Optional metadata schema for
+                filterable metadata fields.
+            timeout (int | None): Seconds to wait for the index to become ready.
+                ``None`` (default) waits indefinitely; ``-1`` returns immediately.
+
+        Returns:
+            :class:`IndexModel` describing the created index.
+
+        Raises:
+            :exc:`PineconeValueError`: If *name*, *cloud*, *region*, or *embed*
+                fail client-side validation.
+            :exc:`ApiError`: If the API returns another error response.
+
+        Examples:
+            >>> async with AsyncPinecone(api_key="your-api-key") as pc:  # doctest: +SKIP
+            ...     index = await pc.create_index_for_model(
+            ...         name="semantic-search",
+            ...         cloud="aws",
+            ...         region="us-east-1",
+            ...         embed={"model": "multilingual-e5-large",
+            ...                "field_map": {"text": "chunk_text"}},
+            ...     )
 
         :meta private:
         """
-        from pinecone.inference.models.index_embed import IndexEmbed as _IndexEmbed
-        from pinecone.models.indexes.specs import EmbedConfig as _EmbedConfig
-        from pinecone.models.indexes.specs import IntegratedSpec as _IntegratedSpec
-
-        if isinstance(embed, _IndexEmbed):
-            embed_config: EmbedConfig = _EmbedConfig(
-                model=embed.model,
-                field_map={k: str(v) for k, v in embed.field_map.items()},
-                metric=embed.metric,
-                read_parameters=embed.read_parameters or None,
-                write_parameters=embed.write_parameters or None,
-            )
-        elif isinstance(embed, _EmbedConfig):
-            embed_config = embed
-        else:
-            embed_config = _EmbedConfig(**embed)
-
-        cloud_str = cloud.value if hasattr(cloud, "value") else str(cloud)
-        region_str = region.value if hasattr(region, "value") else str(region)
-        spec = _IntegratedSpec(cloud=cloud_str, region=region_str, embed=embed_config)
-        resolved_dp = deletion_protection if deletion_protection is not None else "disabled"
-        return await self.indexes.create(
+        return await self.indexes.create_for_model(
             name=name,
-            spec=spec,
+            cloud=cloud,
+            region=region,
+            embed=embed,
+            deletion_protection=deletion_protection,
             tags=tags,
-            deletion_protection=resolved_dp,
             schema=schema,
             read_capacity=read_capacity,
             timeout=timeout,
@@ -543,6 +765,23 @@ class AsyncPinecone:
         should use ``await pc.indexes.describe(...)`` instead of
         ``await pc.describe_index(...)``.
 
+        Args:
+            name (str): The name of the index to describe.
+
+        Returns:
+            :class:`IndexModel` with name, host, schema, deployment,
+            read_capacity, status, deletion_protection, and tags.
+
+        Raises:
+            :exc:`PineconeValueError`: If *name* is empty.
+            :exc:`NotFoundError`: If the index does not exist.
+            :exc:`ApiError`: If the API returns another error response.
+
+        Examples:
+            >>> desc = await pc.describe_index("my-index")  # doctest: +SKIP
+            >>> desc.host  # doctest: +SKIP
+            'https://my-index.svc.pinecone.io'
+
         :meta private:
         """
         return await self.indexes.describe(name)
@@ -550,13 +789,24 @@ class AsyncPinecone:
     async def list_indexes(self) -> IndexList:
         """Backwards-compatibility shim for :meth:`AsyncPinecone.indexes.list`.
 
-        Preserved to ease migration from the legacy Pinecone Python SDK. New code
-        should use ``await pc.indexes.list()`` instead of
-        ``await pc.list_indexes()``.
+        Preserved to ease migration from the legacy Pinecone Python SDK. New
+        code should use ``pc.indexes.list()`` instead of
+        ``await pc.list_indexes()``, which returns an
+        :class:`~pinecone.models.pagination.AsyncPaginator`.
+
+        Returns:
+            :class:`IndexList` wrapping every index in the project.
+
+        Raises:
+            :exc:`ApiError`: If the API returns an error response.
+
+        Examples:
+            >>> for index in await pc.list_indexes():  # doctest: +SKIP
+            ...     print(index.name)
 
         :meta private:
         """
-        return await self.indexes.list()
+        return IndexList(await self.indexes.list().to_list())
 
     async def has_index(self, name: str) -> bool:
         """Backwards-compatibility shim for :meth:`AsyncPinecone.indexes.exists`.
@@ -565,6 +815,16 @@ class AsyncPinecone:
         should use ``await pc.indexes.exists(...)`` instead of
         ``await pc.has_index(...)``.
 
+        Args:
+            name (str): The name of the index to check.
+
+        Returns:
+            True if the index exists, False otherwise.
+
+        Raises:
+            :exc:`PineconeValueError`: If *name* is empty.
+            :exc:`ApiError`: If the API returns an error response other than a not-found error.
+
         :meta private:
         """
         return await self.indexes.exists(name)
@@ -572,24 +832,61 @@ class AsyncPinecone:
     async def configure_index(
         self,
         name: str,
+        *,
         replicas: int | None = None,
-        pod_type: str | None = None,
+        pod_type: PodType | str | None = None,
         deletion_protection: DeletionProtection | str | None = None,
         tags: Mapping[str, str] | None = None,
-        embed: dict[str, Any] | None = None,
+        embed: Any = None,
         read_capacity: dict[str, Any] | None = None,
         serverless_read_capacity: dict[str, Any] | None = None,
-    ) -> None:
+        **legacy_kwargs: Any,
+    ) -> IndexModel:
         """Backwards-compatibility shim for :meth:`AsyncPinecone.indexes.configure`.
 
-        Preserved to ease migration from the legacy Pinecone Python SDK. New code
-        should use ``await pc.indexes.configure(...)`` instead of
-        ``await pc.configure_index(...)``.
+        Preserved to ease migration from the legacy Pinecone Python SDK. New
+        code should use ``await pc.indexes.configure(...)`` instead of
+        ``await pc.configure_index(...)``, which additionally accepts the
+        2026-07 ``deployment=``/``schema=`` surface not available here.
+        ``embed=`` reaches :meth:`AsyncPinecone.indexes.configure`, which
+        raises for it: the 2025-10 convert-to-integrated flow has no 2026-07
+        equivalent.
+
+        .. versionchanged:: 10.0
+           Returns the updated :class:`IndexModel` where the 9.x method
+           returned ``None``.
+
+        Args:
+            name (str): Name of the index to configure.
+            replicas (int | None): Pod-based replica count.
+            pod_type (PodType | str | None): Pod type, e.g. ``"p1.x2"``.
+            deletion_protection (DeletionProtection | str | None):
+                ``"enabled"`` or ``"disabled"``.
+            tags (Mapping[str, str] | None): Tag updates, merged with
+                existing tags on the server. Set a value to ``""`` to
+                delete that key.
+            embed (Any): Not supported by this shim; passing a value raises.
+            read_capacity (dict[str, Any] | None): Updated read capacity,
+                e.g. ``{"mode": "OnDemand"}``.
+            serverless_read_capacity (dict[str, Any] | None): Alias for
+                *read_capacity*.
+
+        Returns:
+            :class:`IndexModel` reflecting the updated index state.
+
+        Raises:
+            :exc:`PineconeTypeError`: If ``embed=`` is passed, or an
+                argument outside this shim's signature is given.
+            :exc:`PineconeValueError`: If *name* is empty or every other
+                argument is left at its default.
+            :exc:`NotFoundError`: If the index does not exist.
+            :exc:`ApiError`: If the API returns another error response.
 
         :meta private:
         """
-        await self.indexes.configure(
-            name=name,
+        reject_new_only_configure_kwargs(legacy_kwargs)
+        return await self.indexes.configure(
+            name,
             replicas=replicas,
             pod_type=pod_type,
             deletion_protection=deletion_protection,
@@ -597,6 +894,7 @@ class AsyncPinecone:
             embed=embed,
             read_capacity=read_capacity,
             serverless_read_capacity=serverless_read_capacity,
+            **legacy_kwargs,
         )
 
     async def delete_index(self, name: str, timeout: int | None = None) -> None:
@@ -605,6 +903,20 @@ class AsyncPinecone:
         Preserved to ease migration from the legacy Pinecone Python SDK. New code
         should use ``await pc.indexes.delete(...)`` instead of
         ``await pc.delete_index(...)``.
+
+        Args:
+            name (str): The name of the index to delete.
+            timeout (int | None): Seconds to wait for the index to disappear.
+                Use ``None`` (default) to poll indefinitely until the index
+                is gone. Use a positive int to poll with a deadline. Use
+                ``-1`` to return immediately without polling.
+
+        Raises:
+            :exc:`PineconeValueError`: If *name* is empty.
+            :exc:`NotFoundError`: If the index does not exist.
+            :exc:`ForbiddenError`: If deletion protection is enabled on the index.
+            :exc:`PineconeTimeoutError`: If the index still exists after *timeout* seconds.
+            :exc:`ApiError`: If the API returns another error response.
 
         :meta private:
         """
@@ -617,6 +929,21 @@ class AsyncPinecone:
         should use ``await pc.collections.create(...)`` instead of
         ``await pc.create_collection(...)``.
 
+        Args:
+            name (str): Name for the new collection. 1-45 characters,
+                lowercase alphanumeric and hyphens only, and can't start or
+                end with a hyphen (e.g. ``"movie-embeddings-snapshot"``).
+            source (str): Name of the pod-based index to copy.
+
+        Returns:
+            A :class:`CollectionModel` describing the created collection.
+
+        Raises:
+            :exc:`PineconeValueError`: If *name* or *source* is empty, or
+                *name* doesn't meet the naming rules above.
+            :exc:`NotFoundError`: If *source* does not name an index in
+                this project.
+
         :meta private:
         """
         return await self.collections.create(name=name, source=source)
@@ -627,6 +954,10 @@ class AsyncPinecone:
         Preserved to ease migration from the legacy Pinecone Python SDK. New code
         should use ``await pc.collections.list()`` instead of
         ``await pc.list_collections()``.
+
+        Returns:
+            A :class:`CollectionList` supporting iteration, len(), index access,
+            and a names() convenience method.
 
         :meta private:
         """
@@ -639,6 +970,17 @@ class AsyncPinecone:
         should use ``await pc.collections.describe(...)`` instead of
         ``await pc.describe_collection(...)``.
 
+        Args:
+            name (str): Name of the collection to describe.
+
+        Returns:
+            A :class:`CollectionModel` with the collection's name, status,
+            size, dimension, vector_count, and environment.
+
+        Raises:
+            :exc:`PineconeValueError`: If *name* is empty.
+            :exc:`NotFoundError`: If the collection does not exist.
+
         :meta private:
         """
         return await self.collections.describe(name)
@@ -649,6 +991,13 @@ class AsyncPinecone:
         Preserved to ease migration from the legacy Pinecone Python SDK. New code
         should use ``await pc.collections.delete(...)`` instead of
         ``await pc.delete_collection(...)``.
+
+        Args:
+            name (str): Name of the collection to delete.
+
+        Raises:
+            :exc:`PineconeValueError`: If *name* is empty.
+            :exc:`NotFoundError`: If the collection does not exist.
 
         :meta private:
         """
@@ -665,7 +1014,29 @@ class AsyncPinecone:
 
         Preserved to ease migration from the legacy Pinecone Python SDK. New code
         should use ``await pc.backups.create(...)`` instead of
-        ``await pc.create_backup(...)``.
+        ``await pc.create_backup(...)``. Note the keyword is *backup_name*
+        here, where :meth:`AsyncPinecone.backups.create` uses *name*.
+
+        Args:
+            index_name (str): Name of the index to back up.
+            backup_name (str | None): Name for the backup, e.g.
+                ``"daily-20240115"``. When omitted, the backup has no name
+                and is identified only by its ``backup_id``.
+            description (str | None): Description for the backup.
+
+        Returns:
+            A :class:`BackupModel` describing the new backup. The call
+            returns once the backup is initiated; check its ``status`` via
+            :meth:`AsyncPinecone.describe_backup` to see when it's ready.
+
+        Raises:
+            :exc:`PineconeValueError`: If *index_name* is empty.
+            :exc:`ForbiddenError`: If the organization's plan does not
+                include backups.
+            :exc:`NotFoundError`: If *index_name* does not resolve to an
+                index in this project.
+            :exc:`ApiError`: If the API returns another error response, for
+                example because *index_name* names a pod-based index.
 
         :meta private:
         """
@@ -681,6 +1052,7 @@ class AsyncPinecone:
         index_name: str | None = None,
         limit: int | None = None,
         pagination_token: str | None = None,
+        include_deleted: bool | None = None,
     ) -> BackupList:
         """Backwards-compatibility shim for :meth:`AsyncPinecone.backups.list`.
 
@@ -688,12 +1060,34 @@ class AsyncPinecone:
         should use ``await pc.backups.list(...)`` instead of
         ``await pc.list_backups(...)``.
 
+        Args:
+            index_name (str | None): Index name to scope the listing to, or
+                ``None`` for every backup in the project.
+            limit (int | None): Maximum number of results per page.
+            pagination_token (str | None): Token naming the next page,
+                taken from a previous :class:`BackupList`'s pagination info.
+            include_deleted (bool | None): When ``True``, include backups of
+                every index that has ever used *index_name*, deleted ones
+                included. Only valid together with *index_name*.
+
+        Returns:
+            A :class:`BackupList` supporting iteration, len(), and index
+            access.
+
+        Raises:
+            :exc:`PineconeValueError`: If *include_deleted* is given without
+                *index_name*.
+            :exc:`NotFoundError`: If *index_name* does not resolve to an
+                active index and *include_deleted* is not ``True``.
+            :exc:`ApiError`: If the API returns another error response.
+
         :meta private:
         """
         return await self.backups.list(
             index_name=index_name,
             limit=limit,
             pagination_token=pagination_token,
+            include_deleted=include_deleted,
         )
 
     async def describe_backup(self, *, backup_id: str) -> BackupModel:
@@ -702,6 +1096,17 @@ class AsyncPinecone:
         Preserved to ease migration from the legacy Pinecone Python SDK. New code
         should use ``await pc.backups.describe(...)`` instead of
         ``await pc.describe_backup(...)``.
+
+        Args:
+            backup_id (str): The identifier of the backup to describe.
+
+        Returns:
+            A :class:`BackupModel` with full backup details.
+
+        Raises:
+            :exc:`PineconeValueError`: If *backup_id* is empty.
+            :exc:`NotFoundError`: If the backup does not exist.
+            :exc:`ApiError`: If the API returns another error response.
 
         :meta private:
         """
@@ -713,6 +1118,14 @@ class AsyncPinecone:
         Preserved to ease migration from the legacy Pinecone Python SDK. New code
         should use ``await pc.backups.delete(...)`` instead of
         ``await pc.delete_backup(...)``.
+
+        Args:
+            backup_id (str): The identifier of the backup to delete.
+
+        Raises:
+            :exc:`PineconeValueError`: If *backup_id* is empty.
+            :exc:`NotFoundError`: If the backup does not exist.
+            :exc:`ApiError`: If the API returns another error response.
 
         :meta private:
         """
@@ -728,7 +1141,21 @@ class AsyncPinecone:
 
         Preserved to ease migration from the legacy Pinecone Python SDK. New code
         should use ``await pc.restore_jobs.list(...)`` instead of
-        ``await pc.list_restore_jobs(...)``.
+        ``await pc.list_restore_jobs(...)``. Returns a single page and does
+        not auto-fetch further pages; see :meth:`AsyncPinecone.restore_jobs.list`
+        for pagination details and a note on its known limitations.
+
+        Args:
+            limit (int | None): Maximum number of results per page.
+            pagination_token (str | None): Token naming the next page, taken
+                from a previous :class:`RestoreJobList`'s pagination info.
+
+        Returns:
+            A :class:`RestoreJobList` supporting iteration, len(), and index
+            access.
+
+        Raises:
+            :exc:`ApiError`: If the API returns an error response.
 
         :meta private:
         """
@@ -742,7 +1169,21 @@ class AsyncPinecone:
 
         Preserved to ease migration from the legacy Pinecone Python SDK. New code
         should use ``await pc.restore_jobs.describe(...)`` instead of
-        ``await pc.describe_restore_job(...)``.
+        ``await pc.describe_restore_job(...)``. See
+        :meth:`AsyncPinecone.restore_jobs.describe` for important caveats about
+        what :exc:`NotFoundError` from this call does and does not mean.
+
+        Args:
+            job_id (str): The identifier of the restore job to describe.
+
+        Returns:
+            A :class:`RestoreJobModel` with full restore job details.
+
+        Raises:
+            :exc:`PineconeValueError`: If *job_id* is empty.
+            :exc:`NotFoundError`: If the API answers with a not-found
+                response for this job.
+            :exc:`ApiError`: If the API returns another error response.
 
         :meta private:
         """
@@ -754,6 +1195,23 @@ class AsyncPinecone:
         Preserved to ease migration from the legacy Pinecone Python SDK. New
         code should use ``pc.index(host=...)`` (where ``pc`` is an
         :class:`AsyncPinecone` instance) instead of ``pc.IndexAsyncio(...)``.
+        Unlike :meth:`AsyncPinecone.index`, this is a plain (non-``async def``)
+        method that only accepts a host, not a name — it builds the client
+        directly, without a describe call.
+
+        Args:
+            host (str): Direct host URL of the index.
+            **kwargs: Unused; accepted for signature compatibility with the
+                legacy SDK.
+
+        Returns:
+            An :class:`AsyncIndex` data-plane client, configured with this
+            client's API key, timeout, proxy, and TLS settings.
+
+        Examples:
+            >>> from pinecone import AsyncPinecone
+            >>> pc = AsyncPinecone(api_key="your-api-key")
+            >>> idx = pc.IndexAsyncio(host="my-index-abc123.svc.pinecone.io")  # doctest: +SKIP
 
         :meta private:
         """
@@ -831,7 +1289,7 @@ class AsyncPinecone:
         *,
         host: str = "",
     ) -> AsyncIndex:
-        """Create an async data plane client targeting a specific index.
+        """Create an async data-plane client targeting a specific index.
 
         Can target by host URL directly (skips the describe call) or by
         index name (triggers an async describe-index lookup to resolve the host
@@ -847,20 +1305,35 @@ class AsyncPinecone:
             host (str): Direct host URL of the index. Skips the describe call.
 
         Returns:
-            An async :class:`AsyncIndex` data plane client.
+            An async :class:`AsyncIndex` data-plane client.
 
         Raises:
-            :exc:`ValidationError`: If neither *name* nor *host* is provided.
-            :exc:`NotFoundError`: If *name* is given but no such index exists.
+            :exc:`PineconeValueError`: If neither *name* nor *host* is provided.
+            :exc:`~pinecone.errors.NotFoundError`: If *name* is given but no such
+                index exists.
 
         Examples:
 
+            Naming the index resolves its host with a describe call the first
+            time; the host is cached on this client, so later calls for the
+            same name cost nothing:
+
             .. code-block:: python
 
-                async with AsyncPinecone(api_key="...") as pc:
-                    idx = await pc.index(host="my-index-abc123.svc.pinecone.io")
-                    # or
-                    idx = await pc.index(name="my-index")  # triggers describe on cache miss
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    idx = await pc.index(name="product-search")
+                    async with idx:
+                        print(await idx.describe_index_stats())
+
+            Passing the host directly skips that lookup entirely, which saves
+            a round trip when you already know it:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    idx = await pc.index(host="product-search-abc123.svc.pinecone.io")
+                    async with idx:
+                        print(await idx.describe_index_stats())
 
         .. warning::
            The returned :class:`AsyncIndex` manages its own HTTP client.
@@ -880,38 +1353,66 @@ class AsyncPinecone:
         """Close all open HTTP connections.
 
         Closes the main control-plane client and any namespace clients (inference,
-        assistants, preview) that were initialized during this session.
+        assistants) that were initialized during this session.
 
         Prefer the async context manager form (``async with AsyncPinecone(...) as pc:``)
         which calls :meth:`close` automatically on exit.
 
         Examples:
-            Close the client explicitly after use:
+            The async context manager form closes the client on the way out,
+            on an exception as well as on a normal exit:
 
-            >>> import asyncio
-            >>> from pinecone import AsyncPinecone
-            >>> async def example():
-            ...     client = AsyncPinecone(api_key="your-api-key")
-            ...     await client.close()
-            >>> asyncio.run(example())
+            .. code-block:: python
 
-            Use AsyncPinecone as a context manager (``close`` is called automatically):
+                from pinecone import AsyncPinecone
 
-            >>> async def example():
-            ...     async with AsyncPinecone(api_key="your-api-key") as pc:
-            ...         _ = await pc.indexes.list()
-            >>> asyncio.run(example())
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    async for index in pc.indexes.list():
+                        print(index.name)
+
+            Close it yourself when the client has to outlive a single block:
+
+            .. code-block:: python
+
+                pc = AsyncPinecone(api_key="your-api-key")
+                try:
+                    print(await pc.indexes.exists("product-search"))
+                finally:
+                    await pc.close()
         """
         await self._http.close()
         if self._assistants is not None:
             await self._assistants.close()
         if self._inference is not None:
             await self._inference.close()
-        if self._preview is not None:
-            await self._preview.close()
 
     async def __aenter__(self) -> AsyncPinecone:
+        """Enter the async context manager, returning this client.
+
+        Returns:
+            This :class:`AsyncPinecone` instance.
+
+        Examples:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    async for index in pc.indexes.list():
+                        print(index.name)
+        """
         return self
 
     async def __aexit__(self, *args: Any) -> None:
+        """Exit the async context manager, closing the client.
+
+        Calls :meth:`close` to release open HTTP connections.
+
+        Examples:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    async for index in pc.indexes.list():
+                        print(index.name)
+        """
         await self.close()

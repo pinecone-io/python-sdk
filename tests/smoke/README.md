@@ -9,7 +9,11 @@ following environment variables control which scenarios run.
 
 | Variable | Effect |
 |---|---|
-| `PINECONE_API_KEY` | API key for the project under test. The whole suite is skipped if unset. Read from `.env` at the SDK root. |
+| `PINECONE_API_KEY` | API key for the project under test. The whole suite is skipped if unset. Read from `.env` in the **main working tree**, so runs from a git worktree find the same file; override with `PINECONE_SDK_ENV_FILE=/path/to/.env`. |
+
+Every run ends with a `smoke coverage summary` block naming the `.env` it
+loaded and how many tests actually ran. A run that resolved no key says so
+there rather than exiting 0 behind a wall of skips (#295, #315).
 
 ## Optional (opt-in coverage)
 
@@ -44,9 +48,9 @@ SMOKE_RUN_POD_SHIMS=1 SMOKE_RUN_BACKUPS=1 \
   PINECONE_IMPORT_INTEGRATION_ID=int-abc123 \
   uv run --with python-dotenv --with pytest-asyncio pytest tests/smoke/ -v -s
 
-# Orphan cleanup
-uv run --with python-dotenv python tests/smoke/scripts/cleanup_orphans.py --dry-run
-uv run --with python-dotenv python tests/smoke/scripts/cleanup_orphans.py
+# Orphan cleanup — as a module, so `tests.live_suite` resolves (#412)
+uv run --with python-dotenv python -m tests.smoke.scripts.cleanup_orphans --dry-run
+uv run --with python-dotenv python -m tests.smoke.scripts.cleanup_orphans
 ```
 
 ## CI integration

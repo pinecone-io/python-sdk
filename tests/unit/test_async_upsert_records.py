@@ -9,7 +9,12 @@ import pytest
 import respx
 
 from pinecone.async_client.async_index import AsyncIndex
-from pinecone.errors.exceptions import PineconeValueError, ValidationError
+from pinecone.errors.exceptions import (
+    PineconeError,
+    PineconeTypeError,
+    PineconeValueError,
+    ValidationError,
+)
 from pinecone.models.vectors.responses import UpsertRecordsResponse
 
 INDEX_HOST = "my-index-abc123.svc.pinecone.io"
@@ -140,3 +145,29 @@ class TestAsyncUpsertRecords:
                 namespace="test-ns",
                 records=[{"_id": 123, "text": "hello"}],
             )
+
+    @respx.mock
+    @pytest.mark.anyio
+    async def test_async_upsert_records_unencodable_metadata_names_the_record(self) -> None:
+        """Issue #196: the async NDJSON path reports the same path as the sync one."""
+        route = respx.post(UPSERT_URL).mock(return_value=httpx.Response(201, content=b""))
+        idx = _make_async_index()
+        with pytest.raises(PineconeTypeError) as excinfo:
+            await idx.upsert_records(
+                namespace="test-ns",
+                records=[
+                    {"_id": "r1", "text": "fine"},
+                    {"_id": "r2", "text": "wide", "views": 2**64},
+                ],
+            )
+        assert excinfo.value.path == "records[1].views"
+        assert "records[1].views" in str(excinfo.value)
+        assert not route.called
+
+    @pytest.mark.anyio
+    async def test_async_upsert_records_unencodable_value_is_still_a_type_error(self) -> None:
+        idx = _make_async_index()
+        with pytest.raises(TypeError):
+            await idx.upsert_records(namespace="test-ns", records=[{"_id": "r1", "n": 2**64}])
+        with pytest.raises(PineconeError):
+            await idx.upsert_records(namespace="test-ns", records=[{"_id": "r1", "n": 2**64}])

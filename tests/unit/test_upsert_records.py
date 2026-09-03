@@ -9,7 +9,12 @@ import pytest
 import respx
 
 from pinecone import Index
-from pinecone.errors.exceptions import PineconeValueError, ValidationError
+from pinecone.errors.exceptions import (
+    PineconeError,
+    PineconeTypeError,
+    PineconeValueError,
+    ValidationError,
+)
 from pinecone.models.vectors.responses import UpsertRecordsResponse
 
 INDEX_HOST = "my-index-abc123.svc.pinecone.io"
@@ -198,6 +203,32 @@ class TestUpsertRecords:
         assert parsed_0["text"] == "Quantum mechanics."
         assert parsed_1["category"] == "history"
         assert parsed_1["text"] == "The Roman Empire."
+
+    @respx.mock
+    def test_upsert_records_unencodable_metadata_names_the_record(self) -> None:
+        """Issue #196: a value orjson cannot encode raises PineconeTypeError with
+        the caller's own record index in the path, and never reaches the wire."""
+        route = respx.post(UPSERT_URL).mock(return_value=httpx.Response(201))
+        idx = _make_index()
+        with pytest.raises(PineconeTypeError) as excinfo:
+            idx.upsert_records(
+                namespace="test-ns",
+                records=[
+                    {"_id": "r1", "text": "fine"},
+                    {"_id": "r2", "text": "wide", "views": 2**64},
+                ],
+            )
+        assert excinfo.value.path == "records[1].views"
+        assert "records[1].views" in str(excinfo.value)
+        assert not route.called
+
+    def test_upsert_records_unencodable_value_is_still_a_type_error(self) -> None:
+        """The typed error only widens what a caller can catch."""
+        idx = _make_index()
+        with pytest.raises(TypeError):
+            idx.upsert_records(namespace="test-ns", records=[{"_id": "r1", "n": 2**64}])
+        with pytest.raises(PineconeError):
+            idx.upsert_records(namespace="test-ns", records=[{"_id": "r1", "n": 2**64}])
 
     @respx.mock
     def test_upsert_records_response_bracket_access(self) -> None:

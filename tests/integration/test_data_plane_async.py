@@ -1,9 +1,22 @@
-"""Integration tests for data-plane vector operations (async REST)."""
+"""Integration tests for data-plane vector operations (async REST).
+
+The shared indexes come from :func:`legacy_index_factory`, not from
+``pc.indexes.create``: 2026-07 has no way to create an index the vectors API
+will serve, and every call in this module is a vectors-API call. See
+:mod:`tests.integration.legacy_index` for the sanctioned pattern and why the
+SDK's own create path is bypassed.
+
+Each shared-index fixture calls ``assert_serves_vectors_api`` once, because a
+document-schema index would not fail this module loudly — writes are refused
+but ``query`` / ``fetch`` / ``describe_index_stats`` succeed and return
+**empty**, so a read-only assertion would pass against data that was never
+there. Every test that reads live data writes first and asserts
+``upserted_count``, which is the other half of that defence.
+"""
 
 from __future__ import annotations
 
 import uuid
-from collections.abc import Generator
 
 import httpx
 import orjson
@@ -12,7 +25,6 @@ import respx
 
 from pinecone import AsyncIndex, AsyncPinecone, Pinecone
 from pinecone.errors import ApiError, ConflictError, PineconeValueError
-from pinecone.models.indexes.specs import ServerlessSpec
 from pinecone.models.namespaces.models import ListNamespacesResponse, NamespaceDescription
 from pinecone.models.vectors.responses import (
     DescribeIndexStatsResponse,
@@ -26,11 +38,11 @@ from pinecone.models.vectors.responses import (
 )
 from pinecone.models.vectors.vector import ScoredVector, Vector
 from tests.integration.conftest import (
+    LegacyIndexFactory,
     async_cleanup_resource,
     async_poll_until,
-    ensure_index_deleted,
-    unique_name,
 )
+from tests.integration.legacy_index import assert_serves_vectors_api
 
 # ---------------------------------------------------------------------------
 # Module-scoped shared indexes
@@ -38,39 +50,19 @@ from tests.integration.conftest import (
 
 
 @pytest.fixture(scope="module")
-def shared_index_dim2(api_key: str) -> Generator[str, None, None]:
-    """Shared serverless index (dim=2, cosine) reused across all dim=2 tests in this module."""
-    sync_pc = Pinecone(api_key=api_key)
-    name = unique_name("idx-shared-dim2-async")
-    sync_pc.indexes.create(
-        name=name,
-        dimension=2,
-        metric="cosine",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        timeout=300,
-    )
-    try:
-        yield name
-    finally:
-        ensure_index_deleted(sync_pc, name)
+def shared_index_dim2(client: Pinecone, legacy_index_factory: LegacyIndexFactory) -> str:
+    """Shared legacy index (dim=2, cosine) reused across all dim=2 tests in this module."""
+    index = legacy_index_factory(dimension=2)
+    assert_serves_vectors_api(client, index)
+    return index.name
 
 
 @pytest.fixture(scope="module")
-def shared_index_dim3(api_key: str) -> Generator[str, None, None]:
-    """Shared serverless index (dim=3, cosine) reused across all dim=3 tests in this module."""
-    sync_pc = Pinecone(api_key=api_key)
-    name = unique_name("idx-shared-dim3-async")
-    sync_pc.indexes.create(
-        name=name,
-        dimension=3,
-        metric="cosine",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        timeout=300,
-    )
-    try:
-        yield name
-    finally:
-        ensure_index_deleted(sync_pc, name)
+def shared_index_dim3(client: Pinecone, legacy_index_factory: LegacyIndexFactory) -> str:
+    """Shared legacy index (dim=3, cosine) reused across all dim=3 tests in this module."""
+    index = legacy_index_factory(dimension=3)
+    assert_serves_vectors_api(client, index)
+    return index.name
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +80,7 @@ async def test_delete_vectors_rest_async(
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     idx = await async_client.index(name=shared_index_dim2)
 
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {"id": "del-v1", "values": [0.1, 0.2]},
             {"id": "del-v2", "values": [0.3, 0.4]},
@@ -96,6 +88,7 @@ async def test_delete_vectors_rest_async(
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait for all 3 vectors to be fetchable (eventual consistency)
     await async_poll_until(
@@ -167,7 +160,7 @@ async def test_query_by_vector_rest_async(
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     idx = await async_client.index(name=shared_index_dim2)
 
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {"id": "v1", "values": [0.1, 0.2]},
             {"id": "v2", "values": [0.3, 0.4]},
@@ -175,6 +168,7 @@ async def test_query_by_vector_rest_async(
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait for all 3 vectors to be queryable (eventual consistency)
     await async_poll_until(
@@ -192,18 +186,14 @@ async def test_query_by_vector_rest_async(
         assert isinstance(match, ScoredVector)
         assert isinstance(match.id, str)
         assert isinstance(match.score, float)
-    # The self-match vector (v1) must be in the top-k results with a score ≈ 1.0.
-    # Strict sorted() comparison is avoided because cosine backends occasionally return
-    # matches in non-descending order when scores are close (RC2 from CI-0059).
-    ids = {m.id for m in result.matches}
-    assert "v1" in ids, f"Self-match v1 should be in top-2 results, got ids={ids}"
-    v1_score = next(m.score for m in result.matches if m.id == "v1")
-    assert abs(v1_score - 1.0) < 0.01, f"v1 self-match score should be ~1.0, got {v1_score}"
-    import itertools
-
-    scores = [m.score for m in result.matches]
-    for a, b in itertools.pairwise(scores):
-        assert a >= b - 0.02, f"Scores should be in roughly descending order, got {scores}"
+    # Keyed by id, never by position: the server returns matches unsorted by
+    # score (#368), so asserting an order would encode a server bug as our
+    # contract and break when it is fixed. The set and the argmax are checked
+    # instead, which is what "the right neighbours, scored right" means.
+    by_match = {m.id: m for m in result.matches}
+    assert "v1" in by_match, f"Self-match v1 should be in top-2 results, got ids={set(by_match)}"
+    assert by_match["v1"].score == pytest.approx(1.0, abs=1e-2)
+    assert max(by_match, key=lambda i: by_match[i].score) == "v1"
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +211,7 @@ async def test_fetch_vectors_rest_async(
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     idx = await async_client.index(name=shared_index_dim2)
 
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {"id": "v1", "values": [0.1, 0.2]},
             {"id": "v2", "values": [0.3, 0.4]},
@@ -229,6 +219,7 @@ async def test_fetch_vectors_rest_async(
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait for vectors to be fetchable (eventual consistency)
     await async_poll_until(
@@ -268,7 +259,7 @@ async def test_list_vectors_rest_async(async_client: AsyncPinecone, shared_index
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     idx = await async_client.index(name=shared_index_dim2)
 
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {"id": "lst-v1", "values": [0.1, 0.2]},
             {"id": "lst-v2", "values": [0.3, 0.4]},
@@ -276,6 +267,7 @@ async def test_list_vectors_rest_async(async_client: AsyncPinecone, shared_index
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait for all 3 vectors to appear in list results (eventual consistency)
     async def _collect_ids() -> list[str]:
@@ -326,13 +318,14 @@ async def test_update_vectors_rest_async(
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     idx = await async_client.index(name=shared_index_dim2)
 
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {"id": "upd-v1", "values": [0.1, 0.2]},
             {"id": "upd-v2", "values": [0.3, 0.4]},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     # Wait for vectors to be fetchable (eventual consistency)
     await async_poll_until(
@@ -382,13 +375,14 @@ async def test_describe_index_stats_rest_async(
     idx = await async_client.index(name=shared_index_dim3)
 
     # Upsert a few vectors so stats are non-trivial
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {"id": "st-v1", "values": [0.1, 0.2, 0.3]},
             {"id": "st-v2", "values": [0.4, 0.5, 0.6]},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     # Wait until our namespace appears in stats (eventual consistency)
     await async_poll_until(
@@ -502,7 +496,7 @@ async def test_list_paginated_returns_single_page_rest_async(
     idx = await async_client.index(name=shared_index_dim2)
 
     # Upsert 4 vectors with a shared prefix
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {"id": "pg-v1", "values": [0.1, 0.2]},
             {"id": "pg-v2", "values": [0.3, 0.4]},
@@ -511,6 +505,7 @@ async def test_list_paginated_returns_single_page_rest_async(
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 4
 
     # Wait until all 4 vectors appear in list results
     await async_poll_until(
@@ -564,7 +559,8 @@ async def test_describe_index_stats_filter_unsupported_on_serverless_rest_async(
     idx = await async_client.index(name=shared_index_dim3)
 
     # Upsert one vector so the index has some content
-    await idx.upsert(vectors=[{"id": "fa-v1", "values": [0.1, 0.2, 0.3]}], namespace=ns)
+    upserted = await idx.upsert(vectors=[{"id": "fa-v1", "values": [0.1, 0.2, 0.3]}], namespace=ns)
+    assert upserted.upserted_count == 1
 
     # The filter parameter is not supported on serverless/starter indexes —
     # the API returns 400 and the SDK should surface it as ApiError.
@@ -674,8 +670,10 @@ async def test_list_namespaces_generator_rest_async(
     idx = await async_client.index(name=shared_index_dim2)
 
     # Upsert one vector into each namespace to create them implicitly
-    await idx.upsert(vectors=[{"id": "lnsg-v1", "values": [0.1, 0.2]}], namespace=ns_a)
-    await idx.upsert(vectors=[{"id": "lnsg-v2", "values": [0.3, 0.4]}], namespace=ns_b)
+    upserted = await idx.upsert(vectors=[{"id": "lnsg-v1", "values": [0.1, 0.2]}], namespace=ns_a)
+    assert upserted.upserted_count == 1
+    upserted = await idx.upsert(vectors=[{"id": "lnsg-v2", "values": [0.3, 0.4]}], namespace=ns_b)
+    assert upserted.upserted_count == 1
 
     # Poll until both namespaces appear in list_namespaces_paginated
     await async_poll_until(
@@ -730,7 +728,7 @@ async def test_list_paginated_multi_page_rest_async(
     idx = await async_client.index(name=shared_index_dim2)
 
     # Upsert 4 vectors with a shared prefix
-    await idx.upsert(
+    upserted = await idx.upsert(
         vectors=[
             {"id": "mp-v1", "values": [0.1, 0.2]},
             {"id": "mp-v2", "values": [0.3, 0.4]},
@@ -739,6 +737,7 @@ async def test_list_paginated_multi_page_rest_async(
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 4
 
     # Wait until all 4 vectors appear in list results
     async def _list_all() -> ListResponse:
@@ -804,7 +803,8 @@ async def test_delete_nonexistent_ids_returns_none_async(
     idx = await async_client.index(name=shared_index_dim2)
 
     # Establish namespace by upserting a sentinel vector first
-    await idx.upsert(vectors=[{"id": "dn-a1", "values": [0.3, 0.7]}], namespace=ns)
+    upserted = await idx.upsert(vectors=[{"id": "dn-a1", "values": [0.3, 0.7]}], namespace=ns)
+    assert upserted.upserted_count == 1
     await async_poll_until(
         query_fn=lambda: idx.fetch(ids=["dn-a1"], namespace=ns),
         check_fn=lambda r: len(r.vectors) == 1,
@@ -845,15 +845,24 @@ async def test_index_context_manager_async(
     Area tag: context-manager
     Transport: rest-async
     """
+    ns = f"ns-{uuid.uuid4().hex[:8]}"
     async_index = await async_client.index(name=shared_index_dim2)
     async with async_index as ai:
         # __aenter__ must return the same object
         assert ai is async_index, "__aenter__ must return self"
         assert isinstance(ai, AsyncIndex)
-        # Operations work inside the context
-        stats = await ai.describe_index_stats()
+        # Write first: describe_index_stats succeeds and reports zero on an
+        # index that refuses vector writes, so a bare shape assertion would
+        # hold against data that never landed (#322).
+        upserted = await ai.upsert(vectors=[{"id": "cma-v1", "values": [0.1, 0.2]}], namespace=ns)
+        assert upserted.upserted_count == 1
+        stats = await async_poll_until(
+            query_fn=lambda: ai.describe_index_stats(),
+            check_fn=lambda s: ns in s.namespaces and s.namespaces[ns].vector_count == 1,
+            timeout=120,
+            description="context-manager namespace visible in stats (async)",
+        )
         assert isinstance(stats, DescribeIndexStatsResponse)
-        assert isinstance(stats.total_vector_count, int)
     # After __aexit__ called close(), calling close() again must not raise
     await async_index.close()
 
@@ -882,7 +891,10 @@ async def test_fetch_nonexistent_ids_returns_empty_vectors_async(
     idx = await async_client.index(name=shared_index_dim3)
 
     # Upsert one real vector to establish the namespace
-    await idx.upsert(vectors=[{"id": "real-v1", "values": [0.1, 0.2, 0.3]}], namespace=ns)
+    upserted = await idx.upsert(
+        vectors=[{"id": "real-v1", "values": [0.1, 0.2, 0.3]}], namespace=ns
+    )
+    assert upserted.upserted_count == 1
     await async_poll_until(
         query_fn=lambda: idx.fetch(ids=["real-v1"], namespace=ns),
         check_fn=lambda r: "real-v1" in r.vectors,
@@ -914,22 +926,32 @@ async def test_create_namespace_error_paths_async(
     """create_namespace() rejects invalid names client-side and raises ConflictError for duplicates.
 
     Verifies claims:
-    - unified-ns-0010: Namespace creation is rejected when name is empty or whitespace-only.
+    - unified-ns-0010: Namespace creation is rejected when the name breaks the
+      ASCII / no-NUL / 1-512 rule, or names the reserved ``__default__``.
     - unified-ns-0012: Creating a namespace that already exists raises a ConflictError (HTTP 409).
 
     Async transport parity for test_create_namespace_error_paths_rest.
+
+    A whitespace-only name is deliberately absent: the rule is ASCII/no-NUL/1-512,
+    not "non-blank", so ``"   "`` is a legal name the server accepts. Asserting a
+    rejection here would both fail and leave a stray namespace on the shared index.
     """
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     ns_name = f"{ns}-cnep-ns-beta"
     idx = await async_client.index(name=shared_index_dim2)
     try:
-        # unified-ns-0010: empty name → client-side PineconeValueError (no API call made)
+        # unified-ns-0010: each of these is refused client-side, so no API call is made
         with pytest.raises(PineconeValueError):
             await idx.create_namespace(name="")
 
-        # unified-ns-0010: whitespace-only name → client-side PineconeValueError
         with pytest.raises(PineconeValueError):
-            await idx.create_namespace(name="   ")
+            await idx.create_namespace(name="naïve")
+
+        with pytest.raises(PineconeValueError):
+            await idx.create_namespace(name="a" * 513)
+
+        with pytest.raises(PineconeValueError):
+            await idx.create_namespace(name="__default__")
 
         # Precondition for ns-0012: create the namespace successfully
         created = await idx.create_namespace(name=ns_name)
@@ -1098,10 +1120,11 @@ async def test_list_namespaces_multi_page_pagination_async(
 
     # Upsert one vector per namespace to create them implicitly
     for i, ns_item in enumerate(ns_names):
-        await idx.upsert(
+        upserted = await idx.upsert(
             vectors=[{"id": f"mpns-v{i}", "values": [0.1 * (i + 1), 0.2 * (i + 1)]}],
             namespace=ns_item,
         )
+        assert upserted.upserted_count == 1
 
     # Wait until all 3 namespaces appear (eventual consistency)
     await async_poll_until(

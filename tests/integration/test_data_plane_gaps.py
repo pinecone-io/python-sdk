@@ -8,41 +8,38 @@ batched parallel code path (``Index.upsert(batch_size=..., max_concurrency=...)`
 ``GrpcIndex.upsert(batch_size=...)``, ``upsert_from_dataframe``) that runs through
 ``pinecone._internal.batch.batch_execute`` / ``bulk_execute_sync``. Those paths
 are the ones with the new ThreadPoolExecutor + adaptive-limiter + total_timeout
-logic. These tests drive them against real serverless indexes on both transports.
+logic. These tests drive them against a real index on both transports.
+
+The shared index comes from :func:`legacy_index_factory`, not from
+``pc.indexes.create``: 2026-07 has no way to create an index the vectors API
+will serve, and every write here is a vectors-API call. See
+:mod:`tests.integration.legacy_index` for the sanctioned pattern. The fixture
+calls ``assert_serves_vectors_api`` once, because a document-schema index
+refuses writes while leaving ``fetch`` succeeding-but-empty, which would make
+every count assertion below pass against data that was never there.
 """
 
 from __future__ import annotations
 
 import uuid
-from collections.abc import Generator
 
 import pytest
 
 from pinecone import Pinecone
 from pinecone.errors import PineconeValueError
-from pinecone.models.indexes.specs import ServerlessSpec
 from tests.integration.conftest import (
-    ensure_index_deleted,
+    LegacyIndexFactory,
     poll_until,
-    unique_name,
 )
+from tests.integration.legacy_index import assert_serves_vectors_api
 
 
 @pytest.fixture(scope="module")
-def shared_index_dim2(client: Pinecone) -> Generator[str, None, None]:
-    """Shared serverless index (dim=2, cosine) reused across all tests in this module."""
-    name = unique_name("idx-gap-shared")
-    client.indexes.create(
-        name=name,
-        dimension=2,
-        metric="cosine",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        timeout=300,
-    )
-    try:
-        yield name
-    finally:
-        ensure_index_deleted(client, name)
+def shared_index_dim2(client: Pinecone, legacy_index_factory: LegacyIndexFactory) -> str:
+    """Shared legacy index (dim=2, cosine) reused across all tests in this module."""
+    index = legacy_index_factory(dimension=2)
+    assert_serves_vectors_api(client, index)
+    return index.name
 
 
 def _make_vectors(n: int, prefix: str) -> list[dict]:

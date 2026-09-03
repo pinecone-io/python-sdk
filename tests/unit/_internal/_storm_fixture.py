@@ -1,7 +1,9 @@
 """Shared fault-injection transport + storm scenario fixture for retry validation tests.
 
 Consumed by tests/unit/_internal/test_retry_storm_sync.py,
-test_retry_storm_async.py, and test_bulk_upsert_storm.py.
+test_retry_storm_async.py, test_bulk_upsert_storm.py and
+_storm_parity_scenarios.py. The fixture's own self-tests live in
+test_storm_fixture.py, where pytest collects them.
 
 Note: StormScenario.__init__ calls random.seed(config.seed) so that jitter math in
 _compute_backoff / _compute_retry_after_delay is reproducible across runs.
@@ -19,10 +21,6 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 import httpx
-import pytest
-
-from pinecone._internal.config import RetryConfig
-from pinecone._internal.http_client import _AsyncRetryTransport, _RetryTransport
 
 
 @dataclass
@@ -296,8 +294,15 @@ class StormScenario:
         return max(timestamps) - min(timestamps)
 
     def first_success_after_window(self) -> float | None:
-        """Return earliest 200 timestamp at or after throttle window end, or None."""
-        window_end = self.sync_transport.start_time + self._config.throttle_window_seconds
+        """Return earliest 200 timestamp at or after throttle window end, or None.
+
+        Measured from ``_active_start_time``, stamped by whichever ``run_*``
+        drove the scenario. ``sync_transport.start_time`` would be wrong for an
+        async run — each transport sets its own in ``__init__``, so the window
+        would end early by the scenario's construction-to-run gap and this
+        filter would admit successes from inside the real window.
+        """
+        window_end = self._active_start_time + self._config.throttle_window_seconds
         candidates = [
             r.timestamp for r in self._records if r.outcome == "200" and r.timestamp >= window_end
         ]
@@ -317,112 +322,3 @@ class StormScenario:
             count = sum(1 for ts in timestamps if t <= ts < t + window_seconds)
             max_count = max(max_count, count)
         return max_count
-
-
-# ---------------------------------------------------------------------------
-# Self-tests — collected by pytest when running on this module directly
-# ---------------------------------------------------------------------------
-
-
-# Override the unit-test conftest's autouse sleep-suppressor.  Storm tests
-# need real time.sleep so retries actually advance the clock past the
-# throttle window.  Defining a fixture with the same name here takes
-# precedence over the conftest.py version for tests in this module.
-@pytest.fixture(autouse=True)
-def _no_retry_sleep() -> None:
-    pass
-
-
-def _make_sync_retry_transport(
-    scenario: StormScenario,
-    max_retries: int = 5,
-    backoff_factor: float = 0.01,
-    max_wait: float = 0.5,
-) -> _RetryTransport:
-    cfg = RetryConfig(max_retries=max_retries, backoff_factor=backoff_factor, max_wait=max_wait)
-    return _RetryTransport(transport=scenario.sync_transport, retry_config=cfg)  # type: ignore[arg-type]
-
-
-def _make_async_retry_transport(
-    scenario: StormScenario,
-    max_retries: int = 5,
-    backoff_factor: float = 0.01,
-    max_wait: float = 0.5,
-) -> _AsyncRetryTransport:
-    cfg = RetryConfig(max_retries=max_retries, backoff_factor=backoff_factor, max_wait=max_wait)
-    return _AsyncRetryTransport(transport=scenario.async_transport, retry_config=cfg)  # type: ignore[arg-type]
-
-
-def test_storm_fixture_records_429s_during_window() -> None:
-    config = StormConfig(n_clients=5, throttle_window_seconds=0.1, retry_after_seconds=0.04)
-    scenario = StormScenario(config)
-    rt = _make_sync_retry_transport(scenario)
-    req = httpx.Request("GET", "https://example.com/test")
-
-    scenario.run_sync(lambda: rt.handle_request(req))
-
-    records = scenario.sync_transport.records
-    outcomes = {r.outcome for r in records}
-    assert "429" in outcomes, "expected some 429s during the throttle window"
-    assert "200" in outcomes, "expected 200s after retries succeed"
-
-
-def test_storm_fixture_dispersion_width_nonzero() -> None:
-    config = StormConfig(n_clients=5, throttle_window_seconds=0.1, retry_after_seconds=0.04)
-    scenario = StormScenario(config)
-    rt = _make_sync_retry_transport(scenario)
-    req = httpx.Request("GET", "https://example.com/test")
-
-    scenario.run_sync(lambda: rt.handle_request(req))
-
-    assert scenario.dispersion_width() > 0, "clients should not all arrive at the exact same moment"
-
-
-def test_storm_fixture_request_amplification_above_one_under_throttle() -> None:
-    config = StormConfig(n_clients=5, throttle_window_seconds=0.1, retry_after_seconds=0.04)
-    scenario = StormScenario(config)
-    rt = _make_sync_retry_transport(scenario)
-    req = httpx.Request("GET", "https://example.com/test")
-
-    scenario.run_sync(lambda: rt.handle_request(req))
-
-    assert scenario.request_amplification() > 1.0, "retries should have fired"
-
-
-@pytest.mark.asyncio
-async def test_storm_fixture_async_records_429s_during_window() -> None:
-    config = StormConfig(n_clients=5, throttle_window_seconds=0.1, retry_after_seconds=0.04)
-    scenario = StormScenario(config)
-    rt = _make_async_retry_transport(scenario)
-    req = httpx.Request("GET", "https://example.com/test")
-
-    await scenario.run_async(lambda: rt.handle_async_request(req))
-
-    records = scenario.async_transport.records
-    outcomes = {r.outcome for r in records}
-    assert "429" in outcomes, "expected some 429s during the throttle window"
-    assert "200" in outcomes, "expected 200s after retries succeed"
-
-
-@pytest.mark.asyncio
-async def test_storm_fixture_async_dispersion_width_nonzero() -> None:
-    config = StormConfig(n_clients=5, throttle_window_seconds=0.1, retry_after_seconds=0.04)
-    scenario = StormScenario(config)
-    rt = _make_async_retry_transport(scenario)
-    req = httpx.Request("GET", "https://example.com/test")
-
-    await scenario.run_async(lambda: rt.handle_async_request(req))
-
-    assert scenario.dispersion_width() > 0, "clients should not all arrive at the exact same moment"
-
-
-@pytest.mark.asyncio
-async def test_storm_fixture_async_request_amplification_above_one_under_throttle() -> None:
-    config = StormConfig(n_clients=5, throttle_window_seconds=0.1, retry_after_seconds=0.04)
-    scenario = StormScenario(config)
-    rt = _make_async_retry_transport(scenario)
-    req = httpx.Request("GET", "https://example.com/test")
-
-    await scenario.run_async(lambda: rt.handle_async_request(req))
-
-    assert scenario.request_amplification() > 1.0, "retries should have fired"

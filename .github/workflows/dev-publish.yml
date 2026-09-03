@@ -489,16 +489,46 @@ jobs:
           name: wheels-x86_64-unknown-linux-gnu
           path: dist
 
+      # The pytest plugins here are load-bearing, not conveniences. Every ini
+      # key in [tool.pytest.ini_options] is owned by some plugin, and #306's
+      # `--strict-config` turns a key whose owner is absent into a usage error.
+      # In pytest 9 that error is raised after collection, so the job runs the
+      # suite's collect-time skips and *then* dies with exit 4 — a red job with
+      # a pile of skips and no test result, which reads like anything but a
+      # missing dependency (#399). `timeout` is pytest-timeout's; `anyio_mode`
+      # is anyio's own pytest plugin. anyio also arrives transitively via
+      # httpx, and naming it here is what keeps that from being load-bearing.
+      # tests/unit/tooling/test_smoke_ci_plugin_deps.py holds this list to the
+      # ini block, so a newly added key or marker fails the unit gate instead
+      # of surfacing here.
       - name: Install wheel and test deps
         run: |
           set -euo pipefail
           wheel=$(ls dist/*.whl | head -n1)
           echo "Installing ${wheel}"
           pip install --upgrade pip
-          pip install "${wheel}" pytest pytest-asyncio python-dotenv
+          pip install "${wheel}" \
+            pytest pytest-asyncio "pytest-timeout>=2.3" "anyio>=4.13.0" python-dotenv
+
+      # Third consumer of the nonexistent `secrets.PINECONE_API_KEY` (#315).
+      # It expands to empty, all 15 smoke tests this job collects skip themselves,
+      # pytest exits 0, and "Smoke tests: PASSED" below has been asserting a
+      # pass that never happened on every hourly run. This job is
+      # continue-on-error at both levels, so failing here stays advisory and
+      # never blocks a publish — it only stops the summary from lying.
+      - name: Preflight — smoke credentials must be present
+        id: smoke_preflight
+        continue-on-error: true
+        run: |
+          if [ -z "${PINECONE_API_KEY}" ]; then
+            echo "::error::PINECONE_API_KEY is empty — the smoke suite would skip all 15 tests this job collects and report a pass it never earned. Add a repo secret PINECONE_API_KEY scoped to a test/CI Pinecone project."
+            exit 1
+          fi
+          echo "PINECONE_API_KEY present (${#PINECONE_API_KEY} chars)"
 
       - name: Run smoke suite
         id: smoke
+        if: steps.smoke_preflight.outcome == 'success'
         continue-on-error: true
         run: |
           # The source `pinecone/` directory from actions/checkout shadows the
@@ -518,18 +548,63 @@ jobs:
       - name: Append summary
         if: always()
         run: |
-          if [ "${{ steps.smoke.outcome }}" = "success" ]; then
-            echo "## Smoke tests: PASSED" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "## Smoke tests: FAILED (informational — does not block publish)" >> "$GITHUB_STEP_SUMMARY"
-            echo "See the 'Run smoke suite' step output and the smoke-results artifact." >> "$GITHUB_STEP_SUMMARY"
-          fi
+          # Each branch names the state it actually observed. "no credentials"
+          # is claimed only when the preflight ran and failed; a preflight that
+          # never ran means an earlier step broke, which is a different story
+          # and must not be reported as a missing key.
+          case "${{ steps.smoke_preflight.outcome }}:${{ steps.smoke.outcome }}" in
+            failure:*)
+              echo "## Smoke tests: NOT RUN (no credentials)" >> "$GITHUB_STEP_SUMMARY"
+              echo "\`PINECONE_API_KEY\` is unset, so the whole suite would have skipped itself." >> "$GITHUB_STEP_SUMMARY"
+              echo "This publish carries no smoke coverage. Remediation: add a repo secret" >> "$GITHUB_STEP_SUMMARY"
+              echo "\`PINECONE_API_KEY\` scoped to a test/CI Pinecone project (#315)." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            success:success)
+              echo "## Smoke tests: PASSED" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            success:*)
+              echo "## Smoke tests: FAILED (informational — does not block publish)" >> "$GITHUB_STEP_SUMMARY"
+              echo "See the 'Run smoke suite' step output and the smoke-results artifact." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "## Smoke tests: NOT RUN (job broke before the credential check)" >> "$GITHUB_STEP_SUMMARY"
+              echo "Preflight outcome: '${{ steps.smoke_preflight.outcome }}'. An earlier step —" >> "$GITHUB_STEP_SUMMARY"
+              echo "checkout, wheel download, or install — did not succeed. This publish carries" >> "$GITHUB_STEP_SUMMARY"
+              echo "no smoke coverage, and the reason is not a missing key." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+          esac
 
+      # `python -m`, not `python tests/smoke/scripts/cleanup_orphans.py`: the
+      # plain-path form makes sys.path[0] the *script's* directory, so
+      # `from tests.live_suite import load_env` cannot resolve and the step
+      # died before deleting anything. It reported success for its entire
+      # existence because `|| true` rewrote the exit code and continue-on-error
+      # swallowed what was left (#412). A local `uv run` on that same path form
+      # works only because the editable install drops a `pinecone.pth` naming
+      # the project root — a property these wheel-install jobs do not have.
+      #
+      # `|| true` is gone deliberately. continue-on-error already keeps a
+      # cleanup failure from blocking the publish; the `|| true` on top of it
+      # only bought silence. The summary block is what makes a leak legible
+      # without opening the log.
       - name: Orphan cleanup
         if: always()
         continue-on-error: true
         run: |
-          python tests/smoke/scripts/cleanup_orphans.py || true
+          set -o pipefail
+          status=0
+          python -m tests.smoke.scripts.cleanup_orphans 2>&1 | tee orphan-cleanup.log || status=$?
+          {
+            echo "### Orphan cleanup"
+            echo
+            echo '```'
+            cat orphan-cleanup.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${status}" -ne 0 ]; then
+            echo "::warning::Orphan cleanup exited ${status}; leaked smoke resources may remain in the test project."
+          fi
+          exit "${status}"
 
       - name: Upload smoke results
         if: always()

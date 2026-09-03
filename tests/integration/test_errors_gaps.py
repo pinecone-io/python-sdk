@@ -10,20 +10,28 @@ test_errors.py / test_errors_async.py. This file closes the remaining gaps:
    all three transports (sync REST, async REST, gRPC) — not covered anywhere.
 3. Error-surface parity: the same underlying fault (unreachable host / tiny
    timeout) raises the SAME exception type across sync REST, async REST, and gRPC.
+
+The two timeout tests need an index that answers a real ``query``, so they take
+one from :func:`legacy_index_factory` rather than ``pc.indexes.create``:
+2026-07 has no way to create an index the vectors API will serve. The
+connection-error tests need no index at all — they point a client at a dead
+port on purpose.
 """
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
-from pinecone import AsyncIndex, GrpcIndex, Index, Pinecone
+from pinecone import AsyncIndex, AsyncPinecone, GrpcIndex, Index, Pinecone
 from pinecone.errors import (
     PineconeConnectionError,
     PineconeError,
     PineconeTimeoutError,
 )
-from pinecone.models.indexes.specs import ServerlessSpec
-from tests.integration.conftest import cleanup_resource, unique_name
+from tests.integration.conftest import LegacyIndexFactory
+from tests.integration.legacy_index import assert_serves_vectors_api
 
 # An unreachable but format-valid data-plane host. Port 1 has no listener, so
 # the connection is refused immediately (fast, deterministic) without touching
@@ -146,37 +154,35 @@ _TINY_TIMEOUT = 0.000001
 _GENEROUS_TIMEOUT = 30.0
 
 
+@pytest.fixture(scope="module")
+def timeout_index(client: Pinecone, legacy_index_factory: LegacyIndexFactory):
+    """Shared legacy index (dim=3, cosine) for the per-call timeout tests."""
+    index = legacy_index_factory(dimension=3)
+    assert_serves_vectors_api(client, index)
+    return index
+
+
 @pytest.mark.integration
-def test_rest_query_too_short_timeout_raises(client: Pinecone) -> None:
+def test_rest_query_too_short_timeout_raises(client: Pinecone, timeout_index) -> None:
     """A sub-millisecond per-call timeout over REST raises PineconeTimeoutError (sync).
 
     The existing timeout test only covers gRPC. A REST data-plane request whose
     client-side deadline fires must map to PineconeTimeoutError, and a subsequent
     call with a generous timeout must succeed, proving the knob is per-call.
     """
-    name = unique_name("idx")
-    try:
-        client.indexes.create(
-            name=name,
-            dimension=3,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-            timeout=300,
-        )
-        index = client.index(name=name)
-        index.upsert(vectors=[("t1", [0.1, 0.2, 0.3])])
+    ns = f"to-sync-{uuid.uuid4().hex[:8]}"
+    index = client.index(name=timeout_index.name)
+    index.upsert(vectors=[("t1", [0.1, 0.2, 0.3])], namespace=ns)
 
-        with pytest.raises(PineconeTimeoutError) as exc_info:
-            index.query(vector=[0.1, 0.2, 0.3], top_k=1, timeout=_TINY_TIMEOUT)
+    with pytest.raises(PineconeTimeoutError) as exc_info:
+        index.query(vector=[0.1, 0.2, 0.3], top_k=1, namespace=ns, timeout=_TINY_TIMEOUT)
 
-        err = exc_info.value
-        assert isinstance(err, PineconeError)
+    err = exc_info.value
+    assert isinstance(err, PineconeError)
 
-        # generous timeout proves channel is healthy and the knob is per-call
-        result = index.query(vector=[0.1, 0.2, 0.3], top_k=1, timeout=_GENEROUS_TIMEOUT)
-        assert result.matches is not None
-    finally:
-        cleanup_resource(lambda: client.indexes.delete(name), name, "index")
+    # generous timeout proves channel is healthy and the knob is per-call
+    result = index.query(vector=[0.1, 0.2, 0.3], top_k=1, namespace=ns, timeout=_GENEROUS_TIMEOUT)
+    assert result.matches is not None
 
 
 # ---------------------------------------------------------------------------
@@ -187,35 +193,26 @@ def test_rest_query_too_short_timeout_raises(client: Pinecone) -> None:
 @pytest.mark.integration
 @pytest.mark.anyio
 async def test_rest_query_too_short_timeout_raises_async(
-    async_client,
+    async_client: AsyncPinecone, timeout_index
 ) -> None:
     """A sub-millisecond per-call timeout over REST raises PineconeTimeoutError (async).
 
     Async parity for test_rest_query_too_short_timeout_raises.
     """
-    from tests.integration.conftest import async_cleanup_resource
-
-    name = unique_name("idx")
+    ns = f"to-async-{uuid.uuid4().hex[:8]}"
+    index = await async_client.index(host=timeout_index.host)
     try:
-        await async_client.indexes.create(
-            name=name,
-            dimension=3,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-            timeout=300,
-        )
-        await async_client.indexes.describe(name)
-        index = await async_client.index(name=name)
-        await index.upsert(vectors=[("t1", [0.1, 0.2, 0.3])])
+        await index.upsert(vectors=[("t1", [0.1, 0.2, 0.3])], namespace=ns)
 
         with pytest.raises(PineconeTimeoutError) as exc_info:
-            await index.query(vector=[0.1, 0.2, 0.3], top_k=1, timeout=_TINY_TIMEOUT)
+            await index.query(vector=[0.1, 0.2, 0.3], top_k=1, namespace=ns, timeout=_TINY_TIMEOUT)
 
         err = exc_info.value
         assert isinstance(err, PineconeError)
 
-        result = await index.query(vector=[0.1, 0.2, 0.3], top_k=1, timeout=_GENEROUS_TIMEOUT)
+        result = await index.query(
+            vector=[0.1, 0.2, 0.3], top_k=1, namespace=ns, timeout=_GENEROUS_TIMEOUT
+        )
         assert result.matches is not None
-        await index.close()
     finally:
-        await async_cleanup_resource(lambda: async_client.indexes.delete(name), name, "index")
+        await index.close()

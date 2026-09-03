@@ -232,9 +232,23 @@ class ChatResponse(StructDictMixin, Struct, kw_only=True):
         model: The model used to generate the response.
         usage: Token usage statistics for the request.
         message: The assistant's response message.
-        finish_reason: The reason the model stopped generating
-            (e.g. ``"stop"``, ``"length"``).
+        finish_reason: The reason the model stopped generating — one of
+            ``"stop"`` (the model finished), ``"length"`` (the token limit was
+            reached), ``"content_filter"`` (content filtering rules blocked the
+            output), ``"tool_calls"`` (a tool call was triggered), or the
+            literal string ``"null"``. The backend enum carries that fifth
+            ``null`` variant and serializes it as the JSON string ``"null"``,
+            not as JSON ``null``; the 2026-07 OAS ``x-enum`` omits it, which is
+            why this is typed ``str`` rather than a closed set.
         citations: List of citations linking response text to source documents.
+        context_snippet_count: Number of retrieved context snippets that were
+            provided to the model, or ``None`` if the server did not report it.
+            ``0`` means no relevant context was found for the query.
+        content_filter_results: Safety classifications reported by the LLM
+            provider, or ``None`` when the provider returned none. The payload
+            carries a ``spec`` key naming the provider (e.g. ``"openai"``,
+            ``"gemini"``) and a ``results`` value whose structure is defined by
+            that provider, so it is left as a plain dict.
     """
 
     id: str
@@ -243,13 +257,20 @@ class ChatResponse(StructDictMixin, Struct, kw_only=True):
     message: ChatMessage
     finish_reason: str
     citations: list[ChatCitation]
+    context_snippet_count: int | None = None
+    content_filter_results: dict[str, Any] | None = None
 
     @safe_display
     def __repr__(self) -> str:
+        snippet_part = (
+            f" context_snippet_count={self.context_snippet_count},"
+            if self.context_snippet_count is not None
+            else ""
+        )
         return (
             f"ChatResponse(id={self.id!r}, model={self.model!r},"
             f" finish_reason={self.finish_reason!r},"
-            f" citations={len(self.citations)}, usage={self.usage!r})"
+            f" citations={len(self.citations)},{snippet_part} usage={self.usage!r})"
         )
 
     @safe_display
@@ -266,6 +287,13 @@ class ChatResponse(StructDictMixin, Struct, kw_only=True):
             p.text(f"finish_reason={self.finish_reason!r},")
             p.breakable()
             p.text(f"citations={len(self.citations)},")
+            if self.context_snippet_count is not None:
+                p.breakable()
+                p.text(f"context_snippet_count={self.context_snippet_count},")
+            if self.content_filter_results is not None:
+                p.breakable()
+                filter_text = truncate_text(str(self.content_filter_results), 200)
+                p.text(f"content_filter_results={filter_text},")
             p.breakable()
             p.text(f"usage={self.usage!r},")
             p.breakable()
@@ -278,6 +306,12 @@ class ChatResponse(StructDictMixin, Struct, kw_only=True):
         builder.row("Model", self.model)
         builder.row("Finish reason", self.finish_reason)
         builder.row("Citations", len(self.citations))
+        if self.context_snippet_count is not None:
+            builder.row("Context snippets", self.context_snippet_count)
+        if self.content_filter_results is not None:
+            builder.row(
+                "Content filter results", truncate_text(str(self.content_filter_results), 500)
+            )
         builder.row("Usage", repr(self.usage))
         builder.section(
             "Message",
@@ -326,7 +360,14 @@ class ChatCompletionChoice(StructDictMixin, Struct, kw_only=True):
     Attributes:
         index: The index of this choice in the choices list.
         message: The message content for this choice.
-        finish_reason: The reason the model stopped generating.
+        finish_reason: The reason the model stopped generating — one of
+            ``"stop"`` (the model finished), ``"length"`` (the token limit was
+            reached), ``"content_filter"`` (content filtering rules blocked the
+            output), ``"tool_calls"`` (a tool call was triggered), or the
+            literal string ``"null"``. The backend enum carries that fifth
+            ``null`` variant and serializes it as the JSON string ``"null"``,
+            not as JSON ``null``; the 2026-07 OAS ``x-enum`` omits it, which is
+            why this is typed ``str`` rather than a closed set.
     """
 
     index: int

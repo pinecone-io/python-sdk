@@ -20,7 +20,7 @@ Index Models
    :members:
    :show-inheritance:
 
-.. autoclass:: pinecone.models.indexes.index.IndexSpec
+.. autoclass:: pinecone.models.indexes.index.IndexStatus
    :members:
    :show-inheritance:
 
@@ -44,19 +44,117 @@ Index Models
    :members:
    :show-inheritance:
 
-.. autoclass:: pinecone.models.indexes.index.ServerlessSpecInfo
+.. autoclass:: pinecone.models.indexes.requests.CreateIndexRequest
    :members:
    :show-inheritance:
 
-.. autoclass:: pinecone.models.indexes.index.PodSpecInfo
+.. autoclass:: pinecone.models.indexes.requests.ConfigureIndexRequest
    :members:
    :show-inheritance:
 
-.. autoclass:: pinecone.models.indexes.index.ByocSpecInfo
+Index Schema Models
+-------------------
+
+``IndexModel.schema`` describes every field in the index.  These types replace
+the removed ``IndexModel.dimension``, ``.metric``, ``.vector_type`` and
+``.embed`` attributes.
+
+.. autoclass:: pinecone.models.indexes.schema.IndexSchema
    :members:
    :show-inheritance:
 
-.. autoclass:: pinecone.models.indexes.index.ModelIndexEmbed
+.. autodata:: pinecone.models.indexes.schema.IndexSchemaField
+
+.. autoclass:: pinecone.models.indexes.schema.DenseVectorField
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.schema.SparseVectorField
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.schema.SemanticTextField
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.schema.StringField
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.schema.StringListField
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.schema.BooleanField
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.schema.IntegerField
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.schema.FloatField
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.schema.LegacyMetadataField
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.schema.FullTextSearchConfig
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.schema.NgramConfig
+   :members:
+   :show-inheritance:
+
+Index Deployment Models
+-----------------------
+
+``IndexModel.deployment`` describes where and how the index runs.  These types
+replace the removed ``IndexSpec``, ``ServerlessSpecInfo``, ``PodSpecInfo`` and
+``ByocSpecInfo``.
+
+.. autodata:: pinecone.models.indexes.deployment.IndexDeployment
+
+.. autoclass:: pinecone.models.indexes.deployment.ManagedDeployment
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.deployment.PodDeployment
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.deployment.ByocDeployment
+   :members:
+   :show-inheritance:
+
+Read Capacity Models
+--------------------
+
+``IndexModel.read_capacity`` replaces the removed
+``IndexSpec.serverless.read_capacity``.
+
+.. autodata:: pinecone.models.indexes.read_capacity.ReadCapacityResponse
+
+.. autoclass:: pinecone.models.indexes.read_capacity.ReadCapacityOnDemandResponse
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.read_capacity.ReadCapacityDedicatedResponse
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.read_capacity.ReadCapacityDedicatedConfig
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.read_capacity.ReadCapacityStatus
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.read_capacity.ScalingConfigManual
    :members:
    :show-inheritance:
 
@@ -234,7 +332,38 @@ Backup and Restore Models
    :members:
    :show-inheritance:
 
+.. autoclass:: pinecone.models.backups.model.CreateIndexFromBackupRequest
+   :members:
+   :show-inheritance:
+
 .. autoclass:: pinecone.models.backups.model.CreateIndexFromBackupResponse
+   :members:
+   :show-inheritance:
+
+Backup Schedule Models
+-----------------------
+
+.. autoclass:: pinecone.models.backups.schedules.BackupScheduleModel
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.backups.list.BackupScheduleList
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.backups.schedules.BackupScheduleHistoryItem
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.backups.list.BackupScheduleHistoryList
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.backups.schedules.CreateBackupScheduleRequest
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.backups.schedules.UpdateBackupScheduleRequest
    :members:
    :show-inheritance:
 
@@ -342,6 +471,70 @@ Admin Models
    :members:
    :show-inheritance:
 
+.. autoclass:: pinecone.models.admin.token.TokenResponse
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.pagination.PaginationResponse
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.user.UserModel
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.user.UserList
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.invite.InviteModel
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.invite.InviteList
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.invite.InviteStatus
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.service_account.ServiceAccountModel
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.service_account.ServiceAccountList
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.service_account.ServiceAccountWithSecret
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.role_binding.RoleBindingModel
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.role_binding.RoleBindingList
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.role_binding.RoleBindingInput
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.role_binding.RoleName
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.role_binding.PrincipalType
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.admin.role_binding.ResourceType
+   :members:
+   :show-inheritance:
+
 Assistant Models
 ----------------
 
@@ -358,6 +551,14 @@ Assistant Models
    :show-inheritance:
 
 .. autoclass:: pinecone.models.assistant.list.ListFilesResponse
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.operation.OperationModel
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.list.ListOperationsResponse
    :members:
    :show-inheritance:
 

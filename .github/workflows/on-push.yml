@@ -147,7 +147,11 @@ jobs:
         run: uv sync --group dev
 
       - name: pytest tests/unit
-        run: uv run pytest tests/unit -x -v --cov --cov-report=term-missing
+        # --durations makes the runner's own timings visible per Python version.
+        # The scoped pytest.mark.timeout values are sized against measured
+        # runtimes (#327), and without this the only way to check a claimed
+        # margin against real CI hardware is to push a throwaway commit.
+        run: uv run pytest tests/unit -x -v --cov --cov-report=term-missing --durations=25 --durations-min=0.5
 
       # One matrix leg is enough to see the shape of coverage; posting it five
       # times over would just be noise on the PR checks tab. See
@@ -155,6 +159,91 @@ jobs:
       - name: Post coverage to job summary
         if: matrix.python-version == '3.12'
         run: uv run --no-sync coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # Wheel-only install verify, on THIS ref
+  #
+  # A missing runtime dependency is invisible to every job above: they all run
+  # `uv sync`, which installs the dev group, and the dev group carries the
+  # transitives that mask the gap. It was also invisible to
+  # release-readiness.yml's multi-python-install-verify for two independent
+  # reasons — that job runs `import pinecone`, which is lazy and reaches almost
+  # no code, and it installs a dev wheel published from `main`, so its result
+  # says nothing about the ref under test. #411 shipped past both.
+  #
+  # So: build the wheel from this checkout, install it and nothing but its
+  # declared dependencies, and touch every lazy export.
+  # ---------------------------------------------------------------------------
+  wheel-install-verify:
+    name: Wheel-only install verify (declared deps, py3.10-3.14)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b  # v3.0.0
+        with:
+          version: ${{ env.PROTOC_VERSION }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+        with:
+          toolchain: "1.98.0"
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc  # v2.9.1
+        with:
+          workspaces: rust
+          shared-key: unit-tests
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: true
+
+      # The wheel is abi3 (cp310-abi3), so one build serves the whole matrix.
+      - name: Build wheel from this checkout
+        run: uv build --wheel --out-dir "${RUNNER_TEMP}/wheel"
+
+      - name: Import the full public surface on each supported Python
+        run: |
+          set -euo pipefail
+          wheel=$(ls "${RUNNER_TEMP}"/wheel/*.whl)
+          echo "wheel: ${wheel}"
+          cat > "${RUNNER_TEMP}/verify.py" <<'PY'
+          import sys
+
+          import pinecone
+
+          names = sorted(pinecone._LAZY_IMPORTS)
+          if len(names) < 100:
+              sys.exit(f"only {len(names)} lazy exports found")
+          broken = []
+          for name in names:
+              try:
+                  getattr(pinecone, name)
+              except ModuleNotFoundError as exc:
+                  broken.append(f"{name}: missing {exc.name}")
+          if broken:
+              sys.exit("undeclared runtime dependency: " + "; ".join(broken[:8]))
+          import pinecone._grpc
+          print(f"OK {sys.version_info[:2]}: {len(names)} lazy exports, _grpc loaded")
+          PY
+          for v in 3.10 3.11 3.12 3.13 3.14; do
+            echo "::group::py${v}"
+            uv python install "${v}"
+            uv venv -p "${v}" "${RUNNER_TEMP}/venv-${v}"
+            # No --group/--extra: only the wheel and [project].dependencies.
+            uv pip install --python "${RUNNER_TEMP}/venv-${v}/bin/python" "${wheel}"
+            uv pip list --python "${RUNNER_TEMP}/venv-${v}/bin/python"
+            # Run from RUNNER_TEMP: the repo's pinecone/ would shadow the wheel,
+            # because Python puts the script's directory on sys.path first.
+            (cd "${RUNNER_TEMP}" && "${RUNNER_TEMP}/venv-${v}/bin/python" "${RUNNER_TEMP}/verify.py")
+            echo "::endgroup::"
+          done
 
   # ---------------------------------------------------------------------------
   # Rust check / clippy / fmt
@@ -203,3 +292,39 @@ jobs:
       # tests had never run in CI.
       - name: cargo test
         run: cargo test --no-default-features
+
+  # ---------------------------------------------------------------------------
+  # Sphinx docs build (warnings are errors)
+  #
+  # Same warnings-as-errors invocation as the doc-build job in
+  # release-readiness.yml, so a PR that breaks the docs build fails here rather
+  # than surfacing days later in the Monday cron.
+  # ---------------------------------------------------------------------------
+  docs:
+    name: Sphinx docs build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      # No protoc / Rust toolchain / project build: docs/conf.py mocks
+      # pinecone._grpc and pandas via autodoc_mock_imports, so autodoc never
+      # loads the compiled extension. --no-install-project still installs the
+      # project's runtime deps, which conf.py needs to import pinecone from the
+      # source tree (it puts the repo root on sys.path).
+      - name: Install docs deps (no project build)
+        run: uv sync --extra docs --no-install-project --no-default-groups
+
+      # SPHINXBUILD override drops the Makefile's inner `uv run --extra docs`,
+      # which would re-sync and build the Rust extension. The resulting
+      # sphinx-build command line is identical to release-readiness's.
+      - name: Build HTML docs
+        run: make -C docs html SPHINXOPTS="-W" SPHINXBUILD="uv run --no-sync sphinx-build"

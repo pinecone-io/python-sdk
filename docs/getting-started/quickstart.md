@@ -5,7 +5,7 @@ Get from install to your first similarity search in five minutes.
 ## 1. Initialize the client
 
 ```python
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import Pinecone
 
 # Option A: read API key from the PINECONE_API_KEY environment variable
 pc = Pinecone()
@@ -16,12 +16,14 @@ pc = Pinecone(api_key="your-api-key")
 
 ## 2. Create a serverless index
 
+An index's fields are declared as a schema. This one has a single dense vector field,
+`embedding`:
+
 ```python
 pc.indexes.create(
     name="quickstart",
-    dimension=3,
-    metric="cosine",
-    spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+    schema={"fields": {"embedding": {"type": "dense_vector", "dimension": 3, "metric": "cosine"}}},
+    deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
 )
 ```
 
@@ -73,15 +75,14 @@ pc.indexes.delete("quickstart")
 ## Complete example
 
 ```python
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import Pinecone
 
 pc = Pinecone()  # reads PINECONE_API_KEY
 
 pc.indexes.create(
     name="quickstart",
-    dimension=3,
-    metric="cosine",
-    spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+    schema={"fields": {"embedding": {"type": "dense_vector", "dimension": 3, "metric": "cosine"}}},
+    deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
 )
 
 index = pc.index("quickstart")

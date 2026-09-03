@@ -1,0 +1,18 @@
+{
+  "api_version": "2026-07",
+  "purpose": "Hand-maintained divergence exception list consumed by scripts/api_coverage.py --write-manifest. Each 'divergences' entry switches conformance fixture validation for one operation from the OAS response schema to the alternative component schema the SDK deliberately implements (backend behavior over spec); each 'base_path_overrides' entry corrects the request path prefix a whole surface is mounted under when the spec's servers URL omits it. Every entry MUST reference an open 'SPEC-vs-BACKEND' question issue by number; the --gate mode fails if the referenced issue is closed or is not a question issue. See tests/unit/conformance/README.md.",
+  "base_path_overrides": {
+    "assistant_data": {
+      "issue": 173,
+      "reason": "The spec's servers url (https://{assistant_host}) has no path, but the data plane is mounted under /assistant: the backend builds Location headers as /assistant/operations/... (svc-knowledge-engine/src/ingest/service/routes/v202604/mod.rs:65, pinecone-db@f6fd0a4019) and Assistants._data_plane_http has always sent that prefix.",
+      "base_path": "/assistant"
+    }
+  },
+  "divergences": {
+    "assistant_control:update_assistant": {
+      "issue": 170,
+      "reason": "The OAS declares UpdateAssistantResponse (assistant_name/instructions/metadata), but the backend has always returned the full Assistant shape (svc-knowledge-engine src/control/service/routes/v202604/mod.rs:145-165, routed for 2026-07 by routes/mod.rs:21) and Assistants.update() decodes AssistantModel accordingly.",
+      "alternative_schema": "Assistant"
+    }
+  }
+}

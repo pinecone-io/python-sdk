@@ -108,41 +108,49 @@ def test_client_init_with_api_key() -> None:
     assert len(__version__) > 0
 
 
+_DENSE_SCHEMA = {
+    "fields": {"embedding": {"type": "dense_vector", "dimension": 1536, "metric": "cosine"}}
+}
+_MANAGED_AWS = {"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"}
+
+
 @respx.mock
-def test_create_index_schema_parameter_forwarded() -> None:
-    """Verify schema param is forwarded through the create_index backcompat shim."""
-    response_body = make_index_response(name="test-schema-shim")
+def test_create_index_rejects_schema_kwarg() -> None:
+    """create_index() rejects schema=/deployment= before making any request."""
+    from pinecone.errors.exceptions import PineconeTypeError
+
     route = respx.post("https://api.pinecone.io/indexes").mock(
-        return_value=httpx.Response(201, json=response_body),
+        return_value=httpx.Response(201, json=make_index_response(name="test-schema-shim")),
     )
 
     pc = Pinecone(api_key="test-key", host=BASE_URL)
-    result = pc.create_index(
-        name="test-schema-shim",
-        spec={"serverless": {"cloud": "aws", "region": "us-east-1"}},
-        dimension=1536,
-        schema={"text_field": {"type": "str"}},
-        timeout=-1,
-    )
+    with pytest.raises(PineconeTypeError, match=r"Use pc\.indexes\.create\(\)"):
+        pc.create_index(
+            name="test-schema-shim",
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
+            timeout=-1,
+        )
 
-    assert result.name == "test-schema-shim"
-    sent_body = json.loads(route.calls[0].request.content)
-    # schema is forwarded into spec.serverless.schema by build_create_body
-    assert sent_body["spec"]["serverless"]["schema"] == {"fields": {"text_field": {"type": "str"}}}
+    assert len(route.calls) == 0
 
 
 @respx.mock
-def test_configure_index_serverless_read_capacity() -> None:
-    """configure_index shim forwards serverless_read_capacity to PATCH spec.serverless."""
+def test_configure_index_read_capacity() -> None:
+    """configure_index shim forwards read_capacity as a top-level PATCH field.
+
+    2026-07: the 2025-10 ``serverless_read_capacity=`` kwarg collapsed into one
+    top-level ``read_capacity=`` covering managed and BYOC indexes.
+    """
     route = respx.patch(f"{BASE_URL}/indexes/my-serverless-idx").mock(
         return_value=httpx.Response(202, json=make_index_response(name="my-serverless-idx")),
     )
 
     pc = Pinecone(api_key="test-key", host=BASE_URL)
-    pc.configure_index("my-serverless-idx", serverless_read_capacity={"mode": "OnDemand"})
+    pc.configure_index("my-serverless-idx", read_capacity={"mode": "OnDemand"})
 
     sent_body = json.loads(route.calls[0].request.content)
-    assert sent_body == {"spec": {"serverless": {"read_capacity": {"mode": "OnDemand"}}}}
+    assert sent_body == {"read_capacity": {"mode": "OnDemand"}}
 
 
 @respx.mock
@@ -182,9 +190,9 @@ def test_configure_index_tags_sparse_patch() -> None:
 
 
 @respx.mock
-def test_create_index_serverless_read_capacity_spec() -> None:
-    """ServerlessSpec.read_capacity is forwarded into spec.serverless.read_capacity in the request body."""
-    from pinecone.models.indexes.specs import ServerlessSpec
+def test_create_index_read_capacity_forwarded() -> None:
+    """read_capacity is a top-level create field and deserializes to a tagged response."""
+    from pinecone.models.indexes.read_capacity import ReadCapacityOnDemandResponse
 
     response_body = make_index_response(name="rc-index")
     route = respx.post(f"{BASE_URL}/indexes").mock(
@@ -194,64 +202,70 @@ def test_create_index_serverless_read_capacity_spec() -> None:
     pc = Pinecone(api_key="test-key", host=BASE_URL)
     result = pc.indexes.create(
         name="rc-index",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1", read_capacity={"mode": "OnDemand"}),
-        dimension=128,
-        metric="cosine",
+        schema=_DENSE_SCHEMA,
+        deployment=_MANAGED_AWS,
+        read_capacity={"mode": "OnDemand"},
         timeout=-1,
     )
 
     assert result.name == "rc-index"
     sent_body = json.loads(route.calls[0].request.content)
-    assert sent_body["spec"]["serverless"]["read_capacity"] == {"mode": "OnDemand"}
-    assert result.spec.serverless is not None
-    assert result.spec.serverless.read_capacity is not None
+    assert sent_body["read_capacity"] == {"mode": "OnDemand"}
+    assert isinstance(result.read_capacity, ReadCapacityOnDemandResponse)
+    assert result.read_capacity.status.state == "Ready"
 
 
 @respx.mock
-def test_create_byoc_index_spec_schema_forwarded() -> None:
-    """ByocSpec.schema is included in spec.byoc of the request body."""
-    from pinecone.models.indexes.specs import ByocSpec
+def test_create_byoc_index_schema_forwarded() -> None:
+    """A byoc deployment and a top-level schema both reach the create body verbatim."""
+    from pinecone.models.indexes.deployment import ByocDeployment
 
-    response_body = make_index_response(name="byoc-schema-index")
+    byoc_response = make_index_response(
+        name="byoc-schema-index",
+        deployment={"deployment_type": "byoc", "environment": "byoc-aws-abc123"},
+    )
     route = respx.post(f"{BASE_URL}/indexes").mock(
-        return_value=httpx.Response(201, json=response_body),
+        return_value=httpx.Response(201, json=byoc_response),
     )
 
     pc = Pinecone(api_key="test-key", host=BASE_URL)
-    pc.indexes.create(
+    result = pc.indexes.create(
         name="byoc-schema-index",
-        spec=ByocSpec(environment="byoc-aws-abc123", schema={"genre": {"type": "str"}}),
-        dimension=128,
-        metric="cosine",
+        schema=_DENSE_SCHEMA,
+        deployment={"deployment_type": "byoc", "environment": "byoc-aws-abc123"},
         timeout=-1,
     )
 
     sent_body = json.loads(route.calls[0].request.content)
-    assert sent_body["spec"]["byoc"]["schema"] == {"fields": {"genre": {"type": "str"}}}
+    assert sent_body["schema"] == _DENSE_SCHEMA
+    assert sent_body["deployment"] == {
+        "deployment_type": "byoc",
+        "environment": "byoc-aws-abc123",
+    }
+    assert isinstance(result.deployment, ByocDeployment)
+    assert result.deployment.environment == "byoc-aws-abc123"
 
 
 @respx.mock
-def test_create_byoc_index_method_schema_forwarded() -> None:
-    """schema= method param is included in spec.byoc of the request body for BYOC indexes."""
-    from pinecone.models.indexes.specs import ByocSpec
+def test_create_index_rejects_quarantined_pods_kwarg() -> None:
+    """pods= has no 2026-07 deployment translation and raises before any request."""
+    from pinecone.errors.exceptions import PineconeTypeError
 
-    response_body = make_index_response(name="byoc-schema-index")
     route = respx.post(f"{BASE_URL}/indexes").mock(
-        return_value=httpx.Response(201, json=response_body),
+        return_value=httpx.Response(201, json=make_index_response()),
     )
 
     pc = Pinecone(api_key="test-key", host=BASE_URL)
-    pc.indexes.create(
-        name="byoc-schema-index",
-        spec=ByocSpec(environment="byoc-aws-abc123"),
-        dimension=128,
-        metric="cosine",
-        schema={"genre": {"type": "str"}},
-        timeout=-1,
-    )
+    with pytest.raises(PineconeTypeError, match="pods=: capacity is replicas x shards"):
+        pc.indexes.create(
+            name="legacy-index",
+            dimension=128,
+            metric="cosine",
+            pods=1,
+            timeout=-1,
+        )
 
-    sent_body = json.loads(route.calls[0].request.content)
-    assert sent_body["spec"]["byoc"]["schema"] == {"fields": {"genre": {"type": "str"}}}
+    assert len(route.calls) == 0
 
 
 # ---------------------------------------------------------------------------

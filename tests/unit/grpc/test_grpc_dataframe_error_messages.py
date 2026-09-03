@@ -42,6 +42,21 @@ _REMEDY_VERBS = (
     "retry",
 )
 
+#: A stated legal range is a remedy in its own right: "must be between 1 and 64,
+#: got 99" tells a caller exactly what to write without naming a verb. The knobs
+#: validated by ``pinecone._internal.validation.require_in_range`` raise in that
+#: shape, and the message text is the 2026-07 contract — ``docs/migration/
+#: v10-migration.md`` prints it verbatim and 29 assertions across the vector-op
+#: and gRPC parity suites pin it character for character, so it cannot carry a
+#: trailing "Pass a limit within that range." clause just to satisfy a verb
+#: scan. Every case with no stated range still has to name a verb.
+_STATED_RANGE = re.compile(r"must be between \S+ and \S+")
+
+
+def _states_a_remedy(message: str) -> bool:
+    lowered = message.lower()
+    return any(verb in lowered for verb in _REMEDY_VERBS) or bool(_STATED_RANGE.search(lowered))
+
 
 class Case(NamedTuple):
     name: str
@@ -161,9 +176,7 @@ class TestEveryErrorIsActionable:
         message = str(excinfo.value)
         assert case.names in message, f"message does not name the knob: {message}"
         assert case.shows in message, f"message does not show the input: {message}"
-        assert any(verb in message.lower() for verb in _REMEDY_VERBS), (
-            f"message states no remedy: {message}"
-        )
+        assert _states_a_remedy(message), f"message states no remedy: {message}"
 
     @pytest.mark.parametrize("case", _CASES, ids=lambda c: c.name)
     def test_no_bare_keyerror_escapes(self, case: Case) -> None:

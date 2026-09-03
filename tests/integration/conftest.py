@@ -4,7 +4,41 @@ These tests make real API calls to Pinecone and require a .env file
 at the SDK root with PINECONE_API_KEY set:
 
     echo 'PINECONE_API_KEY=your-api-key' > .env
-    cd sdks/python-sdk2 && uv run --with python-dotenv pytest tests/integration/ -v -s
+    uv run pytest tests/integration/ -v -s
+
+The .env is looked up in the **main working tree**, so runs from a git
+worktree pick up the same file (see ``tests.live_suite.env_candidates``).
+Override the location with ``PINECONE_SDK_ENV_FILE=/path/to/.env``.
+
+Credential-gated groups
+-----------------------
+Every group below skips itself when its variable is unset. Only
+``PINECONE_API_KEY`` is expected to be present in a normal run; the rest are
+**deliberately out-of-band** and stay skipped locally and in CI:
+
+``PINECONE_API_KEY``
+    Gates ~543 of ~648 collected tests (~94%). Required for any meaningful
+    run. Read from .env or the environment.
+``PINECONE_DOCUMENTS_INDEX_HOST``
+    Gates 14 tests (``test_documents.py``, ``test_async_documents.py``). Needs
+    a pre-provisioned schema-based index host; out-of-band because the suite
+    cannot create one for itself.
+``PINECONE_CLIENT_ID`` / ``PINECONE_CLIENT_SECRET``
+    Gates 10 tests (``test_admin.py``). Needs a service-account OAuth client;
+    out-of-band because those credentials are org-admin scoped and are
+    deliberately not distributed alongside the data-plane key.
+``PINECONE_RETRY_SMOKE=1``
+    Gates 3 tests (``test_retry_smoke.py``). Opt-in: drives live retry/backoff
+    behavior and is slow by design.
+``RUN_EXPENSIVE_TESTS=1``
+    Gates 2 tests (``test_admin.py``). Opt-in: creates real cloud resources.
+
+Two further tests are skipped unconditionally pending IPV-0004
+(documents/delete returns 401 Unknown operation).
+
+A run's actual pass/skip breakdown is printed at the end of the session by
+``pytest_terminal_summary`` — a mostly-skipped run says so out loud rather
+than reporting a misleading green.
 """
 
 from __future__ import annotations
@@ -13,47 +47,110 @@ import asyncio
 import os
 import time
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
+from typing import Protocol
 
 import pytest
-from dotenv import load_dotenv
 
 from pinecone import AsyncPinecone, Pinecone
+from pinecone._internal.constants import DEFAULT_BASE_URL
+from tests.integration.legacy_index import (
+    LegacyIndex,
+    create_legacy_index,
+    delete_legacy_index,
+)
+from tests.live_suite import load_env, write_coverage_summary
+
+
+class LegacyIndexFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        dimension: int | None = None,
+        metric: str = "cosine",
+        vector_type: str = "dense",
+    ) -> LegacyIndex: ...
+
+
+_HERE = Path(__file__).resolve().parent
+
+# The global `timeout` in pyproject.toml is sized for the unit suite, but also
+# applies here and silently overrides each test's own poll budget — nearly every
+# test in this directory asks poll_until() to wait longer than 60s, so they only
+# pass when the control plane happens to be fast. poll_until() already bounds
+# itself with a descriptive TimeoutError, leaving pytest-timeout as a backstop
+# for hangs *outside* polling; size it above the largest declared budget
+# (currently 1020s) rather than below the smallest.
+_DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("PINECONE_TEST_TIMEOUT", "1800"))
 
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "integration: marks tests as real-API integration tests")
 
 
-# Load .env from the SDK root (two levels up from tests/integration/)
-_env_path = Path(__file__).resolve().parent.parent.parent / ".env"
-load_dotenv(_env_path)
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Size the timeout for a live backend (#306) and reject asyncio marks (#313).
 
+    The global ini ``timeout`` is sized for unit tests, which mock every sleep
+    away; a real round trip cannot honour it. Tests carrying their own marker
+    are skipped, so the explicit values in this tree keep winning either way.
 
-# The global `timeout = 60` in pyproject.toml is sized for the unit suite, but
-# also applies here and silently overrides each test's own poll budget — nearly
-# every test in this directory asks poll_until() to wait longer than 60s, so
-# they only pass when the control plane happens to be fast. poll_until() already
-# bounds itself with a descriptive TimeoutError, leaving pytest-timeout as a
-# backstop for hangs *outside* polling; size it above the largest declared
-# budget (currently 1020s) rather than below the smallest.
-_DEFAULT_TIMEOUT = int(os.environ.get("PINECONE_TEST_TIMEOUT", "1800"))
-
-_HERE = Path(__file__).resolve().parent
-
-
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    Path-filtered because pytest hands a conftest hook the entire session's
+    item list, not only the items collected beneath that conftest — an
+    unfiltered loop would hand ``tests/unit`` the integration default too, and
+    would reject ``tests/smoke``'s remaining asyncio marks as if they were ours.
+    """
+    offenders = []
     for item in items:
-        path = getattr(item, "path", None)
-        if path is None:
-            continue
-        try:
-            Path(path).resolve().relative_to(_HERE)
-        except ValueError:
+        if _HERE not in item.path.parents:
             continue
         if item.get_closest_marker("timeout") is None:
-            item.add_marker(pytest.mark.timeout(_DEFAULT_TIMEOUT))
+            item.add_marker(pytest.mark.timeout(_DEFAULT_TIMEOUT_SECONDS))
+        if item.get_closest_marker("asyncio") is not None:
+            offenders.append(item.nodeid)
+
+    if offenders:
+        listing = "\n  ".join(offenders)
+        raise pytest.UsageError(
+            "pytest.mark.asyncio is not allowed in tests/integration (#313):\n  "
+            f"{listing}\n"
+            "pytest-asyncio closes the event loop before running async fixture "
+            "teardown, so the `await pc.close()` in the `async_client` fixture "
+            "below raises 'RuntimeError: Event loop is closed' and every test "
+            "sharing the fixture errors in teardown. Use pytest.mark.anyio, "
+            "which sequences fixture finalization inside the loop's lifetime. "
+            "See commit bd074083."
+        )
+
+
+_ENV_SOURCE = load_env(_HERE)
+
+_CREDENTIAL_VARS = (
+    "PINECONE_API_KEY",
+    "PINECONE_CLIENT_ID",
+    "PINECONE_CLIENT_SECRET",
+    "PINECONE_DOCUMENTS_INDEX_HOST",
+)
+
+
+def pytest_terminal_summary(
+    terminalreporter: pytest.TerminalReporter,
+    exitstatus: int,
+    config: pytest.Config,
+) -> None:
+    """Report what actually ran.
+
+    Without this, a fully credential-starved run exits 0 with a wall of skips
+    that nobody counts, and "integration tests green" gets read as coverage.
+    See #295.
+    """
+    write_coverage_summary(
+        terminalreporter,
+        label="integration",
+        env_source=_ENV_SOURCE,
+        credential_vars=_CREDENTIAL_VARS,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +252,10 @@ def ensure_index_deleted(
     Unlike ``cleanup_resource``, this waits for the backend to finish the
     asynchronous delete so the name is released before the test returns,
     which reduces cross-test index-quota flakes.
+
+    Iterate the paginator; do not reach for a ``.indexes`` attribute. It has
+    none, so every poll raised and this helper leaked every index it was
+    asked to delete (#346).
     """
     timeout, interval = _capped_timeout(timeout), _capped_interval(interval)
     try:
@@ -165,8 +266,7 @@ def ensure_index_deleted(
     start = time.monotonic()
     while time.monotonic() - start < timeout:
         try:
-            listing = client.indexes.list()
-            existing = {i.name for i in listing.indexes}
+            existing = {i.name for i in client.indexes.list()}
             if name not in existing:
                 print(f"  Cleaned up index: {name}")
                 return
@@ -207,8 +307,7 @@ async def async_ensure_index_deleted(
     start = time.monotonic()
     while time.monotonic() - start < timeout:
         try:
-            listing = await async_client.indexes.list()
-            existing = {i.name for i in listing.indexes}
+            existing = {i.name async for i in async_client.indexes.list()}
             if name not in existing:
                 print(f"  Cleaned up index: {name}")
                 return
@@ -271,6 +370,59 @@ def client_pool() -> Pinecone:
     if not api_key:
         pytest.skip("PINECONE_API_KEY not set")
     return Pinecone(api_key=api_key, pool_threads=4)
+
+
+@pytest.fixture(scope="session")
+def legacy_index_factory(api_key: str) -> Generator[LegacyIndexFactory, None, None]:
+    """Create legacy (vectors-API) indexes, one per distinct shape.
+
+    2026-07 cannot create an index the vectors API will serve, so any test
+    that expects ``upsert`` / ``query`` / ``fetch`` to **succeed** has to get
+    its index from :mod:`tests.integration.legacy_index` instead of
+    ``pc.indexes.create``. See that module for the sanctioned pattern and for
+    why the SDK's own create path is bypassed.
+
+    Call it as ``legacy_index_factory(dimension=3)``, or
+    ``legacy_index_factory(vector_type="sparse", metric="dotproduct")``.
+    Results are cached per shape for the whole session and deleted at the end,
+    so callers sharing a shape share one index — isolate with a per-test
+    namespace, as the rest of this package does.
+
+    Reads ``PINECONE_CONTROLLER_HOST`` so a run pointing the SDK at a
+    non-default host (e.g. a local simulator) also creates the legacy index
+    there instead of against production.
+    """
+    base_url = os.environ.get("PINECONE_CONTROLLER_HOST", DEFAULT_BASE_URL)
+    created: dict[tuple[int | None, str, str], LegacyIndex] = {}
+
+    def factory(
+        *,
+        dimension: int | None = None,
+        metric: str = "cosine",
+        vector_type: str = "dense",
+    ) -> LegacyIndex:
+        key = (dimension, metric, vector_type)
+        if key not in created:
+            created[key] = create_legacy_index(
+                api_key,
+                dimension=dimension,
+                metric=metric,
+                vector_type=vector_type,
+                base_url=base_url,
+            )
+        return created[key]
+
+    try:
+        yield factory
+    finally:
+        for index in created.values():
+            delete_legacy_index(api_key, index.name, base_url=base_url)
+
+
+@pytest.fixture(scope="session")
+def legacy_index_dim3(legacy_index_factory: LegacyIndexFactory) -> LegacyIndex:
+    """A ready dim-3 cosine legacy index — the default shape for vector tests."""
+    return legacy_index_factory(dimension=3)
 
 
 @pytest.fixture

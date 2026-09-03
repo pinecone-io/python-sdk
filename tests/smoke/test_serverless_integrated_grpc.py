@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from pinecone import EmbedConfig, GrpcIndex, IntegratedSpec, Pinecone
+from pinecone import EmbedConfig, GrpcIndex, Pinecone
 from tests.smoke.conftest import (
     SMOKE_PREFIX,
     ensure_index_deleted,
@@ -27,15 +27,13 @@ NS = "docs"
 def test_serverless_integrated_grpc_smoke(client: Pinecone) -> None:
     name = unique_name(f"{SMOKE_PREFIX}-srv-int-grpc")
     try:
-        client.indexes.create(
+        client.indexes.create_for_model(
             name=name,
-            spec=IntegratedSpec(
-                cloud=CLOUD,
-                region=REGION,
-                embed=EmbedConfig(
-                    model=EMBED_MODEL,
-                    field_map={"text": "chunk_text"},
-                ),
+            cloud=CLOUD,
+            region=REGION,
+            embed=EmbedConfig(
+                model=EMBED_MODEL,
+                field_map={"text": "chunk_text"},
             ),
         )
 
@@ -49,6 +47,7 @@ def test_serverless_integrated_grpc_smoke(client: Pinecone) -> None:
             ]
             r = idx.upsert_records(namespace=NS, records=records)
             assert r.record_count == 3
+            known_ids = {record["_id"] for record in records}
 
             wait_for_vector_count(idx, NS, expected=3)
 
@@ -59,6 +58,7 @@ def test_serverless_integrated_grpc_smoke(client: Pinecone) -> None:
             )
             assert response.result is not None
             assert len(response.result.hits) > 0
+            assert {hit.id for hit in response.result.hits} <= known_ids
 
             alias = idx.search_records(
                 namespace=NS,
@@ -66,6 +66,8 @@ def test_serverless_integrated_grpc_smoke(client: Pinecone) -> None:
                 inputs={"text": "vector search"},
             )
             assert alias.result is not None
+            assert len(alias.result.hits) > 0
+            assert {hit.id for hit in alias.result.hits} <= known_ids
         finally:
             idx.close()
     finally:

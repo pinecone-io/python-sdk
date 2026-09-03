@@ -34,6 +34,10 @@ Obtain an ``AsyncIndex`` via :meth:`pinecone.AsyncPinecone.index`.
   :meth:`~pinecone.async_client.async_index.AsyncIndex.list`,
   :meth:`~pinecone.async_client.async_index.AsyncIndex.list_paginated`
 - **Stats** — :meth:`~pinecone.async_client.async_index.AsyncIndex.describe_index_stats`
+- **Documents** — :attr:`~pinecone.async_client.async_index.AsyncIndex.documents`, a
+  lazily-instantiated :class:`~pinecone.async_client.documents.AsyncDocuments`
+  namespace for schema-based indexes (``index.documents.upsert``, ``.search``,
+  ``.fetch``, ``.delete``, ``.update``, ``.list``, ``.batch_upsert``).
 - **Integrated Inference** — :meth:`~pinecone.async_client.async_index.AsyncIndex.search`,
   :meth:`~pinecone.async_client.async_index.AsyncIndex.search_records`
 - **Namespaces** — :meth:`~pinecone.async_client.async_index.AsyncIndex.create_namespace`,
@@ -54,3 +58,12 @@ Obtain an ``AsyncIndex`` via :meth:`pinecone.AsyncPinecone.index`.
    :show-inheritance:
    :special-members: __init__, __aenter__, __aexit__
    :member-order: bysource
+
+
+AsyncDocuments
+--------------
+
+.. autoclass:: pinecone.async_client.documents.AsyncDocuments
+   :members:
+   :undoc-members: False
+   :show-inheritance:

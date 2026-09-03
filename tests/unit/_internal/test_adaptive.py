@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import threading
+import time
+from collections.abc import Callable
+
 import pytest
 
 from pinecone._internal.adaptive import (
@@ -7,6 +11,13 @@ from pinecone._internal.adaptive import (
     _AdaptiveLimiter,
     _AdaptiveLimiterRegistry,
 )
+
+_SOAK_SECONDS = 0.5
+
+# 8 threads doing lock-guarded integer arithmetic clear millions of iterations
+# in half a second; this only has to be high enough to distinguish "the threads
+# ran concurrently" from "they were started and immediately told to stop".
+_MIN_SOAK_ITERATIONS = 1_000
 
 
 class TestAdaptiveLimiter:
@@ -141,23 +152,31 @@ class TestAdaptiveLimiterRegistry:
         # Originally throttled to ceiling // 2 = 4.
         assert l0.current_limit() == 4
 
-    def test_concurrent_access_invariants(self) -> None:
+    def test_concurrent_access_invariants(self, real_sleep: Callable[[float], None]) -> None:
         """Spawn N threads alternately throttling and reporting success;
         assert no exceptions and 1 <= current_limit() <= ceiling throughout.
 
         Smoke-level concurrent-access check — not Hypothesis-grade — but it
         catches obvious failures (race on ``_limit``, missed ``notify``,
         silent ``AssertionError`` swallowing, deadlocks).
-        """
-        import threading
-        import time
 
+        The soak length is load-bearing, so it is asserted rather than
+        assumed. ``tests/unit/conftest.py`` no-ops ``time.sleep``
+        process-wide, which made a plain ``time.sleep(_SOAK_SECONDS)`` here
+        return in 0.0000s: the threads were signalled to stop before they
+        had interleaved, and the test passed without exercising any
+        concurrency at all (#360). Hence the ``real_sleep`` fixture, and the
+        elapsed/iteration assertions below — reintroduce the no-op and this
+        test fails instead of going quietly green.
+        """
         reg = _AdaptiveLimiterRegistry()
         lim = reg.get("test-host", ceiling=16)
         errors: list[BaseException] = []
+        iterations: list[int] = []
         stop = threading.Event()
 
         def thrash(action: str) -> None:
+            count = 0
             try:
                 while not stop.is_set():
                     if action == "throttle":
@@ -166,16 +185,30 @@ class TestAdaptiveLimiterRegistry:
                         lim.report_success()
                     cur = lim.current_limit()
                     assert 1 <= cur <= 16, f"limit out of bounds: {cur}"
+                    count += 1
             except BaseException as e:
                 errors.append(e)
+            finally:
+                iterations.append(count)
 
         threads = [threading.Thread(target=thrash, args=("throttle",)) for _ in range(4)]
         threads += [threading.Thread(target=thrash, args=("success",)) for _ in range(4)]
+        started = time.monotonic()
         for t in threads:
             t.start()
-        time.sleep(0.5)
+        real_sleep(_SOAK_SECONDS)
         stop.set()
         for t in threads:
             t.join(timeout=2.0)
             assert not t.is_alive(), "thread did not exit"
+        elapsed = time.monotonic() - started
+
+        assert elapsed >= _SOAK_SECONDS, (
+            f"soak lasted {elapsed:.4f}s, expected at least {_SOAK_SECONDS}s — "
+            "sleep is a no-op here, so this test exercised no concurrency (#360)"
+        )
+        assert sum(iterations) >= _MIN_SOAK_ITERATIONS, (
+            f"threads completed only {sum(iterations)} iterations "
+            f"({iterations}), expected at least {_MIN_SOAK_ITERATIONS}"
+        )
         assert not errors, f"errors during concurrent access: {errors}"

@@ -3,14 +3,33 @@
 from __future__ import annotations
 
 import contextlib
+from typing import Any
 
 import pytest
 
 from pinecone import GrpcIndex, Index, Pinecone
-from pinecone.errors import ForbiddenError, NotFoundError
-from pinecone.models.indexes.index import IndexModel, IndexSpec, IndexStatus
-from pinecone.models.indexes.specs import EmbedConfig, IntegratedSpec, ServerlessSpec
+from pinecone.errors import ForbiddenError, NotFoundError, PineconeValueError
+from pinecone.models.indexes.deployment import ManagedDeployment
+from pinecone.models.indexes.index import IndexModel, IndexStatus
+from pinecone.models.indexes.schema import (
+    DenseVectorField,
+    IndexSchema,
+    SemanticTextField,
+    SparseVectorField,
+)
 from tests.integration.conftest import cleanup_resource, unique_name
+
+_DENSE_SCHEMA: dict[str, Any] = {
+    "fields": {"embedding": {"type": "dense_vector", "dimension": 2, "metric": "cosine"}}
+}
+_DOTPRODUCT_SCHEMA: dict[str, Any] = {
+    "fields": {"embedding": {"type": "dense_vector", "dimension": 4, "metric": "dotproduct"}}
+}
+_MANAGED_AWS: dict[str, Any] = {
+    "deployment_type": "managed",
+    "cloud": "aws",
+    "region": "us-east-1",
+}
 
 # ---------------------------------------------------------------------------
 # list-indexes
@@ -18,26 +37,23 @@ from tests.integration.conftest import cleanup_resource, unique_name
 
 
 @pytest.mark.integration
-def test_list_indexes_returns_index_list(client: Pinecone) -> None:
-    """pc.indexes.list() returns an IndexList that is iterable and supports len()."""
-    result = client.indexes.list()
+def test_list_indexes_returns_paginator(client: Pinecone) -> None:
+    """pc.indexes.list() yields IndexModel instances with distinct non-empty names.
 
-    # IndexList supports len()
-    count = len(result)
-    assert isinstance(count, int)
-    assert count >= 0
+    2026-07 replaced IndexList (which had len() and .names()) with a Paginator,
+    so the name list is built by comprehension.
+    """
+    items = list(client.indexes.list())
 
-    # IndexList supports iteration
-    items = list(result)
-    assert len(items) == count
+    for item in items:
+        assert isinstance(item, IndexModel)
 
-    # .names() returns a list of strings
-    names = result.names()
-    assert isinstance(names, list)
-    assert len(names) == count
+    names = [idx.name for idx in items]
+    assert len(names) == len(items)
     for name in names:
         assert isinstance(name, str)
         assert len(name) > 0
+    assert len(set(names)) == len(names)
 
 
 # ---------------------------------------------------------------------------
@@ -52,20 +68,24 @@ def test_create_serverless_index_becomes_ready(client: Pinecone) -> None:
     try:
         model = client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=300,
         )
 
         assert model.name == name
-        assert model.dimension == 2
-        assert model.metric == "cosine"
         assert model.status.ready is True
         assert model.status.state == "Ready"
-        assert model.spec.serverless is not None
-        assert model.spec.serverless.cloud == "aws"
-        assert model.spec.serverless.region == "us-east-1"
+
+        embedding = model.schema.fields["embedding"]
+        assert isinstance(embedding, DenseVectorField)
+        assert embedding.dimension == 2
+        assert embedding.metric == "cosine"
+
+        assert isinstance(model.deployment, ManagedDeployment)
+        assert model.deployment.cloud == "aws"
+        assert model.deployment.region == "us-east-1"
+
         assert model.deletion_protection == "disabled"
         assert isinstance(model.host, str)
         assert len(model.host) > 0
@@ -85,43 +105,35 @@ def test_create_serverless_index_becomes_ready(client: Pinecone) -> None:
 @pytest.mark.integration
 @pytest.mark.timeout(400)
 def test_create_integrated_dense_index_becomes_ready(client: Pinecone) -> None:
-    """Create an integrated dense index, wait for ready state, verify fields, then delete."""
+    """Create an integrated dense index via create_for_model, verify fields, then delete.
+
+    2026-07 moved integrated creation off ``create(spec=IntegratedSpec(...))``
+    onto ``create_for_model``, and the embedding configuration comes back as a
+    SemanticTextField named after the field_map text entry rather than as
+    ``model.embed``.
+    """
     name = unique_name("int")
     try:
-        model = client.indexes.create(
+        model = client.indexes.create_for_model(
             name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(
-                    model="llama-text-embed-v2",
-                    field_map={"text": "chunk_text"},
-                    metric="cosine",
-                ),
-            ),
+            cloud="aws",
+            region="us-east-1",
+            embed={
+                "model": "llama-text-embed-v2",
+                "field_map": {"text": "chunk_text"},
+                "metric": "cosine",
+            },
             timeout=300,
         )
 
-        assert model.name == name
-        assert model.status.ready is True
-        assert model.status.state == "Ready"
-        assert model.dimension == 1024
-        assert model.metric == "cosine"
-        assert model.vector_type == "dense"
-        assert model.embed is not None
-        assert model.embed.model == "llama-text-embed-v2"
-        assert model.embed.field_map["text"] == "chunk_text"
-
-        desc = client.indexes.describe(name)
-        assert desc.name == name
-        assert desc.status.ready is True
-        assert desc.status.state == "Ready"
-        assert desc.dimension == 1024
-        assert desc.metric == "cosine"
-        assert desc.vector_type == "dense"
-        assert desc.embed is not None
-        assert desc.embed.model == "llama-text-embed-v2"
-        assert desc.embed.field_map["text"] == "chunk_text"
+        for result in (model, client.indexes.describe(name)):
+            assert result.name == name
+            assert result.status.ready is True
+            assert result.status.state == "Ready"
+            chunk_text = result.schema.fields["chunk_text"]
+            assert isinstance(chunk_text, SemanticTextField)
+            assert chunk_text.model == "llama-text-embed-v2"
+            assert chunk_text.metric == "cosine"
     finally:
         cleanup_resource(
             lambda: client.indexes.delete(name),
@@ -131,51 +143,37 @@ def test_create_integrated_dense_index_becomes_ready(client: Pinecone) -> None:
 
 
 # ---------------------------------------------------------------------------
-# create-index — integrated (model-backed) sparse
+# create-index — sparse vector field
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
 @pytest.mark.timeout(400)
-def test_create_integrated_sparse_index_becomes_ready(client: Pinecone) -> None:
-    """Create an integrated sparse index, wait for ready state, verify fields, then delete."""
-    name = unique_name("int")
+def test_create_sparse_index_becomes_ready(client: Pinecone) -> None:
+    """Create an index with a sparse_vector schema field, verify fields, then delete.
+
+    2026-07 replaced the ``vector_type`` discriminator with the schema field
+    type: a SparseVectorField is what makes an index sparse, and it carries no
+    dimension.
+    """
+    name = unique_name("spr")
     try:
         model = client.indexes.create(
             name=name,
-            spec=IntegratedSpec(
-                cloud="aws",
-                region="us-east-1",
-                embed=EmbedConfig(
-                    model="pinecone-sparse-english-v0",
-                    field_map={"text": "chunk_text"},
-                    metric="dotproduct",
-                ),
-            ),
+            schema={"fields": {"sparse_embedding": {"type": "sparse_vector"}}},
+            deployment=_MANAGED_AWS,
             timeout=300,
         )
 
-        assert model.name == name
-        assert model.status.ready is True
-        assert model.status.state == "Ready"
-        assert model.metric == "dotproduct"
-        assert model.vector_type == "sparse"
-        # Sparse indexes may not report a fixed dimension — just check the field is present
-        # and its value is not an unexpected type if populated.
-        assert model.dimension is None or isinstance(model.dimension, int)
-        assert model.embed is not None
-        assert model.embed.model == "pinecone-sparse-english-v0"
-        assert model.embed.field_map["text"] == "chunk_text"
-
-        desc = client.indexes.describe(name)
-        assert desc.name == name
-        assert desc.status.ready is True
-        assert desc.status.state == "Ready"
-        assert desc.metric == "dotproduct"
-        assert desc.vector_type == "sparse"
-        assert desc.embed is not None
-        assert desc.embed.model == "pinecone-sparse-english-v0"
-        assert desc.embed.field_map["text"] == "chunk_text"
+        for result in (model, client.indexes.describe(name)):
+            assert result.name == name
+            assert result.status.ready is True
+            assert result.status.state == "Ready"
+            sparse = result.schema.fields["sparse_embedding"]
+            assert isinstance(sparse, SparseVectorField)
+            assert not any(
+                isinstance(field, DenseVectorField) for field in result.schema.fields.values()
+            )
     finally:
         cleanup_resource(
             lambda: client.indexes.delete(name),
@@ -196,9 +194,8 @@ def test_describe_index_returns_full_model(client: Pinecone) -> None:
     try:
         client.indexes.create(
             name=name,
-            dimension=4,
-            metric="dotproduct",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DOTPRODUCT_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=300,
         )
 
@@ -206,27 +203,33 @@ def test_describe_index_returns_full_model(client: Pinecone) -> None:
 
         assert isinstance(desc, IndexModel)
         assert desc.name == name
-        assert desc.dimension == 4
-        assert desc.metric == "dotproduct"
-        assert desc.vector_type == "dense"
         assert desc.deletion_protection == "disabled"
 
-        # Status fields
         assert isinstance(desc.status, IndexStatus)
         assert desc.status.ready is True
         assert isinstance(desc.status.state, str)
         assert len(desc.status.state) > 0
 
-        # Spec is serverless
-        assert isinstance(desc.spec, IndexSpec)
-        assert desc.spec.serverless is not None
-        assert desc.spec.pod is None
-        assert desc.spec.serverless.cloud == "aws"
-        assert desc.spec.serverless.region == "us-east-1"
+        assert isinstance(desc.schema, IndexSchema)
+        embedding = desc.schema.fields["embedding"]
+        assert isinstance(embedding, DenseVectorField)
+        assert embedding.dimension == 4
+        assert embedding.metric == "dotproduct"
 
-        # Host is a non-empty string
+        assert isinstance(desc.deployment, ManagedDeployment)
+        assert desc.deployment.cloud == "aws"
+        assert desc.deployment.region == "us-east-1"
+
         assert isinstance(desc.host, str)
         assert len(desc.host) > 0
+
+        assert desc.dimension == 4
+        assert desc.metric == "dotproduct"
+        assert desc.vector_type == "dense"
+
+        for removed in ("spec", "embed", "created_at"):
+            with pytest.raises(AttributeError, match="was removed in the 2026-07"):
+                getattr(desc, removed)
     finally:
         cleanup_resource(
             lambda: client.indexes.delete(name),
@@ -247,9 +250,8 @@ def test_index_handle_rest(client: Pinecone) -> None:
     try:
         client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=300,
         )
 
@@ -281,9 +283,8 @@ def test_index_handle_grpc(client: Pinecone) -> None:
     try:
         client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=300,
         )
 
@@ -320,9 +321,8 @@ def test_create_index_with_tags(client: Pinecone) -> None:
     try:
         model = client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             tags=tags,
             timeout=300,
         )
@@ -361,9 +361,8 @@ def test_index_exists_returns_correct_bool(client: Pinecone) -> None:
     try:
         client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=300,
         )
 
@@ -384,10 +383,15 @@ def test_index_exists_returns_correct_bool(client: Pinecone) -> None:
 
 
 @pytest.mark.integration
-def test_index_exists_with_empty_name_returns_false(client: Pinecone) -> None:
-    """Empty/whitespace names must short-circuit to False without a network call."""
-    assert client.indexes.exists("") is False
-    assert client.has_index("") is False
+def test_index_exists_with_empty_name_raises(client: Pinecone) -> None:
+    """An empty name raises before any network call.
+
+    2026-07 changed this from returning False to raising PineconeValueError.
+    """
+    with pytest.raises(PineconeValueError):
+        client.indexes.exists("")
+    with pytest.raises(PineconeValueError):
+        client.has_index("")
 
 
 # ---------------------------------------------------------------------------
@@ -402,9 +406,8 @@ def test_configure_index_updates_tags(client: Pinecone) -> None:
     try:
         client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             tags={"env": "integration-test", "version": "1", "to-remove": "yes"},
             timeout=300,
         )
@@ -447,9 +450,8 @@ def test_configure_deletion_protection_toggle_rest(client: Pinecone) -> None:
     try:
         client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=300,
         )
 
@@ -500,9 +502,8 @@ def test_delete_index_timeout_minus1_returns_immediately(client: Pinecone) -> No
     try:
         client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=300,
         )
 
@@ -531,48 +532,44 @@ def test_delete_index_timeout_minus1_returns_immediately(client: Pinecone) -> No
 
 
 # ---------------------------------------------------------------------------
-# configure-index returns None and preserves unspecified fields
+# configure-index returns the updated model and preserves unspecified fields
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-def test_configure_returns_none_and_preserves_deletion_protection(client: Pinecone) -> None:
-    """configure() always returns None; omitting deletion_protection leaves it unchanged.
+def test_configure_returns_model_and_preserves_deletion_protection(client: Pinecone) -> None:
+    """configure() returns the updated IndexModel; omitting a field leaves it unchanged.
 
-    Verifies claims:
-    - unified-index-0029: configure-index discards the API response and returns None
-    - unified-index-0022: when configure is called without deletion_protection, the
-      current value is preserved (the SDK omits the field from the PATCH body)
+    2026-07 changed configure() from returning None (unified-index-0029) to
+    returning the updated IndexModel, so the response itself is now the
+    assertion surface for unified-index-0022 (fields omitted from the PATCH
+    body keep their current value).
     """
     name = unique_name("idx")
     try:
         client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=300,
         )
 
-        # Enable deletion protection — must return None
         result1 = client.indexes.configure(name, deletion_protection="enabled")
-        assert result1 is None, "configure() must return None (unified-index-0029)"
+        assert isinstance(result1, IndexModel)
+        assert result1.deletion_protection == "enabled"
 
-        # Verify deletion protection is now "enabled"
         desc1 = client.indexes.describe(name)
         assert desc1.deletion_protection == "enabled"
 
-        # Configure just a tag — no deletion_protection argument — must return None
         result2 = client.indexes.configure(name, tags={"test-key": "test-val"})
-        assert result2 is None, "configure() must return None (unified-index-0029)"
-
-        # Describe again: deletion_protection must still be "enabled" (preserved, not reset)
-        desc2 = client.indexes.describe(name)
-        assert desc2.deletion_protection == "enabled", (
+        assert isinstance(result2, IndexModel)
+        assert result2.deletion_protection == "enabled", (
             "deletion_protection must be preserved when configure() is called without it "
             "(unified-index-0022)"
         )
-        # Also verify the tag was applied
+
+        desc2 = client.indexes.describe(name)
+        assert desc2.deletion_protection == "enabled"
         assert desc2.tags is not None
         assert desc2.tags.get("test-key") == "test-val"
 
@@ -608,9 +605,8 @@ def test_delete_index_clears_host_cache_rest(client: Pinecone) -> None:
     try:
         client.indexes.create(
             name=name,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=300,
         )
 
@@ -642,77 +638,6 @@ def test_delete_index_clears_host_cache_rest(client: Pinecone) -> None:
 
 
 # ---------------------------------------------------------------------------
-# schema parameter — flat vs nested format normalization — REST sync
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.integration
-@pytest.mark.skip(
-    reason=(
-        "IT-0017: _normalize_schema() strips the 'fields' wrapper, sending flat format to the "
-        "API. But the 2025-10 API version requires nested format {'fields': {...}}. Both flat and "
-        "nested caller inputs are converted to flat by the SDK and then rejected with 422."
-    )
-)
-def test_create_index_with_schema_normalization_rest(client: Pinecone) -> None:
-    """create() accepts schema in both flat and nested formats, proving _normalize_schema() works.
-
-    DISABLED: IT-0017 — _normalize_schema() incorrectly strips the 'fields' wrapper before
-    sending to the API. The 2025-10 API requires nested {"fields": {...}} format inside
-    spec.serverless.schema; the flat format is rejected with 422 Unprocessable Entity.
-
-    Verifies claims:
-    - unified-schema-0001: A schema specified as a flat map of field names to properties
-      and a schema specified as a nested structure with a 'fields' wrapper key are parsed
-      identically. The normalization is client-side: if nested format is accepted by the API,
-      _normalize_schema() successfully unwrapped {"fields": {...}} before sending.
-    - unified-schema-0002: Schemas can be included in index creation requests for serverless specs.
-
-    Strategy: create two indexes — one with nested schema ({"fields": {...}}) and one with
-    flat schema ({"field": {...}}). Both must be accepted by the API without error. The
-    nested format requires normalization; the flat format is a passthrough.
-    """
-    name_nested = unique_name("idx")
-    name_flat = unique_name("idx")
-    try:
-        # --- Step 1: nested schema format {"fields": {...}} ---
-        # _normalize_schema() unwraps this to {"genre": {"filterable": True}} before the API call.
-        result_nested = client.indexes.create(
-            name=name_nested,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-            schema={"fields": {"genre": {"filterable": True}}},
-            timeout=300,
-        )
-        assert isinstance(result_nested, IndexModel), (
-            "create() with nested schema must return an IndexModel"
-        )
-        assert result_nested.name == name_nested
-        assert result_nested.status.ready is True
-
-        # --- Step 2: flat schema format {"field": {...}} ---
-        # _normalize_schema() passes this through unchanged.
-        result_flat = client.indexes.create(
-            name=name_flat,
-            dimension=2,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-            schema={"genre": {"filterable": True}},
-            timeout=300,
-        )
-        assert isinstance(result_flat, IndexModel), (
-            "create() with flat schema must return an IndexModel"
-        )
-        assert result_flat.name == name_flat
-        assert result_flat.status.ready is True
-
-    finally:
-        cleanup_resource(lambda: client.indexes.delete(name_nested), name_nested, "index")
-        cleanup_resource(lambda: client.indexes.delete(name_flat), name_flat, "index")
-
-
-# ---------------------------------------------------------------------------
 # IndexModel bracket access — unified-index-0026
 # ---------------------------------------------------------------------------
 
@@ -725,7 +650,6 @@ def test_index_model_bracket_access_on_real_describe(client: Pinecone) -> None:
     unified-index-0026: "The describe-index response supports both attribute and
     bracket access."
 
-    All existing tests use only attribute access (model.name, model.metric …).
     This test verifies that the string-key bracket syntax (model['name']) and the
     'in' operator work correctly on a real API-deserialized IndexModel, and that
     accessing a non-existent key raises KeyError.
@@ -738,47 +662,34 @@ def test_index_model_bracket_access_on_real_describe(client: Pinecone) -> None:
     """
     index_name = unique_name("idx")
     try:
-        # Create quickly — don't wait for ready; describe() works on any state
         client.indexes.create(
             name=index_name,
-            dimension=2,
-            metric="cosine",
-            spec={"serverless": {"cloud": "aws", "region": "us-east-1"}},
+            schema=_DENSE_SCHEMA,
+            deployment=_MANAGED_AWS,
             timeout=-1,
         )
 
         model = client.indexes.describe(index_name)
         assert isinstance(model, IndexModel)
 
-        # --- Bracket access equals attribute access ---
-        assert model["name"] == model.name, "model['name'] must equal model.name"
-        assert model["metric"] == model.metric, "model['metric'] must equal model.metric"
-        assert model["host"] == model.host, "model['host'] must equal model.host"
-        assert model["vector_type"] == model.vector_type, (
-            "model['vector_type'] must equal model.vector_type"
-        )
-        assert model["deletion_protection"] == model.deletion_protection, (
-            "model['deletion_protection'] must equal model.deletion_protection"
-        )
-        # dimension can be None for integrated indexes; assert equality regardless
-        assert model["dimension"] == model.dimension, (
-            "model['dimension'] must equal model.dimension"
-        )
+        for field in ("name", "host", "deletion_protection", "schema", "deployment", "status"):
+            assert model[field] == getattr(model, field), (
+                f"model[{field!r}] must equal model.{field}"
+            )
+            assert field in model, f"'{field}' must be in IndexModel"
 
-        # --- Specific field values ---
         assert model["name"] == index_name, "Bracket 'name' must match the created index name"
-        assert model["metric"] == "cosine", "Bracket 'metric' must be 'cosine'"
-        assert model["vector_type"] == "dense", "Bracket 'vector_type' must be 'dense'"
         assert model["deletion_protection"] == "disabled", (
             "Bracket 'deletion_protection' must be 'disabled'"
         )
+        assert model["schema"].fields["embedding"].metric == "cosine"
 
-        # --- Containment check ---
-        for field in ("name", "metric", "host", "dimension", "deletion_protection", "vector_type"):
-            assert field in model, f"'{field}' must be in IndexModel"
         assert "nonexistent_field_xyz" not in model, "Non-existent key must NOT be in IndexModel"
+        for removed in ("dimension", "metric", "vector_type", "spec", "embed"):
+            assert removed not in model, f"Removed field {removed!r} must not be in IndexModel"
+            with pytest.raises(KeyError):
+                _ = model[removed]
 
-        # --- KeyError on missing key ---
         with pytest.raises(KeyError):
             _ = model["nonexistent_field_xyz"]
 
@@ -798,11 +709,12 @@ def test_index_model_bracket_access_on_real_describe(client: Pinecone) -> None:
 @pytest.mark.integration
 @pytest.mark.timeout(400)
 def test_create_index_for_model_shim_creates_index(client: Pinecone) -> None:
-    """create_index_for_model() creates an index matching the direct path.
+    """create_index_for_model() creates an index matching the indexes.create_for_model path.
 
     Verifies:
-    - Passing embed as a plain dict is normalised correctly (dict → EmbedConfig path).
-    - The returned IndexModel matches the shape produced by the direct IntegratedSpec path in DX-0070.
+    - Passing embed as a plain dict is normalised correctly.
+    - The returned IndexModel surfaces the embedding as a SemanticTextField named
+      after the field_map text entry, matching test_create_integrated_dense_index.
     """
     name = unique_name("shim")
     try:
@@ -820,9 +732,9 @@ def test_create_index_for_model_shim_creates_index(client: Pinecone) -> None:
 
         assert model.name == name
         assert model.status.ready is True
-        assert model.embed is not None
-        assert model.embed.model == "llama-text-embed-v2"
-        assert model.embed.field_map["text"] == "chunk_text"
+        chunk_text = model.schema.fields["chunk_text"]
+        assert isinstance(chunk_text, SemanticTextField)
+        assert chunk_text.model == "llama-text-embed-v2"
     finally:
         cleanup_resource(
             lambda: client.indexes.delete(name),

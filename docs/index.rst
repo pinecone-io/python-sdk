@@ -25,6 +25,7 @@ Pinecone Python SDK
    :maxdepth: 1
    :caption: Migration & FAQ
 
+   migration/v10-migration
    migration/v9-migration
    migration/v9.2-grpc-partial-failures
    faq
@@ -82,6 +83,7 @@ Pinecone Python SDK
    reference/pinecone
    reference/sync-index
    reference/models
+   reference/schema-builder
    reference/exceptions
 
 .. toctree::
@@ -104,8 +106,3 @@ Pinecone Python SDK
 
    reference/admin
 
-.. toctree::
-   :maxdepth: 1
-   :caption: Preview (Pre-release)
-
-   reference/preview

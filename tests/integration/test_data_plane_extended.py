@@ -2,6 +2,19 @@
 
 Phase 2 Tier 1: metadata-filter, sparse-vectors, query-by-id, fetch-missing-ids,
 include-values-metadata, query-namespaces.
+
+The shared indexes come from :func:`legacy_index_factory`, not from
+``pc.indexes.create``: 2026-07 has no way to create an index the vectors API
+will serve, and every call in this module is a vectors-API call. See
+:mod:`tests.integration.legacy_index` for the sanctioned pattern and why the
+SDK's own create path is bypassed.
+
+Each shared-index fixture calls ``assert_serves_vectors_api`` once, because a
+document-schema index would not fail this module loudly — writes are refused
+but ``query`` / ``fetch`` / ``describe_index_stats`` succeed and return
+**empty**, so a read-only assertion would pass against data that was never
+there. Every test that reads live data writes first and asserts
+``upserted_count``, which is the other half of that defence.
 """
 # area tags covered: metadata-filter, sparse-vectors, query-by-id, fetch-missing-ids,
 # include-values-metadata, query-namespaces
@@ -9,13 +22,11 @@ include-values-metadata, query-namespaces.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Generator
 
 import pytest
 
 from pinecone import Field, Pinecone
 from pinecone.models.indexes.index import IndexModel
-from pinecone.models.indexes.specs import ServerlessSpec
 from pinecone.models.vectors.query_aggregator import QueryNamespacesResults
 from pinecone.models.vectors.responses import (
     FetchByMetadataResponse,
@@ -29,11 +40,12 @@ from pinecone.models.vectors.responses import (
 from pinecone.models.vectors.sparse import SparseValues
 from pinecone.models.vectors.usage import Usage
 from pinecone.models.vectors.vector import ScoredVector, Vector
-from tests.integration.conftest import (
-    cleanup_resource,
-    ensure_index_deleted,
-    poll_until,
-    unique_name,
+from tests.integration.conftest import LegacyIndexFactory, poll_until
+from tests.integration.legacy_index import (
+    LEGACY_DENSE_FIELD,
+    LEGACY_SPARSE_FIELD,
+    LegacyIndex,
+    assert_serves_vectors_api,
 )
 
 # ---------------------------------------------------------------------------
@@ -42,71 +54,57 @@ from tests.integration.conftest import (
 
 
 @pytest.fixture(scope="module")
-def shared_index_dim2(client: Pinecone) -> Generator[str, None, None]:
-    """Shared serverless index (dim=2, cosine) reused across all dim=2 tests in this module."""
-    name = unique_name("idx-shared-dim2")
-    client.indexes.create(
-        name=name,
-        dimension=2,
-        metric="cosine",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        timeout=300,
-    )
-    try:
-        yield name
-    finally:
-        ensure_index_deleted(client, name)
+def shared_index_dim2(client: Pinecone, legacy_index_factory: LegacyIndexFactory) -> str:
+    """Shared legacy index (dim=2, cosine) reused across all dim=2 tests in this module."""
+    index = legacy_index_factory(dimension=2)
+    assert_serves_vectors_api(client, index)
+    return index.name
 
 
 @pytest.fixture(scope="module")
-def shared_index_dim3(client: Pinecone) -> Generator[str, None, None]:
-    """Shared serverless index (dim=3, cosine) reused across all dim=3 tests in this module."""
-    name = unique_name("idx-shared-dim3")
-    client.indexes.create(
-        name=name,
-        dimension=3,
-        metric="cosine",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        timeout=300,
-    )
-    try:
-        yield name
-    finally:
-        ensure_index_deleted(client, name)
+def shared_index_dim3(client: Pinecone, legacy_index_factory: LegacyIndexFactory) -> str:
+    """Shared legacy index (dim=3, cosine) reused across all dim=3 tests in this module."""
+    index = legacy_index_factory(dimension=3)
+    assert_serves_vectors_api(client, index)
+    return index.name
 
 
 @pytest.fixture(scope="module")
-def shared_index_dim4_dotproduct(client: Pinecone) -> Generator[str, None, None]:
-    """Shared serverless index (dim=4, dotproduct) reused across dim=4/dotproduct tests."""
-    name = unique_name("idx-shared-dim4-dp")
-    client.indexes.create(
-        name=name,
-        dimension=4,
-        metric="dotproduct",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        timeout=300,
-    )
-    try:
-        yield name
-    finally:
-        ensure_index_deleted(client, name)
+def shared_index_dim4_dotproduct(client: Pinecone, legacy_index_factory: LegacyIndexFactory) -> str:
+    """Shared legacy index (dim=4, dotproduct) reused across dim=4/dotproduct tests.
+
+    Hybrid tests write ``sparse_values`` alongside dense values here. A legacy
+    index accepts that because it declares both reserved vector fields; a
+    2026-07 schema index would have to name a ``sparse_vector`` field to do
+    the same, and naming any field makes it a documents-API index.
+    """
+    index = legacy_index_factory(dimension=4, metric="dotproduct")
+    assert_serves_vectors_api(client, index)
+    return index.name
 
 
 @pytest.fixture(scope="module")
-def shared_index_dim4_cosine(client: Pinecone) -> Generator[str, None, None]:
-    """Shared serverless index (dim=4, cosine) reused across dim=4/cosine tests."""
-    name = unique_name("idx-shared-dim4-cos")
-    client.indexes.create(
-        name=name,
-        dimension=4,
-        metric="cosine",
-        spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        timeout=300,
-    )
-    try:
-        yield name
-    finally:
-        ensure_index_deleted(client, name)
+def shared_index_dim4_cosine(client: Pinecone, legacy_index_factory: LegacyIndexFactory) -> str:
+    """Shared legacy index (dim=4, cosine) reused across dim=4/cosine tests."""
+    index = legacy_index_factory(dimension=4)
+    assert_serves_vectors_api(client, index)
+    return index.name
+
+
+@pytest.fixture(scope="module")
+def shared_index_dim2_dotproduct(client: Pinecone, legacy_index_factory: LegacyIndexFactory) -> str:
+    """Shared legacy index (dim=2, dotproduct) — one test uses this combination."""
+    index = legacy_index_factory(dimension=2, metric="dotproduct")
+    assert_serves_vectors_api(client, index)
+    return index.name
+
+
+@pytest.fixture(scope="module")
+def sparse_index(client: Pinecone, legacy_index_factory: LegacyIndexFactory) -> LegacyIndex:
+    """Shared sparse legacy index — no dimension, dotproduct metric."""
+    index = legacy_index_factory(vector_type="sparse", metric="dotproduct")
+    assert_serves_vectors_api(client, index)
+    return index
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +120,7 @@ def test_metadata_filter_rest(client: Pinecone, shared_index_dim2: str) -> None:
     index = client.index(name=shared_index_dim2)
 
     # Upsert vectors with metadata
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {
                 "id": "mf-v1",
@@ -142,6 +140,7 @@ def test_metadata_filter_rest(client: Pinecone, shared_index_dim2: str) -> None:
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait for all 3 vectors to be queryable (eventual consistency)
     poll_until(
@@ -198,13 +197,14 @@ def test_metadata_filter_grpc(client: Pinecone, shared_index_dim2: str) -> None:
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     index = client.index(name=shared_index_dim2, grpc=True)
 
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "mf-v1", "values": [0.1, 0.2], "metadata": {"genre": "comedy"}},
             {"id": "mf-v2", "values": [0.3, 0.4], "metadata": {"genre": "action"}},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     poll_until(
         query_fn=lambda: index.query(vector=[0.1, 0.2], top_k=10, namespace=ns),
@@ -311,7 +311,7 @@ def test_query_by_id_rest(client: Pinecone, shared_index_dim2: str) -> None:
     index = client.index(name=shared_index_dim2)
 
     # Upsert 3 vectors
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "qbi-v1", "values": [0.1, 0.2]},
             {"id": "qbi-v2", "values": [0.3, 0.4]},
@@ -319,6 +319,7 @@ def test_query_by_id_rest(client: Pinecone, shared_index_dim2: str) -> None:
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait for all 3 vectors to be queryable before querying by ID
     poll_until(
@@ -357,7 +358,7 @@ def test_query_by_id_grpc(client: Pinecone, shared_index_dim2: str) -> None:
     index = client.index(name=shared_index_dim2, grpc=True)
 
     # Upsert 3 vectors
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "qbi-v1", "values": [0.1, 0.2]},
             {"id": "qbi-v2", "values": [0.3, 0.4]},
@@ -365,6 +366,7 @@ def test_query_by_id_grpc(client: Pinecone, shared_index_dim2: str) -> None:
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait until vectors are queryable
     poll_until(
@@ -401,13 +403,14 @@ def test_fetch_missing_ids_rest(client: Pinecone, shared_index_dim2: str) -> Non
     index = client.index(name=shared_index_dim2)
 
     # Upsert 2 known vectors
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "fmi-v1", "values": [0.1, 0.2]},
             {"id": "fmi-v2", "values": [0.3, 0.4]},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     # Wait for both vectors to be fetchable (eventual consistency)
     poll_until(
@@ -447,13 +450,14 @@ def test_fetch_missing_ids_grpc(client: Pinecone, shared_index_dim2: str) -> Non
     index = client.index(name=shared_index_dim2, grpc=True)
 
     # Upsert 2 known vectors
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "fmi-v1", "values": [0.1, 0.2]},
             {"id": "fmi-v2", "values": [0.3, 0.4]},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     # Wait for both vectors to be fetchable
     poll_until(
@@ -549,7 +553,7 @@ def test_include_values_metadata_rest(client: Pinecone, shared_index_dim3: str) 
     index = client.index(name=shared_index_dim3)
 
     # Upsert vectors with metadata
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {
                 "id": "ivm-v1",
@@ -564,6 +568,7 @@ def test_include_values_metadata_rest(client: Pinecone, shared_index_dim3: str) 
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     # Wait for both vectors to be queryable (eventual consistency)
     poll_until(
@@ -625,13 +630,14 @@ def test_include_values_metadata_grpc(client: Pinecone, shared_index_dim3: str) 
     index = client.index(name=shared_index_dim3, grpc=True)
 
     # Upsert vectors with metadata
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "ivm-v1", "values": [0.1, 0.2, 0.3], "metadata": {"color": "red"}},
             {"id": "ivm-v2", "values": [0.4, 0.5, 0.6], "metadata": {"color": "blue"}},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     # Wait for vectors to be queryable (eventual consistency)
     poll_until(
@@ -684,20 +690,22 @@ def test_query_namespaces_rest(client: Pinecone, shared_index_dim2: str) -> None
     index = client.index(name=shared_index_dim2)
 
     # Upsert different vectors into two named namespaces
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "qn-ns1-v1", "values": [0.1, 0.2]},
             {"id": "qn-ns1-v2", "values": [0.3, 0.4]},
         ],
         namespace=ns1,
     )
-    index.upsert(
+    assert upserted.upserted_count == 2
+    upserted = index.upsert(
         vectors=[
             {"id": "qn-ns2-v1", "values": [0.5, 0.6]},
             {"id": "qn-ns2-v2", "values": [0.7, 0.8]},
         ],
         namespace=ns2,
     )
+    assert upserted.upserted_count == 2
 
     # Wait until at least one vector from each namespace is queryable
     poll_until(
@@ -771,7 +779,7 @@ def test_metadata_filter_numeric_operators_rest(client: Pinecone, shared_index_d
     index = client.index(name=shared_index_dim2)
 
     # Upsert 4 vectors with distinct integer year metadata values
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "nf-v1", "values": [0.1, 0.2], "metadata": {"year": 2019}},
             {"id": "nf-v2", "values": [0.3, 0.4], "metadata": {"year": 2020}},
@@ -780,6 +788,7 @@ def test_metadata_filter_numeric_operators_rest(client: Pinecone, shared_index_d
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 4
 
     # Wait until all 4 vectors are visible
     poll_until(
@@ -884,7 +893,7 @@ def test_metadata_filter_numeric_operators_grpc(client: Pinecone, shared_index_d
     index = client.index(name=shared_index_dim2, grpc=True)
 
     # Upsert 4 vectors with distinct integer year metadata values
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "ng-v1", "values": [0.1, 0.2], "metadata": {"year": 2019}},
             {"id": "ng-v2", "values": [0.3, 0.4], "metadata": {"year": 2020}},
@@ -893,6 +902,7 @@ def test_metadata_filter_numeric_operators_grpc(client: Pinecone, shared_index_d
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 4
 
     # Wait until all 4 vectors are visible
     poll_until(
@@ -996,7 +1006,7 @@ def test_metadata_filter_logical_operators_rest(client: Pinecone, shared_index_d
     index = client.index(name=shared_index_dim2)
 
     # Upsert 4 vectors with genre + year metadata
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {
                 "id": "lo-v1",
@@ -1021,6 +1031,7 @@ def test_metadata_filter_logical_operators_rest(client: Pinecone, shared_index_d
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 4
 
     # Wait until all 4 vectors are visible
     poll_until(
@@ -1102,7 +1113,7 @@ def test_metadata_filter_logical_operators_grpc(client: Pinecone, shared_index_d
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     index = client.index(name=shared_index_dim2, grpc=True)
 
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {
                 "id": "lo-v1",
@@ -1127,6 +1138,7 @@ def test_metadata_filter_logical_operators_grpc(client: Pinecone, shared_index_d
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 4
 
     poll_until(
         query_fn=lambda: index.query(vector=[0.5, 0.5], top_k=10, namespace=ns),
@@ -1184,7 +1196,7 @@ def test_fetch_by_metadata_rest(client: Pinecone, shared_index_dim3: str) -> Non
     index = client.index(name=shared_index_dim3)
 
     # Upsert vectors with metadata; only v1 and v3 have genre=comedy
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {
                 "id": "fm-v1",
@@ -1204,6 +1216,7 @@ def test_fetch_by_metadata_rest(client: Pinecone, shared_index_dim3: str) -> Non
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait until comedy vectors are reachable via fetch_by_metadata (eventual consistency)
     poll_until(
@@ -1257,7 +1270,7 @@ def test_metadata_filter_exists_operator_rest(client: Pinecone, shared_index_dim
     index = client.index(name=shared_index_dim3)
 
     # v1 and v2 carry "premium" field; v3 does not
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {
                 "id": "ex-v1",
@@ -1273,6 +1286,7 @@ def test_metadata_filter_exists_operator_rest(client: Pinecone, shared_index_dim
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait until all 3 vectors are queryable (eventual consistency)
     poll_until(
@@ -1326,7 +1340,7 @@ def test_metadata_filter_exists_operator_grpc(client: Pinecone, shared_index_dim
     index = client.index(name=shared_index_dim3, grpc=True)
 
     # v1 and v2 carry "premium" field; v3 does not
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {
                 "id": "ex-v1",
@@ -1342,6 +1356,7 @@ def test_metadata_filter_exists_operator_grpc(client: Pinecone, shared_index_dim
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait until all 3 vectors are queryable
     poll_until(
@@ -1397,7 +1412,7 @@ def test_fetch_by_metadata_pagination_rest(client: Pinecone, shared_index_dim3: 
 
     # Upsert 5 vectors — all with genre=scifi so all match the filter
     target_ids = {"fbm-p1", "fbm-p2", "fbm-p3", "fbm-p4", "fbm-p5"}
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "fbm-p1", "values": [0.1, 0.2, 0.3], "metadata": {"genre": "scifi"}},
             {"id": "fbm-p2", "values": [0.2, 0.3, 0.4], "metadata": {"genre": "scifi"}},
@@ -1407,6 +1422,7 @@ def test_fetch_by_metadata_pagination_rest(client: Pinecone, shared_index_dim3: 
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 5
 
     def _paginate_all() -> set[str]:
         """Collect all IDs returned by limit=2 pagination, asserting invariants."""
@@ -1575,8 +1591,9 @@ def test_query_filter_reflects_metadata_update_rest(
 
 
 @pytest.mark.integration
-def test_query_filter_reflects_metadata_update_grpc(client: Pinecone) -> None:
-    # per-test index: unique dim=2/dotproduct shape — only test using this combo
+def test_query_filter_reflects_metadata_update_grpc(
+    client: Pinecone, shared_index_dim2_dotproduct: str
+) -> None:
     """Same as REST variant but via gRPC transport.
 
     Claim: unified-vec-0011 — gRPC update and query paths reflect the same
@@ -1584,75 +1601,67 @@ def test_query_filter_reflects_metadata_update_grpc(client: Pinecone) -> None:
     Area tag: update-and-query-sequence
     Transport: grpc
     """
-    name = unique_name("idx")
-    try:
-        client.indexes.create(
-            name=name,
-            dimension=2,
-            metric="dotproduct",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-            timeout=300,
-        )
-        index = client.index(name=name, grpc=True)
+    ns = f"ns-{uuid.uuid4().hex[:8]}"
+    index = client.index(name=shared_index_dim2_dotproduct, grpc=True)
 
-        vectors = [
-            {"id": "qmug-v1", "values": [0.1, 0.2], "metadata": {"genre": "drama"}},
-            {"id": "qmug-v2", "values": [0.3, 0.4], "metadata": {"genre": "drama"}},
-            {"id": "qmug-v3", "values": [0.5, 0.6], "metadata": {"genre": "comedy"}},
-        ]
-        upsert_resp = index.upsert(vectors=vectors)
-        assert isinstance(upsert_resp, UpsertResponse)
-        assert upsert_resp.upserted_count == 3
+    vectors = [
+        {"id": "qmug-v1", "values": [0.1, 0.2], "metadata": {"genre": "drama"}},
+        {"id": "qmug-v2", "values": [0.3, 0.4], "metadata": {"genre": "drama"}},
+        {"id": "qmug-v3", "values": [0.5, 0.6], "metadata": {"genre": "comedy"}},
+    ]
+    upsert_resp = index.upsert(vectors=vectors, namespace=ns)
+    assert isinstance(upsert_resp, UpsertResponse)
+    assert upsert_resp.upserted_count == 3
 
-        poll_until(
-            query_fn=lambda: index.query(vector=[0.1, 0.2], top_k=10),
-            check_fn=lambda r: len(r.matches) >= 3,
-            timeout=120,
-            description="all 3 qmug vectors queryable (gRPC)",
-        )
+    poll_until(
+        query_fn=lambda: index.query(vector=[0.1, 0.2], top_k=10, namespace=ns),
+        check_fn=lambda r: len(r.matches) >= 3,
+        timeout=120,
+        description="all 3 qmug vectors queryable (gRPC)",
+    )
 
-        # Baseline drama query
-        drama_baseline = index.query(
+    # Baseline drama query
+    drama_baseline = index.query(
+        vector=[0.1, 0.2],
+        top_k=10,
+        filter={"genre": {"$eq": "drama"}},
+        include_metadata=True,
+        namespace=ns,
+    )
+    assert isinstance(drama_baseline, QueryResponse)
+    assert "qmug-v1" in {m.id for m in drama_baseline.matches}
+    assert "qmug-v2" in {m.id for m in drama_baseline.matches}
+
+    # Update qmug-v1 genre to comedy via gRPC
+    update_resp = index.update(
+        id="qmug-v1",
+        set_metadata={"genre": "comedy"},
+        namespace=ns,
+    )
+    assert isinstance(update_resp, UpdateResponse)
+
+    def _drama_filter_updated_grpc() -> QueryResponse | None:
+        r = index.query(
             vector=[0.1, 0.2],
             top_k=10,
             filter={"genre": {"$eq": "drama"}},
             include_metadata=True,
+            namespace=ns,
         )
-        assert isinstance(drama_baseline, QueryResponse)
-        assert "qmug-v1" in {m.id for m in drama_baseline.matches}
-        assert "qmug-v2" in {m.id for m in drama_baseline.matches}
+        ids = {m.id for m in r.matches}
+        if "qmug-v1" not in ids and "qmug-v2" in ids:
+            return r
+        return None
 
-        # Update qmug-v1 genre to comedy via gRPC
-        update_resp = index.update(
-            id="qmug-v1",
-            set_metadata={"genre": "comedy"},
-        )
-        assert isinstance(update_resp, UpdateResponse)
-
-        def _drama_filter_updated_grpc() -> QueryResponse | None:
-            r = index.query(
-                vector=[0.1, 0.2],
-                top_k=10,
-                filter={"genre": {"$eq": "drama"}},
-                include_metadata=True,
-            )
-            ids = {m.id for m in r.matches}
-            if "qmug-v1" not in ids and "qmug-v2" in ids:
-                return r
-            return None
-
-        updated_resp = poll_until(
-            query_fn=_drama_filter_updated_grpc,
-            check_fn=lambda r: r is not None,
-            timeout=180,
-            description="drama filter reflects metadata update for qmug-v1 (gRPC)",
-        )
-        assert updated_resp is not None
-        assert "qmug-v2" in {m.id for m in updated_resp.matches}
-        assert "qmug-v1" not in {m.id for m in updated_resp.matches}
-
-    finally:
-        cleanup_resource(lambda: client.indexes.delete(name), name, "index")
+    updated_resp = poll_until(
+        query_fn=_drama_filter_updated_grpc,
+        check_fn=lambda r: r is not None,
+        timeout=180,
+        description="drama filter reflects metadata update for qmug-v1 (gRPC)",
+    )
+    assert updated_resp is not None
+    assert "qmug-v2" in {m.id for m in updated_resp.matches}
+    assert "qmug-v1" not in {m.id for m in updated_resp.matches}
 
 
 # ---------------------------------------------------------------------------
@@ -1820,7 +1829,7 @@ def test_metadata_filter_boolean_values_rest(client: Pinecone, shared_index_dim2
     index = client.index(name=shared_index_dim2)
 
     # Upsert 3 vectors: 2 active=True, 1 active=False
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "bool-v1", "values": [0.1, 0.2], "metadata": {"active": True, "label": "a"}},
             {
@@ -1832,6 +1841,7 @@ def test_metadata_filter_boolean_values_rest(client: Pinecone, shared_index_dim2
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait until all 3 vectors are queryable (eventual consistency)
     poll_until(
@@ -1904,7 +1914,7 @@ def test_metadata_filter_boolean_values_grpc(client: Pinecone, shared_index_dim2
     index = client.index(name=shared_index_dim2, grpc=True)
 
     # Upsert 3 vectors: 2 active=True, 1 active=False
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "bool-g1", "values": [0.1, 0.2], "metadata": {"active": True}},
             {"id": "bool-g2", "values": [0.3, 0.4], "metadata": {"active": False}},
@@ -1912,6 +1922,7 @@ def test_metadata_filter_boolean_values_grpc(client: Pinecone, shared_index_dim2
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 3
 
     # Wait until all 3 vectors are queryable
     poll_until(
@@ -1984,6 +1995,7 @@ def test_response_info_populated_on_data_plane_responses_rest(
         namespace=ns,
     )
     assert isinstance(upsert_result, UpsertResponse)
+    assert upsert_result.upserted_count == 2
     assert upsert_result.response_info is not None, (
         "UpsertResponse.response_info should be set (non-None) after a real API call"
     )
@@ -2061,13 +2073,14 @@ def test_unicode_metadata_round_trip_rest(client: Pinecone, shared_index_dim2: s
     }
     ascii_meta = {"lang": "english", "emoji": "none", "accented": "plain"}
 
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "uni-v1", "values": [0.1, 0.9], "metadata": unicode_meta},
             {"id": "uni-v2", "values": [0.9, 0.1], "metadata": ascii_meta},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     # Wait until both vectors are queryable (eventual consistency)
     poll_until(
@@ -2154,13 +2167,14 @@ def test_unicode_metadata_round_trip_grpc(client: Pinecone, shared_index_dim2: s
         "cjk": "中文",
     }
 
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "uni-g1", "values": [0.1, 0.9], "metadata": unicode_meta},
             {"id": "uni-g2", "values": [0.9, 0.1], "metadata": {"lang": "english"}},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     # Wait until both vectors are queryable
     poll_until(
@@ -2210,115 +2224,92 @@ def test_unicode_metadata_round_trip_grpc(client: Pinecone, shared_index_dim2: s
 
 
 @pytest.mark.integration
-def test_sparse_index_lifecycle_rest(client: Pinecone) -> None:
-    # per-test index: sparse index lifecycle — unique vector_type=sparse/no-dimension shape, describes fresh index
-    """Create sparse index (vector_type='sparse', no dimension), describe to verify properties, upsert sparse-only vectors, fetch back.
+def test_sparse_index_lifecycle_rest(client: Pinecone, sparse_index: LegacyIndex) -> None:
+    """Describe a sparse index to verify its properties, upsert sparse-only vectors, fetch back.
 
     Verifies:
-    - unified-sparse-0001: Sparse index can be created without specifying a dimension, using dotproduct metric.
-    - unified-sparse-0002: Described sparse index reports vector_type='sparse', metric='dotproduct', dimension=None.
+    - unified-sparse-0001: A sparse index carries no dimension.
+    - unified-sparse-0002: A described sparse index reports a sparse vector field
+      and no dense one.
     - unified-vecfmt-0005: Can accept vectors as dictionaries with sparse values only (no dense values required).
+
+    The old ``vector_type`` / ``metric`` / ``dimension`` triple has no 2026-07
+    equivalent — ``IndexModel`` dropped all three, and a sparse vector field
+    carries neither a dimension nor a metric. What survives is the schema:
+    a sparse index declares the reserved sparse field and no dense field.
     """
-    name = unique_name("idx")
-    try:
-        # Create sparse index — no dimension, dotproduct metric, vector_type=sparse
-        model = client.indexes.create(
-            name=name,
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-            vector_type="sparse",
-            metric="dotproduct",
-            timeout=300,
+    ns = f"ns-{uuid.uuid4().hex[:8]}"
+
+    desc = client.indexes.describe(sparse_index.name)
+    assert isinstance(desc, IndexModel)
+    assert set(desc.schema.fields) == {LEGACY_SPARSE_FIELD}, (
+        f"Described sparse index should declare only {LEGACY_SPARSE_FIELD!r}; "
+        f"got {sorted(desc.schema.fields)}"
+    )
+    assert LEGACY_DENSE_FIELD not in desc.schema.fields
+    assert desc.status.ready is True
+    assert isinstance(desc.host, str) and len(desc.host) > 0
+
+    # Upsert sparse-only vectors (no dense values) — unified-vecfmt-0005
+    index = client.index(name=sparse_index.name)
+    upsert_resp = index.upsert(
+        vectors=[
+            {
+                "id": "sp-v1",
+                "sparse_values": {"indices": [0, 5, 10], "values": [0.5, 0.8, 0.3]},
+            },
+            {
+                "id": "sp-v2",
+                "sparse_values": {"indices": [2, 7], "values": [0.3, 0.9]},
+            },
+        ],
+        namespace=ns,
+    )
+    assert isinstance(upsert_resp, UpsertResponse)
+    assert upsert_resp.upserted_count == 2
+
+    # Wait for vectors to be fetchable (eventual consistency)
+    poll_until(
+        query_fn=lambda: index.fetch(ids=["sp-v1", "sp-v2"], namespace=ns),
+        check_fn=lambda r: len(r.vectors) == 2,
+        timeout=120,
+        description="sparse-only vectors fetchable after upsert (REST)",
+    )
+
+    # Fetch and verify sparse-only structure
+    fetch_resp = index.fetch(ids=["sp-v1", "sp-v2"], namespace=ns)
+    assert isinstance(fetch_resp, FetchResponse)
+    assert "sp-v1" in fetch_resp.vectors
+    assert "sp-v2" in fetch_resp.vectors
+
+    v1 = fetch_resp.vectors["sp-v1"]
+    assert isinstance(v1, Vector)
+    assert v1.id == "sp-v1"
+    # Sparse-only: dense values list must be empty (no dense component)
+    assert v1.values == [], (
+        f"Sparse-only vector 'sp-v1' should have empty dense values, got: {v1.values}"
+    )
+    # Sparse values are present and correct
+    assert v1.sparse_values is not None, "sparse_values must not be None for a sparse-only vector"
+    assert isinstance(v1.sparse_values, SparseValues)
+    assert v1.sparse_values.indices == [0, 5, 10], (
+        f"Expected sparse indices [0, 5, 10], got {v1.sparse_values.indices}"
+    )
+    assert len(v1.sparse_values.values) == 3
+    assert all(isinstance(x, float) for x in v1.sparse_values.values)
+    for actual, expected in zip(v1.sparse_values.values, [0.5, 0.8, 0.3]):
+        assert abs(actual - expected) < 1e-4, (
+            f"Sparse value mismatch: expected {expected}, got {actual}"
         )
 
-        # Verify create() return value — unified-sparse-0001
-        assert isinstance(model, IndexModel)
-        assert model.vector_type == "sparse", (
-            f"Expected vector_type='sparse', got {model.vector_type!r}"
-        )
-        assert model.metric == "dotproduct", f"Expected metric='dotproduct', got {model.metric!r}"
-        assert model.dimension is None, (
-            f"Sparse index must have dimension=None, got {model.dimension!r}"
-        )
-        assert model.status.ready is True
-        assert isinstance(model.host, str) and len(model.host) > 0
-
-        # Verify describe() — unified-sparse-0002
-        desc = client.indexes.describe(name)
-        assert isinstance(desc, IndexModel)
-        assert desc.vector_type == "sparse", (
-            f"Described index: expected vector_type='sparse', got {desc.vector_type!r}"
-        )
-        assert desc.metric == "dotproduct", (
-            f"Described index: expected metric='dotproduct', got {desc.metric!r}"
-        )
-        assert desc.dimension is None, (
-            f"Described sparse index: expected dimension=None, got {desc.dimension!r}"
-        )
-
-        # Upsert sparse-only vectors (no dense values) — unified-vecfmt-0005
-        index = client.index(name=name)
-        upsert_resp = index.upsert(
-            vectors=[
-                {
-                    "id": "sp-v1",
-                    "sparse_values": {"indices": [0, 5, 10], "values": [0.5, 0.8, 0.3]},
-                },
-                {
-                    "id": "sp-v2",
-                    "sparse_values": {"indices": [2, 7], "values": [0.3, 0.9]},
-                },
-            ]
-        )
-        assert isinstance(upsert_resp, UpsertResponse)
-        assert upsert_resp.upserted_count == 2
-
-        # Wait for vectors to be fetchable (eventual consistency)
-        poll_until(
-            query_fn=lambda: index.fetch(ids=["sp-v1", "sp-v2"]),
-            check_fn=lambda r: len(r.vectors) == 2,
-            timeout=120,
-            description="sparse-only vectors fetchable after upsert (REST)",
-        )
-
-        # Fetch and verify sparse-only structure
-        fetch_resp = index.fetch(ids=["sp-v1", "sp-v2"])
-        assert isinstance(fetch_resp, FetchResponse)
-        assert "sp-v1" in fetch_resp.vectors
-        assert "sp-v2" in fetch_resp.vectors
-
-        v1 = fetch_resp.vectors["sp-v1"]
-        assert isinstance(v1, Vector)
-        assert v1.id == "sp-v1"
-        # Sparse-only: dense values list must be empty (no dense component)
-        assert v1.values == [], (
-            f"Sparse-only vector 'sp-v1' should have empty dense values, got: {v1.values}"
-        )
-        # Sparse values are present and correct
-        assert v1.sparse_values is not None, (
-            "sparse_values must not be None for a sparse-only vector"
-        )
-        assert isinstance(v1.sparse_values, SparseValues)
-        assert v1.sparse_values.indices == [0, 5, 10], (
-            f"Expected sparse indices [0, 5, 10], got {v1.sparse_values.indices}"
-        )
-        assert len(v1.sparse_values.values) == 3
-        assert all(isinstance(x, float) for x in v1.sparse_values.values)
-        for actual, expected in zip(v1.sparse_values.values, [0.5, 0.8, 0.3]):
-            assert abs(actual - expected) < 1e-4, (
-                f"Sparse value mismatch: expected {expected}, got {actual}"
-            )
-
-        v2 = fetch_resp.vectors["sp-v2"]
-        assert isinstance(v2, Vector)
-        assert v2.values == [], (
-            f"Sparse-only vector 'sp-v2' should have empty dense values, got: {v2.values}"
-        )
-        assert v2.sparse_values is not None
-        assert v2.sparse_values.indices == [2, 7]
-        assert len(v2.sparse_values.values) == 2
-
-    finally:
-        cleanup_resource(lambda: client.indexes.delete(name), name, "index")
+    v2 = fetch_resp.vectors["sp-v2"]
+    assert isinstance(v2, Vector)
+    assert v2.values == [], (
+        f"Sparse-only vector 'sp-v2' should have empty dense values, got: {v2.values}"
+    )
+    assert v2.sparse_values is not None
+    assert v2.sparse_values.indices == [2, 7]
+    assert len(v2.sparse_values.values) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -2327,73 +2318,62 @@ def test_sparse_index_lifecycle_rest(client: Pinecone) -> None:
 
 
 @pytest.mark.integration
-def test_sparse_index_lifecycle_grpc(client: Pinecone) -> None:
-    # per-test index: sparse index lifecycle — unique vector_type=sparse/no-dimension shape
-    """Create sparse index, upsert sparse-only vectors, fetch back via GrpcIndex.
+def test_sparse_index_lifecycle_grpc(client: Pinecone, sparse_index: LegacyIndex) -> None:
+    """Upsert sparse-only vectors into a sparse index and fetch them back via GrpcIndex.
 
     Verifies (gRPC transport):
-    - unified-sparse-0001: Sparse index can be created without specifying a dimension.
+    - unified-sparse-0001: A sparse index carries no dimension.
     - unified-vecfmt-0005: GrpcIndex accepts vector dicts with only sparse_values (no dense values).
     """
-    name = unique_name("idx")
-    try:
-        client.indexes.create(
-            name=name,
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-            vector_type="sparse",
-            metric="dotproduct",
-            timeout=300,
-        )
+    ns = f"ns-{uuid.uuid4().hex[:8]}"
 
-        # Upsert sparse-only vectors via gRPC
-        index = client.index(name=name, grpc=True)
-        upsert_resp = index.upsert(
-            vectors=[
-                {
-                    "id": "sp-g1",
-                    "sparse_values": {"indices": [1, 4], "values": [0.6, 0.7]},
-                },
-                {
-                    "id": "sp-g2",
-                    "sparse_values": {"indices": [3, 8, 12], "values": [0.4, 0.9, 0.2]},
-                },
-            ]
-        )
-        assert isinstance(upsert_resp, UpsertResponse)
-        assert upsert_resp.upserted_count == 2
+    # Upsert sparse-only vectors via gRPC
+    index = client.index(name=sparse_index.name, grpc=True)
+    upsert_resp = index.upsert(
+        vectors=[
+            {
+                "id": "sp-g1",
+                "sparse_values": {"indices": [1, 4], "values": [0.6, 0.7]},
+            },
+            {
+                "id": "sp-g2",
+                "sparse_values": {"indices": [3, 8, 12], "values": [0.4, 0.9, 0.2]},
+            },
+        ],
+        namespace=ns,
+    )
+    assert isinstance(upsert_resp, UpsertResponse)
+    assert upsert_resp.upserted_count == 2
 
-        # Wait for vectors to be fetchable (eventual consistency)
-        poll_until(
-            query_fn=lambda: index.fetch(ids=["sp-g1", "sp-g2"]),
-            check_fn=lambda r: len(r.vectors) == 2,
-            timeout=120,
-            description="sparse-only vectors fetchable after gRPC upsert",
-        )
+    # Wait for vectors to be fetchable (eventual consistency)
+    poll_until(
+        query_fn=lambda: index.fetch(ids=["sp-g1", "sp-g2"], namespace=ns),
+        check_fn=lambda r: len(r.vectors) == 2,
+        timeout=120,
+        description="sparse-only vectors fetchable after gRPC upsert",
+    )
 
-        # Fetch and verify sparse-only structure
-        fetch_resp = index.fetch(ids=["sp-g1", "sp-g2"])
-        assert isinstance(fetch_resp, FetchResponse)
-        assert "sp-g1" in fetch_resp.vectors
-        assert "sp-g2" in fetch_resp.vectors
+    # Fetch and verify sparse-only structure
+    fetch_resp = index.fetch(ids=["sp-g1", "sp-g2"], namespace=ns)
+    assert isinstance(fetch_resp, FetchResponse)
+    assert "sp-g1" in fetch_resp.vectors
+    assert "sp-g2" in fetch_resp.vectors
 
-        v1 = fetch_resp.vectors["sp-g1"]
-        assert isinstance(v1, Vector)
-        assert v1.values == [], (
-            f"gRPC sparse-only vector 'sp-g1' should have empty dense values, got: {v1.values}"
-        )
-        assert v1.sparse_values is not None
-        assert isinstance(v1.sparse_values, SparseValues)
-        assert v1.sparse_values.indices == [1, 4]
-        assert len(v1.sparse_values.values) == 2
+    v1 = fetch_resp.vectors["sp-g1"]
+    assert isinstance(v1, Vector)
+    assert v1.values == [], (
+        f"gRPC sparse-only vector 'sp-g1' should have empty dense values, got: {v1.values}"
+    )
+    assert v1.sparse_values is not None
+    assert isinstance(v1.sparse_values, SparseValues)
+    assert v1.sparse_values.indices == [1, 4]
+    assert len(v1.sparse_values.values) == 2
 
-        v2 = fetch_resp.vectors["sp-g2"]
-        assert v2.values == []
-        assert v2.sparse_values is not None
-        assert v2.sparse_values.indices == [3, 8, 12]
-        assert len(v2.sparse_values.values) == 3
-
-    finally:
-        cleanup_resource(lambda: client.indexes.delete(name), name, "index")
+    v2 = fetch_resp.vectors["sp-g2"]
+    assert v2.values == []
+    assert v2.sparse_values is not None
+    assert v2.sparse_values.indices == [3, 8, 12]
+    assert len(v2.sparse_values.values) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -2557,13 +2537,14 @@ def test_query_after_delete_reflects_deletion_rest(
     index = client.index(name=shared_index_dim4_dotproduct)
 
     # Upsert two vectors with clearly distinct values
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "qad-v1", "values": [1.0, 0.0, 0.0, 0.0]},
             {"id": "qad-v2", "values": [0.0, 1.0, 0.0, 0.0]},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     # Wait until both vectors are queryable (eventual consistency)
     poll_until(
@@ -2625,13 +2606,14 @@ def test_query_after_delete_reflects_deletion_grpc(
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     index = client.index(name=shared_index_dim4_dotproduct, grpc=True)
 
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {"id": "qadg-v1", "values": [1.0, 0.0, 0.0, 0.0]},
             {"id": "qadg-v2", "values": [0.0, 1.0, 0.0, 0.0]},
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     # Wait until both vectors are queryable
     poll_until(
@@ -2887,7 +2869,7 @@ def test_query_with_sparse_values_object_rest(
     index = client.index(name=shared_index_dim4_dotproduct)
 
     # Upsert two hybrid vectors
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {
                 "id": "svobj-v1",
@@ -2902,6 +2884,7 @@ def test_query_with_sparse_values_object_rest(
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     # Wait for eventual consistency
     poll_until(
@@ -2957,7 +2940,7 @@ def test_query_with_sparse_values_object_grpc(
     ns = f"ns-{uuid.uuid4().hex[:8]}"
     index = client.index(name=shared_index_dim4_dotproduct, grpc=True)
 
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {
                 "id": "svobjg-v1",
@@ -2972,6 +2955,7 @@ def test_query_with_sparse_values_object_grpc(
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 2
 
     poll_until(
         query_fn=lambda: index.fetch(ids=["svobjg-v1", "svobjg-v2"], namespace=ns),
@@ -3027,7 +3011,7 @@ def test_update_values_preserves_metadata_rest(client: Pinecone, shared_index_di
     index = client.index(name=shared_index_dim2)
 
     # Upsert a vector WITH metadata attached
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {
                 "id": "uvpm-v1",
@@ -3037,6 +3021,7 @@ def test_update_values_preserves_metadata_rest(client: Pinecone, shared_index_di
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 1
 
     # Wait until the vector is fetchable and metadata is present
     poll_until(
@@ -3112,7 +3097,7 @@ def test_update_values_preserves_metadata_grpc(client: Pinecone, shared_index_di
     index = client.index(name=shared_index_dim2, grpc=True)
 
     # Upsert a vector WITH metadata attached via gRPC
-    index.upsert(
+    upserted = index.upsert(
         vectors=[
             {
                 "id": "uvpmg-v1",
@@ -3122,6 +3107,7 @@ def test_update_values_preserves_metadata_grpc(client: Pinecone, shared_index_di
         ],
         namespace=ns,
     )
+    assert upserted.upserted_count == 1
 
     # Wait until the vector is fetchable with metadata
     poll_until(

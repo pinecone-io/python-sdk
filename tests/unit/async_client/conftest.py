@@ -41,10 +41,6 @@ def mock_async_assistants() -> AsyncAssistants:
     mock_http.get.return_value = mock_response
     obj._http = mock_http  # type: ignore[attr-defined]
 
-    mock_http_v202604 = AsyncMock()
-    mock_http_v202604.get.return_value = mock_response
-    obj._http_v202604 = mock_http_v202604  # type: ignore[attr-defined]
-
     # Stub the adapter so it returns canned responses.
     mock_adapter = MagicMock()
     mock_adapter.to_assistant.return_value = _CANNED_ASSISTANT

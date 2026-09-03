@@ -16,9 +16,11 @@ logger = logging.getLogger(__name__)
 
 
 class Organizations:
-    """Control-plane operations for Pinecone organizations.
+    """Operations on Pinecone organizations.
 
-    Provides methods to list, describe, update, and delete organizations.
+    An organization is the top-level account boundary in Pinecone: it holds
+    projects, users, and billing. This namespace lists, describes, updates,
+    and deletes organizations.
 
     Args:
         http (HTTPClient): HTTP client for making API requests.
@@ -40,10 +42,11 @@ class Organizations:
         return "Organizations()"
 
     def list(self) -> OrganizationList:
-        """List all organizations accessible to the authenticated user.
+        """List the organizations your credentials can access.
 
         Returns:
-            An :class:`OrganizationList` supporting iteration, len(), and index access.
+            An :class:`OrganizationList` supporting iteration, ``len()``, and
+            index access.
 
         Raises:
             :exc:`ApiError`: If the API returns an error response.
@@ -60,13 +63,14 @@ class Organizations:
         return result
 
     def describe(self, *, organization_id: str) -> OrganizationModel:
-        """Get detailed information about an organization.
+        """Get details for one organization.
 
         Args:
-            organization_id (str): The identifier of the organization.
+            organization_id (str): The organization's identifier, e.g. ``"org-abc123"``.
 
         Returns:
-            An :class:`OrganizationModel` with full organization details.
+            An :class:`OrganizationModel` with the organization's name, plan,
+            payment status, support tier, and creation time.
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *organization_id* is empty.
@@ -85,18 +89,18 @@ class Organizations:
         return result
 
     def update(self, *, organization_id: str, name: str) -> OrganizationModel:
-        """Update an organization's name.
+        """Rename an organization.
 
         Args:
-            organization_id (str): The identifier of the organization to update.
-            name (str): The new name for the organization.
+            organization_id (str): The organization's identifier, e.g. ``"org-abc123"``.
+            name (str): The new name for the organization, e.g. ``"Acme Corp"``.
 
         Returns:
             An :class:`OrganizationModel` with the updated organization details.
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`:
-                If *organization_id* or *name* is empty.
+                If *organization_id* is empty.
             :exc:`ApiError`: If the API returns an error response.
 
         Examples:
@@ -107,7 +111,6 @@ class Organizations:
             'New Name'
         """
         require_non_empty("organization_id", organization_id)
-        require_non_empty("name", name)
         logger.info("Updating organization %r", organization_id)
         response = self._http.patch(
             f"/admin/organizations/{organization_id}",
@@ -120,12 +123,25 @@ class Organizations:
     def delete(self, *, organization_id: str) -> None:
         """Delete an organization.
 
+        An organization must meet three conditions before it can be deleted:
+
+        - It is not on a paid plan (downgrade first).
+        - Its payment status is active, with no open invoices.
+        - It contains no projects (see
+          :meth:`Projects.delete <pinecone.admin.projects.Projects.delete>`).
+
+        All three must hold at once — an organization with no projects can
+        still be blocked by its plan or payment status.
+
         Args:
-            organization_id (str): The identifier of the organization to delete.
+            organization_id (str): The organization's identifier, e.g. ``"org-abc123"``.
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *organization_id* is empty.
-            :exc:`ApiError`: If the API returns an error response (e.g. 4xx if org has projects).
+            :exc:`~pinecone.errors.exceptions.FailedPreconditionError`: If the
+                organization is on a paid plan, its payment status is not active, or it
+                still contains projects. The error message names the blocker.
+            :exc:`ApiError`: If the API returns an error response.
 
         Examples:
             >>> admin.organizations.delete(organization_id="org-abc123")
