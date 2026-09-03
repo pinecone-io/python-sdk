@@ -514,14 +514,43 @@ restore jobs) now sends `X-Pinecone-Api-Version: 2026-07`.
 
 #### What changed on `IndexModel`
 
-`IndexModel` no longer has `.spec`, `.embed`, or `.created_at`. Accessing any
-of them raises an `AttributeError` that names the replacement.
+`.spec` and `.embed` are deprecated but still work. Both are computed
+properties, rebuilt on each access from `deployment`, `read_capacity`,
+`schema`, and `source_collection`, so reads like
+`index.spec.serverless.region`, `index.spec.pod.pod_type`, and
+`index.embed.model` need no editing. Nothing decodes into those classes; they
+are views over fields that live elsewhere now, and will be removed in a later
+major version.
 
-| Removed | Replacement |
+| Deprecated, still works | Replacement |
 | --- | --- |
 | `index.spec.serverless` / `.pod` / `.byoc` | `index.deployment`, a `ManagedDeployment`, `PodDeployment`, or `ByocDeployment` discriminated on `deployment_type` |
 | `index.spec.serverless.read_capacity` | `index.read_capacity` (top level) |
 | `index.embed` | a `SemanticTextField` in `index.schema.fields` |
+
+Being views, they can only report what `2026-07` carries:
+
+- `spec.pod.metadata_config` is always `None`. Metadata fields are indexed
+  automatically at upsert, so there is no such configuration to return.
+- `spec.pod.pods` is `replicas * shards`, the same identity the create path
+  enforces when translating a `9.x` `pods=`.
+- `spec.serverless.schema` and `spec.byoc.schema` hold the typed `2026-07`
+  schema as a dict. In `9.x` that key held the metadata-indexing schema and
+  defaulted to `None`; the `2026-07` schema declares every field, vector
+  fields included.
+- `embed.dimension` and `embed.vector_type` are always `None`. A
+  `semantic_text` field reports neither the width of the vectors it produces
+  nor whether its model is dense or sparse.
+- `index.embed` is `None` for an index with no semantic text field, which is
+  what `9.x` reported for a non-integrated index. A schema with more than one
+  raises an `AttributeError` naming them: as with `metric`, there is no single
+  field to resolve to.
+
+`.created_at` is gone, and accessing it raises an `AttributeError` that names
+the reason.
+
+| Removed | Replacement |
+| --- | --- |
 | `index.created_at` | not returned by the `2026-07` API |
 
 `.dimension`, `.metric`, and `.vector_type` are deprecated but still work.
@@ -553,9 +582,12 @@ New fields on `IndexModel`: `schema`, `deployment`, `read_capacity`,
 `source_collection`, `source_backup_id`, `cmek_id`. `source_collection` is a
 response field only, and no `2026-07` create path populates it: see
 [Pod deployments, and what that means for collections](#pod-collections).
-Removed exports:
-`ServerlessSpecInfo`, `PodSpecInfo`, `ByocSpecInfo`, `IndexSpec`,
-`ModelIndexEmbed`. New exports: `IndexSchema`, `IndexSchemaField`,
+
+Deprecated exports, still importable from `pinecone` — these are the classes
+`.spec` and `.embed` build: `ServerlessSpecInfo`, `PodSpecInfo`,
+`ByocSpecInfo`, `IndexSpec`, `ModelIndexEmbed`.
+
+New exports: `IndexSchema`, `IndexSchemaField`,
 `DenseVectorField`, `SparseVectorField`, `SemanticTextField`, `StringField`,
 `StringListField`, `BooleanField`, `FloatField`, `IntegerField`,
 `LegacyMetadataField`, `FullTextSearchConfig`, `NgramConfig`,
@@ -701,8 +733,8 @@ Integrated-embedding creation moved from `create(spec=IntegratedSpec(...))`
 to a dedicated `pc.indexes.create_for_model(name=..., cloud=..., region=...,
 embed={"model": ..., "field_map": {"text": ...}})`. The embedding
 configuration now surfaces as a `semantic_text` field in the returned
-`index.schema`, named after the `field_map` text entry, instead of
-`index.embed`.
+`index.schema`, named after the `field_map` text entry; `index.embed` is a
+deprecated view rebuilt from that field.
 
 `ConfigureIndexRequest` rejects an unknown PATCH field rather than ignoring
 it.
