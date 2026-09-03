@@ -181,19 +181,23 @@ if [ -n "$new_tags" ]; then
 
     echo ""
     echo "Tags on $PUBLIC_REMOTE_NAME that this repo doesn't have:"
+    any_off_branch=false
     for tag in $new_tags; do
         target=$(git rev-parse "$SCRATCH_NS/$tag^{commit}")
         if git merge-base --is-ancestor "$target" "$public_head"; then
             reachable="on $PUBLIC_REMOTE_NAME/$BRANCH"
         else
             reachable="off-branch"
+            any_off_branch=true
         fi
         echo "  $tag -> ${target:0:8}  ($reachable)  $(git log -1 --format='%s' "$target")"
     done
-    echo ""
-    echo "  'off-branch' means the tag drags in a commit that isn't on $BRANCH."
-    echo "  Normal for RC tags: the RC workflow tags a bump commit without"
-    echo "  advancing main."
+    if [ "$any_off_branch" = true ]; then
+        echo ""
+        echo "  'off-branch' means the tag drags in a commit that isn't on $BRANCH."
+        echo "  Normal for RC tags: the RC workflow tags a bump commit without"
+        echo "  advancing main."
+    fi
 fi
 
 echo ""
