@@ -18,6 +18,10 @@ that section and start with [Index creation and configuration](#index-model).
 - [Vector data (db_data)](#vector-data)
   - [Model and wire-format changes](#vector-models)
   - [Breaking changes and migration table](#db-data-breaking-changes)
+- [Bulk ingest: concurrency and deadlines](#bulk-ingest)
+  - [`max_concurrency` defaults to 8](#bulk-max-concurrency)
+  - [The admission gate can refuse batches](#bulk-backpressure)
+  - [`total_timeout` bounds admission, not requests](#bulk-total-timeout)
 - [Backups and backup schedules](#backup-models)
 - [Assistant](#assistant-models)
   - [File uploads and deletes are operations](#assistant-files)
@@ -1149,9 +1153,11 @@ Sparse vectors are variable-length and their scoring has no knob to turn.
 `upsert`, `query`, `fetch`, `update`, `delete`, `list`, and
 `describe_index_stats` serve indexes created under earlier API versions, and
 they're meant to. None of them is deprecated, none is scheduled for removal,
-and none changed meaning on this release. If you have a workload upserting
-and querying an index you created before `2026-07`, upgrading the SDK doesn't
-change what those calls do.
+and none of them takes a different argument or returns a different shape than
+it did on `9.x`. If you have a workload upserting and querying an index you
+created before `2026-07`, upgrading the SDK doesn't change what those calls
+mean. It does change how fast a batched `upsert` paces itself, which is its
+own section: [Bulk ingest: concurrency and deadlines](#bulk-ingest).
 
 What changed is index creation. A `2026-07` `pc.indexes.create()` always
 persists a document schema, and a document-schema index is addressed through
@@ -1404,13 +1410,168 @@ enforces, not constants of the API.
 
 #### What you don't need to change
 
-Nothing on this page changes a method signature. Any working `query` call
+Nothing in the table above changes a method signature. Any working `query` call
 keeps working, row 1 only rejects values the server was going to reject
 anyway. Vector operations against a legacy index are unaffected, rows 3, 4,
 and 5 are about creating an index, so none of them reaches one you already
 have. `describe_index_stats` without a filter is unchanged. And nothing
 about `error_mode` or `create_namespace(schema=...)` that you already had
 right needs to change; rows 6 and 7 correct documentation, not behavior.
+
+(bulk-ingest)=
+## Bulk ingest: concurrency and deadlines
+
+Batched writes pace themselves differently on `10.x`. This covers
+`upsert(batch_size=...)` and `upsert_from_dataframe` on `Index`, `AsyncIndex`
+and `GrpcIndex`, and `documents.batch_upsert` on both document surfaces. The
+argument you pass to set concurrency is the same one; its default is not, and
+there is now a per-host admission gate between your call and the wire that
+can pace a batch job down or refuse the rest of it.
+
+None of this applies to an unbatched write. An `upsert` without `batch_size`
+is a single request: `max_concurrency` and `total_timeout` are both ignored
+on that path, and `max_concurrency` isn't even range-checked.
+
+(bulk-max-concurrency)=
+### `max_concurrency` defaults to 8
+
+`upsert` took `max_concurrency=4` on `Index`, `AsyncIndex` and `GrpcIndex`
+alike. It now takes `8` on all three, from a single constant. The accepted
+range is unchanged at `1`-`64`, and a value outside it still raises
+`PineconeValueError` before anything is sent. What the argument buys is also
+unchanged: it caps how many of your batches are in flight at once — a thread
+pool that wide on the two sync lanes, that many concurrent coroutines on the
+asyncio lane.
+
+If you sized a workload around four in-flight batches, say so:
+
+```python
+vectors = [(f"vec-{i}", [0.1, 0.2, 0.3]) for i in range(400)]
+
+# 10.x default: up to 8 batches in flight
+idx.upsert(vectors=vectors, namespace="movies-en", batch_size=100)
+
+# the 9.x pacing, stated explicitly
+idx.upsert(vectors=vectors, namespace="movies-en", batch_size=100, max_concurrency=4)
+```
+
+Each in-flight batch still carries its own retry budget on top of that
+(`max_retries=3` by default, so up to four attempts), so doubling the default
+doubles the number of concurrent conversations a single ingest opens with one
+host, not the attempts within any one of them.
+
+`upsert_from_dataframe` arrives at the same `8` by a different route, because
+`9.x` gave it no concurrency argument at all: the `Index` and `GrpcIndex`
+versions took `df`, `namespace`, `batch_size` and `show_progress`, and the
+`AsyncIndex` version raised `NotImplementedError`. On `10.x` all three take a
+keyword-only `max_concurrency` that defaults to `None` and resolves to `8`.
+`documents.batch_upsert` resolves `None` the same way, and was `4` under
+`pc.preview`; see [Smaller signature deltas](#preview-graduation) for the
+rest of that signature's changes.
+
+(bulk-backpressure)=
+### The admission gate can refuse batches
+
+Under `9.x` every `Pinecone` client owned its own adaptive limiter, keyed by
+host, ceilinged at whatever `max_concurrency` you passed. It halved on a
+throttled response and healed back up on success streaks, and that was the
+whole of it: it could only make an ingest slower.
+
+`10.x` replaces it with a per-host admission gate that every batch has to be
+admitted through. Three differences matter when you upgrade:
+
+- **The gate is process-global, not per-client.** Two `Pinecone` instances,
+  or a `Pinecone` and an `AsyncPinecone`, hitting one host in one process
+  share one gate and one in-flight count. The key is the bare lowercase
+  hostname, so scheme and port variants land on the same gate. Concurrent
+  ingests against one host therefore share a budget rather than each getting
+  their own. (A forked child starts with fresh gates rather than inheriting
+  the parent's counts.)
+- **Your `max_concurrency` is a ceiling, not a floor.** Effective
+  concurrency is the lower of your bound and the gate's current limit. The
+  gate starts each host at its own ceiling of `64`, so on a healthy host your
+  bound is the one that binds; once a throttled response halves the gate, the
+  gate's limit is. It halves at most once per in-flight generation, so one
+  batch burning its retries can't halve the limit six times over, and it adds
+  one back after a limit-sized run of successes — counted only while callers
+  were actually pressing against the limit, so unused headroom doesn't
+  accumulate while the host is idle. A `Retry-After` (or
+  `grpc-retry-pushback-ms`) hint blocks admission outright until it elapses.
+- **The gate can stop an ingest instead of slowing it.** When its limit is
+  at the floor of one and four consecutive batches settle with no success at
+  all, it reads the host as unavailable and refuses admission for a 30-second
+  cool-down. The batches that were still queued are abandoned without being
+  sent, and come back as errors carrying `disposition="abandoned"` and a
+  message that says so, rather than as a timeout. `9.x` had nothing that did
+  this; a dead host produced batch after batch of exhausted retries.
+
+The gate's state is reported back on `documents.batch_upsert`'s
+`BatchResult`: `throttle_event_count`, `final_limit` (a value far below your
+`max_concurrency` means the host was pushing back), `peak_inflight`, and
+`stalled`. Because the gate is shared per host, those counters are
+host-level, not call-level. `UpsertResponse` on the vector paths carries none
+of them — there, `errors` and `failed_items` are the whole signal.
+
+(bulk-total-timeout)=
+### `total_timeout` bounds admission, not requests
+
+`10.x` adds a `total_timeout` keyword to every batched ingest entry point:
+`upsert` and `upsert_from_dataframe` on all three lanes, and
+`documents.batch_upsert` on both the sync and asyncio document surfaces.
+`9.x` had no equivalent — `timeout` was the only deadline available, and it
+bounds one attempt of one batch, so a large ingest had no whole-job bound at
+all. It defaults to `None` on every one of those methods, so nothing changes
+until you pass it.
+
+What it bounds is admission. When the deadline expires, no further batch is
+submitted; batches already in flight are awaited and never cancelled, because
+cancelling client-side wouldn't un-send what the server may already be
+applying, and the caller would be told less landed than did. So a call can
+outlive its own `total_timeout` — by up to one batch's `timeout` budget,
+retries included. Waiting on the admission gate counts against the budget
+too, which means a throttled host can consume it without a request going out.
+
+The batches that were never submitted are reported, not silently dropped.
+Each becomes an error carrying `disposition="unsent"` and a
+`PineconeTimeoutError` that names the budget and the batch — `total_timeout
+of 5.0s expired before this batch was submitted; 100 items in batch 3 were
+not sent` — and its items are in `failed_items`, ready to be passed straight
+back in:
+
+```python
+vectors = [(f"vec-{i}", [0.1, 0.2, 0.3]) for i in range(400)]
+
+response = idx.upsert(
+    vectors=vectors,
+    namespace="movies-en",
+    batch_size=100,
+    total_timeout=30.0,
+)
+unsent = [error for error in response.errors if error.disposition == "unsent"]
+if unsent:
+    retry = idx.upsert(
+        vectors=response.failed_items,
+        namespace="movies-en",
+        batch_size=100,
+    )
+```
+
+A partial ingest still doesn't raise on `upsert` — the deadline is reported
+like any other per-batch failure. `upsert_from_dataframe` is where you get a
+choice: `on_error="collect"` (the default) hands back the same response, and
+`on_error="raise"` re-raises the lowest-indexed failure once every batch has
+settled, which on `Index` and `AsyncIndex` means the `PineconeTimeoutError`
+for the first unsent batch. `GrpcIndex.upsert_from_dataframe` is the one
+variation: for an expired deadline it raises a `PineconeTimeoutError`
+summarizing how many vectors landed rather than re-raising one batch's error,
+and under `on_error="collect"` it logs that same summary as a warning. Either
+way the partial response is on the exception's `response` attribute, so
+nothing about the retry is lost.
+
+`documents.batch_upsert` adds one thing the vector paths don't have:
+`result.timed_out`. It's `True` only when work was actually left unsent. A
+deadline that elapses while the last batches are in flight, all of which then
+land, doesn't set it — there'd be nothing to retry.
 
 (backup-models)=
 ## Backups and backup schedules
