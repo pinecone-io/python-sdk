@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 from urllib.parse import quote
 
 from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
 from pinecone._internal.config import PineconeConfig, RetryConfig
 from pinecone._internal.constants import CONTROL_PLANE_API_VERSION, DEFAULT_BASE_URL
 from pinecone._internal.index_migration import (
+    MIGRATION_GUIDE,
     reject_new_only_configure_kwargs,
     reject_new_only_create_kwargs,
 )
@@ -52,6 +53,29 @@ if TYPE_CHECKING:
     )
     from pinecone.models.indexes.index import IndexModel
     from pinecone.models.indexes.specs import EmbedConfig
+
+
+#: Client attributes retired at 10.0.0, each mapped to what replaced it.
+_REMOVED_CLIENT_ATTRIBUTES: dict[str, str] = {
+    "preview": (
+        "the 2026-01.alpha preview surface graduated onto the client itself, so "
+        "pc.preview.indexes is now pc.indexes, pc.preview.index(...) is now "
+        "pc.index(...), and pc.preview.close() is now pc.close()"
+    )
+}
+
+
+def _removed_client_attribute_message(owner: str, name: str) -> str:
+    """Build the guided message for a client attribute retired at 10.0.0.
+
+    Shared by :class:`Pinecone` and
+    :class:`~pinecone.async_client.AsyncPinecone` so both clients explain a
+    removal in the same words.
+    """
+    return (
+        f"{owner}.{name} was removed at 10.0.0: {_REMOVED_CLIENT_ATTRIBUTES[name]}. "
+        f"See {MIGRATION_GUIDE}."
+    )
 
 
 @keyword_only_methods
@@ -1447,3 +1471,22 @@ class Pinecone:
             ...         print(index.name)
         """
         self.close()
+
+    if not TYPE_CHECKING:
+
+        def __getattr__(self, name: str) -> NoReturn:
+            """Explain a removed client attribute rather than failing bare.
+
+            Reached only for names normal lookup did not find. ``preview`` gets
+            a message naming its replacement; every other name raises Python's
+            own wording, so ``hasattr`` and ``getattr`` defaults behave as
+            usual. Hidden from type checkers on purpose: a visible
+            ``__getattr__`` makes every attribute name valid, which would stop
+            them reporting a misspelled one.
+
+            Raises:
+                AttributeError: Always.
+            """
+            if name in _REMOVED_CLIENT_ATTRIBUTES:
+                raise AttributeError(_removed_client_attribute_message(type(self).__name__, name))
+            raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")

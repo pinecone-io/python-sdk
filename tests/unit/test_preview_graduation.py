@@ -155,14 +155,35 @@ class TestPreviewNamespaceIsGone:
     def test_sync_client_has_no_preview_attribute(self) -> None:
         pc = Pinecone(api_key="test-key-1234")
         assert not hasattr(Pinecone, "preview")
-        with pytest.raises(AttributeError):
+        with pytest.raises(AttributeError, match=r"Pinecone\.preview was removed at 10\.0\.0"):
             _ = pc.preview  # type: ignore[attr-defined]
 
     def test_async_client_has_no_preview_attribute(self) -> None:
         pc = AsyncPinecone(api_key="test-key-1234")
         assert not hasattr(AsyncPinecone, "preview")
-        with pytest.raises(AttributeError):
+        with pytest.raises(AttributeError, match=r"AsyncPinecone\.preview was removed at 10\.0\.0"):
             _ = pc.preview  # type: ignore[attr-defined]
+
+    @pytest.mark.parametrize("client", [Pinecone, AsyncPinecone], ids=["sync", "async"])
+    def test_preview_error_names_its_replacements(self, client: type) -> None:
+        pc = client(api_key="test-key-1234")
+        with pytest.raises(AttributeError) as excinfo:
+            _ = pc.preview
+        message = str(excinfo.value)
+        assert "pc.preview.indexes is now pc.indexes" in message
+        assert "pc.preview.index(...) is now pc.index(...)" in message
+        assert "https://sdk.pinecone.io/python/migration/v10-migration.html" in message
+
+    @pytest.mark.parametrize("client", [Pinecone, AsyncPinecone], ids=["sync", "async"])
+    def test_unrelated_missing_attribute_keeps_the_standard_message(self, client: type) -> None:
+        """Only ``preview`` is special-cased; anything else must behave normally."""
+        pc = client(api_key="test-key-1234")
+        with pytest.raises(
+            AttributeError, match=rf"{client.__name__}' object has no attribute 'nope'"
+        ):
+            _ = pc.nope
+        assert getattr(pc, "nope", "fallback") == "fallback"
+        assert not hasattr(pc, "nope")
 
     def test_no_preview_symbols_at_top_level(self) -> None:
         import pinecone
