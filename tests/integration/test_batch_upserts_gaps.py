@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import math
 import uuid
+from typing import Any
 
 import pytest
 
@@ -60,6 +61,25 @@ def shared_index_dim8_dotproduct(client: Pinecone, legacy_index_factory: LegacyI
 
 def _ns(tag: str) -> str:
     return f"udf-{tag}-{uuid.uuid4().hex[:8]}"
+
+
+def _assert_fully_upserted(resp: Any, expected: int) -> None:
+    """Assert every row landed, naming the per-batch errors when they did not.
+
+    ``upsert_from_dataframe`` collects batch failures rather than raising, so a
+    bare ``assert resp.upserted_count == N`` reports ``0 == 60`` and discards
+    the only evidence of why — which is exactly what a partial failure against
+    the real backend leaves behind.
+    """
+    detail = "; ".join(
+        f"batch {err.batch_index}: {type(err.error).__name__}: {err.error_message}"
+        for err in resp.errors
+    )
+    assert resp.upserted_count == expected, (
+        f"expected {expected} rows upserted, got {resp.upserted_count} "
+        f"({resp.failed_item_count} failed) — {detail or 'no errors reported'}"
+    )
+    assert resp.failed_item_count == 0, detail
 
 
 def _frame(n_rows: int) -> pd.DataFrame:
@@ -99,8 +119,7 @@ def test_upsert_from_dataframe_rest_batch_size(client: Pinecone, shared_index_di
     resp = index.upsert_from_dataframe(
         _frame(100), namespace=ns, batch_size=20, show_progress=False
     )
-    assert resp.upserted_count == 100, f"expected 100, got {resp.upserted_count}"
-    assert resp.failed_item_count == 0
+    _assert_fully_upserted(resp, 100)
 
     stats = poll_until(
         query_fn=lambda: index.describe_index_stats(),
@@ -120,7 +139,7 @@ def test_udf_max_concurrency_accepted(client: Pinecone, shared_index_dim8: str) 
     resp = index.upsert_from_dataframe(
         _frame(40), namespace=ns, batch_size=5, max_concurrency=4, show_progress=False
     )
-    assert resp.upserted_count == 40
+    _assert_fully_upserted(resp, 40)
     stats = poll_until(
         query_fn=lambda: index.describe_index_stats(),
         check_fn=lambda r: ns in r.namespaces and r.namespaces[ns].vector_count >= 40,
@@ -140,7 +159,7 @@ def test_udf_metadata_and_sparse_roundtrip(
 
     df = _frame_with_sparse(5)
     resp = index.upsert_from_dataframe(df, namespace=ns, show_progress=False)
-    assert resp.upserted_count == 5
+    _assert_fully_upserted(resp, 5)
 
     fetched = poll_until(
         query_fn=lambda: index.fetch(ids=[f"udf-sparse-{i}" for i in range(5)], namespace=ns),
@@ -158,7 +177,20 @@ def test_udf_metadata_and_sparse_roundtrip(
 
 @pytest.mark.integration
 def test_udf_overwrite_duplicates_last_write_wins(client: Pinecone, shared_index_dim8: str) -> None:
-    """Duplicate IDs across udf batches: last row wins; dup ids dedupe in stats."""
+    """Duplicate IDs across udf batches: last row wins; dup ids dedupe in stats.
+
+    ``max_concurrency=1`` is load-bearing rather than tuning. "Last row wins" is
+    a claim about the order batches reach the server, and at the default
+    ``max_concurrency=8`` all six batches of this frame are in flight at once,
+    so the batch carrying the first ``dup`` row can settle *after* the one
+    carrying the trailing row and the earlier value is what survives.
+    Serializing submission is what makes the trailing row genuinely last; the
+    guarantee under test is the server's overwrite, not the client's scheduler.
+
+    The fetch then polls on the *value*: the id is already present from the
+    first write, so a presence check can return while the overwrite is still
+    working its way to the read path.
+    """
     ns = _ns("ow")
     index = client.index(name=shared_index_dim8)
 
@@ -170,16 +202,24 @@ def test_udf_overwrite_duplicates_last_write_wins(client: Pinecone, shared_index
     rows.append({"id": "dup", "values": [0.99] * DIM})
     df = pd.DataFrame(rows)
 
-    resp = index.upsert_from_dataframe(df, namespace=ns, batch_size=10, show_progress=False)
+    resp = index.upsert_from_dataframe(
+        df, namespace=ns, batch_size=10, max_concurrency=1, show_progress=False
+    )
     # 51 rows processed (50 unique ids; 'dup' appears twice — the first row and
     # the trailing overwrite row are each upsert operations, last-write-wins).
-    assert resp.upserted_count == 51, f"expected 51 rows upserted, got {resp.upserted_count}"
+    _assert_fully_upserted(resp, 51)
+
+    def _carries_last_write(response: Any) -> bool:
+        vector = response.vectors.get("dup")
+        return vector is not None and all(
+            math.isclose(x, 0.99, rel_tol=1e-5) for x in vector.values
+        )
 
     fetched = poll_until(
         query_fn=lambda: index.fetch(ids=["dup"], namespace=ns),
-        check_fn=lambda r: "dup" in r.vectors,
+        check_fn=_carries_last_write,
         timeout=120,
-        description=f"dup id fetchable ({ns})",
+        description=f"dup id carries the last write ({ns})",
     )
     dup = fetched.vectors["dup"]
     assert all(math.isclose(x, 0.99, rel_tol=1e-5) for x in dup.values), (
@@ -257,7 +297,7 @@ def test_udf_grpc_batch(client: Pinecone, shared_index_dim8: str) -> None:
     index = client.index(name=shared_index_dim8, grpc=True)
 
     resp = index.upsert_from_dataframe(_frame(60), namespace=ns, batch_size=20, show_progress=False)
-    assert resp.upserted_count == 60
+    _assert_fully_upserted(resp, 60)
 
     stats = poll_until(
         query_fn=lambda: index.describe_index_stats(),
