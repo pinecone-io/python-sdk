@@ -28,7 +28,9 @@ def resolve_grpc_scheme(scheme: str | None) -> GrpcScheme | None:
 
     Returns:
         ``"http"``, ``"https"``, or ``None`` when neither source names one, which
-        leaves the choice to the caller's own default.
+        leaves the choice to the caller's own default. A resolved ``"http"``
+        scheme warns once per process when the gRPC endpoint is built, unless
+        the host is loopback or RFC 1918 private.
 
     Raises:
         PineconeValueError: If either source names a scheme other than ``http``
@@ -154,7 +156,10 @@ class PineconeConfig:
         ssl_verify: Whether to verify SSL certificates.
         grpc_scheme: URL scheme used to dial the gRPC data plane, ``"http"`` or
             ``"https"``. Falls back to the PINECONE_GRPC_SCHEME env var, then to
-            ``None``, which lets the gRPC client keep its own default.
+            ``None``, which lets the gRPC client keep its own default. Dialling
+            ``"http"`` against a host outside loopback and the RFC 1918 private
+            ranges warns once per process, since the API key and every payload
+            then cross a public network unencrypted.
     """
 
     api_key: str = ""
