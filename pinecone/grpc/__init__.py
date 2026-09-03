@@ -229,7 +229,7 @@ _warned_about_grpc_partial_failure = False
 
 
 def _warn_grpc_partial_failure_once(response: UpsertResponse) -> None:
-    """Announce the 9.2.0 change the first time a caller is affected by it.
+    """Announce the 10.0.0 change the first time a caller is affected by it.
 
     Only on gRPC: REST has aggregated since v9.0.0, so warning there would be
     noise about behavior that did not change.
@@ -240,7 +240,7 @@ def _warn_grpc_partial_failure_once(response: UpsertResponse) -> None:
     _warned_about_grpc_partial_failure = True
     warnings.warn(
         f"{response.failed_item_count} of {response.total_item_count} vectors failed to "
-        "upsert. As of 9.2.0 upsert_from_dataframe aggregates partial failures instead "
+        "upsert. As of 10.0.0 upsert_from_dataframe aggregates partial failures instead "
         "of raising: inspect response.errors and retry response.failed_items. Pass "
         'on_error="raise" to restore the previous behavior, or on_error="collect" to '
         "silence this warning.",
@@ -619,7 +619,7 @@ class GrpcIndex:
            where you send text and the server embeds it.
            :meth:`start_import` — for a one-off load of millions of vectors
            already sitting in cloud storage.
-           :doc:`/migration/v9.2-grpc-partial-failures` — how to read the
+           :doc:`/migration/v10-grpc-partial-failures` — how to read the
            partial-failure fields, and what changed for callers who expected a
            raise.
         """
@@ -1559,13 +1559,13 @@ class GrpcIndex:
            :doc:`/guides/bulk-ingest` — choosing ``batch_size``,
            ``max_concurrency``, and ``total_timeout``.
 
-        .. versionchanged:: 9.2.0
+        .. versionchanged:: 10.0.0
            Partial failures are aggregated into the response rather than
            raised, matching :meth:`upsert` with ``batch_size`` and the REST
            client. The old raise discarded the partial count, so no caller
            could tell what had landed. Pass ``on_error="raise"`` to keep the
            previous behavior. See
-           :doc:`/migration/v9.2-grpc-partial-failures`.
+           :doc:`/migration/v10-grpc-partial-failures`.
         """
         try:
             import pandas as pd

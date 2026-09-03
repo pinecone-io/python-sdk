@@ -26,8 +26,8 @@ Pinecone Python SDK
    :caption: Migration & FAQ
 
    migration/v10-migration
+   migration/v10-grpc-partial-failures
    migration/v9-migration
-   migration/v9.2-grpc-partial-failures
    faq
 
 .. rubric:: By Subject

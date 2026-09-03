@@ -1,4 +1,4 @@
-"""on_error, and the one-time warning that announces the 9.2.0 change.
+"""on_error, and the one-time warning that announces the 10.0.0 change.
 
 The warning is the whole point of "making the break loud": gRPC callers who
 relied on the raise get told once, in the run where it first matters, with the
@@ -134,7 +134,7 @@ class TestTheWarning:
         message = str(record[0].message)
         assert 'on_error="raise"' in message
         assert "response.errors" in message
-        assert "9.2.0" in message
+        assert "10.0.0" in message
 
     def test_does_not_fire_when_nothing_failed(self) -> None:
         channel = MagicMock()
