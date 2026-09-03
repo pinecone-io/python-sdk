@@ -46,11 +46,12 @@ still exist on the client, forwarding to the namespace method. They are hidden
 from the reference docs rather than removed, so v8 call sites keep working and
 the migration can be incremental.
 
-One thing does change even on the shims: they are keyword-only.
-`pc.create_index("my-index", ...)` raises `PineconeValueError` naming the
-keywords it accepts; pass `name=` instead. `pc.describe_index("my-index")`,
-`pc.delete_index("my-index")` and `pc.configure_index("my-index", ...)` still
-take the name positionally.
+The shims also keep their `9.x` positional signatures, so
+`pc.create_index("my-index", ServerlessSpec(cloud="aws", region="us-east-1"), 1536)`,
+`pc.configure_index("my-index", 4)`, `pc.describe_index("my-index")` and
+`pc.delete_index("my-index")` all still work. The namespace methods they
+forward to are keyword-only: `pc.indexes.create("my-index")` raises
+`PineconeValueError` naming the keywords it accepts.
 
 `create` and `delete` both block until the index reaches its end state, polling
 with no upper bound unless you pass `timeout`. Pass `timeout=-1` to return as

@@ -800,21 +800,22 @@ class Pinecone:
 
     def create_index(
         self,
-        *,
         name: str,
         spec: Any = None,
         dimension: int | None = None,
         metric: Metric | str | None = None,
-        vector_type: VectorType | str | None = None,
-        deletion_protection: DeletionProtection | str | None = None,
-        tags: Mapping[str, str] | None = None,
         timeout: int | None = None,
+        deletion_protection: DeletionProtection | str | None = None,
+        vector_type: VectorType | str | None = None,
+        tags: Mapping[str, str] | None = None,
         **legacy_kwargs: Any,
     ) -> IndexModel:
         """Backwards-compatibility shim for :meth:`Pinecone.indexes.create`.
 
         Preserved to ease migration from the legacy (9.x) Pinecone Python
-        SDK, with the same legacy parameter list. New code should use
+        SDK, with the same legacy parameter list — including its positional
+        order, so ``pc.create_index("movies", ServerlessSpec(...), 1536)``
+        keeps working. New code should use
         ``pc.indexes.create()`` instead, which additionally accepts the current
         ``schema=``/``deployment=``/``read_capacity=``/``cmek_id=`` surface not
         available here. ``pods=``/``metadata_config=``/
@@ -833,13 +834,13 @@ class Pinecone:
                 single-field ``schema=``.
             metric (Metric | str | None): Similarity metric — ``"cosine"``
                 (default), ``"euclidean"``, or ``"dotproduct"``.
-            vector_type (VectorType | str | None): ``"dense"`` (default) or
-                ``"sparse"``.
-            deletion_protection (DeletionProtection | str | None): ``"enabled"``
-                or ``"disabled"`` (default).
-            tags (Mapping[str, str] | None): Optional key-value tags to attach.
             timeout (int | None): Seconds to wait for the index to become ready.
                 ``None`` (default) waits indefinitely; ``-1`` returns immediately.
+            deletion_protection (DeletionProtection | str | None): ``"enabled"``
+                or ``"disabled"`` (default).
+            vector_type (VectorType | str | None): ``"dense"`` (default) or
+                ``"sparse"``.
+            tags (Mapping[str, str] | None): Optional key-value tags to attach.
             **legacy_kwargs: Legacy keywords such as ``pods=``,
                 ``metadata_config=``, ``source_collection=``, and
                 ``source_backup_id=``, forwarded to
@@ -1015,7 +1016,6 @@ class Pinecone:
     def configure_index(
         self,
         name: str,
-        *,
         replicas: int | None = None,
         pod_type: PodType | str | None = None,
         deletion_protection: DeletionProtection | str | None = None,
