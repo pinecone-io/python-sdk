@@ -585,9 +585,10 @@ An empty index name now raises `PineconeValueError` from `exists()` /
 (db-control)=
 #### create and configure
 
-`dimension=`, `metric=`, `vector_type=`, and `spec=` are deprecated,
-keyword-only sugar. They still work, on both `pc.create_index()` and
-`pc.indexes.create()`: they translate into the `schema=`/`deployment=` call
+`dimension=`, `metric=`, `vector_type=`, and `spec=` are deprecated sugar —
+keyword-only on `pc.indexes.create()`, positional-or-keyword on the
+`pc.create_index()` shim, which keeps its `9.x` argument order. They still
+work on both: they translate into the `schema=`/`deployment=` call
 below, addressing the vector by the reserved `_values` (dense) or
 `_sparse_values` (sparse) field name, since the SDK can't invent the field
 name your own data-plane code will use. `replicas=`, `pod_type=`, and
