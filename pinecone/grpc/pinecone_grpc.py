@@ -53,7 +53,9 @@ class PineconeGRPC(Pinecone):
 
         Raises:
             :exc:`PineconeValueError`: If neither ``name`` nor ``host`` is given.
-            :exc:`TypeError`: If an unsupported keyword argument is passed.
+            :exc:`TypeError`: If any keyword argument other than
+                ``pool_threads`` is passed — the message lists the ones it did
+                not recognize.
 
         Examples:
 

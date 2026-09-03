@@ -1,4 +1,9 @@
-"""Index deployment response models (2026-07 API)."""
+"""Where and how an index runs.
+
+An index's ``deployment`` says which of three models it uses, and the
+``deployment_type`` key is what tells the variants apart on the wire and in
+:data:`IndexDeployment`.
+"""
 
 from __future__ import annotations
 
@@ -13,22 +18,26 @@ __all__ = [
 
 
 class ManagedDeployment(Struct, tag="managed", tag_field="deployment_type", kw_only=True):
-    """Managed (serverless) deployment configuration.
+    """A serverless index: Pinecone picks the capacity, you pick the region.
 
-    Serverless indexes scale automatically and are billed per usage.  This
-    deployment type also covers full-text search indexes.
+    The default deployment, and what to reach for unless you have a reason
+    not to — no replicas or shards to size, and full-text search indexes run
+    here too. Its ``deployment_type`` is ``"managed"``.
 
     Attributes:
-        cloud: Cloud provider — ``"aws"``, ``"gcp"``, or ``"azure"``.
-        region: Cloud region (e.g. ``"us-east-1"``).
-        environment: The internal environment (cell) hosting the index,
-            derived from ``cloud`` and ``region``. Response-only and
-            informational — it cannot be set on create and is not stable
-            API surface.
+        cloud: Public cloud to run in — ``"aws"``, ``"gcp"``, or ``"azure"``.
+            See :class:`~pinecone.models.enums.CloudProvider`.
+        region: Region within that cloud, e.g. ``"us-east-1"``.
+        environment: The internal cell hosting the index, derived from
+            ``cloud`` and ``region``. Response-only and informational; you
+            cannot set it, and it is not something to build on.
 
-    Note:
-        The ``deployment_type`` field is automatically set to ``"managed"``
-        by msgspec's tagged union system.
+    Examples:
+        The ``deployment=`` argument that asks for one:
+
+        .. code-block:: python
+
+            {"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"}
     """
 
     cloud: str
@@ -37,26 +46,27 @@ class ManagedDeployment(Struct, tag="managed", tag_field="deployment_type", kw_o
 
 
 class PodDeployment(Struct, tag="pod", tag_field="deployment_type", kw_only=True):
-    """Pod-based deployment configuration.
+    """A pod-based index: you size the hardware yourself.
 
-    All properties are required on create — omitting ``replicas`` or
-    ``shards`` is rejected with a ``422``.  Responses always carry all of
-    them as well.
+    The older deployment model, where capacity is something you choose and pay
+    for rather than something that scales. Its ``deployment_type`` is
+    ``"pod"``. Every attribute below is required on create — leaving out
+    ``replicas`` or ``shards`` is rejected — and every one comes back on a
+    describe.
 
     Attributes:
-        environment: Environment where the index is hosted
-            (e.g. ``"us-east1-gcp"``).
-        pod_type: Pod type — one of ``s1``, ``p1``, or ``p2`` appended
-            with ``.`` and one of ``x1``, ``x2``, ``x4``, or ``x8``
-            (e.g. ``"p1.x1"``).
-        replicas: Number of replicas. Replicas duplicate the index for
-            higher availability and throughput.
-        shards: Number of shards. Shards split data across multiple pods
-            to fit more data into an index.
-
-    Note:
-        The ``deployment_type`` field is automatically set to ``"pod"``
-        by msgspec's tagged union system.
+        environment: The environment hosting the index, which stands in for a
+            cloud and region pair, e.g. ``"us-east1-gcp"``. See
+            :class:`~pinecone.models.enums.PodIndexEnvironment`.
+        pod_type: Hardware family and size, e.g. ``"p1.x1"``. See
+            :class:`~pinecone.models.enums.PodType`.
+        replicas: How many copies of the index to run. More replicas mean more
+            query throughput and more availability, at proportional cost.
+            One of the two things :meth:`configure
+            <pinecone.client.indexes.Indexes.configure>` can change later,
+            along with ``pod_type``.
+        shards: How many pods to split the data across, which is what decides
+            how much data fits. Fixed once the index exists.
     """
 
     environment: str
@@ -66,21 +76,22 @@ class PodDeployment(Struct, tag="pod", tag_field="deployment_type", kw_only=True
 
 
 class ByocDeployment(Struct, tag="byoc", tag_field="deployment_type", kw_only=True):
-    """Bring-your-own-compute (BYOC) deployment configuration.
+    """A BYOC index: Pinecone's data plane, running in your own account.
 
-    BYOC indexes run in customer-managed infrastructure.
+    Bring-your-own-compute indexes run in infrastructure you operate, so the
+    only thing to name is the environment Pinecone provisioned there. Its
+    ``deployment_type`` is ``"byoc"``.
 
     Attributes:
-        environment: BYOC environment identifier
-            (e.g. ``"aws-us-east-1-b921"``).
-
-    Note:
-        The ``deployment_type`` field is automatically set to ``"byoc"``
-        by msgspec's tagged union system.
+        environment: The BYOC environment to run in, e.g.
+            ``"aws-us-east-1-b921"``. Pinecone gives you this identifier when
+            the environment is set up.
     """
 
     environment: str
 
 
-#: Union of all deployment variants, dispatched on the ``deployment_type`` field.
+#: The three deployment variants, told apart by their ``deployment_type``.
+#: Narrow an ``IndexModel.deployment`` with ``isinstance`` before reading
+#: fields only one variant has.
 IndexDeployment = ManagedDeployment | PodDeployment | ByocDeployment

@@ -21,17 +21,18 @@ _LIMIT_MAX = 100
 
 
 class Users:
-    """Control-plane operations for the users in an organization.
+    """The human members of a Pinecone organization.
 
-    Provides methods to list, describe, and remove the members of the
-    organization associated with the :class:`~pinecone.Admin` client's OAuth
-    credentials.
+    A user is a person who has accepted an invitation and now belongs to the
+    organization that the :class:`~pinecone.Admin` client's OAuth credentials
+    resolve to. Not constructed directly — reach it as ``admin.users``.
 
-    Role bindings are not part of a user's representation. Use the role-binding
-    operations to see or change what a user can do.
+    What a user is allowed to do is not part of this model. Permissions come
+    only from role bindings, so :class:`~pinecone.admin.role_bindings.RoleBindings`
+    is where a user's access is read and changed.
 
-    Args:
-        http (HTTPClient): HTTP client for making API requests.
+    See :doc:`/guides/error-handling` for the exceptions every operation here
+    can raise.
 
     Examples:
         >>> from pinecone import Admin
@@ -39,6 +40,12 @@ class Users:
         >>> for user in admin.users.list():
         ...     print(user.email)
         alice@example.com
+
+    .. seealso::
+       - :class:`~pinecone.admin.invites.Invites` — the same person before they
+         accept. An invitee is not yet a user and is not listed here.
+       - :class:`~pinecone.admin.service_accounts.ServiceAccounts` — the machine
+         equivalent, for programmatic access rather than a person.
     """
 
     def __init__(self, *, http: HTTPClient) -> None:
@@ -56,50 +63,50 @@ class Users:
         limit: int | None = None,
         pagination_token: str | None = None,
     ) -> Paginator[UserModel]:
-        """List the users in the organization, with transparent lazy pagination.
+        """List the users in the organization, with lazy pagination.
 
-        No request is sent until the returned paginator is iterated. Iterating
-        past the first page automatically follows the cursor from the page
-        before it; iteration stops once a page comes back with no cursor to
-        follow.
+        No request is sent until the returned paginator is iterated; see
+        :doc:`/guides/pagination`.
 
         Args:
-            email (str | None): Case-insensitive filter on the user's email
-                address, e.g. ``"alice@example.com"``. The SDK does not validate
-                or normalize the value; a malformed address is rejected by the
-                server. Omit to list all users.
-            limit (int | None): Number of users the server returns **per page**,
-                between 1 and 100. It caps each page, not how many users the
-                paginator yields in total; the paginator keeps following cursors
-                until the pages run out. Use :func:`itertools.islice` to cap the
-                total. When ``None`` the parameter is omitted and the server
-                chooses the page size.
-            pagination_token (str | None): Cursor from a previous call's
-                paginator (its ``pagination_token`` property), to resume where
-                that iteration stopped. Reuse it with the same ``email`` and
-                ``limit``.
+            email (str | None): Filter on the user's email address, e.g.
+                ``"alice@example.com"``. Forwarded verbatim — the SDK does not
+                validate or normalize it, so the server decides what matches
+                and rejects a malformed address. Omit to list every user.
+            limit (int | None): Number of users the server returns **per page**.
+                It caps each page, not how many users the paginator yields in
+                total; the paginator keeps following cursors until the pages run
+                out, so use :func:`itertools.islice` to cap the total. When
+                ``None`` the server chooses the page size.
+            pagination_token (str | None): Cursor from a previous paginator's
+                ``pagination_token``, to resume where that iteration stopped.
+                Reuse it with the same ``email`` and ``limit``.
 
         Returns:
-            :class:`~pinecone.models.pagination.Paginator` over
-            :class:`~pinecone.models.admin.user.UserModel` objects. Supports
-            ``for`` loops, ``.to_list()``, ``.pages()`` for page-level access,
-            and ``.pagination_token`` for resumption.
+            :class:`~pinecone.models.pagination.Paginator` yielding
+            :class:`~pinecone.models.admin.user.UserModel` objects.
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`:
                 If *limit* is outside 1-100. Raised before any network call.
-            :exc:`ApiError`: If the API returns an error response.
 
         Examples:
-            .. code-block:: python
+            >>> from pinecone import Admin
+            >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
+            >>> for user in admin.users.list():
+            ...     print(user.id, user.email)
+            e2e92523-85dc-4142-b8c2-e681be8b78df alice@example.com
 
-                for user in admin.users.list():
-                    print(user.id, user.email)
+            Filtering by address still returns a paginator, not a single user:
 
-                matches = admin.users.list(email="alice@example.com").to_list()
+            >>> admin.users.list(email="alice@example.com").to_list()[0].name
+            'Alice Nakamura'
 
-                for page in admin.users.list(limit=25).pages():
-                    print(len(page.items), page.pagination_token)
+        .. seealso::
+           - :meth:`Invites.list() <pinecone.admin.invites.Invites.list>` — invitees who have
+             not accepted yet, and so are absent from this list.
+           - :meth:`RoleBindings.list() <pinecone.admin.role_bindings.RoleBindings.list>` — with
+             ``principal_type="user"``, what each user can do.
         """
         if limit is not None:
             require_in_range("limit", limit, _LIMIT_MIN, _LIMIT_MAX)
@@ -122,26 +129,34 @@ class Users:
         return Paginator(fetch_page=fetch_page, initial_token=pagination_token)
 
     def describe(self, *, user_id: str) -> UserModel:
-        """Get detailed information about a user in the organization.
+        """Get one user's details by their user ID.
 
         Args:
-            user_id (str): The identifier of the user.
+            user_id (str): The user's UUID, as carried by ``UserModel.id`` — not
+                their email address, and not the ID of the invite they accepted.
 
         Returns:
-            A :class:`~pinecone.models.admin.user.UserModel` with the user's details.
+            :class:`~pinecone.models.admin.user.UserModel` with ``id``,
+            ``email``, and ``name`` (``None`` when the user has not set one).
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *user_id* is empty.
             :exc:`~pinecone.errors.exceptions.NotFoundError`:
-                If no such user is a member of the organization.
-            :exc:`ApiError`: If the API returns an error response.
+                If no such user is a member of the organization. A person who
+                was invited but has not accepted reads back as not found here —
+                look for them under :meth:`Invites.list() <pinecone.admin.invites.Invites.list>`
+                instead.
 
         Examples:
             >>> from pinecone import Admin
             >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
             >>> user = admin.users.describe(user_id="e2e92523-85dc-4142-b8c2-e681be8b78df")
-            >>> user.email  # doctest: +SKIP
+            >>> user.email
             'alice@example.com'
+
+        .. seealso::
+           - :meth:`Invites.describe() <pinecone.admin.invites.Invites.describe>` — the invite a
+             user accepted, which keeps its own ID and status after acceptance.
         """
         require_non_empty("user_id", user_id)
         logger.info("Describing user %r", user_id)
@@ -153,14 +168,14 @@ class Users:
     def delete(self, *, user_id: str) -> None:
         """Remove a user from the organization.
 
-        The user's role bindings are revoked immediately; their Pinecone
-        account itself is not deleted. This call is not repeatable: once it
-        succeeds, a second call with the same *user_id* raises
+        The user's role bindings are revoked immediately; their Pinecone account
+        itself is not deleted. This call is not repeatable — once it succeeds, a
+        second call with the same *user_id* raises
         :exc:`~pinecone.errors.exceptions.NotFoundError`, as does
         :meth:`describe` for that user.
 
         Args:
-            user_id (str): The identifier of the user to remove.
+            user_id (str): The UUID of the user to remove.
 
         Raises:
             :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *user_id* is empty.
@@ -168,13 +183,18 @@ class Users:
                 If no such user is a member of the organization.
             :exc:`~pinecone.errors.exceptions.ConflictError`:
                 If removal would violate an organization invariant, such as
-                dropping the last ``OrgOwner``.
-            :exc:`ApiError`: If the API returns an error response.
+                dropping the last ``OrgOwner``. Resolve what the server's
+                message names — usually by granting that role to someone else —
+                then retry.
 
         Examples:
             >>> from pinecone import Admin
             >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
             >>> admin.users.delete(user_id="e2e92523-85dc-4142-b8c2-e681be8b78df")
+
+        .. seealso::
+           - :meth:`Invites.delete() <pinecone.admin.invites.Invites.delete>` — how to withdraw
+             access from someone who never accepted; this method cannot reach them.
         """
         require_non_empty("user_id", user_id)
         logger.info("Deleting user %r", user_id)

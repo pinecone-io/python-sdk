@@ -6,29 +6,20 @@ attaches a recurring backup cadence to one index, at one of three cadences
 reported through
 :attr:`~pinecone.models.backups.schedules.BackupScheduleModel.next_scheduled_run`.
 **There is no cron support anywhere in this API**, so there is no way to ask
-for an arbitrary expression or a caller-chosen timezone.
+for an arbitrary expression or a caller-chosen timezone. The SDK always sends
+``"time-based"`` as the schedule type, so :meth:`create` takes no ``type``
+argument.
 
-The SDK always sends ``"time-based"`` as the schedule type, so :meth:`create`
-takes no ``type`` argument. That is a client-side decision rather than an API
-constraint: the server stores the value and echoes it back without validating
-it, so
-:attr:`~pinecone.models.backups.schedules.BackupScheduleModel.schedule_type`
-reports whatever the schedule was created with -- always ``"time-based"`` for
-schedules created through this SDK, not guaranteed for one created by another
-client. ``frequency`` is the opposite: a real server-side enum.
-
-Two shapes are offered for each of the two listings.
-:meth:`AsyncBackupSchedules.list` and :meth:`AsyncBackupSchedules.history`
-return one page plus its pagination token, matching
-:meth:`~pinecone.async_client.backups.AsyncBackups.list`.
+Each of the two listings comes in two shapes. :meth:`AsyncBackupSchedules.list`
+and :meth:`AsyncBackupSchedules.history` return one page plus its pagination
+token, matching :meth:`~pinecone.async_client.backups.AsyncBackups.list`.
 :meth:`AsyncBackupSchedules.iter_schedules` and
 :meth:`AsyncBackupSchedules.iter_history` return an
 :class:`~pinecone.models.pagination.AsyncPaginator` that walks every page,
 matching :meth:`~pinecone.async_client.indexes.AsyncIndexes.list_backups`.
-Prefer the iterators unless you are managing pagination yourself: a daily
-schedule with a 90-day retention window accumulates far more history rows than
-one page holds. Both iterators await each page rather than blocking, so the
-event loop stays free between them.
+Both iterators await each page rather than blocking, so the event loop stays
+free between them. Prefer them unless you are driving the token yourself —
+see :doc:`/guides/pagination`.
 """
 
 from __future__ import annotations
@@ -60,18 +51,23 @@ logger = logging.getLogger(__name__)
 
 
 class AsyncBackupSchedules:
-    """Async control-plane operations for automatic, time-based backup schedules.
+    """Recurring, time-based backups of a single index.
 
-    Args:
-        http (AsyncHTTPClient): Async HTTP client for making API requests.
+    A schedule snapshots its index on a fixed cadence and retains each backup
+    for a set number of days, so you do not have to call
+    :meth:`~pinecone.async_client.backups.AsyncBackups.create` on a timer of
+    your own. Reached as ``pc.backup_schedules``; not constructed directly.
+
+    At most one schedule per index can be enabled at a time. The snapshots a
+    schedule produces are ordinary backups: read one with
+    :meth:`~pinecone.async_client.backups.AsyncBackups.describe`, or list a
+    schedule's own runs with :meth:`history`.
 
     Note:
         Backups are a plan entitlement. A project without it gets a
-        :exc:`ForbiddenError` rather than a :exc:`NotFoundError` for a
-        schedule that does not exist, and the SDK appends that clarification
-        to the error while keeping the server's own message as the prefix.
-        On-demand backups are gated on the same entitlement, so they are not
-        a fallback.
+        :exc:`ForbiddenError` rather than a :exc:`NotFoundError` even for a
+        schedule that does not exist, and on-demand backups are gated on the
+        same entitlement, so they are not a fallback.
 
     Examples:
 
@@ -95,6 +91,10 @@ class AsyncBackupSchedules:
                     schedule_id=schedule.schedule_id
                 ):
                     print(run.backup_id, run.status)
+
+    .. seealso::
+       :doc:`/guides/error-handling` — the exceptions any of these methods
+       can raise, and which ones are worth retrying.
     """
 
     def __init__(self, http: AsyncHTTPClient) -> None:
@@ -117,20 +117,15 @@ class AsyncBackupSchedules:
 
         A backup schedule runs automatically at a fixed cadence, producing a
         backup of the index on each run. There is no cron support here —
-        choose one of the three fixed cadences below.
-
-        .. important::
-           Keep the schedule name short — 28 characters or fewer. Each run
-           names its backup ``"{name}-{run timestamp}"``, and the timestamp
-           costs a fixed 17 characters out of the 45-character limit on
-           resource names, so a longer schedule name yields backup names past
-           that limit. Neither the SDK nor the server rejects a long schedule
-           name at create time; the cost surfaces later, at run time.
+        choose one of the three fixed cadences below. For a single snapshot
+        taken now, use
+        :meth:`~pinecone.async_client.backups.AsyncBackups.create` instead.
 
         Args:
             index_name (str): Name of the index to attach the schedule to.
             name (str): Name for the schedule. Backups it produces are named
-                ``"{name}-{run timestamp}"`` — see the length note above.
+                ``"{name}-{run timestamp}"``, so keep it short — see the note
+                below.
             frequency (str): Cadence for the schedule: ``"daily"``,
                 ``"weekly"``, or ``"monthly"``.
             retention_days (int): Number of days to retain each backup this
@@ -151,9 +146,8 @@ class AsyncBackupSchedules:
             :exc:`ConflictError`: If the index already has an *enabled*
                 schedule — only one per index is allowed, so disable or delete
                 the existing one first.
-            :exc:`ApiError`: If the API returns another error response, such
-                as when scheduling is requested for a pod-based index, which
-                does not support it.
+            :exc:`ApiError`: If *index_name* names a pod-based index, which
+                cannot be scheduled.
 
         Examples:
 
@@ -174,6 +168,14 @@ class AsyncBackupSchedules:
             ``retention_expire_after_days``, mirroring the request body's
             ``retention.expire_after_days`` — the returned schedule has no
             ``retention_days`` attribute.
+
+        .. important::
+           Keep the schedule name short. Each run names its backup
+           ``"{name}-{run timestamp}"``, and the timestamp consumes a fixed
+           share of the limit on resource names, so a long schedule name
+           yields backup names past that limit. Neither the SDK nor the
+           server rejects a long schedule name at create time; the cost
+           surfaces later, at run time.
         """
         require_non_empty("index_name", index_name)
         require_non_empty("name", name)
@@ -202,11 +204,8 @@ class AsyncBackupSchedules:
 
         Schedules are always listed per index; there is no project-wide
         schedule listing. Disabled schedules are included, so a listing can
-        hold several rows even though at most one may be enabled.
-
-        .. note::
-           This returns a **single page**. Use :meth:`iter_schedules` to walk
-           every page instead of managing the token yourself.
+        hold several rows even though at most one may be enabled. One call
+        returns one page — see :doc:`/guides/pagination`.
 
         Args:
             index_name (str): Name of the index whose schedules to list.
@@ -229,7 +228,6 @@ class AsyncBackupSchedules:
             :exc:`ForbiddenError`: If the project's plan does not include
                 scheduled backups.
             :exc:`NotFoundError`: If the index does not exist.
-            :exc:`ApiError`: If the API returns another error response.
 
         Examples:
 
@@ -245,6 +243,10 @@ class AsyncBackupSchedules:
             ``names()`` and ``enabled_schedules()`` read the page in hand
             rather than the whole listing, so check ``schedules.pagination``
             before concluding that an index has no enabled schedule.
+
+        .. seealso::
+           :meth:`iter_schedules` — the same listing as a paginator that walks
+           every page, instead of one page plus a token.
         """
         require_non_empty("index_name", index_name)
         if limit is not None:
@@ -294,7 +296,6 @@ class AsyncBackupSchedules:
                 scheduled backups. Raised while iterating, when a page is
                 fetched.
             :exc:`NotFoundError`: If the index does not exist.
-            :exc:`ApiError`: If the API returns another error response.
 
         Examples:
 
@@ -307,6 +308,10 @@ class AsyncBackupSchedules:
                         index_name="product-search"
                     ):
                         print(s.schedule_id, s.frequency, s.enabled)
+
+        .. seealso::
+           :meth:`list` — one page plus its token, when you are driving
+           pagination yourself.
         """
         require_non_empty("index_name", index_name)
         if limit is not None:
@@ -326,7 +331,7 @@ class AsyncBackupSchedules:
         return AsyncPaginator(fetch_page=fetch_page, initial_token=pagination_token, limit=limit)
 
     async def describe(self, *, schedule_id: str) -> BackupScheduleModel:
-        """Get detailed information about a backup schedule.
+        """Get the current configuration of one backup schedule.
 
         Args:
             schedule_id (str): The identifier of the schedule to describe.
@@ -335,14 +340,16 @@ class AsyncBackupSchedules:
 
         Returns:
             A :class:`~pinecone.models.backups.schedules.BackupScheduleModel`
-            with the schedule's current configuration.
+            carrying the schedule's ``frequency``, its ``enabled`` flag, its
+            ``retention_expire_after_days`` window, and
+            ``next_scheduled_run`` — which is ``None`` exactly when the
+            schedule is disabled.
 
         Raises:
             :exc:`PineconeValueError`: If *schedule_id* is empty.
             :exc:`ForbiddenError`: If the project's plan does not include
                 scheduled backups.
             :exc:`NotFoundError`: If the schedule does not exist.
-            :exc:`ApiError`: If the API returns another error response.
 
         Examples:
 
@@ -372,12 +379,16 @@ class AsyncBackupSchedules:
 
         Returns:
             A :class:`~pinecone.models.backups.schedules.BackupScheduleModel`
-            with the schedule's current configuration.
+            carrying the schedule's ``frequency``, its ``enabled`` flag, its
+            ``retention_expire_after_days`` window, and
+            ``next_scheduled_run`` — which is ``None`` exactly when the
+            schedule is disabled.
 
         Raises:
             :exc:`PineconeValueError`: If *schedule_id* is empty.
+            :exc:`ForbiddenError`: If the project's plan does not include
+                scheduled backups.
             :exc:`NotFoundError`: If the schedule does not exist.
-            :exc:`ApiError`: If the API returns another error response.
 
         Examples:
 
@@ -407,15 +418,6 @@ class AsyncBackupSchedules:
         unchanged rather than reset. The schedule's ``name`` and its index
         cannot be changed -- the API exposes no field for either.
 
-        .. warning::
-           Passing ``enabled=True`` on a *disabled* schedule immediately
-           enqueues a backup run and recomputes ``next_scheduled_run`` from
-           the moment of the update rather than resuming the old slot, so a
-           disable/re-enable cycle shifts the cadence rather than pausing it.
-           Only one schedule per index can be enabled, so re-enabling raises
-           :exc:`ConflictError` if another one already is. On an
-           already-enabled schedule, ``enabled=True`` enqueues nothing.
-
         Args:
             schedule_id (str): The identifier of the schedule to update.
             frequency (str | None): New cadence, one of ``"daily"``,
@@ -442,7 +444,6 @@ class AsyncBackupSchedules:
             :exc:`NotFoundError`: If the schedule does not exist.
             :exc:`ConflictError`: If ``enabled=True`` and another schedule on
                 the same index is already enabled.
-            :exc:`ApiError`: If the API returns another error response.
 
         Note:
             Calling this with none of *frequency*, *retention_days*, or
@@ -482,6 +483,15 @@ class AsyncBackupSchedules:
                         enabled=False,
                     )
                     print(paused.frequency, paused.next_scheduled_run)
+
+        .. warning::
+           Passing ``enabled=True`` on a *disabled* schedule immediately
+           enqueues a backup run and recomputes ``next_scheduled_run`` from
+           the moment of the update rather than resuming the old slot, so a
+           disable/re-enable cycle shifts the cadence rather than pausing it.
+           Only one schedule per index can be enabled, so re-enabling raises
+           :exc:`ConflictError` if another one already is. On an
+           already-enabled schedule, ``enabled=True`` enqueues nothing.
         """
         require_non_empty("schedule_id", schedule_id)
         with schedule_request_validation():
@@ -505,19 +515,8 @@ class AsyncBackupSchedules:
         out on their own retention window. Deleting the schedule only stops
         future runs.
 
-        .. important::
-           This is not safe to retry blindly. A successful delete raises
-           nothing, and a second attempt on the same ``schedule_id`` raises
-           :exc:`NotFoundError` -- so a retry after a dropped response is
-           indistinguishable from deleting something that was never there.
-           Treat a :exc:`NotFoundError` following a delete attempt as
-           success.
-
         Args:
             schedule_id (str): The identifier of the schedule to delete.
-
-        Returns:
-            ``None``. The 204 carries no body, and none is parsed.
 
         Raises:
             :exc:`PineconeValueError`: If *schedule_id* is empty.
@@ -525,7 +524,6 @@ class AsyncBackupSchedules:
                 scheduled backups.
             :exc:`NotFoundError`: If the schedule does not exist -- see the
                 retry caveat above.
-            :exc:`ApiError`: If the API returns another error response.
 
         Examples:
 
@@ -537,6 +535,14 @@ class AsyncBackupSchedules:
                     await pc.backup_schedules.delete(
                         schedule_id="e88f7273-42aa-47e9-af73-593827136867"
                     )
+
+        .. important::
+           This is not safe to retry blindly. A successful delete raises
+           nothing, and a second attempt on the same ``schedule_id`` raises
+           :exc:`NotFoundError` -- so a retry after a dropped response is
+           indistinguishable from deleting something that was never there.
+           Treat a :exc:`NotFoundError` following a delete attempt as
+           success.
         """
         require_non_empty("schedule_id", schedule_id)
         logger.info("Deleting backup schedule %r", schedule_id)
@@ -555,12 +561,9 @@ class AsyncBackupSchedules:
 
         Rows describe backup *snapshots*, not the schedule, and a row appears
         as soon as a run is planned -- so the listing mixes runs that have
-        already completed with ones that have not started.
-
-        .. note::
-           This returns a **single page**. A daily schedule with a 90-day
-           retention window has many more rows than one page holds, so prefer
-           :meth:`iter_history` unless you are managing pagination yourself.
+        already completed with ones that have not started. One call returns
+        one page, and a frequent cadence with a long retention window has far
+        more rows than one page holds — see :doc:`/guides/pagination`.
 
         Args:
             schedule_id (str): The identifier of the schedule whose history
@@ -585,7 +588,6 @@ class AsyncBackupSchedules:
             :exc:`ForbiddenError`: If the project's plan does not include
                 scheduled backups.
             :exc:`NotFoundError`: If the schedule does not exist.
-            :exc:`ApiError`: If the API returns another error response.
 
         Examples:
 
@@ -609,6 +611,10 @@ class AsyncBackupSchedules:
                         pagination_token = runs.pagination.next if runs.pagination else None
                         if pagination_token is None:
                             break
+
+        .. seealso::
+           :meth:`iter_history` — the same listing as a paginator that walks
+           every page, instead of one page plus a token.
         """
         require_non_empty("schedule_id", schedule_id)
         if limit is not None:
@@ -659,7 +665,6 @@ class AsyncBackupSchedules:
                 scheduled backups. Raised while iterating, when a page is
                 fetched.
             :exc:`NotFoundError`: If the schedule does not exist.
-            :exc:`ApiError`: If the API returns another error response.
 
         Examples:
 
@@ -672,6 +677,10 @@ class AsyncBackupSchedules:
                         schedule_id="e88f7273-42aa-47e9-af73-593827136867"
                     ):
                         print(run.backup_id, run.status, run.scheduled_execution_at)
+
+        .. seealso::
+           :meth:`history` — one page plus its token, when you are driving
+           pagination yourself.
         """
         require_non_empty("schedule_id", schedule_id)
         if limit is not None:

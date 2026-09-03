@@ -1,7 +1,8 @@
 """Backwards-compatibility shim — IndexEmbed model for integrated indexes.
 
-Re-exports classes that used to live at :mod:`pinecone.inference.models.index_embed`
-before the `python-sdk2` rewrite. Preserved to keep pre-rewrite callers working.
+Defines the class that used to live at
+:mod:`pinecone.inference.models.index_embed` in earlier releases, so that code
+written against it keeps working.
 
 :meta private:
 """
@@ -16,10 +17,12 @@ __all__ = ["IndexEmbed"]
 
 @dataclasses.dataclass(frozen=True)
 class IndexEmbed:
-    """Configuration for an integrated (model-backed) embedding index.
+    """Which model embeds an integrated index, and which field it embeds.
 
-    Describes the embedding model and field mapping used for an integrated
-    index. Legacy class preserved for backwards compatibility.
+    Accepted as the ``embed`` argument of
+    :meth:`~pinecone.Pinecone.create_index_for_model`, alongside a plain dict
+    and ``EmbedConfig``. Kept here, and importable from ``pinecone``, for code
+    written against earlier releases.
 
     :meta private:
     """

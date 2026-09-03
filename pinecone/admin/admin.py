@@ -173,31 +173,17 @@ class _TokenRefreshingHTTPClient(HTTPClient):
 
 
 class Admin:
-    """Admin client for Pinecone organization and project management.
+    """Manage Pinecone organizations, projects, and the credentials that reach them.
 
-    **Auth model:** :class:`Admin` uses OAuth2 client credentials (service account), while
-    :class:`~pinecone.Pinecone` uses API keys.  These serve different purposes:
+    :class:`Admin` authenticates with OAuth2 client credentials — a service account's
+    ``client_id`` and ``client_secret`` — never with an API key, and it reaches only
+    control-plane resources: organizations, projects, API keys, and the role bindings that
+    grant access to them. :class:`~pinecone.Pinecone` is the other half of the SDK: it takes
+    an API key and does index and vector work. Constructing :class:`Admin` exchanges your
+    credentials for a token straight away, so bad credentials fail here rather than on the
+    first call. This client is synchronous only — there is no async form.
 
-    - :class:`Admin` — organization/project/key management (create projects, rotate keys, etc.)
-    - :class:`~pinecone.Pinecone` — index and vector operations (upsert, query, etc.)
-
-    A common workflow bridges both: use :class:`Admin` to create a project and API key, then
-    pass that key to :class:`~pinecone.Pinecone` for data-plane operations::
-
-        from pinecone import Admin, Pinecone
-
-        admin = Admin(client_id="...", client_secret="...")
-        project = admin.projects.create(name="my-project")
-        key = admin.api_keys.create(project_id=project.id, name="my-key")
-        pc = Pinecone(api_key=key.value)
-        pc.indexes.create(
-            name="my-index",
-            schema={"fields": {"values": {"type": "dense_vector",
-                                          "dimension": 1536, "metric": "cosine"}}},
-            deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
-        )
-
-    Projects are created within the organization associated with your OAuth credentials.
+    Projects are created inside the organization the credentials belong to.
 
     Operations are grouped into seven namespaces:
 
@@ -209,33 +195,6 @@ class Admin:
     - :attr:`service_accounts` — the OAuth principals this client itself authenticates as
     - :attr:`role_bindings` — every grant of a role to a principal, at organization or
       project scope; nothing else confers permissions
-
-    .. note::
-        **Obtaining OAuth credentials** — a service account's ``client_id`` and
-        ``client_secret`` can come from either of two places:
-
-        - :meth:`admin.service_accounts.create()
-          <pinecone.admin.service_accounts.ServiceAccounts.create>`, once you already hold
-          admin credentials. The ``client_secret`` is returned exactly once, at creation, and
-          :meth:`~pinecone.admin.service_accounts.ServiceAccounts.rotate_secret` is the only
-          way to obtain another.
-        - The `Pinecone console <https://console.pinecone.io>`_, under organization settings.
-          This is how the first pair is obtained, since there is nothing to authenticate an
-          :class:`Admin` with until one service account exists.
-
-        These differ from the API keys used by :class:`~pinecone.Pinecone`; they are scoped to
-        your organization and used exclusively for admin operations.
-
-    .. note::
-        **Token refresh** — :class:`Admin` renews its OAuth token automatically before it
-        expires, so a long-lived instance keeps working without any action on your part.
-        Supply your own ``Authorization`` entry in ``additional_headers`` to manage the token
-        yourself instead.
-
-    .. note::
-        :class:`Admin` is synchronous only. There is no async form of this client; admin
-        operations are infrequent control-plane calls, and
-        :class:`~pinecone.AsyncPinecone` is where the async lane lives.
 
     Args:
         client_id (str | None): OAuth2 client ID. Falls back to ``PINECONE_CLIENT_ID`` env var.
@@ -261,16 +220,62 @@ class Admin:
             production. There is no environment-variable fallback for this parameter.
 
     Raises:
-        :exc:`~pinecone.errors.exceptions.PineconeValueError`:
-            If client_id or client_secret cannot be resolved.
-        :exc:`ApiError`: If the OAuth token request fails.
+        :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *client_id* or
+            *client_secret* resolves to nothing, from either the argument or the
+            environment.
+        :exc:`ApiError`: If the credential exchange is rejected — usually a wrong or
+            revoked ``client_secret``.
 
     Examples:
+
+        Every namespace hangs off one client:
 
         >>> from pinecone import Admin
         >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
         >>> for org in admin.organizations.list():
         ...     print(org.name)
+
+        An API key minted here is what :class:`~pinecone.Pinecone` authenticates with, so
+        the two clients chain: create the project, create a key scoped to it, then hand
+        that key's secret to :class:`~pinecone.Pinecone`.
+
+        >>> from pinecone import Pinecone
+        >>> project = admin.projects.create(name="product-search")
+        >>> key = admin.api_keys.create(project_id=project.id, name="prod-search-key")
+        >>> key.value
+        'pcsk_abc123_secretvalue'
+        >>> pc = Pinecone(api_key=key.value)
+        >>> index = pc.indexes.create(
+        ...     name="product-catalog",
+        ...     schema={"fields": {"embedding": {
+        ...         "type": "dense_vector", "dimension": 1536, "metric": "cosine"}}},
+        ...     deployment={"deployment_type": "managed", "cloud": "aws",
+        ...                 "region": "us-east-1"},
+        ... )
+
+    .. note::
+        **Where the credentials come from** — a service account's ``client_id`` and
+        ``client_secret`` come either from
+        :meth:`admin.service_accounts.create()
+        <pinecone.admin.service_accounts.ServiceAccounts.create>`, once you already hold
+        admin credentials, or from the Pinecone console under organization settings, which
+        is how the first pair is obtained: nothing can authenticate an :class:`Admin` until
+        one service account exists. Either way the ``client_secret`` is shown exactly once,
+        and :meth:`~pinecone.admin.service_accounts.ServiceAccounts.rotate_secret` is the
+        only way to get another.
+
+    .. note::
+        **Token refresh** — :class:`Admin` renews its OAuth token before it expires, so a
+        long-lived instance keeps working with no action on your part. Supply your own
+        ``Authorization`` entry in ``additional_headers`` to manage the token yourself
+        instead.
+
+    .. seealso::
+       :class:`~pinecone.Pinecone` — index and vector operations, authenticated with an API
+       key created here.
+
+       :doc:`/guides/error-handling` — what each exception an admin call can raise means,
+       and what to do about it.
     """
 
     def __init__(
@@ -465,8 +470,8 @@ class Admin:
     def organizations(self) -> Organizations:
         """Access the Organizations namespace for organization operations.
 
-        Organizations are the top-level container for projects, users, and billing in
-        Pinecone. Created on first access and cached for the life of this client.
+        An organization is the top-level account boundary in Pinecone: it holds projects,
+        users, and billing.
 
         Returns:
             The :class:`Organizations` namespace. Call
@@ -476,8 +481,6 @@ class Admin:
 
         Examples:
 
-            >>> from pinecone import Admin
-            >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
             >>> for org in admin.organizations.list():
             ...     print(org.name)
         """
@@ -491,7 +494,8 @@ class Admin:
     def projects(self) -> Projects:
         """Access the Projects namespace for project operations.
 
-        Created on first access and cached for the life of this client.
+        A project is the boundary for quotas and API keys inside an organization: indexes,
+        collections, backups, and keys each belong to exactly one project.
 
         Returns:
             The :class:`Projects` namespace. Call :meth:`~pinecone.admin.projects.Projects.create`
@@ -499,8 +503,6 @@ class Admin:
 
         Examples:
 
-            >>> from pinecone import Admin
-            >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
             >>> for project in admin.projects.list():
             ...     print(project.name)
         """
@@ -514,9 +516,8 @@ class Admin:
     def api_keys(self) -> ApiKeys:
         """Access the ApiKeys namespace for API key operations.
 
-        API keys are project-scoped credentials that :class:`~pinecone.Pinecone` authenticates
-        with for data-plane operations. Created on first access and cached for the life of
-        this client.
+        API keys are the project-scoped credentials :class:`~pinecone.Pinecone`
+        authenticates with.
 
         Returns:
             The :class:`ApiKeys` namespace. Call
@@ -526,8 +527,6 @@ class Admin:
 
         Examples:
 
-            >>> from pinecone import Admin
-            >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
             >>> keys = admin.api_keys.list(project_id="proj-abc123")
             >>> for key in keys:
             ...     print(key.key.id)
@@ -542,7 +541,8 @@ class Admin:
     def users(self) -> Users:
         """Access the Users namespace for organization-member operations.
 
-        Created on first access and cached for the life of this client.
+        Users are people who already belong to the organization; :attr:`invites` covers
+        those who have been asked and have not joined yet.
 
         Returns:
             The :class:`Users` namespace. Call :meth:`~pinecone.admin.users.Users.list` to
@@ -550,8 +550,6 @@ class Admin:
 
         Examples:
 
-            >>> from pinecone import Admin
-            >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
             >>> for user in admin.users.list():
             ...     print(user.email)
             alice@example.com
@@ -566,7 +564,8 @@ class Admin:
     def invites(self) -> Invites:
         """Access the Invites namespace for organization-invite operations.
 
-        Created on first access and cached for the life of this client.
+        An invite is a pending or expired request for someone to join the organization; it
+        becomes a :attr:`users` entry once accepted.
 
         Returns:
             The :class:`Invites` namespace. Call :meth:`~pinecone.admin.invites.Invites.create`
@@ -575,10 +574,9 @@ class Admin:
 
         Examples:
 
-            >>> from pinecone import Admin
-            >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
             >>> for invite in admin.invites.list():
             ...     print(invite.email, invite.status)
+            newhire@acme.com pending
         """
         if self._invites is None:
             from pinecone.admin.invites import Invites as _Invites
@@ -592,8 +590,7 @@ class Admin:
 
         Service accounts are the OAuth principals :class:`Admin` clients authenticate as,
         including the one behind this client's own ``client_id``/``client_secret`` — rotating
-        or deleting that account breaks this client. Created on first access and cached for
-        the life of this client.
+        or deleting that account breaks this client.
 
         Returns:
             The :class:`ServiceAccounts` namespace. Call
@@ -603,10 +600,9 @@ class Admin:
 
         Examples:
 
-            >>> from pinecone import Admin
-            >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
             >>> for account in admin.service_accounts.list():
-            ...     print(account.id, account.name)
+            ...     print(account.name, account.client_id)
+            ci-prod l3Ow0CmFyc4jOONcwiKUCRqQKN0tiCAn
         """
         if self._service_accounts is None:
             from pinecone.admin.service_accounts import ServiceAccounts as _ServiceAccounts
@@ -620,8 +616,7 @@ class Admin:
 
         Role bindings are the only thing that confers permissions in Pinecone, so
         this is where any principal's access — user, service account, API key, or
-        pending invite — is read and changed. Created on first access and cached
-        for the life of this client.
+        pending invite — is read and changed.
 
         Returns:
             The :class:`RoleBindings` namespace. Call
@@ -631,10 +626,9 @@ class Admin:
 
         Examples:
 
-            >>> from pinecone import Admin
-            >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
             >>> for binding in admin.role_bindings.list():
-            ...     print(binding.principal_id, binding.role, binding.resource_id)
+            ...     print(binding.principal_type, binding.role, binding.resource_type)
+            user OrgMember organization
         """
         if self._role_bindings is None:
             from pinecone.admin.role_bindings import RoleBindings as _RoleBindings
@@ -649,8 +643,6 @@ class Admin:
 
         Examples:
 
-            >>> from pinecone import Admin
-            >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
             >>> admin  # doctest: +ELLIPSIS
             Admin(organizations=<Organizations>, ...)
         """
@@ -669,8 +661,8 @@ class Admin:
         Examples:
 
             >>> from pinecone import Admin
-            >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
-            >>> admin.close()
+            >>> throwaway = Admin(client_id="your-client-id", client_secret="your-client-secret")
+            >>> throwaway.close()
         """
         self._http.close()
 

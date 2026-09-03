@@ -1,4 +1,8 @@
-"""Read-capacity response models (2026-07 API)."""
+"""How much read capacity an index has, and how it is provisioned.
+
+``IndexModel.read_capacity`` is either on-demand or dedicated, told apart by
+the ``mode`` key — see :data:`ReadCapacityResponse`.
+"""
 
 from __future__ import annotations
 
@@ -15,12 +19,18 @@ __all__ = [
 
 
 class ScalingConfigManual(Struct, kw_only=True):
-    """Manual scaling configuration for dedicated read capacity.
+    """The shard and replica counts you chose for dedicated read capacity.
+
+    Present when ``scaling`` is ``"Manual"`` — you are sizing the read side
+    yourself rather than letting Pinecone size it.
 
     Attributes:
-        shards: Number of shards. Each shard provides 250 GB of storage.
-        replicas: Number of replicas. Setting replicas to 0 disables the
-            index but can be used to reduce costs while usage is paused.
+        shards: How many shards to split reads across, which is what decides
+            how much data the read tier holds.
+        replicas: How many copies of each shard to run, which is what decides
+            read throughput. ``0`` is legal and stops the index serving reads
+            entirely — a way to pause the cost of an index you are not
+            querying without deleting it.
     """
 
     shards: int
@@ -28,13 +38,16 @@ class ScalingConfigManual(Struct, kw_only=True):
 
 
 class ReadCapacityStatus(Struct, kw_only=True):
-    """Read capacity provisioning status.
+    """Whether an index's read capacity is provisioned and serving.
+
+    Separate from :class:`~pinecone.models.indexes.index.IndexStatus`: an
+    index can be ready while its read tier is still scaling into place.
 
     Attributes:
-        state: Current provisioning state — ``"Ready"`` most of the time,
-            ``"Scaling"`` after a recent replica/shard change,
+        state: Where provisioning is — ``"Ready"`` most of the time,
+            ``"Scaling"`` after a recent replica or shard change,
             ``"Migrating"`` while moving to a new node type, or
-            ``"Error"`` (see ``error_message``).
+            ``"Error"``, in which case read ``error_message``.
         current_shards: Current number of active shards. ``None`` for an
             index with on-demand read capacity, which has no fixed shard
             count.
@@ -52,14 +65,15 @@ class ReadCapacityStatus(Struct, kw_only=True):
 
 
 class ReadCapacityDedicatedConfig(Struct, kw_only=True):
-    """Dedicated read-capacity configuration details.
+    """What the dedicated read tier is made of.
 
     Attributes:
-        node_type: The type of machines to use — ``"b1"`` or ``"t1"``
-            (``t1`` includes increased processing power and memory).
-        scaling: Scaling strategy (e.g. ``"Manual"``).
-        manual: Manual scaling configuration, present when
-            ``scaling="Manual"``.
+        node_type: Machine class the read tier runs on — ``"b1"``, or
+            ``"t1"`` for more processing power and memory per node.
+        scaling: How the shard and replica counts are decided, e.g.
+            ``"Manual"``.
+        manual: The counts themselves, as a :class:`ScalingConfigManual`.
+            Present when ``scaling`` is ``"Manual"``.
     """
 
     node_type: str
@@ -68,34 +82,39 @@ class ReadCapacityDedicatedConfig(Struct, kw_only=True):
 
 
 class ReadCapacityOnDemandResponse(Struct, tag="OnDemand", tag_field="mode", kw_only=True):
-    """On-demand read capacity in API responses.
+    """Read capacity that scales with traffic and bills per read.
+
+    The default, and the one with nothing to size: reads bill per operation,
+    so there is no configuration to read back — only a status. Its ``mode`` is
+    ``"OnDemand"``. Reach for :class:`ReadCapacityDedicatedResponse` when you
+    want to control the shards and replicas serving reads instead; see
+    :doc:`/guides/concepts`.
 
     Attributes:
-        status: Current provisioning status.
-
-    Note:
-        The ``mode`` field is automatically set to ``"OnDemand"`` by
-        msgspec's tagged-union system.
+        status: A :class:`ReadCapacityStatus`.
     """
 
     status: ReadCapacityStatus
 
 
 class ReadCapacityDedicatedResponse(Struct, tag="Dedicated", tag_field="mode", kw_only=True):
-    """Dedicated read capacity in API responses.
+    """Read capacity served by nodes provisioned for this index alone.
+
+    Its ``mode`` is ``"Dedicated"``, and unlike on-demand it reports the
+    hardware behind it, because you chose it. Changing the counts puts
+    ``status.state`` into ``"Scaling"`` until the new shape is in place.
 
     Attributes:
-        dedicated: Dedicated capacity configuration details.
-        status: Current provisioning status.
-
-    Note:
-        The ``mode`` field is automatically set to ``"Dedicated"`` by
-        msgspec's tagged-union system.
+        dedicated: A :class:`ReadCapacityDedicatedConfig` — node type and
+            shard/replica counts.
+        status: A :class:`ReadCapacityStatus`.
     """
 
     dedicated: ReadCapacityDedicatedConfig
     status: ReadCapacityStatus
 
 
-#: Union of read-capacity response variants, dispatched on the ``mode`` field.
+#: The two read-capacity variants, told apart by their ``mode``. Narrow an
+#: ``IndexModel.read_capacity`` with ``isinstance`` before reading
+#: ``dedicated``, which only one variant has.
 ReadCapacityResponse = ReadCapacityOnDemandResponse | ReadCapacityDedicatedResponse

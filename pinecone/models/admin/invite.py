@@ -65,6 +65,11 @@ class InviteModel(StructDictMixin, Struct, kw_only=True):
         True
         >>> invite.processed_at is None
         True
+
+    .. seealso::
+       - :class:`~pinecone.models.admin.user.UserModel` — the member record
+         created when the invite is accepted. The two carry separate IDs, so the
+         invite's ``id`` is not usable as a user ID.
     """
 
     id: str
@@ -78,8 +83,14 @@ class InviteModel(StructDictMixin, Struct, kw_only=True):
 class InviteList(Struct, kw_only=True):
     """A page of invites, plus the cursor for the next page.
 
+    One raw page of an invite listing. Callers who reach invites through
+    :meth:`Invites.list() <pinecone.admin.invites.Invites.list>` get a
+    :class:`~pinecone.models.pagination.Paginator` instead, which follows these
+    cursors for them.
+
     Attributes:
-        data (list[InviteModel]): The invites on this page.
+        data (list[InviteModel]): The invites on this page. Accepted invites are
+            never among them; the listing covers pending and expired only.
         pagination (PaginationResponse | None): Cursor envelope for the next
             page, or ``None`` on the final page.
 
@@ -88,7 +99,7 @@ class InviteList(Struct, kw_only=True):
         >>> invites = InviteList(
         ...     data=[
         ...         InviteModel(
-        ...             id="i1",
+        ...             id="9c8e3528-b9c0-4358-84ce-84c28e91b566",
         ...             email="newhire@acme.com",
         ...             status="pending",
         ...             created_at="2026-04-14T20:00:00Z",

@@ -1,4 +1,9 @@
-"""Enumeration models for Pinecone SDK configuration values."""
+"""Enumerations for the string-valued options SDK methods accept.
+
+Every member is a ``str``, so an enum member and its plain-string value are
+interchangeable at every call site. The enums exist for autocomplete and typo
+protection, not to constrain what the API accepts.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +11,13 @@ from enum import Enum
 
 
 class CloudProvider(str, Enum):
-    """Supported cloud providers for Pinecone indexes."""
+    """Public cloud a managed index runs in.
+
+    Goes in the ``cloud`` key of a managed ``deployment``, and in
+    :meth:`~pinecone.client.indexes.Indexes.create_for_model`'s ``cloud``
+    argument. Pair it with a region enum for the same provider —
+    :class:`AwsRegion`, :class:`GcpRegion`, or :class:`AzureRegion`.
+    """
 
     AWS = "aws"
     GCP = "gcp"
@@ -14,7 +25,15 @@ class CloudProvider(str, Enum):
 
 
 class Metric(str, Enum):
-    """Supported similarity metrics for vector search."""
+    """How similarity between two dense vectors is scored.
+
+    Set on the dense vector field in an index's ``schema`` and fixed for the
+    life of that field. ``COSINE`` compares direction and ignores magnitude,
+    which is what most text embedding models are trained for and the right
+    default when in doubt. ``DOTPRODUCT`` takes magnitude into account, and is
+    the metric sparse fields always use. ``EUCLIDEAN`` scores straight-line
+    distance, so a smaller score is a closer match.
+    """
 
     COSINE = "cosine"
     EUCLIDEAN = "euclidean"
@@ -22,14 +41,26 @@ class Metric(str, Enum):
 
 
 class DeletionProtection(str, Enum):
-    """Deletion protection setting for indexes."""
+    """Whether an index refuses to be deleted.
+
+    While ``ENABLED``, :meth:`~pinecone.client.indexes.Indexes.delete` on the
+    index fails with :exc:`~pinecone.errors.exceptions.ForbiddenError`, and you
+    have to ``configure`` it back to ``DISABLED`` first. New indexes are
+    ``DISABLED``.
+    """
 
     ENABLED = "enabled"
     DISABLED = "disabled"
 
 
 class VectorType(str, Enum):
-    """Supported vector types."""
+    """Dense or sparse, for the deprecated single-vector index shape.
+
+    Reaches the API only through the deprecated ``vector_type=`` argument to
+    :meth:`~pinecone.client.indexes.Indexes.create`. A current ``schema``
+    names a ``dense_vector`` or ``sparse_vector`` field type instead, which is
+    what lets one index hold both.
+    """
 
     DENSE = "dense"
     SPARSE = "sparse"
@@ -67,7 +98,15 @@ class RerankModel(str, Enum):
 
 
 class PodType(str, Enum):
-    """Supported pod type and size combinations."""
+    """Pod hardware family and size, for the ``pod_type`` of a pod deployment.
+
+    The family before the dot picks what the pod is optimized for — ``s1`` for
+    storage, ``p1`` for balanced performance, ``p2`` for query throughput —
+    and the ``xN`` after it is the size multiplier. See
+    :doc:`/how-to/indexes/pod` for what each family trades away. Pod-based
+    indexes predate managed ones; reach for a managed deployment unless you
+    have a reason not to.
+    """
 
     P1_X1 = "p1.x1"
     P1_X2 = "p1.x2"
@@ -84,7 +123,12 @@ class PodType(str, Enum):
 
 
 class AwsRegion(str, Enum):
-    """AWS regions supported for serverless indexes."""
+    """AWS regions for the ``region`` of a managed index on ``cloud="aws"``.
+
+    A convenience enum rather than an exhaustive list, like
+    :class:`~pinecone.models.enums.EmbedModel`: ``region`` also accepts a
+    plain string, so a region added after this SDK release still works.
+    """
 
     US_EAST_1 = "us-east-1"
     US_WEST_2 = "us-west-2"
@@ -94,21 +138,36 @@ class AwsRegion(str, Enum):
 
 
 class GcpRegion(str, Enum):
-    """GCP regions supported for serverless indexes."""
+    """GCP regions for the ``region`` of a managed index on ``cloud="gcp"``.
+
+    A convenience enum rather than an exhaustive list, like
+    :class:`~pinecone.models.enums.EmbedModel`: ``region`` also accepts a
+    plain string, so a region added after this SDK release still works.
+    """
 
     US_CENTRAL1 = "us-central1"
     EUROPE_WEST4 = "europe-west4"
 
 
 class AzureRegion(str, Enum):
-    """Azure regions supported for serverless indexes."""
+    """Azure regions for the ``region`` of a managed index on ``cloud="azure"``.
+
+    A convenience enum rather than an exhaustive list, like
+    :class:`~pinecone.models.enums.EmbedModel`: ``region`` also accepts a
+    plain string, so a region added after this SDK release still works.
+    """
 
     EASTUS2 = "eastus2"
     GERMANYWESTCENTRAL = "germanywestcentral"
 
 
 class PodIndexEnvironment(str, Enum):
-    """Deployment environments for pod-based indexes."""
+    """Environments for the ``environment`` of a pod deployment.
+
+    A pod-based index names one environment instead of a cloud and region
+    pair; the member names encode both. Also a convenience enum rather than
+    an exhaustive list.
+    """
 
     US_WEST1_GCP = "us-west1-gcp"
     US_CENTRAL1_GCP = "us-central1-gcp"

@@ -88,9 +88,6 @@ class AsyncAssistantsLegacyNamespaceMixin:
         Returns:
             List of :class:`AssistantModel` objects for every assistant in
             the project.
-
-        Raises:
-            :exc:`ApiError`: If the API returns an error response.
         """
         return [assistant async for assistant in self.list()]  # type: ignore[attr-defined]
 
@@ -118,9 +115,6 @@ class AsyncAssistantsLegacyNamespaceMixin:
         Returns:
             :class:`ListAssistantsResponse` with an ``assistants`` list
             and an optional ``next`` continuation token.
-
-        Raises:
-            :exc:`ApiError`: If the API returns an error response.
 
         Examples:
             .. code-block:: python
@@ -163,7 +157,6 @@ class AsyncAssistantsLegacyNamespaceMixin:
             :exc:`PineconeValueError`: If both *assistant_name* and *name*
                 are given.
             :exc:`NotFoundError`: If the assistant does not exist.
-            :exc:`ApiError`: If the API returns another error response.
         """
         if assistant_name is not None and name is not None:
             raise PineconeValueError(
@@ -210,7 +203,6 @@ class AsyncAssistantsLegacyNamespaceMixin:
             :exc:`PineconeValueError`: If neither *instructions* nor
                 *metadata* is given.
             :exc:`NotFoundError`: If the assistant does not exist.
-            :exc:`ApiError`: If the API returns another error response.
         """
         resolved_name = assistant_name if assistant_name is not None else name
         return cast(
@@ -243,7 +235,7 @@ class AsyncAssistantsLegacyNamespaceMixin:
         Args:
             assistant_name: Legacy name for the new assistant.
             instructions: Optional directive for the assistant to apply
-                to all responses. Maximum 16 KB.
+                to all responses.
             metadata: Optional metadata dictionary. When omitted, the
                 assistant is created without metadata.
             region: Region to deploy the assistant in. Must be ``"us"``
@@ -262,7 +254,6 @@ class AsyncAssistantsLegacyNamespaceMixin:
                 ``"eu"``.
             :exc:`PineconeTimeoutError`: If the assistant does not become
                 ready before *timeout*.
-            :exc:`ApiError`: If the API returns an error response.
 
         Examples:
             .. code-block:: python
@@ -315,7 +306,6 @@ class AsyncAssistantsLegacyNamespaceMixin:
                 failure state while being deleted.
             :exc:`PineconeTimeoutError`: If the assistant still exists
                 after *timeout* seconds.
-            :exc:`ApiError`: If the API returns an error response.
         """
         resolved_name = assistant_name if assistant_name is not None else name
         await self.delete(name=resolved_name, timeout=timeout, **kwargs)  # type: ignore[attr-defined]

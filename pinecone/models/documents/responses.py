@@ -1,10 +1,9 @@
-"""Document response models (2026-07 API).
+"""What the document operations hand back, one envelope per verb.
 
-Envelopes and usage models are typed ``msgspec.Struct`` classes. The two
-envelopes that carry open-schema documents (search and fetch) hold
-:class:`~pinecone.models.documents.document.Document` dict-wrappers, so
-they are plain classes constructed via :meth:`from_dict` from the decoded
-response body.
+The two envelopes that carry documents — search and fetch — hold
+:class:`~pinecone.models.documents.document.Document` objects, so a field the SDK has
+never heard of comes through untouched. Read each document as ``doc.id``, ``doc.score``
+and then your own fields.
 """
 
 from __future__ import annotations
@@ -34,42 +33,42 @@ __all__ = [
 
 
 class DocumentSearchUsage(Struct, kw_only=True, gc=False):
-    """Usage information for the ``search_documents`` operation.
+    """What one document search cost.
 
     Attributes:
-        read_units: Number of read units consumed by the request.
+        read_units: Read units this call consumed.
     """
 
     read_units: int
 
 
 class DocumentFetchUsage(Struct, kw_only=True, gc=False):
-    """Usage information for the ``fetch_documents`` operation.
+    """What one document fetch cost.
 
     Attributes:
-        read_units: Number of read units consumed by the request.
+        read_units: Read units this call consumed.
     """
 
     read_units: int
 
 
 class DocumentListUsage(Struct, kw_only=True, gc=False):
-    """Usage information for the ``list_documents`` operation.
+    """What one document list cost.
 
     Attributes:
-        read_units: Number of read units consumed by the request.
+        read_units: Read units this call consumed.
     """
 
     read_units: int
 
 
 class UpsertDocumentsResponse(Struct, kw_only=True):
-    """Response from a document upsert operation.
+    """What a document upsert wrote.
 
     Attributes:
-        upserted_count: Number of documents successfully upserted.
-        response_info: HTTP response metadata (request ID and LSN headers),
-            or ``None`` when not present.
+        upserted_count: Documents the server accepted.
+        response_info: HTTP response metadata (request ID and LSN headers), or ``None``
+            when not present.
     """
 
     upserted_count: int
@@ -77,7 +76,7 @@ class UpsertDocumentsResponse(Struct, kw_only=True):
 
 
 class DeleteDocumentsResponse(Struct, kw_only=True):
-    """Response from a document delete operation.
+    """Confirmation that a document delete was accepted, and what it matched.
 
     Attributes:
         matched_records: The number of documents that matched ``filter``
@@ -96,7 +95,7 @@ class DeleteDocumentsResponse(Struct, kw_only=True):
 
 
 class UpdateDocumentsResponse(Struct, kw_only=True):
-    """Response from a document update operation.
+    """Confirmation that a document update was accepted, and what it matched.
 
     Attributes:
         matched_records: The number of documents that matched ``filter``
@@ -114,30 +113,50 @@ class UpdateDocumentsResponse(Struct, kw_only=True):
 
 
 class ListedDocumentRecord(Struct, kw_only=True, gc=False):
-    """A listed document containing only its ID.
+    """One document ID from a list, and nothing else.
+
+    This is what iterating ``idx.documents.list(...)`` yields. A list walks the IDs in a
+    namespace without reading the documents, so none of your fields are here — fetch the
+    IDs you want to read. The identifier is ``entry.id``; ``entry._id`` is the same value
+    under the JSON key name.
 
     Attributes:
-        id: The unique identifier of the document (wire field ``_id``).
+        id: The document's identifier. JSON key ``_id``.
+
+    Examples:
+        .. code-block:: python
+
+            for entry in idx.documents.list(namespace="articles-en", prefix="article-"):
+                print(entry.id)
     """
 
     id: str = msgspec.field(name="_id")
 
     @property
     def _id(self) -> str:
+        """Alias for :attr:`id`, matching the JSON key. Prefer :attr:`id`."""
         return self.id
 
 
 class ListDocumentsResponse(Struct, kw_only=True):
-    """Response from a document list operation.
+    """One decoded page of a document list, as it comes off the wire.
+
+    ``idx.documents.list`` does not hand this to you — it returns a
+    :class:`~pinecone.models.pagination.Paginator` that consumes these pages and yields
+    the :class:`ListedDocumentRecord` entries, following ``pagination`` for you. Read this
+    model when you are driving the paging yourself.
 
     Attributes:
-        documents: The listed documents, in sorted order by ID.
-        namespace: The namespace the documents were listed from.
-        usage: API usage statistics.
-        pagination: Pagination token for retrieving the next page, or
-            ``None`` when there are no more results.
-        response_info: HTTP response metadata (request ID and LSN headers),
-            or ``None`` when not present.
+        documents: The ID entries on this page, sorted by ID.
+        namespace: The namespace the IDs were listed from.
+        usage: What this page cost.
+        pagination: Token for the next page, or ``None`` when this is the last page.
+        response_info: HTTP response metadata (request ID and LSN headers), or ``None``
+            when not present.
+
+    .. seealso::
+       :doc:`/guides/pagination` — which pagination shape applies where, and the
+       paginator that saves you writing the loop.
     """
 
     documents: list[ListedDocumentRecord]
@@ -148,14 +167,33 @@ class ListDocumentsResponse(Struct, kw_only=True):
 
 
 class SearchDocumentsResponse:
-    """Response from a document search operation.
+    """The ranked documents a search found.
+
+    ``matches`` is already ordered, so ``matches[0]`` is the best hit. Each element is a
+    :class:`~pinecone.models.documents.document.Document`: read ``doc.id`` and
+    ``doc.score``, then your own fields by name. Which fields are present depends on the
+    search's ``include_fields`` — by default only the ID and the score come back, so ask
+    for the fields you intend to read. A search that matched nothing returns an empty
+    ``matches`` rather than raising.
 
     Attributes:
-        matches: Matching documents, ordered from most to least similar.
+        matches: The matching documents, most relevant first.
         namespace: The namespace that was searched.
-        usage: API usage statistics, or ``None`` when not returned.
-        response_info: HTTP response metadata (request ID and LSN headers),
-            or ``None`` when not present.
+        usage: What the search cost, or ``None`` when not returned.
+        response_info: HTTP response metadata (request ID and LSN headers), or ``None``
+            when not present.
+
+    Examples:
+        .. code-block:: python
+
+            response = idx.documents.search(
+                namespace="articles-en",
+                score_by=[{"type": "text", "query": "vector search", "fields": ["title"]}],
+                top_k=5,
+                include_fields=["title"],
+            )
+            for doc in response.matches:
+                print(doc.id, doc.score, doc.title)
     """
 
     __slots__ = ("matches", "namespace", "response_info", "usage")
@@ -180,10 +218,19 @@ class SearchDocumentsResponse:
     def from_dict(
         cls, data: dict[str, Any], *, response_info: ResponseInfo | None = None
     ) -> SearchDocumentsResponse:
-        """Build a response from a decoded ``search_documents`` body.
+        """Build a response from an already-decoded search body.
 
-        Unknown fields on each match are preserved verbatim in the wrapped
-        :class:`Document` objects.
+        Fields the SDK does not know about are kept verbatim on each wrapped
+        :class:`~pinecone.models.documents.document.Document`.
+
+        Args:
+            data (dict[str, Any]): The decoded response body.
+            response_info (ResponseInfo | None): HTTP response metadata to attach, or
+                ``None``. Keyword-only.
+
+        Returns:
+            :class:`SearchDocumentsResponse` with one
+            :class:`~pinecone.models.documents.document.Document` per match.
         """
         raw_usage = data.get("usage")
         return cls(
@@ -198,7 +245,11 @@ class SearchDocumentsResponse:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """Return the response in wire shape as a plain dictionary."""
+        """Return the response as a plain dict in its JSON shape.
+
+        Reserved keys come back under their JSON names, so each document carries ``_id``
+        and, for a search, ``_score``.
+        """
         result: dict[str, Any] = {
             "matches": [match.to_dict() for match in self.matches],
             "namespace": self.namespace,
@@ -234,18 +285,31 @@ class SearchDocumentsResponse:
 
 
 class FetchDocumentsResponse:
-    """Response from a document fetch operation.
+    """The documents a fetch retrieved, keyed by ID.
+
+    ``documents`` is a dict, so look a document up by the ID you asked for. An ID that
+    does not exist is simply absent — fetching a missing ID is not an error — so test
+    membership rather than indexing blind. Unlike a search, a fetch returns every field by
+    default.
 
     Attributes:
-        documents: Map of document ID to fetched document. Only IDs that
-            exist appear in the map.
+        documents: Document ID to :class:`~pinecone.models.documents.document.Document`,
+            for the requested IDs that exist.
         namespace: The namespace the documents were fetched from.
-        usage: API usage statistics, or ``None`` when not returned.
-        pagination: Pagination token for retrieving the next page of a
-            filter-based fetch, or ``None`` when there are no more results
-            (always ``None`` for by-id fetches).
-        response_info: HTTP response metadata (request ID and LSN headers),
-            or ``None`` when not present.
+        usage: What the fetch cost, or ``None`` when not returned.
+        pagination: Token for the next page of a fetch by filter, or ``None`` when this is
+            the last page. Always ``None`` for a fetch by ID, which does not page.
+        response_info: HTTP response metadata (request ID and LSN headers), or ``None``
+            when not present.
+
+    Examples:
+        .. code-block:: python
+
+            wanted = ["article-101", "article-102"]
+            response = idx.documents.fetch(ids=wanted, namespace="articles-en")
+            for doc_id, doc in response.documents.items():
+                print(doc_id, doc.title)
+            print("not stored:", [d for d in wanted if d not in response.documents])
     """
 
     __slots__ = ("documents", "namespace", "pagination", "response_info", "usage")
@@ -273,10 +337,18 @@ class FetchDocumentsResponse:
     def from_dict(
         cls, data: dict[str, Any], *, response_info: ResponseInfo | None = None
     ) -> FetchDocumentsResponse:
-        """Build a response from a decoded ``fetch_documents`` body.
+        """Build a response from an already-decoded fetch body.
 
-        Unknown fields on each document are preserved verbatim in the
-        wrapped :class:`Document` objects.
+        Fields the SDK does not know about are kept verbatim on each wrapped
+        :class:`~pinecone.models.documents.document.Document`.
+
+        Args:
+            data (dict[str, Any]): The decoded response body.
+            response_info (ResponseInfo | None): HTTP response metadata to attach, or
+                ``None``. Keyword-only.
+
+        Returns:
+            :class:`FetchDocumentsResponse` keyed by document ID.
         """
         raw_usage = data.get("usage")
         raw_pagination = data.get("pagination")
@@ -295,7 +367,11 @@ class FetchDocumentsResponse:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """Return the response in wire shape as a plain dictionary."""
+        """Return the response as a plain dict in its JSON shape.
+
+        Reserved keys come back under their JSON names, so each document carries ``_id``
+        and, for a search, ``_score``.
+        """
         result: dict[str, Any] = {
             "documents": {doc_id: doc.to_dict() for doc_id, doc in self.documents.items()},
             "namespace": self.namespace,

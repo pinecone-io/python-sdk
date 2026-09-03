@@ -46,7 +46,7 @@ from typing import Any
 
 from pinecone.errors.exceptions import PineconeTypeError
 
-MIGRATION_GUIDE = "docs/migration/v10-migration.md"
+MIGRATION_GUIDE = "https://sdk.pinecone.io/python/migration/v10-migration.html"
 
 #: create() kwargs with no faithful translation.
 LEGACY_CREATE_KWARGS = frozenset(
@@ -187,7 +187,7 @@ def reject_legacy_create_kwargs(legacy: dict[str, Any], name: Any = None) -> Non
             "rejects index creation from a collection or backup with 400 'Creating an "
             "index from collection or backup is not yet supported'. To restore a backup, "
             "use pc.create_index_from_backup(backup_id=..., name=...). "
-            f"(See question pinecone-io/python-sdk-internal#144 and {MIGRATION_GUIDE}.)"
+            f"(See {MIGRATION_GUIDE}.)"
         )
 
     removed = sorted(set(legacy) & LEGACY_CREATE_KWARGS)

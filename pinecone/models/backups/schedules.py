@@ -7,12 +7,9 @@ server-side and surfaced through
 :attr:`BackupScheduleModel.next_scheduled_run`; there is no way to
 express an arbitrary cron expression or a caller-chosen timezone.
 
-The only schedule type the SDK sends is ``"time-based"``. That is a
-client-side decision, not an API constraint -- the server neither
-validates nor rejects other values, it stores and echoes back whatever it
-was given (established under issue #334). So the request models here take
-**flat** keyword arguments and fill the type in themselves (see
-:meth:`CreateBackupScheduleRequest.to_wire`): callers write
+The only schedule type the SDK sends is ``"time-based"``. The request
+models here therefore take **flat** keyword arguments and fill the type in
+themselves (see :meth:`CreateBackupScheduleRequest.to_wire`): callers write
 ``frequency="daily", retention_days=90`` instead of assembling
 ``{"schedule": {"type": ..., "frequency": ...}, "retention": {...}}``.
 
@@ -91,7 +88,10 @@ def _rfc3339(value: datetime | None) -> str | None:
 
 
 class BackupScheduleModel(Struct, kw_only=True):
-    """Response model for a backup schedule (2026-07 API).
+    """One recurring backup cadence attached to an index.
+
+    Returned by every :class:`~pinecone.client.backup_schedules.BackupSchedules`
+    method that reads or writes a schedule; not constructed directly.
 
     Attributes:
         schedule_id: Unique identifier for the schedule. Used as the path
@@ -119,16 +119,14 @@ class BackupScheduleModel(Struct, kw_only=True):
             ``None`` **iff** ``enabled`` is ``False``: disabling clears the
             pending run, and re-enabling recomputes it from the moment of
             the update, so a disable/re-enable cycle shifts the cadence
-            rather than resuming the old slot. The field is documented as
-            always present and sent as ``null`` when disabled; it also
-            decodes when absent entirely.
+            rather than resuming the old slot.
         created_at: When the schedule was created.
 
     Note:
         Only one *enabled* schedule may exist per index. Creating a second
-        one fails with a 409 telling you to disable or delete the first;
-        re-enabling a disabled schedule while another is enabled fails the
-        same way.
+        one raises :exc:`ConflictError`, telling you to disable or delete the
+        first; re-enabling a disabled schedule while another is enabled fails
+        the same way.
     """
 
     schedule_id: str
@@ -255,11 +253,13 @@ class BackupScheduleModel(Struct, kw_only=True):
 
 
 class BackupScheduleHistoryItem(Struct, kw_only=True):
-    """A backup produced by a schedule (2026-07 API).
+    """One backup produced, or planned, by a schedule.
 
-    History rows describe backup *snapshots*, not the schedule itself. A
-    row appears as soon as a run is planned, so the list mixes runs that
-    have not happened yet with ones that have.
+    Returned by :meth:`~pinecone.client.backup_schedules.BackupSchedules.history`
+    and its iterator twin; not constructed directly. History rows describe
+    backup *snapshots*, not the schedule itself, and a row appears as soon as
+    a run is planned, so the list mixes runs that have not happened yet with
+    ones that have.
 
     Attributes:
         backup_id: Unique identifier for the backup snapshot.
@@ -281,12 +281,10 @@ class BackupScheduleHistoryItem(Struct, kw_only=True):
             ``"{schedule name}-{run timestamp}"``.
         description: Description of the snapshot, or ``None``.
         schema: Schema captured from the source index, or ``None`` when the
-            server reports none. Reuses the typed
-            :class:`~pinecone.models.indexes.schema.IndexSchema` union;
-            metadata-only schemas from older indexes decode to
+            server reports none. Metadata-only schemas from older indexes
+            decode to
             :class:`~pinecone.models.indexes.schema.LegacyMetadataField`
-            entries when the payload is routed through
-            ``decode_backups_envelope``.
+            entries.
         record_count: Records in the snapshot. ``0`` for a ``Scheduled``
             row -- nothing has been captured yet.
         namespace_count: Namespaces in the snapshot.
@@ -296,10 +294,9 @@ class BackupScheduleHistoryItem(Struct, kw_only=True):
 
     Note:
         ``name``, ``record_count``, ``namespace_count`` and ``size_bytes``
-        are all documented as required, but the backend serves schedule
-        history from its shared backup handler, where each is optional.
-        They are typed as optional here so a real response decodes rather
-        than raising; see the divergence recorded on issue #224.
+        can each be absent from a history row even though the API documents
+        them as required, so they are typed as optional here and can come
+        back ``None``. Guard on them rather than assuming a value.
     """
 
     backup_id: str
@@ -489,8 +486,8 @@ class UpdateBackupScheduleRequest(Struct, kw_only=True):
             ``next_scheduled_run``), ``True`` to re-enable it, or ``None``
             to leave it unchanged. Re-enabling **enqueues a new backup**
             and recomputes the next run from now, so it is not a free
-            toggle; it also fails with a 409 if another schedule on the
-            same index is already enabled.
+            toggle; it also raises :exc:`ConflictError` if another schedule
+            on the same index is already enabled.
 
     Raises:
         ValueError: If *frequency* is set to an unsupported cadence, or

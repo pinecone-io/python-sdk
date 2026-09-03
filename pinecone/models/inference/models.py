@@ -9,17 +9,21 @@ from msgspec import Struct
 
 
 class ModelInfoSupportedParameter(Struct, kw_only=True):
-    """A supported parameter for an inference model.
+    """One key a model accepts in a ``parameters`` argument, and its bounds.
+
+    Read these off :class:`ModelInfo`'s ``supported_parameters`` to learn what
+    ``parameters=`` will take for a given model, rather than guessing and
+    catching the rejection.
 
     Attributes:
-        parameter: The parameter name.
-        type: The parameter category (e.g. ``"one_of"``).
+        parameter: The key to use in ``parameters``, e.g. ``"input_type"``.
+        type: How the value is constrained (e.g. ``"one_of"`` for a fixed set).
         value_type: The value type (e.g. ``"string"``).
-        required: Whether the parameter is required.
-        allowed_values: Allowed values for enum-style parameters.
-        min: Minimum value (integer or float) for numeric parameters.
-        max: Maximum value (integer or float) for numeric parameters.
-        default: Default value for the parameter.
+        required: Whether the parameter must be sent.
+        allowed_values: The values accepted, when the set is fixed.
+        min: Minimum value, for numeric parameters.
+        max: Maximum value, for numeric parameters.
+        default: What the model uses when the key is omitted.
     """
 
     parameter: str
@@ -46,21 +50,43 @@ _MODEL_INFO_ALIASES: dict[str, str] = {"name": "model", "description": "short_de
 
 
 class ModelInfo(Struct, kw_only=True):
-    """Information about an inference model.
+    """What one inference model is and what it will accept.
+
+    Returned by :meth:`~pinecone.client.inference.Inference.get_model`, and by
+    :meth:`~pinecone.client.inference.Inference.list_models` for every model in
+    the listing. The embed-only fields below are ``None`` on a reranking model,
+    so read ``type`` before relying on them. Bracket access with a field name
+    (``info["model"]``) reads the fields too.
 
     Attributes:
-        model: The model identifier (also accessible as ``name``).
-        short_description: A brief description of the model (also accessible as ``description``).
-        type: The model type (e.g. ``"embed"``, ``"rerank"``).
-        supported_parameters: Parameters accepted by the model.
-        vector_type: The type of vectors produced (for embed models).
-        default_dimension: Default output dimension (for embed models).
-        supported_dimensions: Available output dimensions (for embed models).
+        model: The model identifier — what to pass as ``model=``. Also readable
+            as ``name``.
+        short_description: A brief description of the model. Also readable as
+            ``description``.
+        type: ``"embed"`` or ``"rerank"``.
+        supported_parameters: The
+            :class:`ModelInfoSupportedParameter` entries describing what
+            ``parameters=`` will take for this model.
+        vector_type: For embedding models, ``"dense"`` or ``"sparse"``.
+        default_dimension: For embedding models, the output dimension used when
+            none is requested.
+        supported_dimensions: For embedding models, every output dimension the
+            model can produce.
         modality: The input modality (e.g. ``"text"``).
-        max_sequence_length: Maximum input sequence length.
-        max_batch_size: Maximum batch size for requests.
-        provider_name: The model provider.
-        supported_metrics: Supported similarity metrics.
+        max_sequence_length: The longest input the model accepts.
+        max_batch_size: The most inputs one request may carry.
+        provider_name: Who supplies the model.
+        supported_metrics: The similarity metrics an index built on this
+            model's vectors can use.
+
+    Examples:
+        >>> from pinecone import Pinecone
+        >>> pc = Pinecone(api_key="your-api-key")
+        >>> info = pc.inference.get_model(model="multilingual-e5-large")
+        >>> info.type, info.vector_type, info.default_dimension
+        ('embed', 'dense', 1024)
+        >>> info.name == info.model
+        True
     """
 
     model: str

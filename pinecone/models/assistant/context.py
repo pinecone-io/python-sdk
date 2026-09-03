@@ -13,12 +13,17 @@ from pinecone.models.assistant.file_model import AssistantFileModel
 
 
 class ContextImageData(StructDictMixin, Struct, kw_only=True):
-    """Base64-encoded image data within a context snippet.
+    """The encoded bytes of an image in a multimodal context snippet.
+
+    Reached as ``block.image_data``, and present only when the request set
+    ``include_binary_content=True``. ``data`` is text, not bytes — decode it
+    before writing a file.
 
     Attributes:
-        type: The format of the image data (e.g. ``"base64"``).
+        type: The encoding of ``data`` (e.g. ``"base64"``).
         mime_type: The MIME type of the image (e.g. ``"image/jpeg"``).
-        data: The base64-encoded image data string.
+        data: The encoded image as a string, ready for a data URI or for
+            ``base64.b64decode``.
     """
 
     type: str
@@ -63,12 +68,21 @@ class ContextImageBlock(
     tag_field="type",
     rename={"image_data": "image"},
 ):
-    """An image block within a multimodal context snippet.
+    """An image inside a :class:`MultimodalSnippet`, wire tag ``"image"``.
+
+    The caption always arrives; the bytes do not. Ask for them with
+    ``include_binary_content=True``, and expect a much larger response.
+
+    Identify it with ``isinstance``; ``block.type`` gives you
+    ``AttributeError: 'ContextImageBlock' object has no attribute 'type'``,
+    because the tag selected this class during decoding and was then dropped.
 
     Attributes:
-        caption: A text caption describing the image.
-        image_data: The image data, or ``None`` when binary content
-            is excluded from the response.
+        caption: A text caption describing the image. Usable in a prompt on
+            its own, without the image bytes.
+        image_data: The :class:`ContextImageData` holding the encoded image,
+            or ``None`` when the request did not set
+            ``include_binary_content=True``.
     """
 
     caption: str
@@ -108,10 +122,15 @@ class ContextImageBlock(
 
 
 class ContextTextBlock(StructDictMixin, Struct, kw_only=True, tag="text", tag_field="type"):
-    """A text block within a multimodal context snippet.
+    """Text inside a :class:`MultimodalSnippet`, wire tag ``"text"``.
+
+    Identify it with ``isinstance``; ``block.type`` gives you
+    ``AttributeError: 'ContextTextBlock' object has no attribute 'type'``,
+    because the tag selected this class during decoding and was then dropped.
 
     Attributes:
-        text: The text content of the block.
+        text: The text content of the block. Note the field is ``text`` here,
+            not the ``content`` that :class:`TextSnippet` uses.
     """
 
     text: str
@@ -135,20 +154,32 @@ class ContextTextBlock(StructDictMixin, Struct, kw_only=True, tag="text", tag_fi
 
 
 ContextContentBlock: TypeAlias = ContextTextBlock | ContextImageBlock
-"""A content block within a multimodal snippet — either text or image."""
+"""One block of a :class:`MultimodalSnippet`, text or image.
+
+Branch with ``isinstance`` and read ``block.text`` on a
+:class:`ContextTextBlock` or ``block.caption`` on a
+:class:`ContextImageBlock`. These classes do not re-expose the wire tag, so
+``block.type`` raises :exc:`AttributeError`.
+"""
 
 
 class FileReference(StructDictMixin, Struct, kw_only=True):
-    """A reference to a source file.
+    """The source file a context snippet came from.
+
+    Reached as ``snippet.reference``. Render ``reference.file.name`` as the
+    label and ``reference.pages`` to point at the part of the document used.
 
     Attributes:
-        file: The source file object returned by the API.
-        pages: The list of page numbers relevant to the snippet, when
-            the source is a paginated document (e.g. PDF). ``None`` for
-            text, JSON, or Markdown sources.
+        file: The source file, as an
+            :class:`~pinecone.models.assistant.file_model.AssistantFileModel`
+            — ``file.name`` for a label, ``file.id`` to fetch it again, and
+            ``file.metadata`` for whatever you attached at upload.
+        pages: Page numbers relevant to the snippet, when the source is a
+            paginated document such as a PDF. ``None`` for text, JSON, or
+            Markdown sources.
         type: The kind of document referenced — ``"text"``, ``"json"``,
-            ``"markdown"``, ``"pdf"``, or ``"doc_x"``. ``None`` only for
-            payloads that omit it, which the API itself never does.
+            ``"markdown"``, ``"pdf"``, or ``"doc_x"`` — or ``None`` when the
+            payload omits it.
     """
 
     file: AssistantFileModel
@@ -190,16 +221,29 @@ PageReference = FileReference
 """Alias kept for backwards compatibility. Use :class:`FileReference` instead."""
 
 ContextReference: TypeAlias = FileReference
-"""A reference to a source file."""
+"""Alias for :class:`FileReference`, the type of ``snippet.reference``."""
 
 
 class TextSnippet(StructDictMixin, Struct, kw_only=True, tag="text", tag_field="type"):
-    """A text context snippet from a source document.
+    """A retrieved passage of plain text, from the wire tag ``"text"``.
+
+    The :data:`ContextSnippet` variant whose ``content`` is a single string.
+    A request with ``multimodal=True`` can instead yield a
+    :class:`MultimodalSnippet`, whose ``content`` is a list of blocks, so
+    branch with ``isinstance`` before reading ``content``.
+
+    Branching on the tag instead gives you
+    ``AttributeError: 'TextSnippet' object has no attribute 'type'``. That
+    does not mean the payload lacked a ``type``: the tag selected this class
+    during decoding and was then dropped, so there is no attribute to read.
+    The streaming chunk classes do keep theirs, which is why code moved over
+    from a chat stream hits this.
 
     Attributes:
-        content: The text content of the snippet.
-        score: The relevance score of the snippet.
-        reference: A reference to the source file.
+        content: The retrieved passage, ready to put in your own prompt.
+        score: Relevance of the snippet to the query; higher is more relevant.
+        reference: The :class:`FileReference` naming where the passage came
+            from.
     """
 
     content: str
@@ -244,12 +288,27 @@ class TextSnippet(StructDictMixin, Struct, kw_only=True, tag="text", tag_field="
 
 
 class MultimodalSnippet(StructDictMixin, Struct, kw_only=True, tag="multimodal", tag_field="type"):
-    """A multimodal context snippet containing text and/or image blocks.
+    """A retrieved passage of mixed text and images, wire tag ``"multimodal"``.
+
+    The :data:`ContextSnippet` variant whose ``content`` is a **list** of
+    blocks rather than a string, so iterate it and branch with ``isinstance``
+    on :class:`ContextTextBlock` versus :class:`ContextImageBlock`.
+
+    Branching on the tag instead gives you
+    ``AttributeError: 'MultimodalSnippet' object has no attribute 'type'``,
+    and the same for either block class. That does not mean the payload
+    lacked a ``type``: the tag selected the class during decoding and was
+    then dropped, so there is no attribute to read.
 
     Attributes:
-        content: The list of content blocks (text and/or image).
-        score: The relevance score of the snippet.
-        reference: A reference to the source file.
+        content: The blocks making up the snippet, in document order. Each is
+            a :class:`ContextTextBlock` (read ``block.text``) or a
+            :class:`ContextImageBlock` (read ``block.caption``, and
+            ``block.image_data`` when the request set
+            ``include_binary_content=True``).
+        score: Relevance of the snippet to the query; higher is more relevant.
+        reference: The :class:`FileReference` naming where the passage came
+            from.
     """
 
     content: list[ContextContentBlock]
@@ -306,17 +365,81 @@ class MultimodalSnippet(StructDictMixin, Struct, kw_only=True, tag="multimodal",
 
 
 ContextSnippet: TypeAlias = TextSnippet | MultimodalSnippet
-"""A context snippet — either text or multimodal."""
+"""One retrieved snippet, dispatched from the wire on a ``type`` tag.
+
+Both variants carry ``score`` and ``reference``; they differ in ``content``.
+On a :class:`TextSnippet` it is a string; on a :class:`MultimodalSnippet` it
+is a list of blocks, so string handling of one will fail on the other.
+
+Branch with ``isinstance``: unlike the streaming chunks, these classes do not
+re-expose the wire tag, so ``snippet.type`` raises :exc:`AttributeError`.
+"""
 
 
 class ContextResponse(StructDictMixin, Struct, kw_only=True):
-    """Response from the assistant context endpoint.
+    """The retrieved snippets for a query, with no answer generated over them.
+
+    Returned by :meth:`~pinecone.client.assistants.Assistants.context`. This
+    is Pinecone's retrieval step on its own: the snippets are source material
+    for a prompt you assemble yourself, not prose to show a user. Reach for it
+    when you want to run your own model over the assistant's retrieval, or to
+    see what an assistant would have been given.
+
+    ``snippets`` holds :data:`ContextSnippet`, which is two classes. A
+    :class:`TextSnippet` has a string ``content``. A
+    :class:`MultimodalSnippet` has a list of blocks instead — each a
+    :class:`ContextTextBlock` (``block.text``) or a
+    :class:`ContextImageBlock` (``block.caption``, plus ``block.image_data``
+    when the request set ``include_binary_content=True``). Branch with
+    ``isinstance``, not on a ``type`` attribute: the snippet and block classes
+    do not re-expose their wire tag, so ``snippet.type`` raises
+    :exc:`AttributeError`. Both snippet classes carry ``score`` and
+    ``snippet.reference.file.name``.
 
     Attributes:
-        snippets: The list of context snippets.
-        usage: Token usage statistics for the request.
-        id: Unique identifier for the context response, or ``None`` if
-            not included in the response.
+        snippets: The retrieved snippets.
+        usage: :class:`~pinecone.models.assistant.chat.ChatUsage` token counts
+            for the retrieval request.
+        id: Identifier of this context response, or ``None`` when the server
+            did not report one.
+
+    Examples:
+        What comes back is retrieved source text, scored and attributed — no
+        model was asked to write anything, which is why the completion token
+        count is zero:
+
+        >>> from pinecone.models.assistant import TextSnippet
+        >>> response = pc.assistants.context(
+        ...     assistant_name="acme-support-bot",
+        ...     query="Which regions support BYOC?",
+        ... )
+        >>> snippet = response.snippets[0]
+        >>> isinstance(snippet, TextSnippet)
+        True
+        >>> snippet.score
+        0.87
+        >>> snippet.content
+        'BYOC is available in aws us-east-1.'
+        >>> snippet.reference.file.name
+        'q3-revenue-review.pdf'
+        >>> response.usage.completion_tokens
+        0
+
+        Reading ``snippet.type`` to decide which variant you have does not
+        work, even though the wire payload carries that tag:
+
+        >>> snippet.type
+        Traceback (most recent call last):
+            ...
+        AttributeError: 'TextSnippet' object has no attribute 'type'
+
+    .. seealso::
+       - :class:`~pinecone.models.assistant.chat.ChatResponse` — the generated
+         answer over the same retrieval, from
+         :meth:`~pinecone.client.assistants.Assistants.chat`, with citations
+         you can render.
+       - :class:`~pinecone.models.assistant.options.ContextOptions` — the
+         bundle that tunes retrieval for a chat request.
     """
 
     snippets: list[ContextSnippet]

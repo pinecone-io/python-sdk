@@ -56,23 +56,47 @@ if TYPE_CHECKING:
 
 @keyword_only_methods
 class Pinecone:
-    """Synchronous Pinecone client for control-plane operations.
+    """Entry point to Pinecone's control plane, over blocking HTTP.
 
-    The main entry point for the SDK. Use the ``indexes``, ``collections``, and
-    ``backups`` namespace properties to create and manage those resources, and
-    call :meth:`index` to get a client for reading and writing vectors on a
-    specific index.
+    One client carries your API key, resolved host, and connection pool, so
+    construct it once and reuse it. Its namespace properties — :attr:`indexes`,
+    :attr:`collections`, :attr:`backups`, :attr:`backup_schedules`,
+    :attr:`restore_jobs`, :attr:`inference`, and :attr:`assistants` — create and
+    inspect those resources. Vectors are read and written on the data plane
+    instead, through the separate client :meth:`index` hands back.
+
+    :class:`~pinecone.async_client.AsyncPinecone` covers the same surface for
+    ``asyncio`` code, and :doc:`/guides/sync-vs-async` compares the two; the one
+    shape difference is :meth:`index`, which is a plain call here and a coroutine
+    there. Any call can raise the connection, timeout, and API errors catalogued
+    in :doc:`/guides/error-handling`, and every ``Raises:`` section below names
+    only what is specific to that method. :doc:`/guides/retries` covers what the
+    client retries on your behalf and what *retry_config* changes.
 
     Args:
-        api_key (str | None): Pinecone API key. Falls back to ``PINECONE_API_KEY`` env var.
-        host (str | None): Control-plane API host. Falls back to ``PINECONE_CONTROLLER_HOST``
-            env var, then defaults to ``https://api.pinecone.io``.
-        additional_headers (Mapping[str, str] | None): Extra headers included in every request.
-        source_tag (str | None): Tag appended to the User-Agent string for request attribution.
-        proxy_url (str | None): HTTP proxy URL for outgoing requests.
-        proxy_headers (Mapping[str, str] | None): Custom headers for proxy authentication.
-        ssl_ca_certs (str | None): Path to a CA certificate bundle for SSL verification.
-        ssl_verify (bool): Whether to verify SSL certificates. Defaults to ``True``.
+        api_key (str | None): Your Pinecone API key. ``None`` (default) reads
+            ``PINECONE_API_KEY`` from the environment, which is how most
+            deployments supply it.
+        host (str | None): Control-plane host, e.g. ``"https://api.pinecone.io"``.
+            A value with no scheme is read as ``https``. ``None`` (default) reads
+            ``PINECONE_CONTROLLER_HOST``, then falls back to the public API. Point
+            it elsewhere for a gateway, a private endpoint, or a local simulator.
+        additional_headers (Mapping[str, str] | None): Headers added to every
+            control-plane request, e.g. ``{"X-Request-Source": "nightly-reindex"}``.
+            When omitted, the client reads ``PINECONE_ADDITIONAL_HEADERS`` as a JSON
+            object instead.
+        source_tag (str | None): Attribution tag appended to the User-Agent, e.g.
+            ``"acme-search-service"``. Lowercased, spaces become underscores, and
+            anything outside ``a-z``, ``0-9``, ``_`` and ``:`` is dropped.
+        proxy_url (str | None): Proxy for outgoing requests, e.g.
+            ``"http://proxy.corp.internal:3128"``.
+        proxy_headers (Mapping[str, str] | None): Headers sent to the proxy itself,
+            for a proxy that authenticates.
+        ssl_ca_certs (str | None): Path to a CA bundle file, or to a directory of
+            them, for a corporate root or a self-signed endpoint. It wins over
+            ``ssl_verify=False``: pass both and verification stays on.
+        ssl_verify (bool): Whether to verify the server's certificate. ``True``
+            (default) is right everywhere but a throwaway test endpoint.
         grpc_scheme ("http" | "https" | None): URL scheme that :meth:`index` with
             ``grpc=True`` dials the data plane over. State it when the data plane is
             reached over something other than public TLS — a plaintext gateway, an
@@ -80,23 +104,27 @@ class Pinecone:
             leaving the SDK to assume one. ``None`` (default) falls back to the
             ``PINECONE_GRPC_SCHEME`` env var, and then to ``https``. Has no effect on
             REST clients, which take the scheme from the host they are given.
-        timeout (float): Request timeout in seconds. Defaults to ``30.0``.
-        connection_pool_maxsize (int): Maximum number of connections to keep in the
-            pool. ``0`` (default) uses httpx defaults.
-        retry_config (RetryConfig | None): Custom retry configuration. When ``None``
-            (default), uses built-in defaults (5 attempts, exponential backoff, retries
-            on 500/502/503/504 for GET/HEAD).
+        timeout (float): Deadline in seconds for a single HTTP attempt, not for the
+            whole call — each retry gets its own. Defaults to ``30.0``.
+        connection_pool_maxsize (int): Ceiling on connections held open to the
+            control plane. ``0`` (default) leaves httpx's own ceiling in place;
+            raise it for a process issuing many concurrent control-plane calls.
+        retry_config (RetryConfig | None): Retry policy for control-plane requests,
+            and for gRPC data-plane clients when you set it explicitly. ``None``
+            (default) uses the built-in policy, which suits most callers; see
+            :doc:`/guides/retries` for the defaults, for how to switch retries off,
+            and for why it does not reach data-plane REST.
         pool_threads (int | None): Opt-in for the legacy ``async_req=True`` execution
             model on data-plane methods. When set, indexes created via
             :meth:`index` accept ``async_req=True`` on ``upsert``, ``query``,
             ``describe_index_stats``, and ``list_paginated``. **For new code, prefer**
             :class:`~pinecone.async_client.AsyncPinecone` **or**
-            :class:`concurrent.futures.ThreadPoolExecutor`. This kwarg exists for
-            backcompat with pre-rewrite callers.
+            :class:`concurrent.futures.ThreadPoolExecutor`. This keyword is here for
+            9.x callers.
 
     Raises:
-        :exc:`PineconeValueError`: If no API key can be resolved from arguments or
-            environment variables.
+        :exc:`PineconeValueError`: If no API key is given and ``PINECONE_API_KEY``
+            is unset, since nothing would authenticate the first request.
         :exc:`FileNotFoundError`: If ``ssl_ca_certs`` names a path that does not
             exist, raised when the client is constructed, so a mistyped path
             cannot leave you silently verifying against the default trust store
@@ -105,20 +133,15 @@ class Pinecone:
 
     Examples:
 
-        Construct the client once and reuse it. Leaving ``api_key`` off
-        entirely falls back to the ``PINECONE_API_KEY`` environment variable:
+        Construct once, then reach the control plane through the namespace
+        properties. Leaving ``api_key`` off entirely reads it from
+        ``PINECONE_API_KEY``:
 
         .. code-block:: python
 
             from pinecone import Pinecone
 
             pc = Pinecone(api_key="your-api-key")
-
-        The namespace properties reach the control plane, which is where
-        indexes, collections, and backups are created and inspected:
-
-        .. code-block:: python
-
             if not pc.indexes.exists("product-search"):
                 pc.indexes.create(
                     name="product-search",
@@ -223,12 +246,10 @@ class Pinecone:
 
     @property
     def indexes(self) -> Indexes:
-        """Access the Indexes namespace for control-plane index operations.
-
-        Lazily imported and instantiated on first access.
+        """Create, inspect, configure, and delete the project's indexes.
 
         Returns:
-            :class:`Indexes` namespace instance.
+            The :class:`~pinecone.client.indexes.Indexes` namespace.
 
         Examples:
 
@@ -243,12 +264,13 @@ class Pinecone:
 
     @property
     def collections(self) -> Collections:
-        """Access the Collections namespace for control-plane collection operations.
+        """Create and inspect collections: static snapshots of a pod-based index.
 
-        Lazily imported and instantiated on first access.
+        A collection is the pod-based snapshot format. The serverless equivalent
+        is a backup, under :attr:`backups`.
 
         Returns:
-            :class:`Collections` namespace instance.
+            The :class:`~pinecone.client.collections.Collections` namespace.
 
         Examples:
 
@@ -265,12 +287,15 @@ class Pinecone:
 
     @property
     def backups(self) -> Backups:
-        """Access the Backups namespace for control-plane backup operations.
+        """Create, inspect, and delete backups of a serverless index.
 
-        Lazily imported and instantiated on first access.
+        Restoring one is not done from here: pass a ``backup_id`` to
+        :meth:`create_index_from_backup`, which creates a new index from it. For
+        pod-based indexes the snapshot format is a collection, under
+        :attr:`collections`.
 
         Returns:
-            :class:`Backups` namespace instance.
+            The :class:`~pinecone.client.backups.Backups` namespace.
 
         Examples:
 
@@ -287,19 +312,16 @@ class Pinecone:
 
     @property
     def backup_schedules(self) -> BackupSchedules:
-        """Access the BackupSchedules namespace for managing recurring backups.
+        """Attach a recurring backup cadence to an index.
 
-        A backup schedule attaches a recurring cadence (daily, weekly, or
-        monthly) to an index, so Pinecone creates a backup automatically
-        without you having to trigger one each time. Lazily imported and
-        instantiated on first access.
+        A schedule gives an index a daily, weekly, or monthly cadence, so
+        Pinecone creates each backup for you rather than you triggering one
+        every time.
 
         Returns:
-            :class:`BackupSchedules` namespace instance. Call
-            :meth:`~pinecone.client.backup_schedules.BackupSchedules.create`
-            to attach a schedule to an index, or
-            :meth:`~pinecone.client.backup_schedules.BackupSchedules.list`
-            to see existing ones.
+            The
+            :class:`~pinecone.client.backup_schedules.BackupSchedules`
+            namespace.
 
         Examples:
 
@@ -315,24 +337,19 @@ class Pinecone:
 
     @property
     def restore_jobs(self) -> RestoreJobs:
-        """Access the RestoreJobs namespace for tracking backup restores.
+        """Track a restore that :meth:`create_index_from_backup` started.
 
-        A restore job represents an in-progress or completed request to
-        create an index from a backup; use this namespace to check on that
-        request rather than polling the index itself. Lazily imported and
-        instantiated on first access.
+        A restore job is the request itself, so it is what to follow when you
+        passed ``timeout=-1`` and the target index does not exist yet.
 
         Returns:
-            :class:`RestoreJobs` namespace instance. Call
-            :meth:`~pinecone.client.restore_jobs.RestoreJobs.list` to see
-            restore jobs, or
-            :meth:`~pinecone.client.restore_jobs.RestoreJobs.describe` for
-            the status of one.
+            The :class:`~pinecone.client.restore_jobs.RestoreJobs` namespace.
 
         Examples:
 
             >>> for job in pc.restore_jobs.list(limit=10):
             ...     print(job.restore_job_id, job.target_index_name, job.status)
+            rj-abc123 product-search-restored Completed
         """
         if self._restore_jobs is None:
             from pinecone.client.restore_jobs import RestoreJobs as _RestoreJobs
@@ -342,18 +359,13 @@ class Pinecone:
 
     @property
     def inference(self) -> Inference:
-        """Access the Inference namespace for embedding and reranking text.
+        """Embed text or images, and rerank documents, on hosted models.
 
-        Use this to generate vector embeddings from text or images, or to
-        rerank a list of documents by relevance to a query, without running
-        a model yourself. Lazily imported and instantiated on first access.
+        Reach for this when you want vectors or relevance scores without
+        hosting a model yourself.
 
         Returns:
-            :class:`Inference` namespace instance. Call
-            :meth:`~pinecone.client.inference.Inference.embed` to generate
-            embeddings, or
-            :meth:`~pinecone.client.inference.Inference.rerank` to reorder
-            documents by relevance.
+            The :class:`~pinecone.client.inference.Inference` namespace.
 
         Examples:
 
@@ -377,19 +389,14 @@ class Pinecone:
 
     @property
     def assistants(self) -> Assistants:
-        """Access the Assistants namespace for managing Pinecone Assistants.
+        """Create and manage Pinecone Assistants.
 
-        A Pinecone Assistant is a hosted, retrieval-augmented chat service:
-        upload files to it and it answers questions grounded in their
-        content. Use this namespace to create, list, and configure
-        assistants. Lazily imported and instantiated on first access.
+        An assistant is a hosted, retrieval-augmented chat service: upload
+        files to it and it answers questions grounded in their content, with no
+        index or embedding pipeline of your own.
 
         Returns:
-            :class:`Assistants` namespace instance. Call
-            :meth:`~pinecone.client.assistants.Assistants.create` to create
-            an assistant, or
-            :meth:`~pinecone.client.assistants.Assistants.list` to see
-            existing ones.
+            The :class:`~pinecone.client.assistants.Assistants` namespace.
 
         Examples:
 
@@ -404,12 +411,11 @@ class Pinecone:
 
     @property
     def assistant(self) -> _AssistantNamespaceProxy:
-        """Access assistants through the singular-form alias for :attr:`Pinecone.assistants`.
+        """Reach one assistant by name, or the whole namespace by attribute.
 
-        :attr:`Pinecone.assistants` is the canonical namespace; this alias
-        exists for ergonomic singular-form access and is not deprecated. It
-        forwards attribute access to that namespace and also supports
-        calling it directly with a name as a shortcut for
+        :attr:`assistants` is the canonical namespace; this singular alias is
+        not deprecated. It forwards every attribute there, and calling it with
+        a name is shorthand for
         :meth:`~pinecone.client.assistants.Assistants.describe`.
 
         Returns:
@@ -449,54 +455,58 @@ class Pinecone:
         grpc: bool = False,
         pool_threads: int | None = None,
     ) -> Index | GrpcIndex:
-        """Create a data-plane client targeting a specific index.
+        """Open a data-plane client for one index, to read and write vectors.
 
-        Can target by host URL directly (skips the describe call) or by
-        index name (triggers a describe-index lookup to resolve the host).
-
-        .. seealso::
-           Use ``pc.indexes`` for control-plane operations (create, list,
-           describe, delete, configure). To create an index from a backup,
-           use :meth:`Pinecone.create_index_from_backup`.
+        A plain call, not a coroutine: it blocks while it resolves the host. An
+        explicit *host* is used as-is, a *name* is served from this client's host
+        cache, and a *name* that misses the cache costs one describe request. The
+        async twin, :meth:`AsyncPinecone.index()
+        <pinecone.async_client.pinecone.AsyncPinecone.index>`, is a coroutine you
+        await, and cannot return a gRPC client.
 
         Args:
-            name (str): Name of the index. Triggers a describe call to resolve host.
-            host (str): Direct host URL of the index. Skips the describe call.
-            grpc (bool): If ``True``, return a :class:`~pinecone.grpc.GrpcIndex`
-                that routes data-plane operations over gRPC instead of HTTP.
-                The scheme it dials comes from the ``grpc_scheme`` given to
-                :class:`Pinecone`, which defaults to ``https``. Defaults to ``False``.
-            pool_threads (int | None): Maximum number of threads in the connection pool
-                used by the underlying HTTP client. Pass ``None`` to use the client-level
-                default set at :class:`Pinecone` construction time. Has no effect when
-                ``grpc=True``. Defaults to ``None``.
+            name (str): Name of the index, e.g. ``"product-search"``. Costs one
+                describe request the first time, then comes from the host cache.
+            host (str): The index's host, e.g.
+                ``"product-search-abc123.svc.pinecone.io"``. Pass it when you have
+                it already and the describe request is skipped entirely.
+            grpc (bool): Return a :class:`~pinecone.grpc.GrpcIndex` that carries
+                data-plane operations over gRPC rather than HTTP. The scheme it
+                dials comes from the ``grpc_scheme`` given to :class:`Pinecone`.
+                Defaults to ``False``; see :doc:`/guides/grpc` for when it pays off.
+            pool_threads (int | None): Size of the thread pool backing
+                ``async_req=True`` calls on the returned index. ``None`` (default)
+                uses the client-level ``pool_threads``. No effect when ``grpc=True``.
 
         Returns:
-            A sync :class:`Index` (HTTP) or :class:`~pinecone.grpc.GrpcIndex`
-            (gRPC) data-plane client.
+            An :class:`~pinecone.index.Index` over HTTP, or a
+            :class:`~pinecone.grpc.GrpcIndex` when ``grpc=True``.
 
         Raises:
-            :exc:`PineconeValueError`: If neither ``name`` nor ``host`` is provided.
-            :exc:`~pinecone.errors.NotFoundError`: If ``name`` is given but no index with that
-                name exists.
+            :exc:`PineconeValueError`: If neither *name* nor *host* is given, or if
+                *name* names an index that has no host yet — it is still
+                initializing, so wait for its status to reach ``Ready``.
+            :exc:`~pinecone.errors.NotFoundError`: If *name* names no index in this
+                project.
 
         Examples:
 
-            Naming the index resolves its host with a describe call the first
-            time; the host is cached on this client, so later calls for the
-            same name cost nothing:
-
             >>> idx = pc.index(name="product-search")
 
-            Passing the host directly skips that lookup entirely, which saves
-            a round trip when you already know it:
+            Passing the host skips the lookup, which saves a round trip when you
+            already know it — from :meth:`Indexes.describe
+            <pinecone.client.indexes.Indexes.describe>`, or from your own config:
 
             >>> idx = pc.index(host="product-search-abc123.svc.pinecone.io")
 
-            Either form accepts ``grpc=True`` to route the same data-plane
-            operations over gRPC instead of HTTP:
+            Either form accepts ``grpc=True`` for the gRPC transport:
 
             >>> idx = pc.index(name="product-search", grpc=True)
+
+        .. seealso::
+           :attr:`indexes` — the control-plane namespace, for creating, listing,
+           describing, configuring, and deleting indexes rather than reading from
+           one.
         """
         resolved_host = self._resolve_index_host(name=name, host=host)
 
@@ -587,20 +597,16 @@ class Pinecone:
     ) -> CreateIndexFromBackupResponse | IndexModel:
         """Create a new index by restoring from a backup.
 
-        Polls until the restored index is ready, unless *timeout* is ``-1``.
-
-        This is the only supported way to restore a backup:
-        :meth:`Pinecone.create_index` rejects ``source_backup_id=`` with a
-        message pointing here.
-
-        .. versionchanged:: 10.0
-           Added *read_capacity*, so a restore can land straight onto
-           dedicated read nodes instead of defaulting to on-demand capacity.
+        Blocks and polls until the restored index is ready, unless *timeout* is
+        ``-1``. This is the only supported way to restore a backup:
+        :meth:`create_index` rejects ``source_backup_id=`` with a message
+        pointing here.
 
         Args:
             name (str): Name for the new index.
-            backup_id (str): Identifier of the backup to restore from.  Obtain this
-                from :meth:`Pinecone.backups.create` or :meth:`Pinecone.backups.list`.
+            backup_id (str): Identifier of the backup to restore from. Obtain it from
+                :meth:`Backups.create <pinecone.client.backups.Backups.create>` or
+                :meth:`Backups.list <pinecone.client.backups.Backups.list>`.
             deletion_protection (DeletionProtection | str | None): ``"enabled"`` or
                 ``"disabled"``. Defaults to ``"disabled"`` server-side when omitted.
             tags (Mapping[str, str] | None): Optional key-value tags for the new index.
@@ -675,6 +681,10 @@ class Pinecone:
             ... )
             >>> index.status.state
             'Ready'
+
+        .. versionchanged:: 10.0
+           Added *read_capacity*, so a restore can land straight onto dedicated
+           read nodes instead of defaulting to on-demand capacity.
         """
         require_non_empty("name", name)
         require_non_empty("backup_id", backup_id)
@@ -713,17 +723,17 @@ class Pinecone:
 
     @property
     def config(self) -> PineconeConfig:
-        """Return the resolved configuration for this client.
+        """Read back the settings this client resolved at construction.
 
         Returns:
-            :class:`~pinecone._internal.config.PineconeConfig` containing the
+            :class:`~pinecone._internal.config.PineconeConfig` carrying the
             resolved API key, host, timeout, and connection settings.
 
         Examples:
 
-            The values are the resolved ones, after defaults and environment
-            variables have been folded in, so this is where to confirm which
-            host a client is actually pointed at:
+            The values are post-resolution, with defaults and environment
+            variables folded in, so this is where to confirm which host a client
+            is actually pointed at:
 
             >>> pc.config.host
             'https://api.pinecone.io'
@@ -751,9 +761,9 @@ class Pinecone:
 
         Preserved to ease migration from the legacy (9.x) Pinecone Python
         SDK, with the same legacy parameter list. New code should use
-        ``pc.indexes.create()`` instead, which additionally accepts the
-        2026-07 ``schema=``/``deployment=``/``read_capacity=``/``cmek_id=``
-        surface not available here. ``pods=``/``metadata_config=``/
+        ``pc.indexes.create()`` instead, which additionally accepts the current
+        ``schema=``/``deployment=``/``read_capacity=``/``cmek_id=`` surface not
+        available here. ``pods=``/``metadata_config=``/
         ``source_collection=``/``source_backup_id=`` reach
         :meth:`Pinecone.indexes.create`, which raises for them.
 
@@ -965,10 +975,10 @@ class Pinecone:
 
         Preserved to ease migration from the legacy Pinecone Python SDK. New
         code should use ``pc.indexes.configure()`` instead of
-        ``pc.configure_index()``, which additionally accepts the 2026-07
+        ``pc.configure_index()``, which additionally accepts the current
         ``deployment=``/``schema=`` surface not available here. ``embed=``
         reaches :meth:`Pinecone.indexes.configure`, which raises for it: the
-        2025-10 convert-to-integrated flow has no 2026-07 equivalent.
+        convert-to-integrated flow it drove has no current equivalent.
 
         .. versionchanged:: 10.0
            Returns the updated :class:`IndexModel` where the 9.x method
@@ -1052,7 +1062,7 @@ class Pinecone:
             source (str): Name of the pod-based index to copy.
 
         Returns:
-            :class:`CollectionModel` describing the created collection.
+            A :class:`CollectionModel` describing the created collection.
 
         Raises:
             :exc:`PineconeValueError`: If *name* or *source* is empty, or
@@ -1381,13 +1391,13 @@ class Pinecone:
         )
 
     def close(self) -> None:
-        """Close all open HTTP connections.
+        """Release this client's control-plane connections.
 
-        Closes the main control-plane client and any namespace clients (inference,
-        assistants) that were initialized during this session.
-
-        Prefer the context manager form (``with Pinecone(...) as pc:``) which calls
-        :meth:`close` automatically on exit.
+        Closes the control-plane connection pool, plus the :attr:`inference` and
+        :attr:`assistants` pools if those namespaces were used. Index clients from
+        :meth:`index` hold their own connections and are not closed here. Prefer
+        the context manager form, ``with Pinecone(...) as pc:``, which calls this
+        on the way out.
 
         Examples:
             The context manager form closes the client on the way out, on an

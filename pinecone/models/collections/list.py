@@ -9,7 +9,20 @@ from pinecone.models.collections.model import CollectionModel
 
 
 class CollectionList:
-    """Wrapper around a list of CollectionModel with convenience methods."""
+    """The collections in a project, as returned by
+    :meth:`Collections.list() <pinecone.client.collections.Collections.list>`.
+
+    Iterating yields :class:`~pinecone.models.collections.model.CollectionModel`
+    objects. ``len()`` and integer indexing work too, and every collection in the
+    project is present — there is no pagination to follow.
+
+    Examples:
+        >>> collections = pc.collections.list()
+        >>> len(collections)
+        2
+        >>> collections[0].name
+        'movie-embeddings-snapshot'
+    """
 
     def __init__(self, collections: list[CollectionModel]) -> None:
         self._collections = collections
@@ -27,20 +40,27 @@ class CollectionList:
         """Return the list as a serializable dict.
 
         Returns:
-            dict[str, Any]: A dict with a ``"data"`` key containing a list of
-            collection dicts, each produced by :meth:`CollectionModel.to_dict`.
+            dict[str, Any]: A dict with a ``"data"`` key containing a list of collection
+            dicts, each produced by :meth:`CollectionModel.to_dict()
+            <pinecone.models.collections.model.CollectionModel.to_dict>`.
 
         Examples:
-            >>> from pinecone import Pinecone
-            >>> pc = Pinecone(api_key="your-api-key")
-            >>> collections = pc.list_collections()
-            >>> collections.to_dict()  # doctest: +SKIP
-            {'data': [{'name': 'movie-embeddings-v1', ...}, {'name': 'product-snapshot', ...}]}
+            >>> collections = pc.collections.list()
+            >>> payload = collections.to_dict()
+            >>> [c["name"] for c in payload["data"]]
+            ['movie-embeddings-snapshot', 'product-catalog-snapshot']
+            >>> sorted(payload["data"][0])
+            ['dimension', 'environment', 'name', 'size', 'status', 'vector_count']
         """
         return {"data": [c.to_dict() for c in self._collections]}
 
     def names(self) -> list[str]:
-        """Return a list of collection names."""
+        """Return just the collection names, in the order the API returned them.
+
+        Examples:
+            >>> pc.collections.list().names()
+            ['movie-embeddings-snapshot', 'product-catalog-snapshot']
+        """
         return [c.name for c in self._collections]
 
     def __repr__(self) -> str:

@@ -18,26 +18,28 @@ class APIKeyRole(str, Enum):
     ``CONTROL_PLANE_EDITOR``, ``CONTROL_PLANE_VIEWER``,
     ``DATA_PLANE_EDITOR``, ``DATA_PLANE_VIEWER``.
 
+    Every role here is project-scoped: an API key's authority never reaches
+    beyond the project it was created in. This is a ``str`` enum, so the plain
+    role names are accepted interchangeably with the members.
+
     Examples:
         >>> from pinecone import Admin
         >>> from pinecone.models.admin.api_key import APIKeyRole
         >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
         >>> result = admin.api_keys.create(
         ...     project_id="proj-abc123",
-        ...     name="read-only-key",
-        ...     roles=[APIKeyRole.DATA_PLANE_VIEWER],
+        ...     name="search-service-key",
+        ...     roles=[APIKeyRole.DATA_PLANE_EDITOR],
         ... )
-        >>> result.key.roles  # doctest: +SKIP
-        [<APIKeyRole.DATA_PLANE_VIEWER: 'DataPlaneViewer'>]
+        >>> result.key.roles
+        [<APIKeyRole.DATA_PLANE_EDITOR: 'DataPlaneEditor'>]
 
-        Update a key to use control-plane access:
-
-        >>> key = admin.api_keys.update(
-        ...     api_key_id="key-abc123",
-        ...     roles=[APIKeyRole.CONTROL_PLANE_EDITOR],
-        ... )
-        >>> key.role  # doctest: +SKIP
-        <APIKeyRole.CONTROL_PLANE_EDITOR: 'ControlPlaneEditor'>
+    .. seealso::
+       - :class:`~pinecone.models.admin.role_binding.RoleName` — the roles used
+         for users, service accounts, and invites. That set includes
+         organization-scoped roles, which an API key cannot hold.
+       - :meth:`ApiKeys.update() <pinecone.admin.api_keys.ApiKeys.update>` — changing a key's
+         roles replaces the whole set rather than adding to it.
     """
 
     PROJECT_EDITOR = "ProjectEditor"
@@ -49,13 +51,15 @@ class APIKeyRole(str, Enum):
 
 
 class APIKeyModel(StructDictMixin, Struct, kw_only=True):
-    """Response model for a Pinecone API key.
+    """Response model for a Pinecone API key. The secret is not included.
 
     Attributes:
-        id (str): Unique identifier for the API key.
+        id (str): Unique identifier for the API key. This is what every API-key
+            operation takes as ``api_key_id``, and it is not the secret.
         name (str | None): Name of the API key, or ``None`` when the backend
             has no display label set for this key.
-        project_id (str): Identifier of the project the key belongs to.
+        project_id (str): Identifier of the project the key belongs to. A key's
+            authority never reaches outside that project.
         roles (list[APIKeyRole]): List of roles assigned to the key
             (see :class:`APIKeyRole`).
 
@@ -70,6 +74,10 @@ class APIKeyModel(StructDictMixin, Struct, kw_only=True):
         >>> key.roles
         [<APIKeyRole.DATA_PLANE_EDITOR: 'DataPlaneEditor'>]
 
+    .. seealso::
+       - :class:`APIKeyWithSecret` — what
+         :meth:`ApiKeys.create() <pinecone.admin.api_keys.ApiKeys.create>` returns instead,
+         wrapping this model alongside the secret it shows only once.
     """
 
     id: str
@@ -88,23 +96,26 @@ class APIKeyModel(StructDictMixin, Struct, kw_only=True):
             :exc:`ValueError`: If the key has no roles or more than one role.
 
         Examples:
+            >>> from pinecone import Admin
+            >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
             >>> key = admin.api_keys.describe(api_key_id="key-abc123")
             >>> key.role
             <APIKeyRole.DATA_PLANE_EDITOR: 'DataPlaneEditor'>
 
-            Keys with multiple roles raise :exc:`ValueError`; use :attr:`roles` instead:
+            Keys with two or more roles raise :exc:`ValueError`, so reach for
+            this only where a key is known to hold exactly one:
 
-            .. code-block:: python
-
-                multi_role_key = APIKeyModel(
-                    id="k2", name="k2", project_id="p1",
-                    roles=[APIKeyRole.PROJECT_EDITOR, APIKeyRole.DATA_PLANE_EDITOR]
-                )
-                try:
-                    multi_role_key.role
-                except ValueError as exc:
-                    print(exc)
-                # API key has 2 roles; use .roles to access all
+            >>> from pinecone.models.admin.api_key import APIKeyModel, APIKeyRole
+            >>> multi_role_key = APIKeyModel(
+            ...     id="key-def456",
+            ...     name="ci-pipeline-key",
+            ...     project_id="proj-abc123",
+            ...     roles=[APIKeyRole.CONTROL_PLANE_EDITOR, APIKeyRole.DATA_PLANE_EDITOR],
+            ... )
+            >>> multi_role_key.role
+            Traceback (most recent call last):
+                ...
+            ValueError: API key has 2 roles; use .roles to access all
         """
         if len(self.roles) == 0:
             raise ValueError("API key has no roles")
@@ -124,13 +135,37 @@ class APIKeyModel(StructDictMixin, Struct, kw_only=True):
 
 
 class APIKeyWithSecret(StructDictMixin, Struct, kw_only=True):
-    """Response model for an API key with its secret value.
+    """Response model for an API key together with its secret value.
 
-    The secret value is only available at creation time.
+    Returned only by :meth:`ApiKeys.create() <pinecone.admin.api_keys.ApiKeys.create>`, and the
+    secret it carries is obtainable exactly once — no later request returns it,
+    and there is no rotation for API keys, so a lost secret means creating a
+    replacement key and deleting the old one.
 
     Attributes:
-        key: The API key metadata.
-        value: The secret API key string.
+        key (APIKeyModel): The API key metadata, including the ``id`` every
+            other API-key operation takes.
+        value (str): The secret API key string — what
+            :class:`~pinecone.Pinecone` is constructed with. Treat as a
+            credential.
+
+    Examples:
+        >>> from pinecone import Admin
+        >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
+        >>> created = admin.api_keys.create(project_id="proj-abc123", name="prod-search-key")
+        >>> created.key.id
+        'key-abc123'
+
+        ``repr()`` keeps only the last four characters of the secret, so an
+        object logged whole does not leak it:
+
+        >>> repr(created).endswith("value='...alue')")
+        True
+
+    .. warning::
+        The masking stops at ``repr()``. ``to_dict()`` and JSON encoding return
+        ``value`` in full, so a result serialized wholesale into a log line, an
+        error report, or a cache writes the live credential out.
     """
 
     key: APIKeyModel
@@ -155,7 +190,30 @@ class APIKeyWithSecret(StructDictMixin, Struct, kw_only=True):
 
 
 class APIKeyList:
-    """Wrapper around a list of APIKeyModel with convenience methods."""
+    """The API keys of one project, as returned by a list call.
+
+    A sequence of :class:`APIKeyModel` — iterable, indexable, and sized — with
+    :meth:`names` and :meth:`to_dict` on top. Not constructed directly; it is
+    what :meth:`ApiKeys.list() <pinecone.admin.api_keys.ApiKeys.list>` returns.
+
+    Unlike the organization-wide admin listings, this is not paginated: a
+    project's keys arrive in one response, so there is no cursor to follow.
+
+    Examples:
+        >>> from pinecone.models.admin.api_key import APIKeyList, APIKeyModel, APIKeyRole
+        >>> keys = APIKeyList(
+        ...     [
+        ...         APIKeyModel(
+        ...             id="key-abc123",
+        ...             name="prod-search-key",
+        ...             project_id="proj-abc123",
+        ...             roles=[APIKeyRole.DATA_PLANE_EDITOR],
+        ...         )
+        ...     ]
+        ... )
+        >>> keys.names()
+        ['prod-search-key']
+    """
 
     def __init__(self, api_keys: list[APIKeyModel]) -> None:
         """Initialize an APIKeyList.

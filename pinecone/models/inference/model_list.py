@@ -9,13 +9,24 @@ from pinecone.models.inference.models import ModelInfo
 
 
 class ModelInfoList:
-    """Wrapper around a list of ModelInfo with convenience methods.
+    """What :meth:`~pinecone.client.inference.Inference.list_models` returns.
 
-    Supports integer indexing, string key access (``["models"]``),
-    iteration, ``len()``, and a ``.names()`` convenience method.
+    Iterate it to reach each :class:`ModelInfo`; integer indexing, ``len()``
+    and the string key ``["models"]`` work too. Returned by the SDK rather
+    than constructed by callers.
 
     Attributes:
         models: The underlying list of :class:`ModelInfo` instances.
+
+    Examples:
+        >>> from pinecone import Pinecone
+        >>> pc = Pinecone(api_key="your-api-key")
+        >>> models = pc.inference.list_models()
+        >>> for info in models:
+        ...     print(info.model, info.type)
+        multilingual-e5-large embed
+        pinecone-sparse-english-v0 embed
+        bge-reranker-v2-m3 rerank
     """
 
     def __init__(self, models: list[ModelInfo]) -> None:
@@ -32,17 +43,20 @@ class ModelInfoList:
         return self._models
 
     def names(self) -> list[str]:
-        """Return a list of model identifiers.
+        """Return just the model identifiers, in listing order.
 
         Returns:
-            list[str]: Model identifiers from each :class:`ModelInfo`.
+            list[str]: The ``model`` field of each :class:`ModelInfo` — the
+            names accepted by ``model=`` on
+            :meth:`~pinecone.client.inference.Inference.embed` and
+            :meth:`~pinecone.client.inference.Inference.rerank`.
 
         Examples:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
             >>> models = pc.inference.list_models()
-            >>> models.names()  # doctest: +SKIP
-            ['multilingual-e5-large', 'pinecone-sparse-english-v0']
+            >>> models.names()
+            ['multilingual-e5-large', 'pinecone-sparse-english-v0', 'bge-reranker-v2-m3']
         """
         return [m.model for m in self._models]
 

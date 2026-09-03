@@ -21,12 +21,18 @@ class RerankUsage(StructDictMixin, Struct, kw_only=True):
 
 
 class RankedDocument(StructDictMixin, Struct, kw_only=True):
-    """A document with its relevance score from a rerank operation.
+    """One document and the score the reranker gave it.
+
+    ``index`` is where the document sat in the request, not where it sits in
+    the reordered result — it is what maps a result back onto the list you
+    passed in.
 
     Attributes:
-        index: The original index of the document in the input list.
-        score: The relevance score assigned by the reranker.
-        document: The original document content, if requested.
+        index: The position this document held in the *documents* argument.
+        score: The relevance the reranker assigned, higher being closer to the
+            query.
+        document: The document as sent, unless ``return_documents=False`` was
+            passed, in which case ``None``.
     """
 
     index: int
@@ -46,12 +52,33 @@ class RankedDocument(StructDictMixin, Struct, kw_only=True):
 
 
 class RerankResult(Struct, kw_only=True):
-    """Response from the rerank endpoint.
+    """What :meth:`~pinecone.client.inference.Inference.rerank` returns.
+
+    Bracket access with a field name (``result["model"]``) reads the fields
+    below. Returned by the SDK rather than constructed by callers.
 
     Attributes:
-        model: The model used for reranking.
-        data: The list of ranked documents, ordered by relevance.
-        usage: Rerank usage information.
+        model: The model that served the request, which is not always the one
+            asked for — Pinecone may substitute a different model.
+        data: The :class:`RankedDocument` results, ordered by descending
+            ``score`` rather than by the order the documents were passed in.
+        usage: Rerank usage, as ``usage.rerank_units``.
+
+    Examples:
+        >>> from pinecone import Pinecone
+        >>> pc = Pinecone(api_key="your-api-key")
+        >>> result = pc.inference.rerank(
+        ...     model="bge-reranker-v2-m3",
+        ...     query="Tell me about tech companies",
+        ...     documents=["Apple is a fruit.", "Acme Inc. revolutionized tech."],
+        ...     top_n=1,
+        ... )
+        >>> result.data[0].index
+        1
+        >>> result.data[0].document["text"]
+        'Acme Inc. revolutionized tech.'
+        >>> result["model"]
+        'bge-reranker-v2-m3'
     """
 
     model: str

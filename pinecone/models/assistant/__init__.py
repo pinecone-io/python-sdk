@@ -72,7 +72,7 @@ Usage = ChatUsage
 """Deprecated alias for :class:`ChatUsage`. Use the canonical name."""
 
 TokenCounts = ChatUsage
-"""Deprecated alias for :class:`ChatUsage` (replaced the legacy TokenCounts class)."""
+"""Deprecated alias for :class:`ChatUsage`. Use the canonical name."""
 
 Citation = ChatCitation
 """Deprecated alias for :class:`ChatCitation`. Use the canonical name."""
@@ -87,8 +87,10 @@ MessageDelta = StreamContentDelta
 """Deprecated alias for :class:`StreamContentDelta`. Use the canonical name."""
 
 BaseStreamChatResponseChunk = ChatStreamChunk
-"""Deprecated alias for :class:`ChatStreamChunk` (marker base class from
-legacy ``pinecone_plugins.assistant.models.chat``). Use the canonical name."""
+"""Deprecated alias for :data:`ChatStreamChunk`. Use the canonical name.
+
+This is a union of the four chunk classes, not a base class, so it works with
+``isinstance`` but cannot be subclassed."""
 
 StreamChatResponseMessageStart = StreamMessageStart
 """Deprecated alias for :class:`StreamMessageStart`."""
@@ -126,9 +128,12 @@ ImageBlock = ContextImageBlock
 Image = ContextImageData
 """Deprecated alias for :class:`ContextImageData`."""
 
-# Reference types were consolidated — all five legacy names alias FileReference.
 PdfReference = FileReference
-"""Deprecated alias for :class:`FileReference`."""
+"""Deprecated alias for :class:`FileReference`.
+
+All five per-format reference names here are the same class, so
+``isinstance(ref, PdfReference)`` is true for a Markdown reference as well.
+Read ``ref.type`` to tell the formats apart."""
 TextReference = FileReference
 """Deprecated alias for :class:`FileReference`."""
 JsonReference = FileReference

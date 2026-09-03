@@ -14,18 +14,35 @@ from pinecone.models.assistant.operation import OperationModel
 
 
 class _Pagination(Struct, kw_only=True):
-    """Wire-format pagination object returned by the v202604 list endpoints."""
+    """Wire-format pagination object nested in a list response."""
 
     next: str
 
 
 class ListAssistantsResponse(StructDictMixin, Struct, kw_only=True):
-    """Paginated response for listing assistants.
+    """One page of assistants, plus the token for the next one.
+
+    Returned by :meth:`~pinecone.client.assistants.Assistants.list_page`. This
+    is one page only — pass :attr:`next` back as ``pagination_token`` to
+    advance, or call :meth:`~pinecone.client.assistants.Assistants.list`,
+    which drives that loop for you and yields assistants directly.
 
     Attributes:
-        assistants: The assistants returned in this page.
-        pagination: Nested pagination object from the v202604 API, or ``None``
-            when no more pages exist.
+        assistants: The :class:`~pinecone.models.assistant.model.AssistantModel`
+            objects on this page.
+        pagination: The raw nested wire object. Read :attr:`next` instead.
+
+    Examples:
+        :attr:`next` is ``None`` on the last page, which is the loop's exit
+        condition:
+
+        >>> page = pc.assistants.list_page(page_size=10)
+        >>> page.next is None
+        True
+
+    .. seealso::
+       :doc:`/guides/pagination` — the continuation-token loop, and the
+       paginator that drives it for you.
     """
 
     assistants: list[AssistantModel]
@@ -33,12 +50,16 @@ class ListAssistantsResponse(StructDictMixin, Struct, kw_only=True):
 
     @property
     def next(self) -> str | None:
-        """Continuation token for the next page, or ``None`` when exhausted."""
+        """Token for the next page, or ``None`` when this is the last one.
+
+        Pass a non-``None`` value back as the ``pagination_token`` argument of
+        the same ``*_page`` method to fetch the following page.
+        """
         return self.pagination.next if self.pagination is not None else None
 
     @property
     def next_token(self) -> str | None:
-        """Backwards-compatibility alias for :attr:`next`."""
+        """Alias for :attr:`next`. Prefer :attr:`next` in new code."""
         return self.next
 
     @safe_display
@@ -74,12 +95,37 @@ class ListAssistantsResponse(StructDictMixin, Struct, kw_only=True):
 
 
 class ListFilesResponse(StructDictMixin, Struct, kw_only=True):
-    """Paginated response for listing assistant files.
+    """One page of an assistant's files, plus the token for the next one.
+
+    Returned by
+    :meth:`~pinecone.client.assistants.Assistants.list_files_page`. This is
+    one page only — pass :attr:`next` back as ``pagination_token`` to advance,
+    or call :meth:`~pinecone.client.assistants.Assistants.list_files`, which
+    drives that loop for you and yields files directly.
 
     Attributes:
-        files: The files returned in this page.
-        pagination: Nested pagination object from the v202604 API, or ``None``
-            when no more pages exist.
+        files: The
+            :class:`~pinecone.models.assistant.file_model.AssistantFileModel`
+            objects on this page.
+        pagination: The raw nested wire object. Read :attr:`next` instead.
+
+    Examples:
+        A newly uploaded file appears here with ``status`` ``"Processing"``
+        before it becomes ``"Available"``, so filter on it before treating a
+        file as searchable:
+
+        .. code-block:: python
+
+            page = pc.assistants.list_files_page(
+                assistant_name="acme-support-bot",
+                page_size=10,
+            )
+            for file in page.files:
+                print(file.name, file.status)
+
+    .. seealso::
+       :doc:`/guides/pagination` — the continuation-token loop, and the
+       paginator that drives it for you.
     """
 
     files: list[AssistantFileModel]
@@ -87,12 +133,16 @@ class ListFilesResponse(StructDictMixin, Struct, kw_only=True):
 
     @property
     def next(self) -> str | None:
-        """Continuation token for the next page, or ``None`` when exhausted."""
+        """Token for the next page, or ``None`` when this is the last one.
+
+        Pass a non-``None`` value back as the ``pagination_token`` argument of
+        the same ``*_page`` method to fetch the following page.
+        """
         return self.pagination.next if self.pagination is not None else None
 
     @property
     def next_token(self) -> str | None:
-        """Backwards-compatibility alias for :attr:`next`."""
+        """Alias for :attr:`next`. Prefer :attr:`next` in new code."""
         return self.next
 
     @safe_display
@@ -128,12 +178,40 @@ class ListFilesResponse(StructDictMixin, Struct, kw_only=True):
 
 
 class ListOperationsResponse(StructDictMixin, Struct, kw_only=True):
-    """Paginated response for listing assistant operations.
+    """One page of an assistant's operations, plus the token for the next one.
+
+    Returned by
+    :meth:`~pinecone.client.assistants.Assistants.list_operations_page`. This
+    is one page only — pass :attr:`next` back as ``pagination_token`` to
+    advance, or call
+    :meth:`~pinecone.client.assistants.Assistants.list_operations`, which
+    drives that loop for you and yields operations directly.
 
     Attributes:
-        operations: The operations returned in this page.
-        pagination: Nested pagination object from the v202604 API, or ``None``
-            when no more pages exist.
+        operations: The
+            :class:`~pinecone.models.assistant.operation.OperationModel`
+            objects on this page.
+        pagination: The raw nested wire object. Read :attr:`next` instead.
+
+    Examples:
+        Operations are where file-processing progress and failure detail live,
+        so this is the list to check when an upload has not become
+        ``"Available"``:
+
+        .. code-block:: python
+
+            page = pc.assistants.list_operations_page(
+                assistant_name="acme-support-bot",
+                page_size=10,
+            )
+            for operation in page.operations:
+                print(operation.operation_id, operation.status)
+                if operation.status == "Failed":
+                    print(operation.error)
+
+    .. seealso::
+       :doc:`/guides/pagination` — the continuation-token loop, and the
+       paginator that drives it for you.
     """
 
     operations: list[OperationModel]
@@ -141,12 +219,16 @@ class ListOperationsResponse(StructDictMixin, Struct, kw_only=True):
 
     @property
     def next(self) -> str | None:
-        """Continuation token for the next page, or ``None`` when exhausted."""
+        """Token for the next page, or ``None`` when this is the last one.
+
+        Pass a non-``None`` value back as the ``pagination_token`` argument of
+        the same ``*_page`` method to fetch the following page.
+        """
         return self.pagination.next if self.pagination is not None else None
 
     @property
     def next_token(self) -> str | None:
-        """Backwards-compatibility alias for :attr:`next`."""
+        """Alias for :attr:`next`. Prefer :attr:`next` in new code."""
         return self.next
 
     @safe_display

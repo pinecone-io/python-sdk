@@ -20,36 +20,56 @@ _DEFAULT_TIMEOUT: float = 5.0
 
 
 class PineconeFuture(Future["_T"]):
-    """Future returned by ``GrpcIndex.*_async()`` methods.
+    """A handle on a ``GrpcIndex.*_async()`` call that is already in flight.
 
-    Wraps a :class:`concurrent.futures.Future` and is fully compatible with
-    :func:`concurrent.futures.as_completed` and
-    :func:`concurrent.futures.wait`.
+    The call was handed to a background thread and the method returned
+    immediately. Issue as many as you want, then collect them: call
+    :meth:`result` to block for one, or pass the whole batch to
+    :func:`concurrent.futures.as_completed` or
+    :func:`concurrent.futures.wait`, both of which this class supports. Nothing
+    is cancelled if you never collect a future — the request still reaches the
+    server.
 
-    The default :meth:`result` timeout is **5 seconds**.  When the timeout
-    elapses, :class:`~pinecone.errors.PineconeTimeoutError` is raised with
-    the message ``"deadline exceeded"``.
+    This is threads, not :keyword:`await`. Nothing here is awaitable, and the
+    surrounding function does not need to be ``async``. If your code is already
+    running under asyncio,
+    :class:`~pinecone.async_client.async_index.AsyncIndex` is the client you
+    want instead: its methods are coroutines, so a pending request yields to
+    the event loop rather than parking a worker thread.
+
+    ``result()`` and ``exception()`` default to a **5 second** wait, short
+    enough that an unfinished call raises rather than hanging; pass an explicit
+    ``timeout=`` for anything slower, or ``timeout=None`` to block until the
+    call settles.
 
     Examples:
 
         .. code-block:: python
 
             from pinecone.grpc import GrpcIndex
-            idx = GrpcIndex(host="article-search-abc123.svc.pinecone.io", api_key="your-api-key")
-            future = idx.upsert_async(vectors=[("article-101", [0.012, -0.087, 0.153, ...])])
-            result = future.result()  # blocks up to 5 seconds
-            result.upserted_count
-            # 1
+
+            idx = GrpcIndex(host="article-search-abc123.svc.pinecone.io", api_key="...")
+            future = idx.upsert_async(vectors=[("article-101", [0.012, -0.087, 0.153])])
+            print(future.result().upserted_count)
+
+        Issuing several at once is the reason to prefer these over the blocking
+        methods — the requests overlap instead of queueing:
 
         .. code-block:: python
 
             from concurrent.futures import as_completed
+
             futures = [
-                idx.upsert_async(vectors=[("article-101", [0.012, -0.087, 0.153, ...])]),
-                idx.upsert_async(vectors=[("article-102", [0.045, 0.021, -0.064, ...])]),
+                idx.upsert_async(vectors=[("article-101", [0.012, -0.087, 0.153])]),
+                idx.upsert_async(vectors=[("article-102", [0.045, 0.021, -0.064])]),
             ]
             for future in as_completed(futures):
                 print(future.result().upserted_count)
+
+    .. seealso::
+       :class:`~pinecone.async_client.async_index.AsyncIndex` — the asyncio
+       client, for code that awaits rather than joining threads. See
+       :doc:`/guides/sync-vs-async`.
     """
 
     def __init__(self, underlying: Future[_T]) -> None:
@@ -91,35 +111,37 @@ class PineconeFuture(Future["_T"]):
     # ------------------------------------------------------------------
 
     def result(self, timeout: float | None = _DEFAULT_TIMEOUT) -> _T:
-        """Return the result of the call that the future represents.
+        """Block until the call settles, then return what it returned.
 
         Args:
-            timeout: Maximum seconds to wait.  Defaults to 5.0.
-                Pass ``None`` to block indefinitely.
+            timeout: Maximum seconds to wait, defaulting to 5.0. Pass ``None``
+                to block until the call settles, however long that takes.
 
         Returns:
-            The result value set by the underlying future.
+            Whatever the underlying ``GrpcIndex`` method would have returned
+            had you called it directly — an
+            :class:`~pinecone.models.vectors.responses.UpsertResponse` from ``upsert_async``, a
+            :class:`~pinecone.models.vectors.responses.QueryResponse` from ``query_async``, and so
+            on.
 
         Raises:
-            PineconeTimeoutError: If *timeout* seconds elapse before the
-                result is available.
+            :exc:`~pinecone.errors.exceptions.PineconeTimeoutError`: If *timeout* elapses
+                first. The call is still in flight and may yet reach the
+                server; call :meth:`result` again to keep waiting.
 
         Examples:
 
             .. code-block:: python
 
-                future = idx.upsert_async(vectors=[("article-101", [0.012, -0.087, 0.153, ...])])
-                result = future.result()
-                result.upserted_count  # 1
+                future = idx.upsert_async(vectors=[("article-101", [0.012, -0.087, 0.153])])
+                print(future.result().upserted_count)
+
+            A large batch usually needs more than the 5-second default:
 
             .. code-block:: python
 
                 future = idx.upsert_async(vectors=large_batch)
                 result = future.result(timeout=30.0)
-
-            .. code-block:: python
-
-                result = future.result(timeout=None)
         """
         try:
             return self._underlying.result(timeout=timeout)
@@ -127,13 +149,31 @@ class PineconeFuture(Future["_T"]):
             raise PineconeTimeoutError("deadline exceeded") from None
 
     def exception(self, timeout: float | None = _DEFAULT_TIMEOUT) -> BaseException | None:
-        """Return the exception raised by the call, or ``None``.
+        """Block until the call settles, then return how it failed, or ``None``.
+
+        Use this to inspect a failure without it propagating, where
+        :meth:`result` would re-raise it.
 
         Args:
-            timeout: Maximum seconds to wait.  Defaults to 5.0.
+            timeout: Maximum seconds to wait, defaulting to 5.0. Pass ``None``
+                to block until the call settles.
+
+        Returns:
+            The exception the call raised, or ``None`` if it succeeded.
 
         Raises:
-            PineconeTimeoutError: If *timeout* seconds elapse.
+            :exc:`~pinecone.errors.exceptions.PineconeTimeoutError`: If *timeout* elapses
+                before the call settles. This is the wait timing out, not the
+                call failing.
+
+        Examples:
+
+            .. code-block:: python
+
+                future = idx.upsert_async(vectors=[("article-101", [0.012, -0.087, 0.153])])
+                error = future.exception(timeout=30.0)
+                if error is not None:
+                    print("upsert failed:", error)
         """
         try:
             return self._underlying.exception(timeout=timeout)
@@ -141,10 +181,20 @@ class PineconeFuture(Future["_T"]):
             raise PineconeTimeoutError("deadline exceeded") from None
 
     def cancel(self) -> bool:
-        """Attempt to cancel the underlying call.
+        """Try to cancel the call before a worker thread picks it up.
 
-        Returns ``True`` if the call was successfully cancelled, ``False``
-        if the call has already completed or is running.
+        Returns ``True`` only if the call had not started yet. Once it is
+        running there is no way to recall it — you get ``False`` and the
+        request still reaches the server, so treat a ``False`` here as "the
+        write may land" rather than "nothing happened".
+
+        Examples:
+
+            .. code-block:: python
+
+                future = idx.upsert_async(vectors=[("article-101", [0.012, -0.087, 0.153])])
+                if not future.cancel():
+                    future.result(timeout=30.0)
         """
         return self._underlying.cancel()
 
@@ -161,8 +211,23 @@ class PineconeFuture(Future["_T"]):
         return self._underlying.running()
 
     def add_done_callback(self, fn: Callable[..., Any]) -> None:
-        """Attach a callable to be called when the future finishes.
+        """Run *fn* once the call settles, instead of blocking on it.
 
-        The callable will be called with the future as its only argument.
+        *fn* receives this future as its only argument, and runs on the worker
+        thread that finished the call — so keep it short, and do not call
+        :meth:`result` on a *different* pending future from inside it. Adding a
+        callback to a future that has already settled runs *fn* immediately, on
+        the calling thread.
+
+        Examples:
+
+            .. code-block:: python
+
+                def log_result(future):
+                    print("upserted", future.result().upserted_count)
+
+                idx.upsert_async(
+                    vectors=[("article-101", [0.012, -0.087, 0.153])]
+                ).add_done_callback(log_result)
         """
         self._underlying.add_done_callback(lambda _underlying: fn(self))

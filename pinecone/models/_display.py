@@ -1,4 +1,9 @@
-"""Internal utilities for Jupyter notebook display formatting."""
+"""Internal helpers for the ``_repr_html_`` / ``_repr_pretty_`` model reprs.
+
+Not public API and not in the published reference. Model classes call
+:func:`render_table` or :class:`HtmlBuilder` from ``_repr_html_`` so every
+model renders the same way in a notebook.
+"""
 
 from __future__ import annotations
 
@@ -47,20 +52,18 @@ _SECTION_TITLE_COLOR: dict[str, str] = {
 
 
 def render_table(title: str, rows: Sequence[tuple[str, str | int | float]]) -> str:
-    """Render a simple HTML table for Jupyter notebook display.
+    """Render a titled two-column table as a self-contained HTML fragment.
 
-    Provides consistent styling across all model objects that implement `_repr_html_()`.
+    The single-table case. Reach for :class:`HtmlBuilder` when the model needs
+    extra sections below the main table, as ``BatchResult`` does for errors.
 
     Args:
-        title: Title to display above the table
-        rows: List of (label, value) tuples to render as table rows
+        title: Heading above the table.
+        rows: ``(label, value)`` pairs, one per row. Both sides are escaped.
 
     Returns:
-        HTML string for Jupyter notebook display
-
-    Example:
-        >>> render_table("MyResponse", [("Count:", 42), ("Status:", "ok")])
-        '<div style="...">...</div>'
+        An HTML ``div`` with inline styles, ready to return from
+        ``_repr_html_``.
     """
     table_rows = "\n".join(
         f"""                <tr>
@@ -86,6 +89,7 @@ def render_table(title: str, rows: Sequence[tuple[str, str | int | float]]) -> s
 
 
 def truncate_text(value: str, max_chars: int = 80, suffix: str = "...") -> str:
+    """Cut *value* to *max_chars* and append *suffix* when it was longer."""
     s = str(value)
     if len(s) <= max_chars:
         return s
@@ -97,6 +101,13 @@ def abbreviate_list(
     head: int = 3,
     formatter: Callable[[Any], str] = repr,
 ) -> str:
+    """Format *items* as a list literal, eliding the tail past *head* entries.
+
+    Lists of *head* + 2 or fewer are shown whole, so the elision never costs
+    more characters than it saves. A *formatter* that raises falls back to
+    ``object.__repr__``, so a broken ``__repr__`` on one element cannot break
+    the whole repr.
+    """
     if len(items) == 0:
         return "[]"
 
@@ -115,6 +126,7 @@ def abbreviate_list(
 
 
 def abbreviate_dict(d: Mapping[str, Any], max_keys: int = 5) -> str:
+    """Format *d* as a dict literal, eliding the keys past *max_keys*."""
     if len(d) == 0:
         return "{}"
     keys = list(d.keys())
@@ -127,6 +139,13 @@ def abbreviate_dict(d: Mapping[str, Any], max_keys: int = 5) -> str:
 
 
 class HtmlBuilder:
+    """Chainable builder for a model repr with a main table plus sections.
+
+    ``.row()`` / ``.rows()`` fill the main table, ``.section()`` appends a
+    themed sub-table below it, and ``.build()`` returns the HTML. Every label
+    and value is escaped on the way in.
+    """
+
     def __init__(self, title: str) -> None:
         self._title = html.escape(title)
         self._main_rows: list[tuple[str, str]] = []
@@ -204,6 +223,12 @@ def safe_display(method: Callable[P, None]) -> Callable[P, None]: ...
 
 
 def safe_display(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap a ``_repr_html_`` or ``_repr_pretty_`` so it cannot raise.
+
+    A display hook that throws makes a notebook cell fail on an object that
+    was otherwise fine, so any exception becomes a
+    ``<TypeName (display error)>`` placeholder instead.
+    """
     is_pretty = method.__name__ == "_repr_pretty_"
 
     @functools.wraps(method)

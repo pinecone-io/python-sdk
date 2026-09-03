@@ -1,8 +1,8 @@
 """Backwards-compatibility shim for :mod:`pinecone.client.inference`.
 
-Re-exports classes that used to live at :mod:`pinecone.inference.inference` before
-the `python-sdk2` rewrite. Preserved to keep pre-rewrite callers working.
-New code should import from the canonical module.
+Re-exports the class that used to live at :mod:`pinecone.inference.inference`
+in earlier releases, so that code written against it keeps working. New code
+should import from the canonical module.
 
 :meta private:
 """

@@ -19,22 +19,27 @@ logger = logging.getLogger(__name__)
 
 
 class RestoreJobs:
-    """Control-plane operations for Pinecone restore jobs.
+    """Progress reports for restores of a backup into a new index.
 
-    Provides methods to list and describe restore jobs.
+    :meth:`~pinecone.Pinecone.create_index_from_backup` hands back a
+    ``restore_job_id`` and leaves the restore running in the background; this
+    namespace is how you follow it to completion. Reached as
+    ``pc.restore_jobs``; not constructed directly.
 
-    Args:
-        http (HTTPClient): HTTP client for making API requests.
+    A restore job is not a backup: :class:`~pinecone.client.backups.Backups`
+    manages the snapshots themselves, while a job here is a read-only record
+    of one attempt at turning a snapshot back into an index.
 
     Examples:
+        >>> from pinecone import Pinecone
+        >>> pc = Pinecone(api_key="your-api-key")
+        >>> job = pc.restore_jobs.describe(job_id="rj-abc123")
+        >>> job.status, job.target_index_name
+        ('Completed', 'product-search-restored')
 
-        .. code-block:: python
-
-            from pinecone import Pinecone
-
-            pc = Pinecone(api_key="your-api-key")
-            for job in pc.restore_jobs.list(limit=10):
-                print(job.restore_job_id, job.target_index_name, job.status)
+    .. seealso::
+       :doc:`/guides/error-handling` — the exceptions any of these methods
+       can raise, and which ones are worth retrying.
     """
 
     def __init__(self, http: HTTPClient) -> None:
@@ -53,12 +58,12 @@ class RestoreJobs:
     ) -> RestoreJobList:
         """List one page of the project's restore jobs.
 
-        Pagination is **offset-based**, not cursor-based: the token names a
-        position in the result set rather than a stable cursor. This returns a
-        **single page** and does not auto-fetch:
-        :class:`RestoreJobList` carries a ``pagination`` token but never follows
-        it, so iterating the return value sees at most one page. Drive the token
-        yourself to walk the rest — see *Examples*.
+        One call returns one page: :class:`RestoreJobList` carries a
+        ``pagination`` token but never follows it, so iterating the return
+        value sees at most one page. Drive the token yourself to walk the
+        rest — see :doc:`/guides/pagination`. The result is a best-effort
+        sample rather than an inventory; the warning below says why that
+        matters.
 
         Args:
             limit (int | None): Maximum number of results per page. When ``None``,
@@ -75,30 +80,10 @@ class RestoreJobs:
             A :class:`RestoreJobList` supporting iteration, len(), and index access.
             Its ``pagination`` attribute is ``None`` on the final page.
 
-        Raises:
-            :exc:`ApiError`: If the API returns an error response.
-
-        .. warning::
-            **This listing can silently drop restore jobs, stop paginating
-            early, and repeat rows across pages.** The token stream can end
-            while restore jobs remain, and successive pages can overlap, so
-            pages are neither exhaustive nor disjoint. A restore job whose
-            target index has been deleted is dropped from the listing
-            entirely.
-
-            What that means for you: treat the result as a best-effort sample
-            rather than an exhaustive inventory, never conclude a restore job
-            does not exist from its absence here, and de-duplicate by
-            ``restore_job_id`` while walking pages. The SDK offers no
-            workaround on purpose — the token stream itself ends early, so no
-            client-side code can recover pages the server never points at.
-            Tracked in `pinecone-io/python-sdk-internal#250
-            <https://github.com/pinecone-io/python-sdk-internal/issues/250>`_.
-
         Examples:
             Walk every page the server will hand out. Because pages can overlap,
             the loop collects into a dict keyed by ``restore_job_id`` rather than
-            a list — that is the de-duplication the warning above calls for, and
+            a list — that is the de-duplication the warning below calls for, and
             it costs nothing on a listing that happens not to repeat:
 
             .. code-block:: python
@@ -125,6 +110,20 @@ class RestoreJobs:
 
                 page = pc.restore_jobs.list(limit=5)
                 print(len(page))
+
+        .. warning::
+           **This listing can silently drop restore jobs, stop paginating
+           early, and repeat rows across pages.** The token stream can end
+           while restore jobs remain, and successive pages can overlap, so
+           pages are neither exhaustive nor disjoint; a restore job whose
+           target index has been deleted is dropped from the listing
+           entirely. Treat the result as a best-effort sample rather than an
+           inventory, never conclude a restore job does not exist from its
+           absence here, and de-duplicate by ``restore_job_id`` while walking
+           pages.
+
+        .. seealso::
+           :meth:`describe` — the authoritative read for a single job, by id.
         """
         params: dict[str, Any] = restore_job_list_params(
             limit=limit, pagination_token=pagination_token
@@ -137,58 +136,36 @@ class RestoreJobs:
         return result
 
     def describe(self, *, job_id: str) -> RestoreJobModel:
-        """Get detailed information about a restore job.
+        """Get the current state of one restore job.
 
         Args:
             job_id (str): The identifier of the restore job to describe.
 
         Returns:
-            A :class:`RestoreJobModel` with full restore job details.
-            ``status`` is one of ``"Pending"``, ``"Completed"``, ``"Failed"``,
-            or ``"Cancelled"``. There is **no in-progress state**: a restore
-            that is actively running reports ``"Pending"``, so do not poll for
-            a ``"Running"``-style value. ``percent_complete`` is ``100`` once
-            ``status`` is ``"Completed"`` and ``None`` at every other point —
-            it reports completion, not progress, and cannot be used to draw a
-            progress bar. ``completed_at`` is populated on the same condition.
+            A :class:`RestoreJobModel` naming the ``backup_id`` restored and
+            the ``target_index_name`` it lands in. ``status`` is one of
+            ``"Pending"``, ``"Completed"``, ``"Failed"``, or ``"Cancelled"``:
+            there is **no in-progress state**, so a restore that is actively
+            running reports ``"Pending"`` and polling for a ``"Running"``-style
+            value never succeeds. ``percent_complete`` and ``completed_at``
+            are populated only once ``status`` is ``"Completed"``, so
+            ``percent_complete`` reports completion rather than progress and
+            cannot drive a progress bar.
 
         Raises:
             :exc:`PineconeValueError`: If *job_id* is empty.
             :exc:`NotFoundError`: If the API answers ``404`` — which is **not**
                 the same as "the restore job does not exist"; see the warning
                 below.
-            :exc:`ApiError`: If the API returns another error response.
-
-        .. warning::
-            **A ``404`` from this endpoint cannot be trusted to mean "no such
-            restore job".** Every failure to read the restore-job store, an
-            outage included, is answered with a ``404``, so
-            :exc:`NotFoundError` here means "could not produce this job", not
-            "this job does not exist". Any retry policy or control
-            flow keyed on a ``404`` from ``describe`` is therefore unsafe:
-            giving up, deleting local state, or reporting the job as gone can
-            each be the wrong call on what was really a transient store
-            failure. Treat it as possibly transient unless you have
-            independent evidence the id is bad.
-
-            A restore job whose target index has been deleted also answers
-            ``404``, and the message it carries is not the one a genuinely
-            missing job produces — so do not match on the message text either.
-            Such a job is dropped from :meth:`list` entirely rather than
-            reported. Tracked in
-            `pinecone-io/python-sdk-internal#250
-            <https://github.com/pinecone-io/python-sdk-internal/issues/250>`_.
 
         Examples:
-            Read a restore job once:
-
-            .. code-block:: python
-
-                from pinecone import Pinecone
-
-                pc = Pinecone(api_key="your-api-key")
-                job = pc.restore_jobs.describe(job_id="rj-xyz789")
-                print(job.status, job.target_index_name)
+            >>> from pinecone import Pinecone
+            >>> pc = Pinecone(api_key="your-api-key")
+            >>> job = pc.restore_jobs.describe(job_id="rj-abc123")
+            >>> job.status
+            'Completed'
+            >>> job.target_index_name
+            'product-search-restored'
 
             To wait for a restore, poll until ``status`` *leaves* ``"Pending"``
             rather than waiting for it to reach a running state — there is no
@@ -201,12 +178,26 @@ class RestoreJobs:
                 import time
 
                 deadline = time.monotonic() + 600
-                job = pc.restore_jobs.describe(job_id="rj-xyz789")
+                job = pc.restore_jobs.describe(job_id="rj-abc123")
                 while job.status == "Pending" and time.monotonic() < deadline:
                     time.sleep(5)
-                    job = pc.restore_jobs.describe(job_id="rj-xyz789")
+                    job = pc.restore_jobs.describe(job_id="rj-abc123")
 
                 print(job.status, job.completed_at)
+
+        .. warning::
+           **A ``404`` from this endpoint cannot be trusted to mean "no such
+           restore job".** Any failure to read the restore-job store, an
+           outage included, is answered with ``404``: what you see is
+           :exc:`NotFoundError`, and what it actually means is "could not read
+           this job", not "this job does not exist". Control flow keyed on it
+           — giving up, deleting local state, reporting the job as gone — can
+           each be wrong about what was really a transient failure, so treat
+           it as possibly transient unless you have independent evidence the
+           id is bad. A restore job whose target index has been deleted also
+           answers ``404``, under a different message, so do not match on
+           message text either; such a job is dropped from :meth:`list`
+           entirely rather than reported.
         """
         require_non_empty("job_id", job_id)
         logger.info("Describing restore job %r", job_id)

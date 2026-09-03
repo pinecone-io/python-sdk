@@ -19,19 +19,21 @@ logger = logging.getLogger(__name__)
 class Organizations:
     """Operations on Pinecone organizations.
 
-    An organization is the top-level account boundary in Pinecone: it holds
-    projects, users, and billing. This namespace lists, describes, updates,
-    and deletes organizations.
-
-    Args:
-        http (HTTPClient): HTTP client for making API requests.
+    An organization is the top-level account boundary in Pinecone: it holds projects,
+    users, and billing, and everything else an :class:`~pinecone.Admin` client touches
+    lives inside one. Where a project scopes indexes and API keys, an organization scopes
+    projects, members, and the bill. Not constructed directly — reach it as
+    ``admin.organizations``.
 
     Examples:
 
         >>> from pinecone import Admin
-        >>> admin = Admin(client_id="my-id", client_secret="my-secret")
+        >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
         >>> for org in admin.organizations.list():
         ...     print(org.name)
+
+    .. seealso::
+       :class:`~pinecone.admin.projects.Projects` — the projects inside an organization.
     """
 
     def __init__(self, *, http: HTTPClient) -> None:
@@ -43,19 +45,15 @@ class Organizations:
         return "Organizations()"
 
     def list(self) -> OrganizationList:
-        """List the organizations your credentials can access.
+        """List the organizations your credentials can reach.
 
         Returns:
-            An :class:`OrganizationList` supporting iteration, ``len()``, and
-            index access.
-
-        Raises:
-            :exc:`ApiError`: If the API returns an error response.
+            An :class:`OrganizationList` of every reachable organization, supporting
+            iteration, ``len()``, and index access. Returned whole — there is no paging.
 
         Examples:
-            >>> admin = Admin(client_id="my-id", client_secret="my-secret")
             >>> for org in admin.organizations.list():
-            ...     print(org.name)
+            ...     print(org.name, org.plan)
         """
         logger.info("Listing organizations")
         response = self._http.get("/admin/organizations")
@@ -74,8 +72,8 @@ class Organizations:
             payment status, support tier, and creation time.
 
         Raises:
-            :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *organization_id* is empty.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *organization_id* is
+                empty or whitespace-only. Checked before the request is sent.
 
         Examples:
             >>> org = admin.organizations.describe(organization_id="org-abc123")
@@ -92,24 +90,25 @@ class Organizations:
     def update(self, *, organization_id: str, name: str) -> OrganizationModel:
         """Rename an organization.
 
+        The name is the only organization field this SDK can change; plan, payment status,
+        and support tier are read-only here.
+
         Args:
             organization_id (str): The organization's identifier, e.g. ``"org-abc123"``.
-            name (str): The new name for the organization, e.g. ``"Acme Corp"``.
+            name (str): The new display name, e.g. ``"Acme Corporation"``. Unlike
+                *organization_id*, it is not checked client-side.
 
         Returns:
-            An :class:`OrganizationModel` with the updated organization details.
+            An :class:`OrganizationModel` carrying the name as it was stored.
 
         Raises:
-            :exc:`~pinecone.errors.exceptions.PineconeValueError`:
-                If *organization_id* is empty.
-            :exc:`ApiError`: If the API returns an error response.
+            :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *organization_id* is
+                empty or whitespace-only. Checked before the request is sent.
 
         Examples:
             >>> org = admin.organizations.update(
-            ...     organization_id="org-abc123", name="New Name"
+            ...     organization_id="org-abc123", name="Acme Corporation"
             ... )
-            >>> org.name  # doctest: +SKIP
-            'New Name'
         """
         require_non_empty("organization_id", organization_id)
         logger.info("Updating organization %r", organization_id)
@@ -122,9 +121,10 @@ class Organizations:
         return result
 
     def delete(self, *, organization_id: str) -> None:
-        """Delete an organization.
+        """Delete an organization permanently.
 
-        An organization must meet three conditions before it can be deleted:
+        There is no undo and no soft-delete window. An organization must meet three
+        conditions before it can be deleted:
 
         - It is not on a paid plan (downgrade first).
         - Its payment status is active, with no open invoices.
@@ -138,11 +138,11 @@ class Organizations:
             organization_id (str): The organization's identifier, e.g. ``"org-abc123"``.
 
         Raises:
-            :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *organization_id* is empty.
+            :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *organization_id* is
+                empty or whitespace-only. Checked before the request is sent.
             :exc:`~pinecone.errors.exceptions.FailedPreconditionError`: If the
                 organization is on a paid plan, its payment status is not active, or it
                 still contains projects. The error message names the blocker.
-            :exc:`ApiError`: If the API returns an error response.
 
         Examples:
             >>> admin.organizations.delete(organization_id="org-abc123")

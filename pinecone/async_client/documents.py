@@ -1,4 +1,4 @@
-"""AsyncDocuments namespace — document data-plane operations (2026-07 API)."""
+"""AsyncDocuments namespace — document data-plane operations."""
 
 from __future__ import annotations
 
@@ -41,12 +41,24 @@ logger = logging.getLogger(__name__)
 
 @keyword_only_methods
 class AsyncDocuments:
-    """Document data-plane operations for a schema-based index (2026-07 API).
+    """Document data-plane operations for a schema-based index.
 
+    A schema-based index stores JSON documents instead of raw vectors. Every
+    document carries the reserved ``_id`` key; every other key is a field of
+    your own, either declared in the index schema or free-form metadata.
     Accessed via :attr:`~pinecone.async_client.async_index.AsyncIndex.documents`.
     Not constructed directly — the parent
     :class:`~pinecone.async_client.async_index.AsyncIndex` builds and caches
     its own instance on first access.
+
+    On a vector-based index, use the vector methods on
+    :class:`~pinecone.async_client.async_index.AsyncIndex` itself
+    (:meth:`~pinecone.async_client.async_index.AsyncIndex.upsert`,
+    :meth:`~pinecone.async_client.async_index.AsyncIndex.query`) rather than
+    this namespace.
+    Every method here is keyword-only. A positional argument raises
+    :exc:`PineconeValueError` listing the accepted keywords, and a misspelled
+    keyword raises :exc:`TypeError` suggesting the one you meant.
 
     Examples:
         .. code-block:: python
@@ -60,6 +72,10 @@ class AsyncDocuments:
                     namespace="published",
                     documents=[{"_id": "article-101", "title": "Intro to vectors"}],
                 )
+
+    .. seealso::
+       :doc:`/guides/error-handling` — the exceptions any of these methods can
+       raise, and which ones are worth retrying.
     """
 
     def __init__(self, *, http: AsyncHTTPClient, host: str) -> None:
@@ -108,13 +124,11 @@ class AsyncDocuments:
                 request size — a document count inside the accepted range can
                 still be too large. Send fewer documents per request, or use
                 :meth:`batch_upsert`.
-            :exc:`ApiError`: If the API returns an error response; the server's
-                error text is surfaced intact.
-            :exc:`PineconeConnectionError`: If a network-level connection
-                fails (DNS, refused, transport error).
-            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
+            ``_id`` is the only reserved key; ``title`` here is a field of
+            your own, and every document may carry a different set of them:
+
             .. code-block:: python
 
                 response = await idx.documents.upsert(
@@ -182,17 +196,10 @@ class AsyncDocuments:
             total_timeout (float | None): Deadline in seconds for the **whole
                 batched upsert**, as opposed to *timeout*, which bounds a
                 single attempt of a single batch. On expiry no further batches
-                are submitted; batches already in flight are awaited and never
-                cancelled, because dropping one client-side would not stop the
-                host from applying it. Un-submitted batches are reported in
-                ``result.failed_items`` so they can be retried, and
-                ``result.timed_out`` is ``True`` only when something was
-                actually left unsent — if the in-flight batches were the last
-                ones and all landed, the upsert succeeded late rather than
-                failing. Time spent waiting for the host's admission gate
-                counts against the budget, so a throttled host can consume it
-                without a request being sent. ``None`` (default) means no
-                deadline.
+                are submitted, and the un-submitted ones are reported in
+                ``result.failed_items`` so they can be retried. ``None``
+                (default) means no deadline. See the note below for what
+                ``result.timed_out`` does and does not tell you.
 
         Returns:
             :class:`~pinecone.models.batch.BatchResult` with aggregated
@@ -228,9 +235,21 @@ class AsyncDocuments:
                         batch_size=100,
                     )
 
+        .. note::
+           Batches already in flight when *total_timeout* expires are awaited
+           and never cancelled, because dropping one client-side would not
+           stop the host from applying it. So ``result.timed_out`` is ``True``
+           only when something was actually left unsent — if the in-flight
+           batches were the last ones and all landed, the upsert succeeded
+           late rather than failing. Time spent waiting for the host's
+           admission gate counts against the budget, so a throttled host can
+           consume it without a request being sent.
+
         .. seealso::
            - :meth:`upsert` — for a single-request upsert of up to
              1000 documents.
+           - :doc:`/guides/bulk-ingest` — choosing a batch size and
+             concurrency, and reading the gate counters on the result.
         """
         effective_max_concurrency = (
             DEFAULT_MAX_CONCURRENCY if max_concurrency is None else max_concurrency
@@ -290,8 +309,8 @@ class AsyncDocuments:
             include_fields: Document fields to include in each match.
                 Omitting it (the default) or passing ``[]`` returns only
                 ``_id`` and ``_score``; ``["*"]`` returns every field, even
-                alongside other names. Note this differs from :meth:`fetch`,
-                where omitting the argument returns every field.
+                alongside other names. :meth:`fetch` is the opposite — there,
+                omitting the argument returns every field.
             filter: Metadata filter expression restricting the documents
                 searched, or ``None``.
             timeout (float | None): Per-request timeout in seconds. Overrides
@@ -299,17 +318,15 @@ class AsyncDocuments:
 
         Returns:
             :class:`SearchDocumentsResponse` with ``matches`` (ordered from
-            most to least similar), ``namespace``, and ``usage``.
+            most to least similar), ``namespace``, and ``usage``. Each match
+            is a :class:`~pinecone.models.documents.document.Document`,
+            reached as ``doc.id``, ``doc.score``, and ``doc.<field>`` for the
+            fields ``include_fields`` asked for.
 
         Raises:
             :exc:`PineconeValueError`: If ``namespace`` is empty, ``score_by``
                 is empty, over 100 clauses, or combines a vector clause with
                 any other clause, or ``top_k`` is outside [1, 10000].
-            :exc:`ApiError`: If the API returns an error response; the server's
-                error text is surfaced intact.
-            :exc:`PineconeConnectionError`: If a network-level connection
-                fails (DNS, refused, transport error).
-            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
             .. code-block:: python
@@ -360,9 +377,9 @@ class AsyncDocuments:
         """Fetch documents from a namespace by ID or by metadata filter.
 
         Exactly one of ``ids`` or ``filter`` must be provided. A filtered
-        fetch returns matching documents a page at a time — a page holds up
-        to 10000 documents and the page size is fixed — with
-        ``response.pagination`` carrying the token for the next page.
+        fetch returns matching documents a page at a time, with
+        ``response.pagination`` carrying the token for the next page; the
+        server fixes the page size, so there is no page-size argument here.
 
         Args:
             namespace (str): Namespace to fetch from (required, non-empty).
@@ -373,8 +390,8 @@ class AsyncDocuments:
                 documents to fetch. Mutually exclusive with ``ids``.
             include_fields: Document fields to include in each document.
                 Omitting it (the default), ``[]``, or ``["*"]`` each return
-                every field; a list of names returns just those. Note this
-                differs from :meth:`search`, where omitting the argument
+                every field; a list of names returns just those.
+                :meth:`search` is the opposite — there, omitting the argument
                 returns only ``_id`` and ``_score``.
             pagination_token: Token from a previous filtered fetch response
                 to retrieve the next page. Only valid together with
@@ -383,8 +400,9 @@ class AsyncDocuments:
                 the client-level default for this call only.
 
         Returns:
-            :class:`FetchDocumentsResponse` with ``documents`` (a map of
-            document ID to document), ``namespace``, ``usage``, and — for
+            :class:`FetchDocumentsResponse` with ``documents`` (document ID
+            mapped to a :class:`~pinecone.models.documents.document.Document`,
+            reached as ``doc.<field>``), ``namespace``, ``usage``, and — for
             filtered fetches with more results — ``pagination``.
 
         Raises:
@@ -392,11 +410,6 @@ class AsyncDocuments:
                 neither of ``ids`` and ``filter`` are provided, ``filter`` is
                 an empty dict, ``ids`` exceeds 1000 entries, or
                 ``pagination_token`` is passed without ``filter``.
-            :exc:`ApiError`: If the API returns an error response; the server's
-                error text is surfaced intact.
-            :exc:`PineconeConnectionError`: If a network-level connection
-                fails (DNS, refused, transport error).
-            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
             Fetch specific documents by ID. IDs that do not exist are absent
@@ -429,6 +442,14 @@ class AsyncDocuments:
                     if response.pagination is None:
                         break
                     pagination_token = response.pagination.next
+
+        .. seealso::
+           - :meth:`search` — when you want the best-matching documents
+             rather than every document that satisfies a filter.
+           - :meth:`~pinecone.async_client.async_index.AsyncIndex.fetch` — for
+             indexes where you provide your own vectors.
+           - :doc:`/guides/pagination` — the pagination shapes the SDK uses
+             and when each applies.
         """
         segment = _encode_document_namespace(namespace)
         body = _build_fetch_documents_body(
@@ -488,11 +509,6 @@ class AsyncDocuments:
             :exc:`PineconeValueError`: If ``namespace`` is empty, zero or more
                 than one of ``ids``/``filter``/``delete_all`` is provided,
                 ``filter`` is an empty dict, or ``ids`` exceeds 1000 entries.
-            :exc:`ApiError`: If the API returns an error response; the server's
-                error text is surfaced intact.
-            :exc:`PineconeConnectionError`: If a network-level connection
-                fails (DNS, refused, transport error).
-            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
 
         Examples:
             Delete specific documents by ID:
@@ -518,6 +534,13 @@ class AsyncDocuments:
             .. code-block:: python
 
                 await idx.documents.delete(namespace="drafts", delete_all=True)
+
+        .. seealso::
+           - :meth:`~pinecone.async_client.async_index.AsyncIndex.delete_namespace`
+             — to remove the namespace itself, rather than emptying it with
+             ``delete_all``.
+           - :meth:`~pinecone.async_client.async_index.AsyncIndex.delete` — for
+             indexes where you provide your own vectors.
         """
         segment = _encode_document_namespace(namespace)
         body = _build_delete_documents_body(ids=ids, filter=filter, delete_all=delete_all)
@@ -588,13 +611,9 @@ class AsyncDocuments:
                 an empty dict or carries no patch, ``documents`` is empty or
                 exceeds 1000 entries, or a patch is malformed — the message
                 names the offending position.
-            :exc:`ApiError`: If the API returns an error response; the server's
-                error text is surfaced intact. A field value of ``None`` is
-                rejected server-side — use ``_remove_fields`` (per-ID) or
-                ``remove_fields`` (by-filter) to remove a field.
-            :exc:`PineconeConnectionError`: If a network-level connection
-                fails (DNS, refused, transport error).
-            :exc:`PineconeTimeoutError`: If the request exceeds the configured timeout.
+            :exc:`ApiError`: If a field value is ``None``, which the server
+                rejects — use ``_remove_fields`` (per-ID) or ``remove_fields``
+                (by-filter) to remove a field instead.
 
         Examples:
             Patch documents by ID. Each key other than the reserved ``_id`` and
@@ -628,6 +647,13 @@ class AsyncDocuments:
                     remove_fields=["draft_notes"],
                 )
                 print(response.matched_records)
+
+        .. seealso::
+           - :meth:`upsert` — to replace a document outright; an upsert of an
+             existing ``_id`` drops the fields it does not mention, where this
+             method keeps them.
+           - :meth:`~pinecone.async_client.async_index.AsyncIndex.update` — for
+             indexes where you provide your own vectors.
         """
         segment = _encode_document_namespace(namespace)
         body = _build_update_documents_body(
@@ -666,9 +692,10 @@ class AsyncDocuments:
                 this prefix. At most 512 characters, ASCII only
                 (``\\x01``-``\\x7F``). ``None`` lists every document.
             limit (int | None): Maximum number of documents the server returns
-                **per page**, 1-100. This tunes
-                the page size, not the total — the paginator follows every
-                page. To stop early, break out of the ``async for`` loop.
+                **per page**, 1-100. This tunes the page size, not the total —
+                the paginator follows every page. ``None`` (default) lets the
+                server choose the page size. To stop early, break out of the
+                loop.
             pagination_token (str | None): Token from a previous list response
                 to resume from, rather than starting at the first page.
             timeout (float | None): Per-request timeout in seconds, applied to
@@ -684,21 +711,32 @@ class AsyncDocuments:
             :exc:`PineconeValueError`: If ``namespace`` is empty, ``prefix``
                 violates the rules above, or ``limit`` falls outside 1-100.
                 Raised by this call, before the paginator is returned.
-            :exc:`ApiError`: If the API returns an error response; the server's
-                error text is surfaced intact.
-            :exc:`PineconeConnectionError`: If a network-level connection
-                fails (DNS, refused, transport error).
-            :exc:`PineconeTimeoutError`: If a page request exceeds the configured timeout.
 
         Examples:
+            Iterate every document ID in the namespace, letting the paginator
+            cross page boundaries for you:
+
             .. code-block:: python
 
                 async for doc in idx.documents.list(namespace="published", prefix="article-1"):
                     print(doc.id)
 
+            Or take the pages themselves, when you want to checkpoint a long
+            walk on the token each page carries:
+
+            .. code-block:: python
+
                 paginator = idx.documents.list(namespace="published", limit=20)
                 async for page in paginator.pages():
                     print(len(page.items), page.pagination_token)
+
+        .. seealso::
+           - :meth:`fetch` — to read the fields of the documents, not just
+             their IDs.
+           - :meth:`~pinecone.async_client.async_index.AsyncIndex.list` — for
+             indexes where you provide your own vectors.
+           - :doc:`/guides/pagination` — the pagination shapes the SDK uses
+             and when each applies.
         """
         segment = _encode_document_namespace(namespace)
         base = _build_list_documents_body(prefix=prefix, limit=limit, pagination_token=None)
