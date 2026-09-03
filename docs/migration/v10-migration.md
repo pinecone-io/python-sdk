@@ -2564,3 +2564,8 @@ when it is `True`, `http` when it is `False`. Code that reaches a plaintext
 data plane today by passing `secure=False` therefore keeps working
 unchanged. Naming the scheme is the narrower way to do it, since it leaves
 `upsert_records` and `search` verifying certificates.
+
+Because a plaintext channel sends the API key in the clear, an `http` scheme
+resolved against a host outside loopback and the RFC 1918 private ranges
+emits a `RuntimeWarning` once per process, naming the host. A private
+endpoint, a `192.168.x.x` gateway, or a local simulator is silent.

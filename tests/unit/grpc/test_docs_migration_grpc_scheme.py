@@ -91,6 +91,7 @@ def test_the_refused_combination_really_is_refused(channel_module: MagicMock) ->
         GrpcIndex(host="http://10.0.0.7:50051", api_key="k", secure=False, grpc_scheme="https")
 
 
+@pytest.mark.filterwarnings("ignore:The gRPC data plane is configured:RuntimeWarning")
 @pytest.mark.parametrize(("secure", "expected"), [(True, "https"), (False, "http")])
 def test_an_unset_scheme_follows_secure_as_the_guide_says(
     channel_module: MagicMock, secure: bool, expected: str

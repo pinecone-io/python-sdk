@@ -53,6 +53,7 @@ class TestEndpointBuilder:
             == "https://127.0.0.1:5085"
         )
 
+    @pytest.mark.filterwarnings("ignore:The gRPC data plane is configured:RuntimeWarning")
     @pytest.mark.parametrize(
         ("secure", "expected"),
         [(True, "https://idx.svc.pinecone.io"), (False, "http://idx.svc.pinecone.io")],

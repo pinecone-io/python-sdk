@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import ipaddress
 import logging
 import os
 import warnings
@@ -95,6 +96,62 @@ from pinecone.models.vectors.vector import ScoredVector, Vector
 logger = logging.getLogger(__name__)
 
 
+_PLAINTEXT_SAFE_NETWORKS: tuple[ipaddress.IPv4Network, ...] = (
+    ipaddress.IPv4Network("10.0.0.0/8"),
+    ipaddress.IPv4Network("172.16.0.0/12"),
+    ipaddress.IPv4Network("192.168.0.0/16"),
+)
+
+_warned_about_plaintext_grpc = False
+
+
+def _endpoint_hostname(host: str) -> str:
+    """Extract the hostname from a bare ``host[:port]``, IPv6 brackets included."""
+    bare = host.split("/", 1)[0]
+    if bare.startswith("["):
+        return bare[1:].split("]", 1)[0]
+    if bare.count(":") > 1:
+        return bare
+    return bare.split(":", 1)[0]
+
+
+def _is_plaintext_safe_host(hostname: str) -> bool:
+    """Whether plaintext to *hostname* stays inside the caller's own network.
+
+    Loopback and the RFC 1918 ranges qualify. A hostname that is not an IP
+    address does not, apart from ``localhost``: a name has to be resolved to
+    know where it points, and assuming the best of an unresolvable one would
+    silence the warning exactly where it matters.
+    """
+    lowered = hostname.lower().rstrip(".")
+    if lowered == "localhost" or lowered.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    if address.is_loopback:
+        return True
+    return any(address in network for network in _PLAINTEXT_SAFE_NETWORKS)
+
+
+def _warn_plaintext_grpc_once(host: str) -> None:
+    """Warn the first time this process dials a public host without TLS."""
+    global _warned_about_plaintext_grpc
+    hostname = _endpoint_hostname(host)
+    if _warned_about_plaintext_grpc or _is_plaintext_safe_host(hostname):
+        return
+    _warned_about_plaintext_grpc = True
+    warnings.warn(
+        f"The gRPC data plane is configured to dial {hostname} over http, so the "
+        "API key and every request and response body travel unencrypted. Pass "
+        'grpc_scheme="https" (and unset PINECONE_GRPC_SCHEME if it is set to '
+        '"http") to encrypt the connection.',
+        RuntimeWarning,
+        stacklevel=4,
+    )
+
+
 def _build_grpc_endpoint(host: str, *, secure: bool, scheme: str | None) -> str:
     """Build a gRPC endpoint URL from a host string.
 
@@ -106,6 +163,10 @@ def _build_grpc_endpoint(host: str, *, secure: bool, scheme: str | None) -> str:
     endpoint stays plaintext even with TLS material configured, and an
     ``https`` one without that material cannot connect at all. That pairing is
     rejected here rather than at the first call.
+
+    A resolved ``http`` scheme against a host that is neither loopback nor
+    RFC 1918 private emits a :exc:`RuntimeWarning` once per process, since the
+    API key then crosses a public network in the clear.
 
     Raises:
         PineconeValueError: If *scheme* is ``"https"`` while *secure* is
@@ -129,6 +190,8 @@ def _build_grpc_endpoint(host: str, *, secure: bool, scheme: str | None) -> str:
             break
 
     resolved = scheme if scheme is not None else ("https" if secure else "http")
+    if resolved == "http":
+        _warn_plaintext_grpc_once(bare)
     return f"{resolved}://{bare}"
 
 
@@ -337,7 +400,10 @@ class GrpcIndex:
             default applies. ``"https"`` requires ``secure=True``, since an https
             endpoint cannot connect without the TLS material ``secure=False``
             withholds. ``"http"`` with ``secure=True`` is a plaintext channel: the
-            scheme, not the TLS material, decides what goes on the wire.
+            scheme, not the TLS material, decides what goes on the wire. A
+            resolved ``http`` scheme against a host outside loopback and the
+            RFC 1918 private ranges warns once per process, because the API key
+            and every payload then cross a public network unencrypted.
         timeout (float): Deadline in seconds for a **single attempt** of a request, not
             for the call as a whole. Defaults to ``20.0``. A per-call ``timeout=`` does not
             replace it — the channel keeps this one too, so the shorter of the two governs.
