@@ -230,7 +230,7 @@ class TestUpsertFromDataframePartitionProperties:
 class TestUpsertFromDataframePartialFailureProperties:
     """The aggregating contract, shared with upsert(batch_size=...) and REST.
 
-    Changed in 9.2.0 (issue #26). What these used to pin — first failure wins,
+    Changed in 10.0.0 (issue #26). What these used to pin — first failure wins,
     partial count discarded — is now what `on_error="raise"` does, minus the
     discarding.
     """

@@ -244,7 +244,7 @@ with GrpcIndex(host="product-search-abc123.svc.pinecone.io") as index:
 
 A batch that fails does not abort the ingest: the returned `UpsertResponse` reports what
 landed and what did not. See
-[gRPC `upsert_from_dataframe` reports partial failures](../migration/v9.2-grpc-partial-failures.md)
+[gRPC `upsert_from_dataframe` reports partial failures](../migration/v10-grpc-partial-failures.md)
 for the response fields and a bounded retry loop. `total_timeout` bounds the whole
 ingest, as opposed to `timeout`, which bounds one attempt of one batch.
 

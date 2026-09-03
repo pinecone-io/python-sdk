@@ -1,7 +1,7 @@
-# 9.2: gRPC `upsert_from_dataframe` reports partial failures instead of raising
+# 10.0: gRPC `upsert_from_dataframe` reports partial failures instead of raising
 
 In 9.1 and earlier, `GrpcIndex.upsert_from_dataframe` raised as soon as any batch
-failed. From 9.2 it aggregates, matching `upsert(batch_size=...)` and the REST
+failed. From 10.0 it aggregates, matching `upsert(batch_size=...)` and the REST
 transport, which has behaved this way since v9.0.0.
 
 ## What changed
@@ -16,7 +16,7 @@ except Exception:
     # No way to tell how much landed. Re-run the whole frame.
     ...
 
-# 9.2 — gRPC and REST
+# 10.0 — gRPC and REST
 response = index.upsert_from_dataframe(df)
 if response.failed_item_count:
     for error in response.errors:

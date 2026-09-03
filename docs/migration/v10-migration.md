@@ -1275,13 +1275,15 @@ themselves.
 | 10 | `update(filter=..., values=...)` / `update(filter=..., sparse_values=...)` | forwarded to the server | raises `PineconeValueError` before any request; a by-filter update cannot carry vector values |
 | 11 | Empty `filter={}` on `delete`, `update`, `fetch_by_metadata` | forwarded to the server, which rejected it | raises `PineconeValueError` locally, with the server's own wording |
 | 12 | `fetch(ids=...)`, `fetch_by_metadata(limit=...)`, `list_paginated(prefix=..., limit=...)` | `fetch` checked only that `ids` was non-empty; `fetch_by_metadata` checked only that `limit` was positive; `list_paginated` validated neither argument | all three validate the same ID/prefix shape and limit range every other vector operation already used |
+| 13 | `GrpcIndex.upsert_from_dataframe` partial failures | raised on the first failed batch, discarding the count of what had landed | returns an `UpsertResponse` carrying `upserted_count`, `failed_item_count`, `errors` and `failed_items`; `on_error="raise"` restores the raise, now with that partial response attached to the exception. See [gRPC `upsert_from_dataframe` reports partial failures](v10-grpc-partial-failures.md) |
 
 Rows 1, 3, and 4 change the bytes the SDK puts on the wire. Rows 2, 6, and 7
 change documentation that was wrong, not behavior. Row 5 changes what a
 working index declaration looks like, covered above under
 [Sparse writes require a declared field](#sparse-writes). Row 8 needed no fix
 on this surface. Rows 9-12 add client-side checks for requests the server was
-already going to refuse.
+already going to refuse. Row 13 changes what a gRPC ingest hands back when
+some batches fail, and has a page of its own.
 
 #### 1. `query(top_k=...)` is bounded at both ends on every lane
 
