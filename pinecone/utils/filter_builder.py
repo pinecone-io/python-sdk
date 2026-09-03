@@ -86,22 +86,46 @@ class Field:
             )
 
     def gt(self, value: int | float) -> Condition:
-        """``$gt`` — greater than (*numeric only*)."""
+        """``$gt`` — greater than (*numeric only*).
+
+        Raises:
+            :exc:`TypeError`: If *value* is not an :class:`int` or :class:`float`.
+                A :class:`bool` is rejected as well, though Python counts it as an
+                ``int``; compare a boolean field with ``==`` instead.
+        """
         self._require_numeric("gt", value)
         return Condition({self._name: {"$gt": value}})
 
     def gte(self, value: int | float) -> Condition:
-        """``$gte`` — greater than or equal (*numeric only*)."""
+        """``$gte`` — greater than or equal (*numeric only*).
+
+        Raises:
+            :exc:`TypeError`: If *value* is not an :class:`int` or :class:`float`.
+                A :class:`bool` is rejected as well, though Python counts it as an
+                ``int``; compare a boolean field with ``==`` instead.
+        """
         self._require_numeric("gte", value)
         return Condition({self._name: {"$gte": value}})
 
     def lt(self, value: int | float) -> Condition:
-        """``$lt`` — less than (*numeric only*)."""
+        """``$lt`` — less than (*numeric only*).
+
+        Raises:
+            :exc:`TypeError`: If *value* is not an :class:`int` or :class:`float`.
+                A :class:`bool` is rejected as well, though Python counts it as an
+                ``int``; compare a boolean field with ``==`` instead.
+        """
         self._require_numeric("lt", value)
         return Condition({self._name: {"$lt": value}})
 
     def lte(self, value: int | float) -> Condition:
-        """``$lte`` — less than or equal (*numeric only*)."""
+        """``$lte`` — less than or equal (*numeric only*).
+
+        Raises:
+            :exc:`TypeError`: If *value* is not an :class:`int` or :class:`float`.
+                A :class:`bool` is rejected as well, though Python counts it as an
+                ``int``; compare a boolean field with ``==`` instead.
+        """
         self._require_numeric("lte", value)
         return Condition({self._name: {"$lte": value}})
 
