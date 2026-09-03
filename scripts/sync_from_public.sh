@@ -219,10 +219,24 @@ if [ "$branch_action" = "fast-forward" ]; then
     git push origin "$public_head:refs/heads/$BRANCH"
 fi
 
+pushed_tags=0
 for tag in $new_tags; do
     echo "==> Pushing tag $tag to origin"
     git push origin "$SCRATCH_NS/$tag:refs/tags/$tag"
     git update-ref "refs/tags/$tag" "$(git rev-parse "$SCRATCH_NS/$tag")"
+    pushed_tags=$((pushed_tags + 1))
 done
 
-echo "Done. origin/$BRANCH is now at $(git rev-parse --short "$public_head")."
+# Report what actually moved. The branch and the tags are independent: tags can
+# be pushed while the branch stays put (origin already ahead of public, or the
+# two tips identical), and naming public_head then would claim origin moved to
+# an older commit it was never on.
+echo ""
+if [ "$branch_action" = "fast-forward" ]; then
+    echo "Done. origin/$BRANCH is now at $(git rev-parse --short "$public_head")."
+else
+    echo "Done. origin/$BRANCH unchanged at $(git rev-parse --short "$origin_head")."
+fi
+if [ "$pushed_tags" -gt 0 ]; then
+    echo "Pushed $pushed_tags tag(s) to origin:$new_tags"
+fi
