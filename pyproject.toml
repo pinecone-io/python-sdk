@@ -46,14 +46,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest",
-    "pytest-asyncio",
-    "pytest-timeout",
-    "respx",
-    "mypy",
-    "ruff",
-]
 docs = [
     "sphinx>=8.0",
     "furo",
@@ -179,10 +171,9 @@ dev = [
     "pytest>=9.0.3",
     "pytest-anyio>=0.0.0",
     "pytest-asyncio>=0.23",
-    # Backs `timeout = 5` in [tool.pytest.ini_options] and the 89
-    # `pytest.mark.timeout` markers in tests/integration/. It was only ever
-    # added to [project.optional-dependencies].dev, which `uv sync --group dev`
-    # does not install, so none of them did anything (#306).
+    # Backs `timeout` in [tool.pytest.ini_options] and the `pytest.mark.timeout`
+    # markers in tests/. This group is the only place test dependencies are
+    # declared; `uv sync --group dev` installs it (#306).
     "pytest-timeout>=2.3",
     "python-dotenv>=1.2.2",
     "pytest-benchmark>=5.0.0",
