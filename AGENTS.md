@@ -1,37 +1,50 @@
 # Pinecone Python SDK
 
-The Pinecone Python SDK provides access to the Pinecone vector database. Use `Pinecone` for control-plane operations (creating and managing indexes) and `Index` for data-plane operations (upserting and querying vectors). The `pc.index("name")` method bridges the two.
+The Pinecone Python SDK provides access to the Pinecone vector database. Use `Pinecone` for control-plane operations (creating and managing indexes) and `Index` for data-plane operations (documents, vectors, records). The `pc.index("name")` method bridges the two.
 
 ## Quick Start
 
+An index declares its fields as a schema. Declaring a schema makes it a document index: read and write it through `index.documents`, and each record is a JSON document whose fields you named yourself.
+
 ```python
 import os
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import DenseVectorQuery, Pinecone
 
 pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
 
-# Create a serverless index
+# Create an index. This blocks until the index is ready.
 pc.indexes.create(
     name="movie-recommendations",
-    dimension=1536,
-    metric="cosine",
-    spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+    schema={"fields": {"embedding": {"type": "dense_vector", "dimension": 1536, "metric": "cosine"}}},
+    deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
 )
 
 # Get a handle to the index (data-plane operations)
 index = pc.index("movie-recommendations")
 
-# Upsert vectors
-index.upsert(vectors=[
-    ("movie-42", [0.012, -0.087, 0.153]),  # 1536-dim vector
-    ("movie-43", [0.045, 0.021, -0.064]),  # 1536-dim vector
-])
+# Upsert documents. Each one needs an `_id`; every other key is either a
+# field declared in the schema or arbitrary metadata.
+index.documents.upsert(
+    namespace="movies-en",
+    documents=[
+        {"_id": "movie-42", "embedding": [0.012, -0.087, 0.153]},  # 1536-dim vector
+        {"_id": "movie-43", "embedding": [0.045, 0.021, -0.064]},  # 1536-dim vector
+    ],
+)
 
-# Query by vector similarity
-results = index.query(vector=[0.012, -0.087, 0.153], top_k=5)  # 1536-dim vector
-for match in results.matches:
-    print(match.id, match.score)
+# Search. `score_by` names the field to compare against.
+results = index.documents.search(
+    namespace="movies-en",
+    top_k=5,
+    score_by=[DenseVectorQuery(field="embedding", values=[0.012, -0.087, 0.153])],  # 1536-dim vector
+)
+for doc in results.matches:
+    print(doc.id, doc.score)
 ```
+
+Upserts apply asynchronously, so a document may not be visible to the next search immediately.
+
+Two other data-plane interfaces exist, and the way the index was created decides which one applies: an index created with the deprecated top-level `dimension=`/`metric=` answers on `index.upsert`/`index.query` (see "Store and retrieve vectors" below), and one created with `pc.indexes.create_for_model(...)` embeds text server-side and answers on `index.upsert_records`/`index.search` (see "Semantic search with integrated embeddings" below). See the [quickstart](https://sdk.pinecone.io/python/getting-started/quickstart.html) for the full picture.
 
 ## Key Classes
 
@@ -39,17 +52,19 @@ for match in results.matches:
 |---|---|---|
 | `Pinecone` | `from pinecone import Pinecone` | Sync client for control-plane operations (indexes, collections, backups) |
 | `AsyncPinecone` | `from pinecone import AsyncPinecone` | Async variant of `Pinecone` for use with `asyncio` |
-| `Index` | Obtained via `pc.index("name")` | Sync client for data-plane operations (upsert, query, delete, fetch) |
+| `Index` | Obtained via `pc.index("name")` | Sync client for data-plane operations (documents, upsert, query, delete, fetch) |
 | `AsyncIndex` | Obtained via `async_pc.index("name")` | Async variant of `Index` |
 | `Admin` | `from pinecone import Admin` | Organization and project management via OAuth2 credentials |
 
 ## Control Plane vs Data Plane
 
-`Pinecone` manages indexes, collections, and backups. It talks to the Pinecone control-plane API. `Index` performs vector operations (upsert, query, fetch, delete) against a specific index. It talks to the data-plane API hosted on the index's own endpoint. Call `pc.index("name")` to get an `Index` handle from a `Pinecone` client. The two use different hosts and authentication scopes.
+`Pinecone` manages indexes, collections, and backups. It talks to the Pinecone control-plane API. `Index` performs data-plane operations (documents, upsert, query, fetch, delete) against a specific index. It talks to the data-plane API hosted on the index's own endpoint. Call `pc.index("name")` to get an `Index` handle from a `Pinecone` client. The two use different hosts and authentication scopes.
 
 ## Common Workflows
 
 ### Store and retrieve vectors
+
+`index.upsert()`/`index.query()` are for indexes created with the deprecated top-level `dimension=`/`metric=`, not `schema=`. The server rejects them on a schema-based (document) index.
 
 ```python
 from pinecone import Pinecone, Vector
@@ -74,6 +89,7 @@ Use `query()` for raw vector search on standard indexes. Use `search()` for text
 
 | Method | Use when | Batching |
 |--------|----------|----------|
+| `index.documents.upsert(namespace=, documents=[...])` | Your index declares a `schema=` (document index) | Manual — all documents in one request |
 | `index.upsert(vectors=[...])` | You have pre-computed vectors (<1000 per call) | Manual — all vectors in one request |
 | `index.upsert_from_dataframe(df)` | You have a pandas DataFrame of vectors | Automatic — batches of 500 (configurable) |
 | `index.upsert_records(records=[...])` | Your index uses integrated inference (server-side embedding) | Manual — all records in one request |
@@ -84,18 +100,18 @@ For datasets larger than ~1000 vectors, use `upsert_from_dataframe()` or `start_
 ### Semantic search with integrated embeddings
 
 ```python
-from pinecone import Pinecone, IntegratedSpec, EmbedConfig, EmbedModel
+from pinecone import EmbedConfig, Pinecone
 
 pc = Pinecone(api_key="your-api-key")
-pc.indexes.create(
+pc.indexes.create_for_model(
     name="product-catalog",
-    spec=IntegratedSpec(cloud="aws", region="us-east-1",
-        embed=EmbedConfig(model=EmbedModel.Multilingual_E5_Large,
-                          field_map={"text": "description"})),
+    cloud="aws",
+    region="us-east-1",
+    embed=EmbedConfig(model="multilingual-e5-large", field_map={"text": "description"}),
 )
 index = pc.index("product-catalog")
 index.upsert_records(namespace="products", records=[
-    {"id": "prod-001", "description": "Lightweight running shoes", "category": "footwear"},
+    {"_id": "prod-001", "description": "Lightweight running shoes", "category": "footwear"},
 ])
 results = index.search(
     namespace="products",
@@ -148,7 +164,7 @@ print(stats.namespaces)
 
 ### Metadata filtering
 
-Filter vectors by metadata fields using the operators below. Filters work on both `query(filter=...)` and `search(filter=...)`.
+Filter vectors by metadata fields using the operators below. Filters work on `query(filter=...)`, `search(filter=...)`, and `documents.search(filter=...)`.
 
 | Operator | Description |
 |----------|-------------|
@@ -190,7 +206,7 @@ collection = pc.collections.describe("snapshot")
 The `Admin` client uses OAuth2 credentials (not API keys) for organization-level operations.
 
 ```python
-from pinecone import Admin, Pinecone, ServerlessSpec
+from pinecone import Admin, Pinecone
 
 admin = Admin(client_id="my-client-id", client_secret="my-client-secret")
 # Or set PINECONE_CLIENT_ID and PINECONE_CLIENT_SECRET env vars
@@ -205,8 +221,11 @@ key = admin.api_keys.create(project_id=project.id, name="my-key")
 
 # Bridge to Pinecone for data operations
 pc = Pinecone(api_key=key.value)
-pc.indexes.create(name="my-index", dimension=1536, metric="cosine",
-                  spec=ServerlessSpec(cloud="aws", region="us-east-1"))
+pc.indexes.create(
+    name="my-index",
+    schema={"fields": {"embedding": {"type": "dense_vector", "dimension": 1536, "metric": "cosine"}}},
+    deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
+)
 ```
 
 OAuth credentials are created in the Pinecone console under Organization Settings → Service Accounts.
@@ -262,11 +281,14 @@ PineconeError
 │   ├── PaymentRequiredError      # 402
 │   ├── FailedPreconditionError   # 412
 │   ├── ConflictError     # 409
+│   ├── RateLimitError    # 429
 │   └── ServiceError      # 5xx
 ├── PineconeValueError    # Invalid argument (also a ValueError)
 ├── PineconeTypeError     # Wrong type (also a TypeError)
 ├── PineconeTimeoutError  # Request timed out
 ├── PineconeConnectionError # Network connectivity failure
+├── IndexInitFailedError  # Index entered InitializationFailed while waiting for readiness
+├── IndexTerminatedError  # Index entered Terminating/Disabled while waiting for readiness
 └── ResponseParsingError  # Unexpected response format
 ```
 
@@ -285,9 +307,9 @@ except PineconeError as e:
     print(e)  # Validation, timeout, or connection error
 ```
 
-**Retry behavior (HTTP):** All HTTP methods (GET, HEAD, POST, PUT, PATCH, DELETE) are automatically retried on transient failures: connection errors (`httpx.TransportError`), 408 Request Timeout, 429 Too Many Requests, and 5xx (500, 502, 503, 504). Pinecone's data-plane writes are idempotent at the server (upsert overwrites by ID, delete-by-ID is idempotent, update-by-ID is idempotent), so retrying upsert/query/fetch/delete/update on transient errors is safe. Backoff is floored full jitter: `uniform(0.1 * base, base)` where `base = min(backoff_factor**attempt, max_wait)`. Configure via `RetryConfig`.
+**Retry behavior (HTTP):** All HTTP methods (GET, HEAD, POST, PUT, PATCH, DELETE) are automatically retried on transient failures: connection errors (`httpx.TransportError`), 408 Request Timeout, 429 Too Many Requests, and 5xx (500, 502, 503, 504). Pinecone's data-plane writes are idempotent at the server (upsert overwrites by ID, delete-by-ID is idempotent, update-by-ID is idempotent), so retrying upsert/query/fetch/delete/update on transient errors is safe. Backoff is decorrelated jitter: `uniform(backoff_factor, min(max_wait, prev_delay * 3))`, seeded with `prev_delay = backoff_factor`. `RetryConfig` passed to `Pinecone`/`AsyncPinecone` configures the control plane; it does not reach `Index`/`AsyncIndex` data-plane REST calls, which keep fixed defaults (`max_retries=3`, `backoff_factor=0.25`) and accept no `retry_config` at all. See `docs/guides/retries.md`.
 
-**Retry behavior (gRPC):** gRPC retries on UNAVAILABLE, RESOURCE_EXHAUSTED (rate limit), and ABORTED (concurrency conflict). DEADLINE_EXCEEDED is not retried — set a longer client timeout instead. All three default retryable codes are safe for Pinecone data-plane operations (upsert, query, fetch, delete-by-id, update), which are idempotent. Backoff uses full-jitter exponential: `uniform(0, min(max_backoff, initial_backoff * multiplier^attempt))`. The set of retryable codes is configurable via `RetryConfig.retryable_codes`.
+**Retry behavior (gRPC):** gRPC retries exactly three codes — UNAVAILABLE, RESOURCE_EXHAUSTED (rate limit), and ABORTED (concurrency conflict) — and this set is fixed, not configurable. DEADLINE_EXCEEDED is not retried — set a longer client timeout instead. All three default retryable codes are safe for Pinecone data-plane operations (upsert, query, fetch, delete-by-id, update), which are idempotent. gRPC's defaults differ from REST's: `max_retries=5`, `backoff_factor=0.1`, `max_wait=60.0`. Backoff uses the same decorrelated jitter as HTTP, except the first retry draws from a wider window (`10 * backoff_factor`). `RetryConfig.retryable_status_codes` carries HTTP statuses and is ignored on this transport.
 
 ## Response Objects
 
