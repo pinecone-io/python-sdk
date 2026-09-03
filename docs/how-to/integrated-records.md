@@ -146,7 +146,7 @@ its shape is **not** {meth}`~pinecone.index.Index.query`'s:
 | | `search` | `query` |
 |---|---|---|
 | Where the results live | `response.result.hits` | `response.matches` |
-| One result | {class}`~pinecone.models.vectors.search.Hit` | `ScoredVector` |
+| One result | {class}`~pinecone.models.vectors.search.Hit` | {class}`~pinecone.models.vectors.vector.ScoredVector` |
 | Your record's data | `hit.fields`, one dict | split across `.values` and `.metadata` |
 
 The extra `result` step is the response envelope, and forgetting it is the usual first

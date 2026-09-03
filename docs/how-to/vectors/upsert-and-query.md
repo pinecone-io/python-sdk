@@ -99,7 +99,7 @@ request comes back rejected for size. Batches are sent **in parallel**
 via a `ThreadPoolExecutor` (sync) or `asyncio.Semaphore`
 (async) of `max_concurrency` workers. HTTP-level retries
 happen automatically per batch via the configured
-`RetryConfig`.
+{class}`~pinecone.RetryConfig`.
 
 ```python
 response = index.upsert(
@@ -178,7 +178,7 @@ stop.
 
 The HTTP transport retries `{408, 429, 500, 502, 503, 504}`
 automatically up to three times (four total attempts) with decorrelated jitter
-(see `RetryConfig`). That layer absorbs nearly
+(see {class}`~pinecone.RetryConfig`). That layer absorbs nearly
 all transient infrastructure issues. By the time an error
 reaches `response.errors`, it has either:
 
@@ -245,7 +245,7 @@ for match in response.matches:
     print(match.id, match.score)
 ```
 
-Each element of `response.matches` is a `ScoredVector`, ordered
+Each element of `response.matches` is a {class}`~pinecone.models.vectors.vector.ScoredVector`, ordered
 most similar first. A query that matched nothing returns an empty `matches` rather than
 raising, so check the length instead of catching an exception.
 
@@ -454,4 +454,4 @@ filter.
 - {doc}`/how-to/integrated-records`: `search` on an index with integrated inference
 - {doc}`/guides/performance`: choosing a `batch_size` and a `max_concurrency`
 - {class}`~pinecone.models.vectors.responses.QueryResponse`: query response model
-- `ScoredVector`: individual match in query results
+- {class}`~pinecone.models.vectors.vector.ScoredVector`: individual match in query results

@@ -88,3 +88,17 @@ Assistants
    :undoc-members: False
    :show-inheritance:
    :member-order: bysource
+
+
+Retry Configuration
+-------------------
+
+``RetryConfig`` is a constructor argument on :class:`~pinecone.Pinecone` and
+:class:`~pinecone.AsyncPinecone`.  See :doc:`/guides/retries` for which calls it
+governs and which run on fixed policy.
+
+.. autoclass:: pinecone.RetryConfig
+   :members:
+   :undoc-members: False
+   :show-inheritance:
+   :member-order: bysource

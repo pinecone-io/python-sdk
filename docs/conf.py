@@ -74,7 +74,6 @@ nitpick_ignore = [
     ("py:class", "pinecone.models._mixin.StructDictMixin"),
     ("py:class", "pinecone.models._mixin.DictLikeStruct"),
     ("py:class", "pinecone._internal.config.PineconeConfig"),
-    ("py:class", "pinecone._internal.config.RetryConfig"),
     ("py:class", "pinecone._internal.http_client.HTTPClient"),
     ("py:class", "pinecone._internal.http_client.AsyncHTTPClient"),
     ("py:class", "pinecone.client._assistant_namespace_proxy._AssistantNamespaceProxy"),

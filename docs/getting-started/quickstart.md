@@ -81,7 +81,7 @@ immediately.
 ## 5. Search
 
 Rank documents with a `score_by` clause naming the field to compare against.
-`DenseVectorQuery` scores by cosine similarity on the `embedding` field, because that
+{class}`~pinecone.models.documents.score_by.DenseVectorQuery` scores by cosine similarity on the `embedding` field, because that
 is the metric the field was declared with:
 
 ```python
