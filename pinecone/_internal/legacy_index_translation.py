@@ -27,7 +27,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from pinecone._internal.index_migration import MIGRATION_GUIDE
+from pinecone._internal.index_migration import MIGRATION_GUIDE, reject_legacy_spec_fields
 from pinecone._internal.indexes_helpers import resolve_enum_value
 from pinecone.errors.exceptions import PineconeTypeError, PineconeValueError
 from pinecone.models.enums import Metric, PodType, VectorType
@@ -66,8 +66,12 @@ def _coerce_spec(spec: Any) -> ServerlessSpec | PodSpec | ByocSpec:
     Raises:
         PineconeValueError: The value is not a spec the 2026-07 API has a
             deployment translation for.
+        PineconeTypeError: The spec sets a field the 2026-07 create request
+            has no destination for. See
+            :func:`~pinecone._internal.index_migration.reject_legacy_spec_fields`.
     """
     if isinstance(spec, (ServerlessSpec, PodSpec, ByocSpec)):
+        reject_legacy_spec_fields(spec)
         return spec
 
     if isinstance(spec, IntegratedSpec):
@@ -84,12 +88,14 @@ def _coerce_spec(spec: Any) -> ServerlessSpec | PodSpec | ByocSpec:
             if inner is None:
                 continue
             try:
-                return struct(**inner)
+                resolved = struct(**inner)
             except TypeError as exc:
                 raise PineconeValueError(
                     f"spec={{{key!r}: ...}} is not a valid {struct.__name__}: {exc}. "
                     f"{_DEPLOYMENT_HINT}. See the migration guide: {MIGRATION_GUIDE}"
                 ) from exc
+            reject_legacy_spec_fields(resolved)
+            return resolved
         raise PineconeValueError(
             "spec dict must contain a 'serverless', 'pod', or 'byoc' key, got "
             f"{sorted(map(str, spec))}. {_DEPLOYMENT_HINT}. "
@@ -123,6 +129,9 @@ def spec_to_deployment(spec: Any) -> dict[str, Any]:
             indistinguishable from "not set") nor *replicas x shards* — the
             2026-07 API has no independent *pods* field, and such a value
             can't be decomposed into the two fields it would replace.
+        PineconeTypeError: *spec* sets ``metadata_config`` or
+            ``source_collection``, neither of which the 2026-07 create
+            request has a field to carry.
 
     Example:
         >>> spec_to_deployment(ServerlessSpec(cloud="aws", region="us-east-1"))
@@ -175,6 +184,9 @@ def spec_to_read_capacity(spec: Any) -> dict[str, Any] | None:
 
     Raises:
         PineconeValueError: *spec* is malformed or is not a spec at all.
+        PineconeTypeError: *spec* sets ``metadata_config`` or
+            ``source_collection``, neither of which the 2026-07 create
+            request has a field to carry.
     """
     resolved = _coerce_spec(spec)
     if isinstance(resolved, PodSpec) or resolved.read_capacity is None:

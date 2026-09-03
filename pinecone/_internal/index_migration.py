@@ -18,7 +18,9 @@ HTTP request:
   there's nothing to declare), ``source_collection=``/``source_backup_id=``
   (rejected by the backend with a 400), and ``spec=IntegratedSpec(...)``
   (integrated-embedding indexes are created through ``create_for_model()``
-  instead).
+  instead). ``metadata_config`` and ``source_collection`` are also
+  rejected when they arrive as ``PodSpec`` attributes rather than as
+  kwargs, so ``spec=`` gets the same answer as the kwarg spelling.
 - ``configure()``: ``embed=`` and ``spec=`` (neither has a destination in
   the 2026-07 PATCH body; the 2025-10 convert-to-integrated flow is gone
   and the server rejects unknown PATCH fields).
@@ -39,6 +41,7 @@ exists.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from pinecone.errors.exceptions import PineconeTypeError
@@ -49,6 +52,9 @@ MIGRATION_GUIDE = "docs/migration/v10-migration.md"
 LEGACY_CREATE_KWARGS = frozenset(
     {"pods", "metadata_config", "source_collection", "source_backup_id"}
 )
+
+#: PodSpec attributes spelling the same values as the like-named create() kwargs.
+LEGACY_SPEC_FIELDS = ("metadata_config", "source_collection")
 
 #: Indexes.configure() kwargs with no 2026-07 PATCH-body equivalent.
 LEGACY_CONFIGURE_KWARGS = frozenset({"embed", "spec"})
@@ -64,19 +70,37 @@ def _fmt(value: Any) -> str:
     return repr(value)
 
 
+def _read(obj: Any, key: str, placeholder: Any) -> Any:
+    """Read *key* off a struct or an equivalent mapping, or fall back.
+
+    ``IntegratedSpec`` is a ``msgspec.Struct`` built by direct construction,
+    which does not coerce its ``embed`` annotation, so ``embed`` is whatever
+    the caller passed — commonly the 9.x plain dict, the same shape the
+    guided message below prints. A message builder on a rejection path must
+    not raise something other than the rejection.
+    """
+    value = obj.get(key) if isinstance(obj, Mapping) else getattr(obj, key, None)
+    return placeholder if value is None else value
+
+
 def _integrated_spec_error(spec: Any, name: Any) -> PineconeTypeError:
-    embed = spec.embed
-    field_map = dict(embed.field_map) if embed.field_map else {}
-    field = next(iter(field_map.values()), "<field-name>")
+    embed = _read(spec, "embed", "")
+    field_map = _read(embed, "field_map", {})
+    field = (
+        next(iter(field_map.values()), "<field-name>")
+        if isinstance(field_map, Mapping)
+        else "<field-name>"
+    )
     lines = [
         "Indexes.create() no longer accepts spec=IntegratedSpec(...) — the 2026-07 API",
         "creates integrated-embedding indexes through create_for_model instead:",
         "",
         "    pc.indexes.create_for_model(",
         f"        name={_fmt(name) if name else '<name>'},",
-        f"        cloud={_fmt(spec.cloud)},",
-        f"        region={_fmt(spec.region)},",
-        f"        embed={{'model': {_fmt(embed.model)}, 'field_map': {{'text': {_fmt(field)}}}}},",
+        f"        cloud={_fmt(_read(spec, 'cloud', '<cloud>'))},",
+        f"        region={_fmt(_read(spec, 'region', '<region>'))},",
+        f"        embed={{'model': {_fmt(_read(embed, 'model', '<model-name>'))}, "
+        f"'field_map': {{'text': {_fmt(field)}}}}},",
         "    )",
         "",
         f"See the migration guide: {MIGRATION_GUIDE}",
@@ -93,6 +117,48 @@ def reject_integrated_spec_create(spec: Any, name: Any = None) -> None:
     """
     if spec is not None and type(spec).__name__ == "IntegratedSpec":
         raise _integrated_spec_error(spec, name)
+
+
+def reject_legacy_spec_fields(spec: Any) -> None:
+    """Raise a guided error for a spec attribute with no ``create()`` destination.
+
+    No-op unless *spec* sets one of :data:`LEGACY_SPEC_FIELDS`. ``PodSpec``
+    still carries ``metadata_config`` and ``source_collection`` so that a
+    9.x spec object round-trips, but the 2026-07 create request has nowhere
+    to put either. Called by
+    ``pinecone._internal.legacy_index_translation._coerce_spec`` so a value
+    nested in ``spec=`` gets the same answer as the like-named top-level
+    kwarg, which :func:`reject_legacy_create_kwargs` already rejects.
+    """
+    given = [field for field in LEGACY_SPEC_FIELDS if getattr(spec, field, None) is not None]
+    if not given:
+        return
+
+    lines = [
+        "Indexes.create() cannot translate spec=PodSpec(...) carrying "
+        f"{', '.join(f'{field}=' for field in given)} — none has a destination in the "
+        "2026-07 create request, and dropping a field you set would send a create call "
+        "that differs from the one you wrote:"
+    ]
+    if "metadata_config" in given:
+        lines.append(
+            "  metadata_config=: metadata fields are indexed automatically at upsert; "
+            "there is nothing to declare at create time."
+        )
+    if "source_collection" in given:
+        lines.append(
+            "  source_collection=: the 2026-07 API rejects index creation from a collection "
+            "or backup with 400 'Creating an index from collection or backup is not yet "
+            "supported'; use pc.create_index_from_backup(backup_id=..., name=...) to restore "
+            "a backup."
+        )
+    lines.append(
+        "2026-07 refuses pod index creation whatever the spec says, with 400 "
+        "\"deployment_type 'pod' is not supported on this API version\", so no spelling of "
+        "this call creates an index."
+    )
+    lines.append(f"See the migration guide: {MIGRATION_GUIDE}")
+    raise PineconeTypeError("\n".join(lines))
 
 
 def reject_legacy_create_kwargs(legacy: dict[str, Any], name: Any = None) -> None:
