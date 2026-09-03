@@ -1656,29 +1656,21 @@ deleted.
 
 #### `read_capacity` on restore
 
-```{warning}
-`read_capacity=` on a restore is accepted and silently ignored. The field
-serializes and the request succeeds, but the backend doesn't read a
-read-capacity value from a restore request today, so the index always lands
-on on-demand capacity (or, for a BYOC restore, a fixed default tier, which
-also means a BYOC restore loses the source index's provisioned tier). There's
-no error and no warning.
-```
+`read_capacity=` is applied to the restored index, so restoring onto
+dedicated read nodes is one call. In `9.x` there was no way to ask for it on
+the restore; a restored index always came up on on-demand capacity.
 
-Until that's fixed, restoring onto dedicated read nodes is two calls: restore,
-then configure.
+The server rejects a dedicated configuration too small to hold the backup, so
+an undersized request fails the restore rather than producing an index that
+cannot serve the data.
 
 :::::{tabs}
 ::::{tab} Sync
 
 ```python
-job = pc.create_index_from_backup(
+index = pc.create_index_from_backup(
     name="product-search-restored",
     backup_id="bk-abc123",
-    timeout=-1,
-)
-index = pc.indexes.configure(
-    "product-search-restored",
     read_capacity={
         "mode": "Dedicated",
         "dedicated": {
@@ -1694,13 +1686,9 @@ index = pc.indexes.configure(
 ::::{tab} Async
 
 ```python
-job = await pc.create_index_from_backup(
+index = await pc.create_index_from_backup(
     name="product-search-restored",
     backup_id="bk-abc123",
-    timeout=-1,
-)
-index = await pc.indexes.configure(
-    "product-search-restored",
     read_capacity={
         "mode": "Dedicated",
         "dedicated": {

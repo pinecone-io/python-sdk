@@ -479,7 +479,7 @@ class AsyncPinecone:
                 "manual": {"shards": ..., "replicas": ...}}}``. Omitted entirely
                 when ``None``, leaving the server's on-demand default in place.
                 Serverless backups only; the server rejects a dedicated
-                configuration too small for the backup.
+                configuration too small to hold the backup.
             timeout (int | None): Seconds to wait for readiness. ``None`` (default)
                 blocks up to 300 s. ``-1`` returns a :class:`CreateIndexFromBackupResponse`
                 immediately (contains ``restore_job_id`` and ``index_id``) without polling.

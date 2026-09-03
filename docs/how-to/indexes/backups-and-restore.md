@@ -196,27 +196,15 @@ index = pc.create_index_from_backup(
 index inherits the backup's tags. `deletion_protection` is taken from the request
 only. It is never inherited from the source index.
 
-````{warning}
-**`read_capacity` is accepted on the request but has no effect today.** The
-`2026-07` OAS declares `read_capacity` on the restore body, and the SDK sends
-what you pass, but the backend's restore handler does not read the field. It
-hardcodes on-demand capacity for a serverless restore and a fixed `B1`
-tier with one shard and one replica for a BYOC restore, whatever the source
-index or the request asked for.
-
-The SDK keeps the spec-shaped parameter rather than rejecting it client-side,
-so the call still succeeds. It just silently lands on defaults. Until the
-backend honours the field, size a restored index with a `configure` call
-**after** the restore rather than expecting the restore to land on dedicated
-capacity:
+`read_capacity` is applied to the restored index. Omit it and the restore
+lands on on-demand capacity; pass a dedicated configuration and the index
+comes up on dedicated read nodes, sized as asked. It is one call, not a
+restore followed by a resize:
 
 ```python
 index = pc.create_index_from_backup(
     name="product-search-restored",
     backup_id="bk-abc123",
-)
-pc.indexes.configure(
-    "product-search-restored",
     read_capacity={
         "mode": "Dedicated",
         "dedicated": {
@@ -227,7 +215,10 @@ pc.indexes.configure(
     },
 )
 ```
-````
+
+The server rejects a dedicated configuration too small to hold the backup, so
+an undersized request fails the restore rather than producing an index that
+cannot serve the data.
 
 Two more server-side gates are worth knowing before you call:
 
