@@ -36,8 +36,8 @@ dependencies = [
     # drops symbols (e.g. httpx.BaseTransport) the SDK relies on. Without this
     # cap, `pip install --pre pinecone` resolves httpx to a broken pre-release.
     "httpx[http2]>=0.27,<1.0",
-    "msgspec",
-    "orjson",
+    "msgspec>=0.19,<0.22",
+    "orjson>=3.11,<4",
     # Imported at module scope by pinecone/async_client/assistants.py for async
     # file IO. httpx happens to require it too, but every module the package
     # imports eagerly is declared here rather than left to a transitive accident
