@@ -36,11 +36,32 @@ class TokenResponse(StructDictMixin, Struct, kw_only=True):
         'Bearer'
         >>> token.expires_in is None
         True
+
+        ``repr()`` keeps only the last four characters of ``access_token``, so
+        an object logged whole does not leak it:
+
+        >>> repr(token).startswith("TokenResponse(access_token='...VCJ9'")
+        True
+
+    .. warning::
+        The masking stops at ``repr()``. ``to_dict()`` and JSON encoding return
+        ``access_token`` in full, so a result serialized wholesale into a log
+        line, an error report, or a cache writes the live credential out.
     """
 
     access_token: str
     token_type: str | None = None
     expires_in: int | None = None
+
+    def __repr__(self) -> str:
+        masked = f"...{self.access_token[-4:]}" if len(self.access_token) >= 4 else "***"
+        return (
+            f"TokenResponse(access_token='{masked}', token_type={self.token_type!r}, "
+            f"expires_in={self.expires_in!r})"
+        )
+
+    def __str__(self) -> str:
+        return repr(self)
 
     def __getitem__(self, key: str) -> Any:
         """Support bracket access (e.g. token['access_token'])."""
