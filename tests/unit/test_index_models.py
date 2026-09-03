@@ -372,6 +372,185 @@ class TestIndexModel:
         assert hasattr(model, "vector_type")
 
 
+_ONE_DENSE = {
+    "fields": {"embedding": {"type": "dense_vector", "dimension": 1536, "metric": "cosine"}}
+}
+_DENSE_AND_SPARSE = {
+    "fields": {
+        "dv": {"type": "dense_vector", "dimension": 8, "metric": "euclidean"},
+        "sv": {"type": "sparse_vector"},
+    }
+}
+_SPARSE_ONLY = {"fields": {"sv": {"type": "sparse_vector"}}}
+_TWO_DENSE = {
+    "fields": {
+        "a": {"type": "dense_vector", "dimension": 4, "metric": "cosine"},
+        "b": {"type": "dense_vector", "dimension": 8, "metric": "cosine"},
+    }
+}
+_TWO_SPARSE = {"fields": {"a": {"type": "sparse_vector"}, "b": {"type": "sparse_vector"}}}
+_NO_VECTORS: dict[str, Any] = {"fields": {}}
+
+_AMBIGUOUS = "ambiguous"
+_UNDETERMINED = "no dense or sparse vector fields"
+
+#: (schema, accessor, resolved value) for every shape where the accessor answers.
+_RESOLVING_CASES = [
+    (_ONE_DENSE, "dimension", 1536),
+    (_ONE_DENSE, "metric", "cosine"),
+    (_ONE_DENSE, "vector_type", "dense"),
+    (_DENSE_AND_SPARSE, "dimension", 8),
+    (_DENSE_AND_SPARSE, "metric", "euclidean"),
+    (_DENSE_AND_SPARSE, "vector_type", "dense"),
+    (_SPARSE_ONLY, "dimension", None),
+    (_SPARSE_ONLY, "metric", "dotproduct"),
+    (_SPARSE_ONLY, "vector_type", "sparse"),
+    (_TWO_SPARSE, "dimension", None),
+]
+
+#: (schema, accessor, expected message fragment) for every shape where it raises.
+_FAILING_CASES = [
+    (_TWO_DENSE, "dimension", _AMBIGUOUS),
+    (_TWO_DENSE, "metric", _AMBIGUOUS),
+    (_TWO_DENSE, "vector_type", _AMBIGUOUS),
+    (_TWO_SPARSE, "metric", _AMBIGUOUS),
+    (_TWO_SPARSE, "vector_type", _AMBIGUOUS),
+    (_NO_VECTORS, "dimension", _UNDETERMINED),
+    (_NO_VECTORS, "metric", _UNDETERMINED),
+    (_NO_VECTORS, "vector_type", _UNDETERMINED),
+]
+
+
+def _model_with(schema: dict[str, Any]) -> IndexModel:
+    return msgspec.convert(make_index_response(schema=schema), IndexModel)
+
+
+class TestLegacyVectorAccessorMappingParity:
+    """Every spelling of a deprecated accessor agrees with the property.
+
+    9.x carried ``dimension``/``metric``/``vector_type`` as struct fields, so
+    ``index.metric``, ``index["metric"]``, ``"metric" in index`` and
+    ``to_dict()["metric"]`` all worked. 10.0 made them computed properties;
+    these tests pin that the other three spellings kept up.
+    """
+
+    @pytest.mark.parametrize("schema,accessor,expected", _RESOLVING_CASES)
+    def test_attribute_resolves(self, schema: dict[str, Any], accessor: str, expected: Any) -> None:
+        assert getattr(_model_with(schema), accessor) == expected
+
+    @pytest.mark.parametrize("schema,accessor,expected", _RESOLVING_CASES)
+    def test_getitem_matches_attribute(
+        self, schema: dict[str, Any], accessor: str, expected: Any
+    ) -> None:
+        assert _model_with(schema)[accessor] == expected
+
+    @pytest.mark.parametrize("schema,accessor,expected", _RESOLVING_CASES)
+    def test_contains_is_true(self, schema: dict[str, Any], accessor: str, expected: Any) -> None:
+        assert accessor in _model_with(schema)
+
+    @pytest.mark.parametrize("schema,accessor,expected", _RESOLVING_CASES)
+    def test_to_dict_carries_key(
+        self, schema: dict[str, Any], accessor: str, expected: Any
+    ) -> None:
+        assert _model_with(schema).to_dict()[accessor] == expected
+
+    @pytest.mark.parametrize("schema,accessor,message", _FAILING_CASES)
+    def test_attribute_raises_attribute_error(
+        self, schema: dict[str, Any], accessor: str, message: str
+    ) -> None:
+        with pytest.raises(AttributeError, match=message):
+            getattr(_model_with(schema), accessor)
+
+    @pytest.mark.parametrize("schema,accessor,message", _FAILING_CASES)
+    def test_getitem_raises_key_error_carrying_the_same_text(
+        self, schema: dict[str, Any], accessor: str, message: str
+    ) -> None:
+        with pytest.raises(KeyError, match=message):
+            _model_with(schema)[accessor]
+
+    @pytest.mark.parametrize("schema,accessor,message", _FAILING_CASES)
+    def test_contains_is_false(self, schema: dict[str, Any], accessor: str, message: str) -> None:
+        assert accessor not in _model_with(schema)
+
+    @pytest.mark.parametrize("schema,accessor,message", _FAILING_CASES)
+    def test_to_dict_omits_key(self, schema: dict[str, Any], accessor: str, message: str) -> None:
+        assert accessor not in _model_with(schema).to_dict()
+
+    def test_getitem_key_error_text_equals_attribute_error_text(self) -> None:
+        model = _model_with(_TWO_DENSE)
+        try:
+            model.metric
+        except AttributeError as exc:
+            attribute_message = str(exc)
+        with pytest.raises(KeyError) as excinfo:
+            model["metric"]
+        assert excinfo.value.args[0] == attribute_message
+
+
+class TestRemovedKeyMappingParity:
+    """``index["spec"]`` explains the removal instead of raising a bare KeyError."""
+
+    @pytest.mark.parametrize("removed", ["spec", "embed", "created_at"])
+    def test_getitem_raises_guided_key_error(self, removed: str) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        with pytest.raises(KeyError, match="removed in the 2026-07"):
+            model[removed]
+
+    @pytest.mark.parametrize("removed", ["spec", "embed", "created_at"])
+    def test_key_error_text_equals_attribute_error_text(self, removed: str) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        try:
+            getattr(model, removed)
+        except AttributeError as exc:
+            attribute_message = str(exc)
+        with pytest.raises(KeyError) as excinfo:
+            model[removed]
+        assert excinfo.value.args[0] == attribute_message
+
+    @pytest.mark.parametrize("removed", ["spec", "embed", "created_at"])
+    def test_contains_is_false(self, removed: str) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        assert removed not in model
+
+    @pytest.mark.parametrize("removed", ["spec", "embed", "created_at"])
+    def test_to_dict_omits_key(self, removed: str) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        assert removed not in model.to_dict()
+
+    def test_unknown_key_still_raises_bare_key_error(self) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        with pytest.raises(KeyError) as excinfo:
+            model["bogus"]
+        assert excinfo.value.args[0] == "bogus"
+
+    def test_dunder_key_rejected(self) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        assert "__class__" not in model
+        with pytest.raises(KeyError):
+            model["__class__"]
+
+    def test_non_string_key_not_contained(self) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        assert 3 not in model
+
+
+class TestToDictRoundTrip:
+    def test_msgspec_convert_accepts_to_dict_output(self) -> None:
+        """The derived keys must not make to_dict() output undecodable."""
+        model = msgspec.convert(make_index_response(), IndexModel)
+        payload = model.to_dict()
+        assert {"dimension", "metric", "vector_type"} <= set(payload)
+
+        restored = msgspec.convert(payload, IndexModel)
+        assert restored.name == model.name
+        assert restored.dimension == model.dimension
+        assert restored.metric == model.metric
+
+    def test_struct_field_keys_still_all_present(self) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        assert set(IndexModel.__struct_fields__) <= set(model.to_dict())
+
+
 class TestIndexList:
     def _make_list(self) -> IndexList:
         data = make_index_list_response(

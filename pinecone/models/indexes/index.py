@@ -56,6 +56,12 @@ class IndexTags(dict):  # type: ignore[type-arg]
         return dict(self)
 
 
+#: Names that resolve through a deprecated computed property rather than a
+#: struct field. Attribute, item, ``in`` and ``to_dict()`` access all read it.
+_LEGACY_VECTOR_ACCESSORS: tuple[str, ...] = ("dimension", "metric", "vector_type")
+
+_MIGRATION_GUIDE = "https://sdk.pinecone.io/python/migration/v10-migration.html"
+
 _REMOVED_FIELD_HINTS: dict[str, str] = {
     "spec": (
         "use index.deployment instead — a ManagedDeployment, PodDeployment, "
@@ -68,6 +74,18 @@ _REMOVED_FIELD_HINTS: dict[str, str] = {
     ),
     "created_at": "the 2026-07 API does not return a creation timestamp",
 }
+
+
+def _removed_field_message(name: str) -> str:
+    """Build the guided message for a field the 2026-07 API no longer returns.
+
+    Shared by the attribute and mapping paths so ``index.created_at`` and
+    ``index["created_at"]`` explain the removal in the same words.
+    """
+    return (
+        f"IndexModel.{name} was removed in the 2026-07 Pinecone API: "
+        f"{_REMOVED_FIELD_HINTS[name]}. See {_MIGRATION_GUIDE}."
+    )
 
 
 class IndexModel(Struct, kw_only=True):
@@ -122,12 +140,27 @@ class IndexModel(Struct, kw_only=True):
         (True, 'aws', 'us-east-1')
         >>> index = pc.index(host=idx.host)
 
+    ``IndexModel`` also reads like a mapping: ``index["host"]`` and
+    ``"host" in index`` work for every attribute above, and
+    :meth:`to_dict` returns the same key set.
+
     .. versionchanged:: 10.0
        ``dimension``, ``metric``, ``vector_type``, ``spec``, ``embed`` and
-       ``created_at`` are no longer plain attributes. Reading one raises
-       :exc:`AttributeError` with the replacement named in the message; the
-       first three survive as deprecated properties that resolve when the
-       schema has exactly one vector field.
+       ``created_at`` are no longer plain attributes.
+
+       ``dimension``, ``metric`` and ``vector_type`` survive as deprecated
+       properties that resolve when the schema has exactly one vector field,
+       and every spelling agrees: ``index.metric``, ``index["metric"]``,
+       ``"metric" in index`` and the ``"metric"`` key of :meth:`to_dict` all
+       answer from the same schema lookup. On a schema where the accessor is
+       ambiguous — two dense fields, say — the attribute raises
+       :exc:`AttributeError`, the item access raises :exc:`KeyError` carrying
+       that same explanation, ``in`` is ``False``, and :meth:`to_dict` omits
+       the key.
+
+       ``spec``, ``embed`` and ``created_at`` are gone. Reading one raises
+       :exc:`AttributeError`, and ``index["spec"]`` a :exc:`KeyError`, with
+       the replacement named in the message.
     """
 
     name: str
@@ -153,13 +186,10 @@ class IndexModel(Struct, kw_only=True):
             self.tags = IndexTags(self.tags)
 
     def __getattr__(self, name: str) -> Any:
-        if name in ("dimension", "metric", "vector_type"):
+        if name in _LEGACY_VECTOR_ACCESSORS:
             raise self._legacy_vector_accessor_error(name)
         if name in _REMOVED_FIELD_HINTS:
-            raise AttributeError(
-                f"IndexModel.{name} was removed in the 2026-07 Pinecone API: "
-                f"{_REMOVED_FIELD_HINTS[name]}. See https://sdk.pinecone.io/python/migration/v10-migration.html."
-            )
+            raise AttributeError(_removed_field_message(name))
         raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
 
     def _dense_fields(self) -> list[DenseVectorField]:
@@ -208,6 +238,10 @@ class IndexModel(Struct, kw_only=True):
         one dense field, or no vector field at all: there is no single field to
         resolve to, and the message says which fields it found.
 
+        Also readable as ``index["dimension"]``, testable with
+        ``"dimension" in index``, and present in :meth:`to_dict` — all three
+        resolve exactly when this property does.
+
         .. deprecated:: 10.0
            Read ``index.schema.fields["<field-name>"].dimension`` instead.
         """
@@ -225,6 +259,10 @@ class IndexModel(Struct, kw_only=True):
         Resolves to ``"dotproduct"`` for a schema whose only vector field is
         sparse, since sparse scoring is always dot product. Raises
         :exc:`AttributeError` when more than one field could answer.
+
+        Also readable as ``index["metric"]``, testable with
+        ``"metric" in index``, and present in :meth:`to_dict` — all three
+        resolve exactly when this property does.
 
         .. deprecated:: 10.0
            Read ``index.schema.fields["<field-name>"].metric`` instead.
@@ -245,6 +283,10 @@ class IndexModel(Struct, kw_only=True):
         Raises :exc:`AttributeError` when the schema has several fields of one
         kind — a hybrid schema has no single vector type to report.
 
+        Also readable as ``index["vector_type"]``, testable with
+        ``"vector_type" in index``, and present in :meth:`to_dict` — all
+        three resolve exactly when this property does.
+
         .. deprecated:: 10.0
            Inspect the field types in ``index.schema.fields`` instead.
         """
@@ -260,13 +302,46 @@ class IndexModel(Struct, kw_only=True):
             return "sparse"
         raise AttributeError("vector_type")
 
+    def _legacy_accessor_resolves(self, key: str) -> bool:
+        try:
+            getattr(self, key)
+        except AttributeError:
+            return False
+        return True
+
     def __getitem__(self, key: str) -> Any:
-        if key not in self.__struct_fields__:
-            raise KeyError(key)
-        return getattr(self, key)
+        """Return the value for *key*, including the deprecated accessors.
+
+        ``index["dimension"]``, ``index["metric"]`` and
+        ``index["vector_type"]`` answer whatever the like-named property
+        answers. When the property cannot resolve — an ambiguous schema, or
+        one with no vector field — the :exc:`KeyError` carries that same
+        explanation rather than a bare key name, as does a key removed in
+        10.0 such as ``"created_at"``.
+        """
+        if key in self.__struct_fields__:
+            return getattr(self, key)
+        if key in _REMOVED_FIELD_HINTS:
+            raise KeyError(_removed_field_message(key))
+        if key in _LEGACY_VECTOR_ACCESSORS:
+            try:
+                return getattr(self, key)
+            except AttributeError as exc:
+                raise KeyError(str(exc)) from None
+        raise KeyError(key)
 
     def __contains__(self, key: object) -> bool:
-        return key in self.__struct_fields__
+        """Return whether *key* is readable through :meth:`__getitem__`.
+
+        ``True`` for every struct field, and for a deprecated accessor that
+        resolves against this index's schema. ``False`` for one that would
+        raise, and for a key removed in 10.0.
+        """
+        if key in self.__struct_fields__:
+            return True
+        if key in _LEGACY_VECTOR_ACCESSORS:
+            return self._legacy_accessor_resolves(str(key))
+        return False
 
     def __dir__(self) -> list[str]:
         attrs = set(super().__dir__())
@@ -283,10 +358,27 @@ class IndexModel(Struct, kw_only=True):
         emitted without a ``type``, matching the wire format. Optional fields
         that are ``None`` are present with a ``None`` value rather than
         omitted, so the key set is the same for every index.
+
+        The deprecated ``dimension``, ``metric`` and ``vector_type`` keys are
+        included whenever the like-named property resolves, which is what 9.x
+        emitted. An index whose schema makes one of them ambiguous omits that
+        key rather than guessing. ``spec``, ``embed`` and ``created_at`` are
+        not emitted at all.
+
+        The result is still accepted by ``msgspec.convert(d, IndexModel)``,
+        which ignores the three derived keys. It is not constructor input:
+        ``IndexModel(**d)`` rejects them, and never built a usable model
+        anyway, since the nested values are dicts rather than the structs the
+        fields are typed as.
         """
         result: dict[str, Any] = {
             field: _to_builtins_stripped(getattr(self, field)) for field in self.__struct_fields__
         }
+        for key in _LEGACY_VECTOR_ACCESSORS:
+            try:
+                result[key] = getattr(self, key)
+            except AttributeError:
+                continue
         return result
 
     def __repr__(self) -> str:
