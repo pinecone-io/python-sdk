@@ -55,13 +55,13 @@ class Collections:
 
         .. note::
            The 2026-07 API has no path from a collection back to an index.
-           :meth:`Pinecone.indexes.create` rejects ``source_collection=``
-           with a :exc:`PineconeTypeError`, and the backend rejects the
-           request with ``400 Creating an index from collection or backup is
-           not yet supported``. Passing ``source_collection`` inside a
-           :class:`~pinecone.models.indexes.specs.PodSpec` (via the
-           deprecated ``spec=`` argument) is worse: it is silently dropped,
-           and the new index comes back empty. Use
+           :meth:`Pinecone.indexes.create` rejects ``source_collection`` with
+           a :exc:`PineconeTypeError` in both spellings — as a top-level
+           keyword argument, and nested in a
+           :class:`~pinecone.models.indexes.specs.PodSpec` passed to the
+           deprecated ``spec=`` argument. The backend rejects the request
+           too, with ``400 Creating an index from collection or backup is
+           not yet supported``. Use
            :meth:`Pinecone.create_index_from_backup` for the supported
            restore path.
 

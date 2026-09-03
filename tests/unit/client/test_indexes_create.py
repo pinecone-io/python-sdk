@@ -402,6 +402,74 @@ def test_create_legacy_integrated_spec_redirects_to_create_for_model(indexes: In
     assert "'chunk_text'" in message
 
 
+def test_create_legacy_integrated_spec_with_a_dict_embed_redirects_the_same_way(
+    indexes: Indexes,
+) -> None:
+    """The dict spelling of ``embed=`` reaches the same guided error (#529).
+
+    ``IntegratedSpec`` is a ``msgspec.Struct`` built by direct construction,
+    so its ``EmbedConfig`` annotation does not coerce a plain dict. The dict
+    is the 9.x spelling, and it is what the guided message itself prints, so
+    the message builder has to read it.
+    """
+    with pytest.raises(PineconeTypeError) as exc_info:
+        indexes.create(
+            name="semantic",
+            spec=IntegratedSpec(
+                cloud="aws",
+                region="us-east-1",
+                embed={"model": "multilingual-e5-large", "field_map": {"text": "chunk_text"}},  # type: ignore[arg-type]
+            ),
+        )
+
+    message = str(exc_info.value)
+    assert "create_for_model" in message
+    assert "'multilingual-e5-large'" in message
+    assert "'chunk_text'" in message
+
+
+def test_create_legacy_integrated_spec_with_an_unreadable_embed_still_redirects(
+    indexes: Indexes,
+) -> None:
+    """A junk ``embed=`` yields placeholders, not a crash in the builder (#529)."""
+    with pytest.raises(PineconeTypeError) as exc_info:
+        indexes.create(
+            name="semantic",
+            spec=IntegratedSpec(cloud="aws", region="us-east-1", embed=None),  # type: ignore[arg-type]
+        )
+
+    message = str(exc_info.value)
+    assert "create_for_model" in message
+    assert "<model-name>" in message
+    assert "<field-name>" in message
+
+
+def test_create_legacy_pod_spec_source_collection_is_guided_away(indexes: Indexes) -> None:
+    """``source_collection`` nested in a ``PodSpec`` raises, as the kwarg does (#538)."""
+    with pytest.raises(PineconeTypeError) as exc_info:
+        indexes.create(
+            name="restored",
+            dimension=8,
+            spec=PodSpec(environment="us-east-1-aws", source_collection="movie-embeddings"),
+        )
+
+    message = str(exc_info.value)
+    assert "source_collection" in message
+    assert "create_index_from_backup" in message
+
+
+def test_create_legacy_pod_spec_metadata_config_is_guided_away(indexes: Indexes) -> None:
+    """``metadata_config`` nested in a ``PodSpec`` raises, as the kwarg does (#538)."""
+    with pytest.raises(PineconeTypeError) as exc_info:
+        indexes.create(
+            name="declared",
+            dimension=8,
+            spec=PodSpec(environment="us-east-1-aws", metadata_config={"indexed": ["genre"]}),
+        )
+
+    assert "metadata_config" in str(exc_info.value)
+
+
 def test_create_legacy_pods_kwarg_notes_no_equivalent(indexes: Indexes) -> None:
     with pytest.raises(PineconeTypeError, match="pods=: capacity is replicas x shards"):
         indexes.create(  # type: ignore[call-arg]

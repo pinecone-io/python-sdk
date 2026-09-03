@@ -244,6 +244,73 @@ class TestSpecRejection:
             spec_to_read_capacity({"serverless": None})
 
 
+class TestPodSpecFieldsWithNoDestination:
+    """``metadata_config`` and ``source_collection`` raise rather than vanish (#538).
+
+    Both are 9.x ``PodSpec`` fields the 2026-07 create request has nowhere to
+    put. Translating the rest of the spec and omitting them would build a
+    request the caller did not write, so the translation refuses instead.
+    """
+
+    @pytest.mark.parametrize(
+        ("spec", "expected"),
+        [
+            pytest.param(
+                PodSpec(environment="us-east-1-aws", source_collection="movie-embeddings"),
+                "source_collection",
+                id="source-collection-object",
+            ),
+            pytest.param(
+                PodSpec(environment="us-east-1-aws", metadata_config={"indexed": ["genre"]}),
+                "metadata_config",
+                id="metadata-config-object",
+            ),
+            pytest.param(
+                {"pod": {"environment": "us-east-1-aws", "source_collection": "movie-embeddings"}},
+                "source_collection",
+                id="source-collection-dict",
+            ),
+            pytest.param(
+                {"pod": {"environment": "us-east-1-aws", "metadata_config": {"indexed": ["g"]}}},
+                "metadata_config",
+                id="metadata-config-dict",
+            ),
+        ],
+    )
+    def test_spec_to_deployment_rejects_rather_than_drops(self, spec: Any, expected: str) -> None:
+        with pytest.raises(PineconeTypeError) as exc:
+            spec_to_deployment(spec)
+        assert expected in str(exc.value)
+
+    def test_source_collection_names_the_supported_restore_path(self) -> None:
+        with pytest.raises(PineconeTypeError, match="create_index_from_backup"):
+            spec_to_deployment(
+                PodSpec(environment="us-east-1-aws", source_collection="movie-embeddings")
+            )
+
+    def test_the_message_says_pod_creation_is_refused_either_way(self) -> None:
+        with pytest.raises(PineconeTypeError) as exc:
+            spec_to_deployment(
+                PodSpec(environment="us-east-1-aws", source_collection="movie-embeddings")
+            )
+        assert "deployment_type 'pod' is not supported" in str(exc.value)
+
+    def test_read_capacity_lifting_refuses_the_same_spec(self) -> None:
+        with pytest.raises(PineconeTypeError, match="source_collection"):
+            spec_to_read_capacity(
+                PodSpec(environment="us-east-1-aws", source_collection="movie-embeddings")
+            )
+
+    def test_a_pod_spec_setting_neither_field_still_translates(self) -> None:
+        assert spec_to_deployment(PodSpec(environment="us-east-1-aws")) == {
+            "deployment_type": "pod",
+            "environment": "us-east-1-aws",
+            "pod_type": "p1.x1",
+            "replicas": 1,
+            "shards": 1,
+        }
+
+
 class TestLegacyVectorSchema:
     @pytest.mark.parametrize(
         ("kwargs", "expected"),
