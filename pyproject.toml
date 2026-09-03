@@ -74,8 +74,11 @@ module-name = "pinecone._grpc"
 python-source = "."
 # maturin 1.7.x doesn't auto-include the LICENSE file in the sdist even though
 # it adds `License-File: LICENSE` to PKG-INFO from the SPDX license expression.
-# The mismatch makes PyPI reject the sdist. Explicit include fixes both forms.
-include = ["LICENSE"]
+# The mismatch makes PyPI reject the sdist. The wheel needs no entry here: it
+# gets its copy under `dist-info/licenses/` from the SPDX expression, and an
+# unscoped include would also drop a bare `LICENSE` at the wheel root, which
+# installs into the site-packages root.
+include = [{ path = "LICENSE", format = "sdist" }]
 
 [tool.mypy]
 strict = true
