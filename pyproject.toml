@@ -67,6 +67,7 @@ Homepage = "https://www.pinecone.io"
 Documentation = "https://docs.pinecone.io"
 Source = "https://github.com/pinecone-io/python-sdk"
 Issues = "https://github.com/pinecone-io/python-sdk/issues"
+Changelog = "https://sdk.pinecone.io/python/migration/v10-migration.html"
 
 [tool.maturin]
 manifest-path = "rust/Cargo.toml"
