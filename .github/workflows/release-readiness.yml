@@ -73,15 +73,33 @@ jobs:
           # report as success, so a fixed-size run window can miss the most
           # recent real publish. The artifacts API is sorted newest-first and
           # only returns runs that actually uploaded the artifact.
-          run_id=$(gh api \
+          #
+          # The artifact's `workflow_run` object carries only id,
+          # repository_id, head_repository_id, head_branch and head_sha — no
+          # status or conclusion — so a candidate run can still be in
+          # progress (its dev wheel not yet pushed to Artifact Registry) when
+          # this is dispatched shortly after a merge to main. Walk the
+          # newest-first candidates and check each run directly, taking the
+          # first that has actually completed successfully.
+          candidates=$(gh api \
               "repos/${GH_REPO}/actions/artifacts?name=dev-version&per_page=20" \
             --jq '[.artifacts[]
                     | select(.expired == false)
                     | select(.workflow_run.head_branch == "main")
-                  ][0].workflow_run.id // empty')
+                  ] | .[].workflow_run.id')
+
+          run_id=""
+          for candidate in $candidates; do
+            state=$(gh api "repos/${GH_REPO}/actions/runs/${candidate}" \
+              --jq '.status + " " + (.conclusion // "null")')
+            if [ "$state" = "completed success" ]; then
+              run_id="$candidate"
+              break
+            fi
+          done
 
           if [ -z "$run_id" ]; then
-            echo "::error::No non-expired 'dev-version' artifact on main"
+            echo "::error::No non-expired 'dev-version' artifact on main from a completed, successful run"
             exit 1
           fi
           echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
