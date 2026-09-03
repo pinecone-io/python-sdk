@@ -9,8 +9,8 @@ Five properties are pinned here (#106, #374):
   long-form aliases, and a passthrough for unknown values.
 * ``build()`` output is always JSON-serializable, and ``add_*`` then
   ``build()`` round-trips the exact set of field names added.
-* Builder reuse: ``build()`` copies — later ``add_*`` calls never mutate
-  earlier results.
+* Builder reuse: ``build()`` copies deeply — neither a later ``add_*`` call
+  nor mutation of a returned result changes the builder or any other result.
 * ``boolean``/``float``/``string_list`` fields always carry ``filterable``,
   which the backend requires (#374).
 """
@@ -213,6 +213,32 @@ def test_later_add_calls_never_mutate_earlier_build_results(
     builder.build()
 
     assert first == snapshot
+
+
+@given(calls=st.lists(_add_call, min_size=1, max_size=6))
+def test_mutating_a_built_result_never_reaches_the_builder(
+    calls: list[tuple[str, str, dict[str, Any]]],
+) -> None:
+    """Writing into a `build()` result changes neither the builder nor another result.
+
+    The counterpart to `test_later_add_calls_never_mutate_earlier_build_results`,
+    which only ever exercises the `add_*` direction. `_set_field` rebinds a map
+    entry rather than writing through it, so no sequence of `add_*` calls can
+    reach a dict a caller already holds — a shallow `build()` is invisible from
+    that side (#465).
+    """
+    builder = SchemaBuilder()
+    for call in calls:
+        _apply(builder, call)
+    first = builder.build()
+    snapshot = copy.deepcopy(first)
+
+    second = builder.build()
+    for field in second["fields"].values():
+        field["injected"] = "caller mutation"
+
+    assert first == snapshot
+    assert builder.build() == snapshot
 
 
 @given(calls=st.lists(_add_metadata, min_size=1, max_size=8))

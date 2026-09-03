@@ -9,11 +9,11 @@ Create-schema rules at API version ``2026-07``:
   ``sparse_vector``, or ``string`` with ``full_text_search``.
 - At most one ``dense_vector`` and at most one ``sparse_vector`` field per
   schema (server-enforced).
-- On managed and BYOC indexes, metadata-only field declarations (``boolean``,
-  ``float``, ``string_list``, and ``string`` without ``full_text_search``) are
-  rejected by the server — metadata is indexed automatically at upsert time.
-  Pod indexes are the exception: they still accept metadata field
-  declarations.
+- Metadata-only field declarations (``boolean``, ``float``, ``string_list``,
+  and ``string`` without ``full_text_search``) are rejected by the server on
+  every deployment type ``2026-07`` can create, and one rejected field fails
+  the whole request. Leave them out — metadata is indexed for filtering
+  automatically at upsert time.
 - ``semantic_text`` fields are not accepted in create schemas at ``2026-07``
   and the builder does not offer a method for them.
 - ``integer`` is a **response-only** field type: it appears in describe/list
@@ -28,6 +28,7 @@ Create-schema rules at API version ``2026-07``:
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 _FTS_LANGUAGES_SHORT = frozenset(
@@ -88,9 +89,9 @@ _RESPONSE_ONLY_FIELD_TYPES: dict[str, str] = {
     "integer": (
         "'integer' appears only in describe/list responses, for indexes created "
         "before numeric values were normalised to float; the create schema has no "
-        "integer variant. Drop the field from the create schema (numeric metadata "
-        "is indexed for filtering automatically at upsert time), or, on a pod "
-        "index, declare it with add_float_field()"
+        "integer variant. Drop the field from the create schema — numeric metadata "
+        "is indexed for filtering automatically at upsert time, and the 'float' "
+        "declaration add_float_field() writes is rejected on create too"
     )
 }
 
@@ -207,21 +208,21 @@ class SchemaBuilder:
 
     A create schema declares the fields that are **searched**: a dense
     vector field, a sparse vector field, or string fields with full-text
-    search enabled. On managed and BYOC indexes, every other field type is
-    metadata — include those values in documents instead of the schema and
-    they are indexed for filtering automatically at upsert time. Pod
-    indexes still accept metadata field declarations
+    search enabled. Every other field type is metadata — include those
+    values in documents instead of the schema and they are indexed for
+    filtering automatically at upsert time. The metadata-only declarations
     (:meth:`add_boolean_field`, :meth:`add_float_field`,
     :meth:`add_string_list_field`, and :meth:`add_string_field` without
-    full-text search).
+    full-text search) are rejected on create, whichever deployment type you
+    ask for.
 
     There is no ``add_integer_field``. ``integer`` is a response-only field
     type at ``2026-07`` — it is returned by describe/list but has no create
     variant — so the builder rejects it wherever a raw ``type`` key can reach
     a field dict (:meth:`add_custom_field`, or ``additional_options``),
     raising :exc:`~pinecone.errors.exceptions.PineconeValueError` rather than
-    letting the server answer with a ``422``. Use :meth:`add_float_field` for
-    numeric fields.
+    letting the server answer with a ``422``. Numeric metadata needs no
+    declaration at all — put the values in documents.
 
     Examples:
         >>> from pinecone.schema_builder import SchemaBuilder
@@ -354,7 +355,7 @@ class SchemaBuilder:
         description: str | None = None,
         **additional_options: Any,
     ) -> SchemaBuilder:
-        """Add a string field for full-text search (or, on pod indexes, filtering).
+        """Add a string field for full-text search.
 
         Full-text search is enabled by passing ``full_text_search=True``, a
         ``full_text_search`` dict, or any of the typed FTS keyword arguments
@@ -362,18 +363,13 @@ class SchemaBuilder:
 
         .. important::
 
-           At API version ``2026-07``, a string field's shape decides which
-           deployment family accepts it. **Without** ``full_text_search``,
-           it is a metadata-only declaration: pod indexes accept it as
-           filterable metadata, while managed and BYOC indexes reject it
-           (``400``: the schema only accepts fields used for search).
-           **With** ``full_text_search``, it is the other way around: managed
-           and BYOC indexes accept it, while pod indexes reject it
-           (``400``: full-text-search fields are not supported for that
-           deployment type). For managed and BYOC indexes, omit
-           metadata-only fields from the schema and include the values in
-           documents instead; they are indexed for filtering automatically
-           at upsert time.
+           Pass ``full_text_search``. A string field declared without it is
+           a metadata-only declaration, which the server rejects on create
+           at API version ``2026-07`` on every deployment type that version
+           can create (``400``: the schema only accepts fields used for
+           search). Leave metadata-only fields out of the schema and include
+           the values in documents instead; they are indexed for filtering
+           automatically at upsert time.
 
         When both ``full_text_search`` dict and keyword arguments are provided,
         the keyword arguments take precedence for the same key.
@@ -386,8 +382,8 @@ class SchemaBuilder:
             full_text_search: ``True`` or ``{}`` to enable FTS with server
                 defaults, a ``dict`` of FTS-config keys (``language``,
                 ``stemming``, ``stop_words``, ``ngram``), or ``None``
-                (default) to leave FTS disabled — valid only for pod
-                indexes; see the note above.
+                (default) to leave FTS disabled, which makes the field a
+                metadata-only declaration; see the note above.
             language: Language for FTS tokenisation and analysis. Accepts
                 ISO short codes or long-form aliases. Both ``"en"`` and
                 ``"english"`` are valid; the SDK normalises known
@@ -506,18 +502,19 @@ class SchemaBuilder:
         description: str | None = None,
         **additional_options: Any,
     ) -> SchemaBuilder:
-        """Add a list-of-strings field for metadata filtering (pod indexes only).
+        """Add a list-of-strings field for metadata filtering (the server rejects these).
 
         .. important::
 
            At API version ``2026-07``, ``string_list`` is a metadata-only
-           declaration, and the server rejects it when creating managed or
-           BYOC indexes (``400``: the schema only accepts fields used for
-           search) — regardless of ``filterable``. Pod indexes are the
-           exception and still accept this declaration. For managed and
-           BYOC indexes, include list-of-string values in documents
-           instead; they are indexed for filtering automatically at
-           upsert time.
+           declaration and no index you can create accepts one. The server
+           rejects it on every deployment type this version creates
+           (``400``: the schema only accepts fields used for search),
+           regardless of ``filterable``, and one rejected field fails the
+           whole schema. Pod indexes are not a way around it: ``2026-07``
+           refuses to create a pod index at all. Leave list-of-string
+           values out of the schema and put them in documents instead;
+           they are indexed for filtering automatically at upsert time.
 
         String-list fields store a list of strings per row — useful for
         tag-style metadata (e.g. ``["sci-fi", "mystery"]``) that should be
@@ -558,17 +555,19 @@ class SchemaBuilder:
         description: str | None = None,
         **additional_options: Any,
     ) -> SchemaBuilder:
-        """Add a boolean field for metadata filtering (pod indexes only).
+        """Add a boolean field for metadata filtering (the server rejects these).
 
         .. important::
 
            At API version ``2026-07``, ``boolean`` is a metadata-only
-           declaration, and the server rejects it when creating managed or
-           BYOC indexes (``400``: the schema only accepts fields used for
-           search) — regardless of ``filterable``. Pod indexes are the
-           exception and still accept this declaration. For managed and
-           BYOC indexes, include boolean values in documents instead; they
-           are indexed for filtering automatically at upsert time.
+           declaration and no index you can create accepts one. The server
+           rejects it on every deployment type this version creates
+           (``400``: the schema only accepts fields used for search),
+           regardless of ``filterable``, and one rejected field fails the
+           whole schema. Pod indexes are not a way around it: ``2026-07``
+           refuses to create a pod index at all. Leave boolean values out
+           of the schema and put them in documents instead; they are
+           indexed for filtering automatically at upsert time.
 
         The wire type is ``"boolean"``.
 
@@ -605,23 +604,25 @@ class SchemaBuilder:
         description: str | None = None,
         **additional_options: Any,
     ) -> SchemaBuilder:
-        """Add a numeric field for metadata filtering (pod indexes only).
+        """Add a numeric field for metadata filtering (the server rejects these).
 
         .. important::
 
            At API version ``2026-07``, ``float`` is a metadata-only
-           declaration, and the server rejects it when creating managed or
-           BYOC indexes (``400``: the schema only accepts fields used for
-           search) — regardless of ``filterable``. Pod indexes are the
-           exception and still accept this declaration. For managed and
-           BYOC indexes, include numeric values in documents instead; they
-           are indexed for filtering automatically at upsert time.
+           declaration and no index you can create accepts one. The server
+           rejects it on every deployment type this version creates
+           (``400``: the schema only accepts fields used for search),
+           regardless of ``filterable``, and one rejected field fails the
+           whole schema. Pod indexes are not a way around it: ``2026-07``
+           refuses to create a pod index at all. Leave numeric values out
+           of the schema and put them in documents instead; they are
+           indexed for filtering automatically at upsert time.
 
-        The wire type is ``"float"`` — the only numeric type a create schema
-        accepts. The create schema has no integer type; integers are stored
-        and filtered as double-precision floats. (Describe/list responses can
-        still return ``integer`` for indexes that pre-date that
-        normalisation; see :class:`~pinecone.models.indexes.schema.IntegerField`.)
+        The wire type is ``"float"``. The create schema has no integer type;
+        integers are stored and filtered as double-precision floats.
+        (Describe/list responses can still return ``integer`` for indexes
+        that pre-date that normalisation; see
+        :class:`~pinecone.models.indexes.schema.IntegerField`.)
 
         Args:
             name: Field name. Replaces any existing field with the same name.
@@ -633,6 +634,11 @@ class SchemaBuilder:
 
         Returns:
             ``self`` for method chaining.
+
+        Examples:
+            .. code-block:: python
+
+                builder.add_float_field("release_year", filterable=True)
         """
         _validate_field_name(name)
         _validate_description(name, description)
@@ -664,9 +670,9 @@ class SchemaBuilder:
            but the ``2026-07`` create schema has no integer variant and the
            server answers a create request carrying one with a ``422``. When
            replaying a described schema into a create request, drop integer
-           fields (numeric metadata is indexed for filtering automatically at
-           upsert time) or, on a pod index, declare them with
-           :meth:`add_float_field`.
+           fields; numeric metadata is indexed for filtering automatically at
+           upsert time, and :meth:`add_float_field` is no help — a ``float``
+           declaration is rejected on create too.
 
         Args:
             name: Field name. Replaces any existing field with the same name.
@@ -687,8 +693,11 @@ class SchemaBuilder:
     def build(self) -> dict[str, dict[str, Any]]:
         """Return the completed schema dict.
 
-        Returns a copy of the internal field dict so that subsequent
-        ``add_*`` calls do not mutate a previously built result.
+        The result is a deep copy of the builder's state, so writing into it
+        — adding a forward-compatible key the SDK does not yet model, for
+        instance — leaves the builder and every other result of ``build()``
+        untouched. One builder can be reused across several indexes even when
+        each schema is edited after the fact.
 
         The server requires at least one searched field (``dense_vector``,
         ``sparse_vector``, or ``string`` with ``full_text_search``) per
@@ -698,8 +707,18 @@ class SchemaBuilder:
         Returns:
             ``{"fields": {name: field_dict, ...}}`` ready to pass as the
             ``schema`` argument when creating an index.
+
+        Examples:
+            >>> from pinecone.schema_builder import SchemaBuilder
+            >>> builder = SchemaBuilder().add_dense_vector_field(
+            ...     "embedding", dimension=8, metric="cosine"
+            ... )
+            >>> schema = builder.build()
+            >>> schema["fields"]["embedding"]["future_option"] = True
+            >>> builder.build()["fields"]["embedding"]
+            {'type': 'dense_vector', 'dimension': 8, 'metric': 'cosine'}
         """
-        return {"fields": dict(self._fields)}
+        return {"fields": copy.deepcopy(self._fields)}
 
 
 __all__ = ["SchemaBuilder"]

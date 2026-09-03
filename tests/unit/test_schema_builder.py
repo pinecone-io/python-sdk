@@ -528,6 +528,7 @@ def test_build_returns_copy_not_same_object() -> None:
     result2 = builder.build()
     assert result1 is not result2
     assert result1["fields"] is not result2["fields"]
+    assert result1["fields"]["title"] is not result2["fields"]["title"]
 
 
 def test_build_subsequent_mutations_do_not_affect_prior_result() -> None:
@@ -537,6 +538,44 @@ def test_build_subsequent_mutations_do_not_affect_prior_result() -> None:
     second = builder.build()
     assert "body" not in first["fields"]
     assert "body" in second["fields"]
+    second["fields"]["title"]["injected"] = "caller mutation"
+    assert "injected" not in first["fields"]["title"]
+
+
+def test_build_result_mutation_does_not_reach_the_builder() -> None:
+    builder = SchemaBuilder().add_boolean_field("x", filterable=True)
+    result = builder.build()
+    result["fields"]["x"]["injected"] = "caller mutation"
+    assert builder.build() == {"fields": {"x": {"type": "boolean", "filterable": True}}}
+
+
+def test_build_result_mutation_does_not_reach_an_earlier_result() -> None:
+    builder = SchemaBuilder().add_boolean_field("x", filterable=True)
+    first = builder.build()
+    second = builder.build()
+    second["fields"]["x"]["injected"] = "caller mutation"
+    assert "injected" not in first["fields"]["x"]
+
+
+def test_build_result_nested_full_text_search_mutation_does_not_reach_the_builder() -> None:
+    builder = SchemaBuilder().add_string_field(
+        "title", full_text_search={"ngram": {"min_gram": 2, "max_gram": 3}}
+    )
+    result = builder.build()
+    result["fields"]["title"]["full_text_search"]["ngram"]["max_gram"] = 99
+    assert builder.build()["fields"]["title"]["full_text_search"]["ngram"] == {
+        "min_gram": 2,
+        "max_gram": 3,
+    }
+
+
+def test_build_result_nested_custom_field_mutation_does_not_reach_the_builder() -> None:
+    builder = SchemaBuilder().add_custom_field(
+        "future", {"type": "future_type", "options": {"depth": 1}}
+    )
+    result = builder.build()
+    result["fields"]["future"]["options"]["depth"] = 99
+    assert builder.build()["fields"]["future"]["options"] == {"depth": 1}
 
 
 def test_build_empty_schema_returns_empty_fields() -> None:
