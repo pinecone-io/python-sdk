@@ -104,7 +104,7 @@ jobs:
           uv run --no-sync sphinx-build -M html . _build -W "${opts[@]}"
 
       - name: Push documentation artifacts to sdk-docs
-        uses: cpina/github-action-push-to-another-repository@main
+        uses: cpina/github-action-push-to-another-repository@55306faa4ed53b815ae49e564af8cfb359d32ae2  # v1.7.3
         env:
           SSH_DEPLOY_KEY: ${{ secrets.SSH_DEPLOY_KEY }}
         with:
