@@ -926,8 +926,13 @@ def test_namespace_crud_lifecycle_rest(client: Pinecone, shared_index_dim2: str)
     assert created.record_count == 0  # unified-ns-0002
     assert isinstance(created.size_bytes, int) and created.size_bytes >= 0
 
-    # 2. Describe namespace — returns same details
-    described = index.describe_namespace(name=ns_name)
+    # 2. Describe namespace — poll for eventual consistency after create
+    described = poll_until(
+        query_fn=lambda: index.describe_namespace(name=ns_name),
+        check_fn=lambda r: isinstance(r, NamespaceDescription),
+        timeout=60,
+        description=f"namespace {ns_name} visible after create",
+    )
     assert isinstance(described, NamespaceDescription)
     assert described.name == ns_name
     assert isinstance(described.record_count, int)
@@ -942,10 +947,13 @@ def test_namespace_crud_lifecycle_rest(client: Pinecone, shared_index_dim2: str)
         index.describe_namespace(name=f"{ns}-absent")
 
     # 3. Namespace appears in list_namespaces_paginated with prefix match
-    list_resp = index.list_namespaces_paginated(prefix=f"{ns}-", limit=100)
+    list_resp = poll_until(
+        query_fn=lambda: index.list_namespaces_paginated(prefix=f"{ns}-", limit=100),
+        check_fn=lambda r: ns_name in [ns_item.name for ns_item in r.namespaces],
+        timeout=60,
+        description=f"namespace {ns_name} visible in listing after create",
+    )
     assert isinstance(list_resp, ListNamespacesResponse)
-    ns_names = [ns_item.name for ns_item in list_resp.namespaces]
-    assert ns_name in ns_names
 
     # Each entry is a NamespaceDescription with a string name
     for ns_item in list_resp.namespaces:

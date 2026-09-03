@@ -2215,6 +2215,13 @@ def test_pagination_next_token_populated(client: Pinecone) -> None:
 
     Also verifies that the backwards-compatibility ``next_token`` property alias
     returns the same value as ``next``.
+
+    The raw call and the SDK call are two independent listings of a
+    project-wide, concurrently-mutated collection, and the token is a cursor
+    naming the last row of whichever page each one saw — so their tokens are
+    allowed to differ and comparing them for equality tests nothing. Each call
+    is therefore checked against itself: the raw body for which key carries the
+    token, and the SDK response for a token that actually advances the cursor.
     """
     import json as _json
 
@@ -2236,10 +2243,6 @@ def test_pagination_next_token_populated(client: Pinecone) -> None:
                 description=f"assistant {n}",
             )
 
-        # --- SDK call ---
-        page = client.assistants.list_page(page_size=2)
-        assert isinstance(page, ListAssistantsResponse)
-
         # --- Raw HTTP inspection to verify wire-format key ---
         raw_response = client.assistants._http.get("/assistants", params={"limit": 2})
         raw_body = _json.loads(raw_response.content)
@@ -2249,18 +2252,41 @@ def test_pagination_next_token_populated(client: Pinecone) -> None:
         )
 
         # v202604 wire format: {"assistants": [...], "pagination": {"next": "token"}}
-        if len(page.assistants) == 2 and has_nested_pagination:
-            raw_next = raw_body["pagination"].get("next")
-            if raw_next:
-                assert page.next == raw_next, (
-                    f"SDK next={page.next!r} does not match raw pagination.next={raw_next!r}"
-                )
-                assert isinstance(page.next, str)
-                assert len(page.next) > 0, "page.next must be non-empty when more pages exist"
+        if len(raw_body.get("assistants", [])) == 2:
+            assert has_nested_pagination, (
+                f"expected a nested 'pagination' object on a full page, got keys {sorted(raw_body)}"
+            )
+            assert raw_body["pagination"].get("next"), (
+                f"expected the token under pagination.next, got "
+                f"{raw_body['pagination']!r} — a rename to next_token would be needed"
+            )
+            assert "next_token" not in raw_body, (
+                f"token also present at the top level: {sorted(raw_body)}"
+            )
+
+        # --- SDK call ---
+        page = client.assistants.list_page(page_size=2)
+        assert isinstance(page, ListAssistantsResponse)
 
         # backwards-compat alias must mirror next regardless of pagination state
         assert page.next_token == page.next, (
             f"next_token alias mismatch: next_token={page.next_token!r}, next={page.next!r}"
+        )
+
+        # The three assistants above guarantee a second page, so the SDK must
+        # surface a token, and following it must move the cursor forward.
+        assert len(page.assistants) == 2, f"expected a full page, got {len(page.assistants)}"
+        assert isinstance(page.next, str) and page.next, (
+            f"page.next must be a non-empty string when more pages exist, got {page.next!r}"
+        )
+
+        second = client.assistants.list_page(page_size=2, pagination_token=page.next)
+        assert isinstance(second, ListAssistantsResponse)
+        first_names = {a.name for a in page.assistants}
+        second_names = {a.name for a in second.assistants}
+        assert not (first_names & second_names), (
+            f"following page.next re-returned rows from page 1: "
+            f"{sorted(first_names & second_names)}"
         )
 
         # --- List files: verify next_token alias on ListFilesResponse ---
