@@ -7,12 +7,15 @@ Get from install to your first similarity search in five minutes.
 ```python
 from pinecone import Pinecone
 
-# Option A: read API key from the PINECONE_API_KEY environment variable
+# Option A: read the API key from the PINECONE_API_KEY environment variable
 pc = Pinecone()
 
 # Option B: pass it explicitly
 pc = Pinecone(api_key="your-api-key")
 ```
+
+With neither, construction raises `PineconeValueError` rather than failing later on
+the first request. See [Authentication](authentication.md).
 
 ## 2. Create an index
 
@@ -27,35 +30,36 @@ pc.indexes.create(
 )
 ```
 
-Declaring a schema makes this a **document index**: you read and write it through
-`index.documents`, and each record is a JSON document whose fields you named yourself.
-The vector methods on {class}`~pinecone.Index` — {meth}`~pinecone.Index.upsert` and
-{meth}`~pinecone.Index.query` — belong to the older vector indexes created with top-level
-`dimension` and `metric`, and the server rejects them on a document index. See
-[Choosing an interface](#choosing-an-interface) below.
-
-## 3. Wait for the index to be ready
-
-`create` polls until the index is ready by default. If you passed `timeout=-1` to
-return immediately, check readiness yourself:
+`create` blocks until the index is ready, so there is nothing to poll before the next
+step. Pass `timeout=-1` to return as soon as the request is accepted, or a positive
+number of seconds to raise {exc}`~pinecone.errors.exceptions.PineconeTimeoutError`
+instead of waiting indefinitely. If you did return early, wait for readiness yourself:
 
 ```python
 import time
 
-while True:
-    desc = pc.indexes.describe("quickstart")
-    if desc.status.ready:
-        break
+while not pc.indexes.describe("quickstart").status.ready:
     time.sleep(1)
 ```
 
-## 4. Get an Index client
+Declaring a schema makes this a **document index**: you read and write it through
+`index.documents`, and each record is a JSON document whose fields you named yourself.
+The vector methods on {class}`~pinecone.index.Index` —
+{meth}`~pinecone.index.Index.upsert` and {meth}`~pinecone.index.Index.query` — belong
+to the older vector indexes created with top-level `dimension` and `metric`, and the
+server rejects them on a document index.
+See [Choosing an interface](#choosing-an-interface) below.
+
+## 3. Get an Index client
 
 ```python
 index = pc.index("quickstart")
 ```
 
-## 5. Upsert documents
+The client the control plane hands back is scoped to one index and talks to the data
+plane, which is a different host.
+
+## 4. Upsert documents
 
 Each document needs an `_id`. Every other key is either a field you declared in the
 schema — here, `embedding` — or arbitrary metadata:
@@ -74,10 +78,11 @@ index.documents.upsert(
 Upserts apply asynchronously, so a document may not be visible to the next search
 immediately.
 
-## 6. Search
+## 5. Search
 
 Rank documents with a `score_by` clause naming the field to compare against.
-{class}`~pinecone.DenseVectorQuery` scores by cosine similarity on the `embedding` field:
+`DenseVectorQuery` scores by cosine similarity on the `embedding` field, because that
+is the metric the field was declared with:
 
 ```python
 from pinecone import DenseVectorQuery
@@ -94,31 +99,35 @@ for match in results.matches:
 
 Omitting `include_fields` returns only `_id` and `_score`; pass `["*"]` for every field.
 
-## 7. Clean up
+## 6. Clean up
 
 ```python
 pc.indexes.delete("quickstart")
 ```
 
+`delete` blocks until the index is gone, the same way `create` blocks until it is
+ready. Pass `timeout=-1` to return as soon as the request is accepted.
+
 (choosing-an-interface)=
 ## Choosing an interface
 
-Two data-plane interfaces exist, and the index's schema decides which one applies:
+Three data-plane interfaces exist, and the way the index was created decides which one
+applies:
 
 | You created the index with | Use | Entry point |
 | --- | --- | --- |
 | `schema={"fields": {...}}` naming your own vector field | documents | `index.documents` |
-| top-level `dimension=` and `metric=` (9.x style) | vectors | `index.upsert`, `index.query` |
-| `create_for_model(...)`, embedding server-side | records | `index.search` |
+| top-level `dimension=` and `metric=` | vectors | `index.upsert`, `index.query` |
+| `create_for_model(...)`, embedding server-side | records | `index.upsert_records`, `index.search` |
 
 Calling the vector methods on a document index fails with an
-{exc}`~pinecone.ApiError` whose message names the documents endpoint to use instead.
-One case is quieter and worth knowing: querying a namespace that has never been written
-returns an empty result rather than that error, so an empty first query is not by itself
-evidence that the interface is right.
+{exc}`~pinecone.errors.exceptions.ApiError` whose message names the documents
+endpoint to use instead.
 
-New indexes should declare a schema. The vector interface remains for indexes that
-already exist; see the [migration guide](../migration/v10-migration.md) for moving
+New indexes should declare a schema. `dimension=`, `metric=`, `vector_type=`, and
+`spec=` are still accepted by {meth}`~pinecone.client.indexes.Indexes.create`, but
+they are deprecated sugar that the SDK translates into a single-field `schema=` and a
+`deployment=`; see the [migration guide](../migration/v10-migration.md) for moving
 between them.
 
 ## Complete example

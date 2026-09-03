@@ -11,7 +11,10 @@ In v8, control-plane methods lived directly on the `Pinecone` client:
 
 ```python
 # v8
-pc.create_index(name="my-index", dimension=1536, metric="cosine", spec=...)
+pc.create_index(
+    name="my-index", dimension=1536, metric="cosine",
+    spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+)
 indexes = pc.list_indexes()
 pc.delete_index("my-index")
 ```
@@ -20,7 +23,10 @@ In v9, they are grouped under namespace properties:
 
 ```python
 # v9
-pc.indexes.create(name="my-index", dimension=1536, metric="cosine", spec=...)
+pc.indexes.create(
+    name="my-index", dimension=1536, metric="cosine",
+    spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+)
 indexes = pc.indexes.list()
 pc.indexes.delete("my-index")
 ```
@@ -28,15 +34,32 @@ pc.indexes.delete("my-index")
 The same pattern applies to collections, backups, and inference:
 
 ```python
-pc.collections.create(...)
+pc.collections.create(name="catalog-snapshot", source="my-index")
 pc.backups.list()
-pc.inference.embed(...)
+pc.inference.embed(model="multilingual-e5-large", inputs=["hello"])
 ```
+
+**You are not forced to move.** `pc.create_index`, `pc.describe_index`,
+`pc.list_indexes`, `pc.configure_index`, `pc.delete_index`,
+`pc.create_collection`, `pc.list_collections` and `pc.delete_collection` all
+still exist on the client, forwarding to the namespace method. They are hidden
+from the reference docs rather than removed, so v8 call sites keep working and
+the migration can be incremental.
+
+One thing does change even on the shims: they are keyword-only.
+`pc.create_index("my-index", ...)` raises `PineconeValueError` naming the
+keywords it accepts; pass `name=` instead. `pc.describe_index("my-index")`,
+`pc.delete_index("my-index")` and `pc.configure_index("my-index", ...)` still
+take the name positionally.
+
+`create` and `delete` both block until the index reaches its end state, polling
+with no upper bound unless you pass `timeout`. Pass `timeout=-1` to return as
+soon as the request is accepted.
 
 ### 2. Async client rename
 
-`PineconeAsyncio` is renamed to `AsyncPinecone`. The old name still works but is
-deprecated and will be removed in a future release.
+`PineconeAsyncio` is renamed to `AsyncPinecone`. The old name is still importable, as a
+plain alias of the new class — same object, so `isinstance` checks are unaffected.
 
 ```python
 # v8
@@ -52,17 +75,24 @@ async with AsyncPinecone(api_key="...") as pc:
 
 ### 3. Response models
 
-v8 returned a mix of plain dicts, dataclass models, and bespoke objects. v9 returns `msgspec.Struct` instances.
-Field access is straightforward—`idx.name`, `idx.dimension`—but the objects are immutable.
-`dict()` no longer works; use `msgspec.structs.asdict(idx)` if you need a dict.
+v8 returned a mix of plain dicts, dataclass models, and bespoke objects. v9 returns
+`msgspec.Struct` instances. Attribute access is unchanged — `idx.name`, `idx.host` — and
+so is subscripting a declared field, `idx["name"]`. What no longer works is handing the
+model to something that expects a real mapping: `dict(idx)` raises `KeyError`.
 
 ```python
-# v9 — field access is unchanged
+import msgspec
+
 idx = pc.indexes.describe("my-index")
-print(idx.name)        # works
-print(idx.dimension)   # works
-print(dict(idx))       # TypeError — structs are not dict-convertible
+print(idx.name)                     # works
+print(idx["name"])                  # works — declared fields only
+print(idx.to_dict())                # nested plain dicts, JSON-ready
+print(msgspec.structs.asdict(idx))  # shallow: nested models stay as objects
+print(dict(idx))                    # raises KeyError — a Struct is not a mapping
 ```
+
+Reach for `to_dict()` when you want JSON, and `msgspec.structs.asdict()` when you want
+the declared fields with the nested models intact.
 
 ### 4. HTTP transport: httpx replaces urllib3
 
@@ -81,17 +111,28 @@ pc = Pinecone(
 )
 ```
 
+Unlike the control-plane methods above, this one is not shimmed: an unrecognised keyword
+raises `TypeError: Pinecone() got unexpected keyword arguments: ['retries']`. See
+[Retries and Resilience](../guides/retries.md) for what `retry_config` reaches and what
+it does not.
+
 ### 5. gRPC: Rust extension replaces grpcio
 
 `GrpcIndex` is now backed by a compiled Rust extension instead of the Python `grpcio`
-package. You do not need to install `grpcio` or `grpcio-tools`. The interface—`upsert`,
-`query`, `fetch`, `delete`—is unchanged.
+package. There is no `grpc` extra to install and no `grpcio` or `grpcio-tools`
+dependency to add — the transport ships in the base `pinecone` package. The data-plane
+interface — `upsert`, `query`, `fetch`, `delete` — is unchanged.
 
 ```python
 # v9 — interface is the same; no grpcio dependency required
 index = pc.index("my-index", grpc=True)
-index.upsert(vectors=[...])
+index.upsert(vectors=[("product-42", [0.012, -0.087, 0.153])])
 ```
+
+`from pinecone.grpc import PineconeGRPC` still works too, and
+`PineconeGRPC(...).Index(name=...)` still returns a `GrpcIndex` — it is a thin subclass
+of `Pinecone` kept for v8 call sites. [Using the gRPC Client](../guides/grpc.md) covers
+the transport, including what `GrpcIndex` does not carry.
 
 ### 6. Import paths
 
@@ -103,8 +144,18 @@ from pinecone import ServerlessSpec, PodSpec
 from pinecone import ConflictError, NotFoundError, ForbiddenError
 ```
 
-Deep imports (`from pinecone.core.client.api...`) are no longer supported. Use the
-top-level package instead.
+Several pre-rewrite module paths survive as shims that re-export from the new
+locations, so imports from them keep working: `pinecone.pinecone`,
+`pinecone.pinecone_asyncio`, `pinecone.exceptions`, `pinecone.control` and
+`pinecone.data`. They are hidden from the reference docs; new code should import from
+`pinecone` directly.
+
+Three others exist but re-export nothing you can import by name — `pinecone.config`,
+`pinecone.db_control` and `pinecone.db_data`. `from pinecone.db_data import Index`
+raises `ImportError`; import `Index` from `pinecone`.
+
+The generated OpenAPI tree is gone: `from pinecone.core.client.api...` raises
+`ModuleNotFoundError`. Use the top-level package instead.
 
 ### 7. Python version requirement
 
@@ -178,17 +229,19 @@ code must be rewritten to use `pc.assistants` directly.
 
 ### 9. Partial-success contract for batched upsert
 
-`index.upsert(...)` gains `batch_size`, `max_concurrency`, and
-`show_progress` kwargs that match v8's signature on the
-surface — but the failure behaviour changed.
+`index.upsert(...)` keeps v8's `batch_size` and `show_progress`
+and adds `max_concurrency` — so a v8 call site still compiles.
+The failure behaviour underneath it changed.
 
 **v8 behaviour.** `idx.upsert(vectors=[...], batch_size=N)`
 raised on the first batch failure. Successful batches were
 lost; subsequent batches were not attempted.
 
-**v9 behaviour.** Batches are submitted concurrently
-(`max_concurrency=4` default; range 1–64). Per-batch HTTP
-retries happen automatically via
+**v9 behaviour.** Batches are submitted concurrently, with
+`max_concurrency` capping how many are in flight at once
+(accepted range 1–64; the default changed after v9 — see
+[the next migration guide](v10-migration.md)).
+Per-batch HTTP retries happen automatically via
 {class}`~pinecone.RetryConfig`. Failures that exceed the
 retry budget are captured on the returned
 {class}`~pinecone.models.UpsertResponse` rather than raised.
@@ -237,7 +290,7 @@ The same partial-success contract applies to
 | Configure index | `pc.configure_index("name", ...)` | `pc.indexes.configure("name", ...)` |
 | Check index exists | `pc.describe_index("name")` + try/except | `pc.indexes.exists("name")` |
 | Get data-plane index | `pc.Index("name")` | `pc.index("name")` *(lowercase in v9; `pc.Index()` is a deprecated shim)* |
-| Get gRPC index | `Pinecone(...).GrpcIndex("name")` | `pc.index("name", grpc=True)` |
+| Get gRPC index | `PineconeGRPC(...).Index("name")` | `pc.index("name", grpc=True)` *(`PineconeGRPC` remains as a deprecated shim)* |
 | Create collection | `pc.create_collection(name=..., source=...)` | `pc.collections.create(name=..., source=...)` |
 | List collections | `pc.list_collections()` | `pc.collections.list()` |
 | Delete collection | `pc.delete_collection("name")` | `pc.collections.delete("name")` |
@@ -247,7 +300,7 @@ The same partial-success contract applies to
 | Delete vectors | `index.delete(ids=[...])` | `index.delete(ids=[...])` *(unchanged)* |
 | Async client | `PineconeAsyncio(api_key=...)` | `AsyncPinecone(api_key=...)` |
 | Retry config | `Pinecone(retries=3)` | `Pinecone(retry_config=RetryConfig(max_retries=3))` |
-| Convert response to dict | `dict(idx)` or `idx.to_dict()` | `msgspec.structs.asdict(idx)` |
+| Convert response to dict | `dict(idx)` or `idx.to_dict()` | `idx.to_dict()` *(still present; `dict(idx)` raises — see §3)* |
 | Embed text | `pc.inference.embed(...)` | `pc.inference.embed(...)` *(unchanged)* |
 
 ---
@@ -259,9 +312,11 @@ The following aliases remain importable from `pinecone` but are deprecated:
 | Deprecated name | Canonical name |
 |---|---|
 | `PineconeAsyncio` | `AsyncPinecone` |
+| `ValidationError` | `PineconeValueError` *(the one alias that emits a `DeprecationWarning` on access)* |
 | `ForbiddenException` | `ForbiddenError` *(`ForbiddenException` still works as a deprecated alias)* |
 | `NotFoundException` | `NotFoundError` *(`NotFoundException` still works as a deprecated alias)* |
 | `pinecone_plugins.assistant.*` (any submodule) | `pinecone.models.assistant`, `pinecone.client.assistants.Assistants` (via `pc.assistant` / `pc.assistants`) |
 
-These aliases will be removed in a future major release. Update your code to use the
-canonical names.
+Each is a plain alias of its canonical name, so `isinstance` and `except` clauses
+behave identically. Update your code to the canonical names; nothing in the SDK forces
+the issue today.

@@ -2,21 +2,33 @@
 
 ### Why is my import slow?
 
-Cold imports of large packages can take tens of milliseconds. The SDK uses lazy imports
-so the heavy modules (`httpx`, `msgspec`, `orjson`) load only when you first use them.
-The fastest way to initialize is to import just what you need:
+`import pinecone` on its own is nearly free — the top-level package binds its exports
+lazily, so nothing underneath it loads until you name something. What costs time is
+which names you then pull through it. Import just the ones you use:
 
 ```python
-from pinecone import Pinecone   # imports only the Pinecone class
+from pinecone import Pinecone   # pulls in the client and its serialization layer
 ```
 
-Avoid wildcard imports (`from pinecone import *`) in performance-sensitive startup paths.
+`from pinecone import *` resolves every export in the package and is the slowest
+form by a wide margin. Avoid it in startup paths you care about.
+
+Of the SDK's own dependencies, `httpx` and `orjson` stay unloaded until a request is
+actually made; `msgspec` comes in with the client class itself, because the response
+models are `msgspec.Struct` subclasses defined at import time.
 
 ### Why does `pc.indexes.list()` yield only a single page?
 
-Serverless index listings return at most a few hundred entries, which fits comfortably
-in a single response. The returned `Paginator` (or `AsyncPaginator`) exists for
-interface consistency with other list methods; the server sends everything in one page.
+Because the server sends every index in one page today. The returned `Paginator` (or
+`AsyncPaginator`) exposes the paginator interface anyway, so a call site written against
+it keeps working if that ever changes. Iterate it rather than assuming one page:
+
+```python
+names = [index.name for index in pc.indexes.list()]
+```
+
+Note that `pc.list_indexes()`, the `9.x`-shaped shim, is not a paginator — it returns an
+`IndexList`, which still has `.names()`.
 
 ### Can I use the async client with FastAPI?
 
@@ -41,9 +53,10 @@ context, so requests reuse connections instead of opening new ones each time.
 
 ### What is the difference between `Index` and `GrpcIndex`?
 
-`Index` uses the REST/HTTP API. `GrpcIndex` uses gRPC, which has lower per-request
-overhead and is better suited to high-throughput bulk operations such as large upsert
-batches. For typical read-heavy or mixed workloads, `Index` is simpler to operate.
+The transport, and nothing else about how you call them. `Index` speaks REST over
+HTTP; `GrpcIndex` speaks gRPC, which pays off on high-throughput bulk upserts. Both
+come with the base `pinecone` package, so it's a keyword argument rather than an
+install:
 
 ```python
 # REST: general purpose
@@ -52,6 +65,10 @@ index = pc.index("my-index")
 # gRPC: high-throughput upserts
 index = pc.index("my-index", grpc=True)
 ```
+
+`GrpcIndex` carries no document operations — the `2026-07` documents API is REST-only.
+See [Using the gRPC client](guides/grpc.md) for the full comparison and when the
+switch is worth making.
 
 ### How do I handle a `ConflictError` when creating an index that already exists?
 

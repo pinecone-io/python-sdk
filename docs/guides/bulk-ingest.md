@@ -9,8 +9,8 @@ control. For benchmark numbers and transport comparisons, see
 [Reliable Large Ingests with upsert_from_dataframe](../how-to/vectors/upsert-from-dataframe.md).
 
 Everything here applies identically to the REST sync client, the asyncio
-client, and the gRPC client. Bulk behavior is one shared engine underneath
-all three.
+client, and the gRPC client, and to `documents.upsert()` as well as
+`upsert()`. Bulk behavior is one shared engine underneath all of them.
 
 ## The four stations
 
@@ -52,11 +52,12 @@ Two consequences worth knowing:
 - The limit is **per backend host, shared process-wide**. Two `Index`
   handles in one process pointed at the same index share one gate, so they
   cannot accidentally double-team the backend.
-- Retries are also **budgeted per host**. Every failure spends from a
-  budget that successes slowly refill; when too large a fraction of recent
-  traffic is failing, retries pause and requests fail fast instead. This
-  caps how much extra load a partial outage can generate — a backend at 80%
-  capacity gets ~1.1× normal traffic from the SDK, not 2×.
+- Retries are also **budgeted per host**, as a token bucket: every
+  retryable failure spends from it and every success slowly refills it, and
+  retries are suppressed once the bucket falls below half. That caps
+  steady-state retry overhead near a tenth of successful traffic, and makes
+  retries switch themselves off during a full outage rather than doubling
+  load at the worst moment.
 
 ## The knobs
 
@@ -67,9 +68,10 @@ How many items go in one request. Defaults: 500 rows for
 
 Bigger batches mean fewer requests but heavier ones: more per-request
 payload, longer per-request time, and a larger unit of failure (a batch
-fails or succeeds as a whole). 100–1000 items is the practical range for
-typical vector sizes. Change it when your vectors are unusually large
-(lower it) or tiny (raise it).
+fails or succeeds as a whole). The SDK only requires `batch_size >= 1`; the
+ceiling is the server's request size limit, which a batch of unusually
+large vectors reaches sooner than the item count suggests. Lower it when
+your vectors are large, raise it when they are tiny.
 
 ### `max_concurrency`
 
@@ -138,9 +140,14 @@ you what happened:
   to feed back into a retry call.
 - `errors` — one entry per failed batch. Each carries the items, the error,
   a `retryable` hint, and a `disposition` telling you *how* it failed:
-  - `rejected` — the server or transport refused it (after retries).
+  - `rejected` — the attempt completed with an error, after retries. The
+    write may still have landed: a response can be lost after the server
+    applied it.
   - `unsent` — never attempted because `total_timeout` expired first.
   - `abandoned` — never attempted because the stall detector fired.
+
+  Dispositions are an open set. Branch on the values you handle and let an
+  unfamiliar one fall through to your default; do not match exhaustively.
 
 (`upsert_from_dataframe` accepts `on_error="raise"` if you'd rather the
 lowest-indexed batch failure be re-raised after all batches settle; the
@@ -163,6 +170,11 @@ rounds:
 
 ```python
 import time
+
+from pinecone import Pinecone
+
+pc = Pinecone()
+index = pc.index(name="product-search")
 
 response = index.upsert(vectors=vectors, batch_size=200)
 

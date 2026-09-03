@@ -1,7 +1,11 @@
 # Backups and restore
 
-Backups are point-in-time snapshots of an index. Use them to protect against data loss,
-create copies of an index, or restore a previous state.
+Backups are point-in-time snapshots of a managed (serverless) or BYOC index. Use them to
+protect against data loss, create copies of an index, or restore a previous state.
+
+Pod-based indexes cannot be backed up. Their snapshot mechanism is a collection, which is a
+different thing with a different API and no restore path — see
+[collections](../collections.md).
 
 ## Create a backup
 
@@ -27,7 +31,11 @@ backup = pc.backups.create(
 )
 ```
 
-The backup transitions through ``Initializing`` → ``Ready`` when complete.
+`status` is ``"Initializing"`` while the snapshot is being built, then
+``"Ready"`` when it is complete or ``"Failed"`` if it is not. Those three are
+the only values, and `create` returns as soon as the request is accepted — there
+is no `timeout=` to wait on, so poll `describe` until the status leaves
+``"Initializing"``.
 
 The same operation is available index-first on the indexes namespace, if that
 reads better in an index-centric flow:
@@ -133,17 +141,26 @@ entirely, so the server's default applies.
 ```python
 backup = pc.backups.describe(backup_id="bk-abc123")
 print(backup.source_index_name)
-print(backup.status)
+print(backup.status)            # "Initializing" | "Ready" | "Failed"
 print(backup.dense_dimension)
-print(backup.schema.fields["embedding"].metric)
 print(backup.record_count)
 print(backup.size_bytes)
 print(backup.source_index_deleted_at)
+
+if backup.schema is not None:
+    print(backup.schema.fields["embedding"].metric)
 ```
 
 `schema` is an {class}`~pinecone.models.indexes.schema.IndexSchema`, the same
 typed model returned by `pc.indexes.describe(...).schema`, and is `None` when
-the server returns no schema for the backup.
+the server returns no schema for the backup — schedule-produced backups of an
+index that declared none, for instance. Guard it rather than reaching straight
+through, as above.
+
+`dense_dimension` is a convenience over that schema: it reports the dimension
+when the backup has exactly one `dense_vector` field, and `None` when the
+schema is absent, has no dense field, or has more than one. For a hybrid or
+multi-vector index, read the field you want off `schema.fields` instead.
 
 `pc.indexes.describe_backup("bk-abc123")` is the same call under the indexes
 namespace.
@@ -167,7 +184,13 @@ print(index.name)
 print(index.status.state)
 ```
 
-`create_index_from_backup` polls until the new index is ready. Pass `timeout=-1` to
+`create_index_from_backup` polls until the new index is ready, but unlike
+`pc.indexes.create` it does **not** wait indefinitely: omitting `timeout`
+bounds the wait at 300 seconds and then raises
+{exc}`~pinecone.errors.exceptions.PineconeTimeoutError`. A large backup can
+outlast that, and the timeout does not cancel the restore — the job carries on
+server-side, so catch it and poll the restore job rather than treating it as a
+failure. Pass a larger positive `timeout` to wait longer, or `timeout=-1` to
 return immediately:
 
 ```python
@@ -192,9 +215,11 @@ index = pc.create_index_from_backup(
 
 ### What a restore does and does not carry over
 
-`tags` behaves as documented. Pass them and they win; omit them and the restored
-index inherits the backup's tags. `deletion_protection` is taken from the request
-only. It is never inherited from the source index.
+`tags` you pass win outright; omit them and the server copies the backup's own
+tags onto the restored index. `deletion_protection` is taken from the request
+only — it is never inherited from the source index, and defaults to `disabled`
+when you leave it out, so an index restored from a protected source comes back
+unprotected.
 
 `read_capacity` is applied to the restored index. Omit it and the restore
 lands on on-demand capacity; pass a dedicated configuration and the index
@@ -279,7 +304,7 @@ code can recover pages the server never points at. Tracked upstream in
 Describe a specific job:
 
 ```python
-job = pc.restore_jobs.describe(job_id="rj-xyz789")
+job = pc.restore_jobs.describe(job_id="rj-abc123")
 print(job.restore_job_id)
 print(job.backup_id)
 print(job.target_index_name)
@@ -302,7 +327,7 @@ for a terminal value instead:
 import time
 
 while True:
-    job = pc.restore_jobs.describe(job_id="rj-xyz789")
+    job = pc.restore_jobs.describe(job_id="rj-abc123")
     if job.status in ("Completed", "Failed", "Cancelled"):
         break
     time.sleep(5)
@@ -332,12 +357,12 @@ from `list` entirely rather than reported. Tracked upstream in
 pc.backups.delete(backup_id="bk-abc123")
 ```
 
-Deleting a backup does not affect the source index or any indexes restored from it.
-The call returns `None`. The API answers `202 Accepted` with no body.
+Deleting a backup does not affect the source index or any indexes restored from
+it, and the call returns `None`.
 
-A backup with a restore job still in flight cannot be deleted; the API returns
-`412` and the SDK raises a `FailedPreconditionError` naming the pending job ids. Wait for the
-restore to finish, then delete.
+A backup with a restore job still in flight cannot be deleted: the SDK raises
+{exc}`~pinecone.errors.exceptions.FailedPreconditionError`, and its message
+names the pending job ids. Wait for the restore to finish, then delete.
 
 
 ## Schedule automatic backups
@@ -367,9 +392,12 @@ There is **no cron support** anywhere in this API. `frequency` accepts exactly
 sending a request. The run time is chosen server-side and reported through
 `next_scheduled_run`; there is no way to pick an hour or a timezone.
 
-`retention_days` must be at least 1. Its upper bound is a per-project setting
-(`max_backup_retention_days`) that the SDK does not know, so a too-large
-value is rejected by the server with a message naming the real limit.
+`retention_days` must be at least 1, which the SDK checks before sending.
+Its upper bound is a per-project setting (`max_backup_retention_days`) the SDK
+does not know, so a too-large value is rejected by the server with a message
+naming the real limit. On the way back the value is spelled
+`retention_expire_after_days` on the schedule model, mirroring the response
+body — the shorter `retention_days` is the request keyword only.
 
 Only **one enabled schedule per index** is allowed. Creating a second one fails
 with `409` and a message telling you to disable or delete the first. Pod-based
@@ -480,5 +508,6 @@ the backend graduates; until then `scheduled_execution_at` reads as `None` and
 - {class}`~pinecone.models.backups.list.BackupScheduleList`: schedule list response
 - {class}`~pinecone.models.backups.schedules.BackupScheduleHistoryItem`: one run produced by a schedule
 - {class}`~pinecone.models.backups.list.BackupScheduleHistoryList`: schedule history response
-- {doc}`/how-to/indexes/serverless`: serverless index management
-- {doc}`/how-to/indexes/pod`: pod-based index management
+- [Serverless indexes](serverless.md): creating and configuring the indexes you back up
+- [Pod-based indexes](pod.md): the legacy deployment, which backups do not cover
+- [Collections](../collections.md): the pod-based snapshot mechanism
