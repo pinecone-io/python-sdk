@@ -15,7 +15,7 @@ working. New code should use::
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from pinecone._client import Pinecone
 from pinecone.errors.exceptions import PineconeValueError
@@ -73,9 +73,7 @@ class PineconeGRPC(Pinecone):
             raise TypeError(
                 f"PineconeGRPC.Index() got unexpected keyword arguments: {sorted(kwargs)!r}"
             )
-        from pinecone.grpc import GrpcIndex as _GrpcIndex
-
-        return cast(_GrpcIndex, self.index(name=name, host=host, grpc=True))
+        return self.index(name=name, host=host, grpc=True)
 
 
 __all__ = ["PineconeGRPC"]

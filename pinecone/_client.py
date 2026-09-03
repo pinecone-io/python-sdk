@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, overload
 from urllib.parse import quote
 
 from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
@@ -470,6 +470,36 @@ class Pinecone:
         from pinecone.client._assistant_namespace_proxy import _AssistantNamespaceProxy
 
         return _AssistantNamespaceProxy(self.assistants)
+
+    @overload
+    def index(
+        self,
+        name: str = ...,
+        *,
+        host: str = ...,
+        grpc: Literal[False] = ...,
+        pool_threads: int | None = ...,
+    ) -> Index: ...
+
+    @overload
+    def index(
+        self,
+        name: str = ...,
+        *,
+        host: str = ...,
+        grpc: Literal[True],
+        pool_threads: int | None = ...,
+    ) -> GrpcIndex: ...
+
+    @overload
+    def index(
+        self,
+        name: str = ...,
+        *,
+        host: str = ...,
+        grpc: bool,
+        pool_threads: int | None = ...,
+    ) -> Index | GrpcIndex: ...
 
     def index(
         self,
@@ -1369,9 +1399,7 @@ class Pinecone:
             raise TypeError(
                 f"Pinecone.Index() got unexpected keyword arguments: {sorted(kwargs)!r}"
             )
-        from pinecone.index import Index as _Index
-
-        return cast(_Index, self.index(name=name, host=host, pool_threads=pool_threads))
+        return self.index(name=name, host=host, pool_threads=pool_threads)
 
     def IndexAsyncio(self, host: str, **kwargs: Any) -> Any:  # noqa: N802
         """Backwards-compatibility shim that returns an :class:`AsyncIndex`.

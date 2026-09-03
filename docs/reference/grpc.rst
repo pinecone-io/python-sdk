@@ -17,10 +17,11 @@ Obtain a ``GrpcIndex`` instance via :meth:`pinecone.Pinecone.index` with
    from pinecone.grpc import GrpcIndex
    idx = GrpcIndex(host="my-index-abc123.svc.pinecone.io", api_key="your-api-key")
 
-``GrpcIndex`` exposes the same data-plane operations as
-:class:`~pinecone.index.Index` but uses gRPC transport (backed by a Rust
-extension) and returns :class:`~pinecone.grpc.future.PineconeFuture` objects
-from the ``*_async()`` methods.
+``GrpcIndex`` carries the data-plane operations of
+:class:`~pinecone.index.Index` except for the ``documents`` namespace, over gRPC
+transport (backed by a Rust extension), and returns
+:class:`~pinecone.grpc.future.PineconeFuture` objects from the ``*_async()``
+methods.
 
 **Method groups:**
 
