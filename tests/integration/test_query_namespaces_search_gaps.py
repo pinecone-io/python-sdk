@@ -27,8 +27,8 @@ import pytest
 
 from pinecone import AsyncPinecone, Pinecone
 from pinecone._internal.constants import DEFAULT_BASE_URL
-from pinecone.models.namespaces.models import NamespaceDescription
-from tests.integration.conftest import async_poll_until, wait_for_ready
+from pinecone.models.namespaces.models import ListNamespacesResponse, NamespaceDescription
+from tests.integration.conftest import async_poll_until, poll_until, wait_for_ready
 from tests.integration.legacy_index import (
     LegacyIndex,
     assert_serves_vectors_api,
@@ -87,13 +87,17 @@ def test_namespace_crud_rest(client: Pinecone, fresh_legacy_index: LegacyIndex) 
     assert desc.record_count == 0
 
     # delete_namespace removes it — after delete, it should be gone from listing
+    # (eventual consistency)
     index.delete_namespace(name="crud-ns1")
-    page = index.list_namespaces_paginated()
-    names = {ns.name for ns in page.namespaces}
+    post_delete = poll_until(
+        query_fn=lambda: index.list_namespaces_paginated(),
+        check_fn=lambda r: "crud-ns1" not in {ns.name for ns in r.namespaces},
+        timeout=60,
+        description="namespace crud-ns1 removed from listing after delete",
+    )
+    assert isinstance(post_delete, ListNamespacesResponse)
+    names = {ns.name for ns in post_delete.namespaces}
     assert "crud-ns1" not in names, f"namespace not deleted: {names}"
-
-    # delete_namespace is idempotent-ish on re-delete (no exception for now-existing)
-    # crud-ns2 still there
     assert "crud-ns2" in names
 
 
@@ -158,8 +162,14 @@ async def test_namespace_crud_rest_async(
         assert d.record_count == 0
 
         await index.delete_namespace(name="acrud-ns1")
-        page = await index.list_namespaces_paginated()
-        names = {ns.name for ns in page.namespaces}
+        post_delete = await async_poll_until(
+            query_fn=lambda: index.list_namespaces_paginated(),
+            check_fn=lambda r: "acrud-ns1" not in {ns.name for ns in r.namespaces},
+            timeout=60,
+            description="namespace acrud-ns1 removed from listing after delete",
+        )
+        assert isinstance(post_delete, ListNamespacesResponse)
+        names = {ns.name for ns in post_delete.namespaces}
         assert "acrud-ns1" not in names
     finally:
         await index.close()
