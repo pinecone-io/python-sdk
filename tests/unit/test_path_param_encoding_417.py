@@ -1,4 +1,4 @@
-"""Path parameters on the DB control-plane routes are percent-encoded (#417).
+"""Every path parameter the SDK interpolates is percent-encoded (#417, #460).
 
 #385 fixed the ``.``/``..`` half of this defect class at the HTTP boundary. The
 boundary cannot fix the other half: by the time ``_prepare_path`` sees
@@ -7,8 +7,12 @@ segment or two structural ones. So ``/``-injection has to be encoded at the call
 site, and these routes have real siblings for an injected segment to reach --
 ``/indexes/{name}``, ``/indexes/{name}/backups`` and
 ``/indexes/{name}/backup-schedules`` are all live, so ``describe(name="x/backups")``
-listed backups instead of describing an index. That is not a judgement about what
-a name may contain; it is a failure to send the name we were given.
+listed backups instead of describing an index. The assistants surface had the
+same shape and a caller-chosen name to reach it with: ``/chat/{name}``,
+``/chat/{name}/context`` and ``/chat/{name}/chat/completions`` are all live, so
+``chat(assistant_name="x/context")`` retrieved context instead of chatting. That
+is not a judgement about what a name may contain; it is a failure to send the
+name we were given.
 
 Three kinds of test live here, and only the first states the invariant:
 
@@ -18,10 +22,10 @@ Three kinds of test live here, and only the first states the invariant:
   the encoding alone, so it covers sites nobody has written yet.
 - per-operation tables asserting ``request.url.raw_path``, the actual request
   line, so no row can pass on a helper's return value;
-- an AST scan of the ``pinecone/`` tree, derived at run time, that fails when a
-  **new** unencoded site appears. #417 converts the DB control-plane sites; the
-  assistants and admin surfaces are deferred to #460 and recorded in
-  :data:`DEFERRED_RAW_SITES` so the inventory cannot drift in either direction.
+- an AST scan of the ``pinecone/`` tree, derived at run time, that fails when an
+  unencoded site appears anywhere. #417 converted the DB control-plane sites and
+  #460 the assistants and admin ones, so the scan now asserts the tree is clean
+  rather than matching an inventory of exceptions.
 """
 
 from __future__ import annotations
@@ -29,6 +33,8 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
+import inspect
+import io
 import pathlib
 import re
 from collections import Counter
@@ -44,6 +50,7 @@ from hypothesis import strategies as st
 
 from pinecone import Pinecone, PineconeAsyncio
 from pinecone._internal.http_client import _prepare_path
+from pinecone.admin.admin import _OAUTH_URL, Admin
 from tests.unit.test_import_id_path_encoding import ENCODING_CASES
 
 # ---------------------------------------------------------------------------
@@ -120,51 +127,23 @@ def scan_package() -> Counter[Site]:
     return found
 
 
-DEFERRED_RAW_SITES: dict[Site, int] = {
-    ("pinecone/admin/api_keys.py", "/admin/api-keys/{}", "api_key_id"): 3,
-    ("pinecone/admin/api_keys.py", "/admin/projects/{}/api-keys", "project_id"): 2,
-    ("pinecone/admin/invites.py", "/admin/invites/{}", "invite_id"): 2,
-    ("pinecone/admin/invites.py", "/admin/invites/{}/resend", "invite_id"): 1,
-    ("pinecone/admin/organizations.py", "/admin/organizations/{}", "organization_id"): 3,
-    ("pinecone/admin/projects.py", "/admin/projects/{}", "project_id"): 3,
-    ("pinecone/admin/role_bindings.py", "/admin/role-bindings/{}", "role_binding_id"): 2,
-    ("pinecone/admin/service_accounts.py", "/admin/service-accounts/{}", "service_account_id"): 3,
-    (
-        "pinecone/admin/service_accounts.py",
-        "/admin/service-accounts/{}/rotate-secret",
-        "service_account_id",
-    ): 1,
-    ("pinecone/admin/users.py", "/admin/users/{}", "user_id"): 2,
-    ("pinecone/async_client/assistants.py", "/assistants/{}", "name"): 4,
-    ("pinecone/async_client/assistants.py", "/chat/{}", "assistant_name"): 2,
-    ("pinecone/async_client/assistants.py", "/chat/{}/chat/completions", "assistant_name"): 2,
-    ("pinecone/async_client/assistants.py", "/chat/{}/context", "assistant_name"): 1,
-    ("pinecone/async_client/assistants.py", "/files/{}", "assistant_name"): 2,
-    ("pinecone/async_client/assistants.py", "/files/{}/{}", "assistant_name"): 3,
-    ("pinecone/async_client/assistants.py", "/files/{}/{}", "file_id"): 3,
-    ("pinecone/async_client/assistants.py", "/operations/{}", "assistant_name"): 1,
-    ("pinecone/async_client/assistants.py", "/operations/{}/{}", "assistant_name"): 1,
-    ("pinecone/async_client/assistants.py", "/operations/{}/{}", "operation_id"): 1,
-    ("pinecone/client/assistants.py", "/assistants/{}", "name"): 4,
-    ("pinecone/client/assistants.py", "/chat/{}", "assistant_name"): 2,
-    ("pinecone/client/assistants.py", "/chat/{}/chat/completions", "assistant_name"): 2,
-    ("pinecone/client/assistants.py", "/chat/{}/context", "assistant_name"): 1,
-    ("pinecone/client/assistants.py", "/files/{}", "assistant_name"): 2,
-    ("pinecone/client/assistants.py", "/files/{}/{}", "assistant_name"): 3,
-    ("pinecone/client/assistants.py", "/files/{}/{}", "file_id"): 3,
-    ("pinecone/client/assistants.py", "/operations/{}", "assistant_name"): 1,
-    ("pinecone/client/assistants.py", "/operations/{}/{}", "assistant_name"): 1,
-    ("pinecone/client/assistants.py", "/operations/{}/{}", "operation_id"): 1,
-}
-
 CONVERTED_MODULES = (
     "pinecone/_client.py",
+    "pinecone/admin/api_keys.py",
+    "pinecone/admin/invites.py",
+    "pinecone/admin/organizations.py",
+    "pinecone/admin/projects.py",
+    "pinecone/admin/role_bindings.py",
+    "pinecone/admin/service_accounts.py",
+    "pinecone/admin/users.py",
+    "pinecone/async_client/assistants.py",
     "pinecone/async_client/backup_schedules.py",
     "pinecone/async_client/backups.py",
     "pinecone/async_client/collections.py",
     "pinecone/async_client/indexes.py",
     "pinecone/async_client/pinecone.py",
     "pinecone/async_client/restore_jobs.py",
+    "pinecone/client/assistants.py",
     "pinecone/client/backup_schedules.py",
     "pinecone/client/backups.py",
     "pinecone/client/collections.py",
@@ -173,19 +152,16 @@ CONVERTED_MODULES = (
 )
 
 
-def test_no_unencoded_path_param_site_outside_the_deferred_inventory() -> None:
-    """A new raw site anywhere in ``pinecone/`` fails here rather than shipping."""
-    new = scan_package() - Counter(DEFERRED_RAW_SITES)
-    assert not new, (
-        "unencoded path-parameter site(s) not on the #460 deferral list; "
-        f"encode with quote(value, safe=''): {sorted(new)}"
+def test_no_unencoded_path_param_site_anywhere() -> None:
+    """A raw site anywhere in ``pinecone/`` fails here rather than shipping.
+
+    #417 left an inventory of known-raw sites for #460 to work through. That
+    inventory is empty, so the assertion is now the flat one: no exceptions.
+    """
+    found = scan_package()
+    assert not found, (
+        f"unencoded path-parameter site(s); encode with quote(value, safe=''): {sorted(found)}"
     )
-
-
-def test_deferred_inventory_has_no_stale_entries() -> None:
-    """A site fixed but left on the list would let the list outlive the defect."""
-    fixed = Counter(DEFERRED_RAW_SITES) - scan_package()
-    assert not fixed, f"these are encoded now -- drop them from DEFERRED_RAW_SITES: {sorted(fixed)}"
 
 
 @pytest.mark.parametrize("module", CONVERTED_MODULES)
@@ -703,3 +679,482 @@ def test_the_encoding_is_stable_under_reapplication(value: str) -> None:
     """
     once = _prepare_path(f"/indexes/{quote(value, safe='')}/backups")
     assert _prepare_path(once) == once
+
+
+# ---------------------------------------------------------------------------
+# The assistants and admin surfaces (#460)
+# ---------------------------------------------------------------------------
+
+_MESSAGES = [{"content": "hi"}]
+_FIXED_ASSISTANT = "an-assistant"
+_FIXED_FILE = "file-abc123"
+_FIXED_OPERATION = "op-abc123"
+
+
+async def _await_then_drain(awaitable: Any) -> list[Any]:
+    stream = await awaitable
+    return [chunk async for chunk in stream]
+
+
+def _consume_stream(result: Any) -> Any:
+    """Drain a streaming chat on whichever lane produced it.
+
+    The async lane returns a coroutine that resolves to the stream, so unlike
+    :func:`_consume` this cannot dispatch on ``__aiter__`` -- there is nothing
+    to inspect until the coroutine has been awaited.
+    """
+    if inspect.isawaitable(result):
+        return _await_then_drain(result)
+    return list(result)
+
+
+def _seeded(pc: Any, assistant_name: str) -> Any:
+    """Return ``pc.assistants`` with a data-plane client already cached for *name*.
+
+    ``_data_plane_http`` otherwise describes the assistant first to learn its
+    host, which would put a second request on the wire ahead of the one under
+    test and build a fresh TLS context per Hypothesis example (#421). The
+    control-plane client stands in for the cached one: it carries the same
+    ``/assistant`` path prefix a real data-plane client does, so the request
+    line has the shape the operation actually produces.
+    """
+    assistants = pc.assistants
+    assistants._data_plane_clients.clear()
+    assistants._data_plane_clients[assistant_name] = assistants._http
+    return assistants
+
+
+ASSISTANT_OPS: list[tuple[str, Op, str]] = [
+    (
+        "assistant_describe",
+        lambda pc, v: pc.assistants.describe(name=v),
+        "/assistant/assistants/{}",
+    ),
+    (
+        "assistant_update",
+        lambda pc, v: pc.assistants.update(name=v, instructions="be brief"),
+        "/assistant/assistants/{}",
+    ),
+    (
+        "assistant_delete",
+        lambda pc, v: pc.assistants.delete(name=v, timeout=-1),
+        "/assistant/assistants/{}",
+    ),
+    (
+        "assistant_chat",
+        lambda pc, v: _seeded(pc, v).chat(assistant_name=v, messages=_MESSAGES),
+        "/assistant/chat/{}",
+    ),
+    (
+        "assistant_chat_streaming",
+        lambda pc, v: _consume_stream(
+            _seeded(pc, v).chat(assistant_name=v, messages=_MESSAGES, stream=True)
+        ),
+        "/assistant/chat/{}",
+    ),
+    (
+        "assistant_chat_completions",
+        lambda pc, v: _seeded(pc, v).chat_completions(assistant_name=v, messages=_MESSAGES),
+        "/assistant/chat/{}/chat/completions",
+    ),
+    (
+        "assistant_chat_completions_streaming",
+        lambda pc, v: _consume_stream(
+            _seeded(pc, v).chat_completions(assistant_name=v, messages=_MESSAGES, stream=True)
+        ),
+        "/assistant/chat/{}/chat/completions",
+    ),
+    (
+        "assistant_context",
+        lambda pc, v: _seeded(pc, v).context(assistant_name=v, query="q"),
+        "/assistant/chat/{}/context",
+    ),
+    (
+        "assistant_list_files_page",
+        lambda pc, v: _seeded(pc, v).list_files_page(assistant_name=v),
+        "/assistant/files/{}",
+    ),
+    (
+        "assistant_upload_file",
+        lambda pc, v: _seeded(pc, v).upload_file(
+            assistant_name=v, file_stream=io.BytesIO(b"x"), file_name="a.txt", timeout=-1
+        ),
+        "/assistant/files/{}",
+    ),
+    (
+        "assistant_upsert_file_varying_the_assistant",
+        lambda pc, v: _seeded(pc, v).upload_file(
+            assistant_name=v,
+            file_stream=io.BytesIO(b"x"),
+            file_name="a.txt",
+            file_id=_FIXED_FILE,
+            timeout=-1,
+        ),
+        f"/assistant/files/{{}}/{_FIXED_FILE}",
+    ),
+    (
+        "assistant_upsert_file_varying_the_file",
+        lambda pc, v: _seeded(pc, _FIXED_ASSISTANT).upload_file(
+            assistant_name=_FIXED_ASSISTANT,
+            file_stream=io.BytesIO(b"x"),
+            file_name="a.txt",
+            file_id=v,
+            timeout=-1,
+        ),
+        f"/assistant/files/{_FIXED_ASSISTANT}/{{}}",
+    ),
+    (
+        "assistant_delete_file_varying_the_assistant",
+        lambda pc, v: _seeded(pc, v).delete_file(assistant_name=v, file_id=_FIXED_FILE, timeout=-1),
+        f"/assistant/files/{{}}/{_FIXED_FILE}",
+    ),
+    (
+        "assistant_describe_file_varying_the_assistant",
+        lambda pc, v: _seeded(pc, v).describe_file(assistant_name=v, file_id=_FIXED_FILE),
+        f"/assistant/files/{{}}/{_FIXED_FILE}",
+    ),
+    (
+        "assistant_describe_file_varying_the_file",
+        lambda pc, v: _seeded(pc, _FIXED_ASSISTANT).describe_file(
+            assistant_name=_FIXED_ASSISTANT, file_id=v
+        ),
+        f"/assistant/files/{_FIXED_ASSISTANT}/{{}}",
+    ),
+    (
+        "assistant_delete_file_varying_the_file",
+        lambda pc, v: _seeded(pc, _FIXED_ASSISTANT).delete_file(
+            assistant_name=_FIXED_ASSISTANT, file_id=v, timeout=-1
+        ),
+        f"/assistant/files/{_FIXED_ASSISTANT}/{{}}",
+    ),
+    (
+        "assistant_list_operations_page",
+        lambda pc, v: _seeded(pc, v).list_operations_page(assistant_name=v),
+        "/assistant/operations/{}",
+    ),
+    (
+        "assistant_describe_operation_varying_the_assistant",
+        lambda pc, v: _seeded(pc, v).describe_operation(
+            assistant_name=v, operation_id=_FIXED_OPERATION
+        ),
+        f"/assistant/operations/{{}}/{_FIXED_OPERATION}",
+    ),
+    (
+        "assistant_describe_operation_varying_the_operation",
+        lambda pc, v: _seeded(pc, _FIXED_ASSISTANT).describe_operation(
+            assistant_name=_FIXED_ASSISTANT, operation_id=v
+        ),
+        f"/assistant/operations/{_FIXED_ASSISTANT}/{{}}",
+    ),
+]
+
+
+@pytest.mark.parametrize(("value", "encoded"), ENCODING_CASES)
+@pytest.mark.parametrize(("invoke", "template"), _params(ASSISTANT_OPS))
+@respx.mock
+def test_assistant_op_sends_the_value_as_one_path_segment(
+    client: Pinecone, invoke: Op, template: str, value: str, encoded: str
+) -> None:
+    respx.route().mock(return_value=httpx.Response(200, json={}))
+
+    with _ignoring_the_stub_response_body():
+        invoke(client, value)
+
+    assert respx.calls, "no request was issued, so this row would prove nothing"
+    assert respx.calls[0].request.url.raw_path.decode() == template.format(encoded)
+
+
+@pytest.mark.parametrize(("value", "encoded"), ENCODING_CASES)
+@pytest.mark.parametrize(("invoke", "template"), _params(ASSISTANT_OPS))
+async def test_async_assistant_op_sends_the_value_as_one_path_segment(
+    async_client: PineconeAsyncio,
+    invoke: Op,
+    template: str,
+    value: str,
+    encoded: str,
+    respx_mock: respx.MockRouter,
+) -> None:
+    respx_mock.route().mock(return_value=httpx.Response(200, json={}))
+
+    with _ignoring_the_stub_response_body():
+        await invoke(async_client, value)
+
+    assert respx_mock.calls, "no request was issued, so this row would prove nothing"
+    assert respx_mock.calls[0].request.url.raw_path.decode() == template.format(encoded)
+
+
+ADMIN_OPS: list[tuple[str, Op, str]] = [
+    (
+        "api_key_list",
+        lambda ad, v: ad.api_keys.list(project_id=v),
+        "/admin/projects/{}/api-keys",
+    ),
+    (
+        "api_key_create",
+        lambda ad, v: ad.api_keys.create(project_id=v, name="k"),
+        "/admin/projects/{}/api-keys",
+    ),
+    ("api_key_describe", lambda ad, v: ad.api_keys.describe(api_key_id=v), "/admin/api-keys/{}"),
+    (
+        "api_key_update",
+        lambda ad, v: ad.api_keys.update(api_key_id=v, name="k"),
+        "/admin/api-keys/{}",
+    ),
+    ("api_key_delete", lambda ad, v: ad.api_keys.delete(api_key_id=v), "/admin/api-keys/{}"),
+    ("invite_describe", lambda ad, v: ad.invites.describe(invite_id=v), "/admin/invites/{}"),
+    ("invite_delete", lambda ad, v: ad.invites.delete(invite_id=v), "/admin/invites/{}"),
+    ("invite_resend", lambda ad, v: ad.invites.resend(invite_id=v), "/admin/invites/{}/resend"),
+    (
+        "organization_describe",
+        lambda ad, v: ad.organizations.describe(organization_id=v),
+        "/admin/organizations/{}",
+    ),
+    (
+        "organization_update",
+        lambda ad, v: ad.organizations.update(organization_id=v, name="o"),
+        "/admin/organizations/{}",
+    ),
+    (
+        "organization_delete",
+        lambda ad, v: ad.organizations.delete(organization_id=v),
+        "/admin/organizations/{}",
+    ),
+    ("project_describe", lambda ad, v: ad.projects.describe(project_id=v), "/admin/projects/{}"),
+    (
+        "project_update",
+        lambda ad, v: ad.projects.update(project_id=v, name="p"),
+        "/admin/projects/{}",
+    ),
+    ("project_delete", lambda ad, v: ad.projects.delete(project_id=v), "/admin/projects/{}"),
+    (
+        "role_binding_describe",
+        lambda ad, v: ad.role_bindings.describe(role_binding_id=v),
+        "/admin/role-bindings/{}",
+    ),
+    (
+        "role_binding_delete",
+        lambda ad, v: ad.role_bindings.delete(role_binding_id=v),
+        "/admin/role-bindings/{}",
+    ),
+    (
+        "service_account_describe",
+        lambda ad, v: ad.service_accounts.describe(service_account_id=v),
+        "/admin/service-accounts/{}",
+    ),
+    (
+        "service_account_update",
+        lambda ad, v: ad.service_accounts.update(service_account_id=v, name="s"),
+        "/admin/service-accounts/{}",
+    ),
+    (
+        "service_account_delete",
+        lambda ad, v: ad.service_accounts.delete(service_account_id=v),
+        "/admin/service-accounts/{}",
+    ),
+    (
+        "service_account_rotate_secret",
+        lambda ad, v: ad.service_accounts.rotate_secret(service_account_id=v),
+        "/admin/service-accounts/{}/rotate-secret",
+    ),
+    ("user_describe", lambda ad, v: ad.users.describe(user_id=v), "/admin/users/{}"),
+    ("user_delete", lambda ad, v: ad.users.delete(user_id=v), "/admin/users/{}"),
+]
+
+
+def _build_admin() -> Admin:
+    """Mint the Bearer token against a stub so construction issues no live call.
+
+    The exchange happens in ``Admin.__init__`` and has to be routed separately
+    from the operation under test: a catch-all returning the stub body would
+    hand the exchange a payload it cannot parse.
+    """
+    with respx.mock(assert_all_called=False) as router:
+        router.post(_OAUTH_URL).mock(
+            return_value=httpx.Response(
+                200, json={"access_token": "t", "token_type": "Bearer", "expires_in": 1800}
+            )
+        )
+        return Admin(client_id="i", client_secret="s")
+
+
+@pytest.fixture
+def admin() -> Iterator[Admin]:
+    client = _build_admin()
+    yield client
+    client.close()
+
+
+@pytest.mark.parametrize(("value", "encoded"), ENCODING_CASES)
+@pytest.mark.parametrize(("invoke", "template"), _params(ADMIN_OPS))
+@respx.mock
+def test_admin_op_sends_the_value_as_one_path_segment(
+    admin: Admin, invoke: Op, template: str, value: str, encoded: str
+) -> None:
+    respx.route().mock(return_value=httpx.Response(200, json={}))
+
+    with _ignoring_the_stub_response_body():
+        invoke(admin, value)
+
+    assert respx.calls, "no request was issued, so this row would prove nothing"
+    assert respx.calls[0].request.url.raw_path.decode() == template.format(encoded)
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_an_empty_admin_id_is_still_rejected_before_encoding(admin: Admin, value: str) -> None:
+    """Encoding is added ahead of the existing guard, not in place of it."""
+    with pytest.raises(Exception, match="non-empty"):
+        admin.projects.describe(project_id=value)
+
+
+@respx.mock
+def test_an_assistant_name_is_coerced_rather_than_refused(client: Pinecone) -> None:
+    """A non-``str`` still reaches the wire as its ``str`` data.
+
+    No assistants path parameter has ever had a ``str`` guard in front of it --
+    the f-string coerced whatever it was handed, so a ``UUID`` file id or an
+    ``int`` name worked. Bare ``quote`` would turn those calls into a
+    ``TypeError``: a new client-side refusal, which the minimal-validation
+    decision forbids regardless of what the annotation says.
+
+    Deleting the ``str()`` is what this test exists to catch.
+    """
+    respx.route().mock(return_value=httpx.Response(200, json={}))
+
+    with _ignoring_the_stub_response_body():
+        client.assistants.describe(name=1234)  # type: ignore[arg-type]
+
+    assert respx.calls[0].request.url.raw_path.decode() == "/assistant/assistants/1234"
+
+
+async def test_an_async_assistant_name_is_coerced_rather_than_refused(
+    async_client: PineconeAsyncio, respx_mock: respx.MockRouter
+) -> None:
+    """The async mirror; the two lanes must refuse and accept the same inputs."""
+    respx_mock.route().mock(return_value=httpx.Response(200, json={}))
+
+    with _ignoring_the_stub_response_body():
+        await async_client.assistants.describe(name=1234)  # type: ignore[arg-type]
+
+    assert respx_mock.calls[0].request.url.raw_path.decode() == "/assistant/assistants/1234"
+
+
+_READY_ASSISTANT = {
+    "name": "n",
+    "status": "Ready",
+    "created_at": "2025-01-15T12:00:00Z",
+    "updated_at": "2025-01-15T12:00:00Z",
+    "metadata": {},
+    "instructions": None,
+    "host": "n-abc123.svc.pinecone.io",
+    "region": "us",
+}
+
+
+@respx.mock
+def test_create_polls_the_named_assistant() -> None:
+    """``create`` builds its own path for the readiness poll.
+
+    The poll is a second site with the same template as ``describe``, reached
+    only when ``create`` returns without ``timeout=-1``, so a row in the table
+    above cannot cover it -- the request under test is the second one.
+    """
+    respx.route().mock(return_value=httpx.Response(200, json=_READY_ASSISTANT))
+    client = Pinecone(api_key="test-key")
+
+    client.assistants.create(name="a/b")
+
+    assert respx.calls[1].request.url.raw_path.decode() == "/assistant/assistants/a%2Fb"
+
+
+async def test_async_create_polls_the_named_assistant(respx_mock: respx.MockRouter) -> None:
+    """The async mirror."""
+    respx_mock.route().mock(return_value=httpx.Response(200, json=_READY_ASSISTANT))
+    pc = PineconeAsyncio(api_key="test-key")
+
+    await pc.assistants.create(name="a/b")
+    await pc.close()
+
+    assert respx_mock.calls[1].request.url.raw_path.decode() == "/assistant/assistants/a%2Fb"
+
+
+def _named(ops: list[tuple[str, Op, str]], names: set[str]) -> list[tuple[str, Op, str]]:
+    return [op for op in ops if op[0] in names]
+
+
+ASSISTANT_PROPERTY_OPS = _named(
+    ASSISTANT_OPS,
+    {
+        "assistant_describe",
+        "assistant_chat",
+        "assistant_context",
+        "assistant_describe_file_varying_the_assistant",
+        "assistant_describe_file_varying_the_file",
+    },
+)
+
+ADMIN_PROPERTY_OPS = _named(
+    ADMIN_OPS,
+    {"api_key_list", "project_describe", "service_account_rotate_secret", "invite_resend"},
+)
+
+
+def _check_unguarded(template: str, value: str, paths: list[Any]) -> None:
+    """The assistants variant of :func:`_check`: nothing is refused client-side.
+
+    No assistants path parameter is validated before the request is built, so
+    every value -- the empty string included -- has to reach the wire and
+    address the named endpoint. There is no second branch to assert.
+    """
+    assert paths, f"{value!r} produced no request"
+    assert_addresses_the_named_endpoint(template, value, paths[0])
+
+
+@pytest.mark.parametrize(("invoke", "template"), _params(ASSISTANT_PROPERTY_OPS))
+@_apply(
+    _NASTY,
+    lambda fn: settings(
+        max_examples=200, suppress_health_check=[HealthCheck.function_scoped_fixture]
+    )(given(value=PATH_VALUES)(fn)),
+)
+def test_any_value_addresses_the_named_assistant_endpoint(
+    shared_client: Pinecone, invoke: Op, template: str, value: str
+) -> None:
+    _check_unguarded(template, value, _drive(invoke, shared_client, value))
+
+
+@pytest.mark.parametrize(("invoke", "template"), _params(ASSISTANT_PROPERTY_OPS))
+@_apply(
+    _NASTY,
+    lambda fn: settings(
+        max_examples=200, suppress_health_check=[HealthCheck.function_scoped_fixture]
+    )(given(value=PATH_VALUES)(fn)),
+)
+def test_any_value_addresses_the_named_assistant_endpoint_async(
+    shared_async_client: tuple[asyncio.AbstractEventLoop, PineconeAsyncio],
+    invoke: Op,
+    template: str,
+    value: str,
+) -> None:
+    loop, pc = shared_async_client
+    _check_unguarded(template, value, _drive_async(loop, invoke, pc, value))
+
+
+@pytest.fixture(scope="module")
+def shared_admin() -> Iterator[Admin]:
+    """Built once per module: rebuilding it per Hypothesis example is #422."""
+    client = _build_admin()
+    yield client
+    client.close()
+
+
+@pytest.mark.parametrize(("invoke", "template"), _params(ADMIN_PROPERTY_OPS))
+@_apply(
+    _NASTY,
+    lambda fn: settings(
+        max_examples=200, suppress_health_check=[HealthCheck.function_scoped_fixture]
+    )(given(value=PATH_VALUES)(fn)),
+)
+def test_any_value_addresses_the_named_admin_endpoint(
+    shared_admin: Admin, invoke: Op, template: str, value: str
+) -> None:
+    _check(template, value, _drive(invoke, shared_admin, value))

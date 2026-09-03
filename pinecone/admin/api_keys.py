@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from pinecone._internal.adapters.admin_adapter import AdminAdapter
 from pinecone._internal.validation import require_max_length, require_non_empty
@@ -78,7 +79,7 @@ class ApiKeys:
         """
         require_non_empty("project_id", project_id)
         logger.info("Listing API keys for project %r", project_id)
-        response = self._http.get(f"/admin/projects/{project_id}/api-keys")
+        response = self._http.get(f"/admin/projects/{quote(project_id, safe='')}/api-keys")
         result = self._adapter.to_api_key_list(response.content)
         logger.debug("Listed %d API keys", len(result))
         return result
@@ -147,7 +148,9 @@ class ApiKeys:
         if roles is not None:
             body["roles"] = _validate_roles(roles)
         logger.info("Creating API key %r in project %r", name, project_id)
-        response = self._http.post(f"/admin/projects/{project_id}/api-keys", json=body)
+        response = self._http.post(
+            f"/admin/projects/{quote(project_id, safe='')}/api-keys", json=body
+        )
         result = self._adapter.to_api_key_with_secret(response.content)
         logger.debug("Created API key %r", result.key.id)
         return result
@@ -174,7 +177,7 @@ class ApiKeys:
         """
         require_non_empty("api_key_id", api_key_id)
         logger.info("Describing API key %r", api_key_id)
-        response = self._http.get(f"/admin/api-keys/{api_key_id}")
+        response = self._http.get(f"/admin/api-keys/{quote(api_key_id, safe='')}")
         result = self._adapter.to_api_key(response.content)
         logger.debug("Described API key %r", api_key_id)
         return result
@@ -225,7 +228,7 @@ class ApiKeys:
         if roles is not None:
             body["roles"] = _validate_roles(roles)
         logger.info("Updating API key %r", api_key_id)
-        response = self._http.patch(f"/admin/api-keys/{api_key_id}", json=body)
+        response = self._http.patch(f"/admin/api-keys/{quote(api_key_id, safe='')}", json=body)
         result = self._adapter.to_api_key(response.content)
         logger.debug("Updated API key %r", api_key_id)
         return result
@@ -247,5 +250,5 @@ class ApiKeys:
         """
         require_non_empty("api_key_id", api_key_id)
         logger.info("Deleting API key %r", api_key_id)
-        self._http.delete(f"/admin/api-keys/{api_key_id}")
+        self._http.delete(f"/admin/api-keys/{quote(api_key_id, safe='')}")
         logger.debug("Deleted API key %r", api_key_id)

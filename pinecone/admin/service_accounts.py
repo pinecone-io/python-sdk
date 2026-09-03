@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from pinecone._internal.adapters.admin_adapter import AdminAdapter
 from pinecone._internal.role_bindings import normalize_role_bindings
@@ -248,7 +249,7 @@ class ServiceAccounts:
         """
         require_non_empty("service_account_id", service_account_id)
         logger.info("Describing service account %r", service_account_id)
-        response = self._http.get(f"/admin/service-accounts/{service_account_id}")
+        response = self._http.get(f"/admin/service-accounts/{quote(service_account_id, safe='')}")
         result = self._adapter.to_service_account(response.content)
         logger.debug("Described service account %r", service_account_id)
         return result
@@ -305,7 +306,9 @@ class ServiceAccounts:
         body: dict[str, Any] = {"name": name}
 
         logger.info("Updating service account %r", service_account_id)
-        response = self._http.patch(f"/admin/service-accounts/{service_account_id}", json=body)
+        response = self._http.patch(
+            f"/admin/service-accounts/{quote(service_account_id, safe='')}", json=body
+        )
         result = self._adapter.to_service_account(response.content)
         logger.debug("Updated service account %r", service_account_id)
         return result
@@ -344,7 +347,7 @@ class ServiceAccounts:
         """
         require_non_empty("service_account_id", service_account_id)
         logger.info("Deleting service account %r", service_account_id)
-        self._http.delete(f"/admin/service-accounts/{service_account_id}")
+        self._http.delete(f"/admin/service-accounts/{quote(service_account_id, safe='')}")
         logger.debug("Deleted service account %r", service_account_id)
 
     def rotate_secret(self, *, service_account_id: str) -> ServiceAccountWithSecret:
@@ -401,7 +404,9 @@ class ServiceAccounts:
         """
         require_non_empty("service_account_id", service_account_id)
         logger.info("Rotating secret for service account %r", service_account_id)
-        response = self._http.post(f"/admin/service-accounts/{service_account_id}/rotate-secret")
+        response = self._http.post(
+            f"/admin/service-accounts/{quote(service_account_id, safe='')}/rotate-secret"
+        )
         result = self._adapter.to_service_account_with_secret(response.content)
         logger.debug("Rotated secret for service account %r", result.service_account.id)
         return result
