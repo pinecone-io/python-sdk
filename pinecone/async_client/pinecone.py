@@ -478,8 +478,8 @@ class AsyncPinecone:
                 "dedicated": {"node_type": ..., "scaling": "Manual",
                 "manual": {"shards": ..., "replicas": ...}}}``. Omitted entirely
                 when ``None``, leaving the server's on-demand default in place.
-                Serverless backups only; the server rejects a dedicated
-                configuration too small for the backup.
+                The server rejects a dedicated configuration too small to hold
+                the backup.
             timeout (int | None): Seconds to wait for readiness. ``None`` (default)
                 blocks up to 300 s. ``-1`` returns a :class:`CreateIndexFromBackupResponse`
                 immediately (contains ``restore_job_id`` and ``index_id``) without polling.
@@ -497,8 +497,13 @@ class AsyncPinecone:
             :exc:`IndexTerminatedError`: If the index enters ``Terminating`` or ``Disabled`` state.
             :exc:`NotFoundError`: If *backup_id* does not match an existing backup.
             :exc:`ConflictError`: If an index named *name* already exists.
-            :exc:`ApiError`: If the API returns another error response, for
-                example if the backup is not yet complete.
+            :exc:`ApiError`: If the backup's source index was a BYOC index.
+                Such a backup reaches ``"Ready"`` like any other and nothing on
+                :class:`~pinecone.models.backups.model.BackupModel` marks it,
+                but it cannot be restored. The message reads
+                ``BYOC restore is not supported in this API version``.
+                Also raised for other error responses, for example if the
+                backup is not yet complete.
 
         Examples:
 

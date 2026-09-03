@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -11,6 +14,9 @@ import pytest
 import respx
 
 from pinecone._client import Pinecone
+from pinecone.async_client.backups import AsyncBackups
+from pinecone.async_client.pinecone import AsyncPinecone
+from pinecone.client.backups import Backups
 from pinecone.errors.exceptions import PineconeTypeError, ValidationError
 from pinecone.models.backups.model import CreateIndexFromBackupResponse
 from pinecone.models.indexes.index import IndexModel
@@ -296,3 +302,142 @@ def test_create_index_from_backup_polls_until_ready(mock_sleep: object, pc: Pine
     assert result.name == "poll-index"
     # Describe should be called at least 2 times (first not-ready, then ready)
     assert describe_route.call_count >= 2
+
+
+# ---------------------------------------------------------------------------
+# What the shipped docs say about a restore (#466, #467)
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+HOW_TO = REPO_ROOT / "docs/how-to/indexes/backups-and-restore.md"
+MIGRATION_GUIDE = REPO_ROOT / "docs/migration/v10-migration.md"
+
+RESTORE_SECTION_START = "### What a restore does and does not carry over"
+RESTORE_SECTION_END = "## Monitor restore jobs"
+READ_CAPACITY_SECTION_START = "#### `read_capacity` on restore"
+READ_CAPACITY_SECTION_END = "`create_index_from_backup` remains the only supported restore path"
+
+DISCARDED_CLAIMS = ("has no effect", "silently ignored", "does not read", "doesn't read")
+
+
+def _slice(path: Path, start: str, end: str) -> str:
+    text = path.read_text()
+    assert start in text, f"{path} no longer contains {start!r}"
+    after = text.split(start, 1)[1]
+    assert end in after, f"{path} no longer contains {end!r} after {start!r}"
+    return after.split(end, 1)[0]
+
+
+def _how_to_restore_section() -> str:
+    return _slice(HOW_TO, RESTORE_SECTION_START, RESTORE_SECTION_END)
+
+
+def _migration_read_capacity_section() -> str:
+    return _slice(MIGRATION_GUIDE, READ_CAPACITY_SECTION_START, READ_CAPACITY_SECTION_END)
+
+
+def _python_blocks(section: str) -> list[str]:
+    return re.findall(r"```python\n(.*?)```", section, re.DOTALL)
+
+
+def _guide_sections() -> list[Any]:
+    return [
+        pytest.param("how-to", _how_to_restore_section, id="how-to"),
+        pytest.param("migration guide", _migration_read_capacity_section, id="migration-guide"),
+    ]
+
+
+@pytest.mark.parametrize(("label", "section"), _guide_sections())
+def test_neither_guide_claims_read_capacity_is_discarded_on_restore(
+    label: str, section: Callable[[], str]
+) -> None:
+    """The backend applies ``read_capacity`` to the restored index."""
+    text = section().lower()
+    for claim in DISCARDED_CLAIMS:
+        assert claim not in text, f"{label} still claims read_capacity is discarded: {claim!r}"
+    assert "indexes.configure" not in text, (
+        f"{label} still teaches the restore-then-configure workaround"
+    )
+
+
+@pytest.mark.parametrize(("label", "section"), _guide_sections())
+def test_both_guides_pass_read_capacity_on_the_restore_call_itself(
+    label: str, section: Callable[[], str]
+) -> None:
+    blocks = _python_blocks(section())
+    assert blocks, f"{label} restore section has no python example"
+    for block in blocks:
+        assert "create_index_from_backup(" in block, f"{label}: example is not a restore"
+        assert "read_capacity=" in block, f"{label}: restore example drops read_capacity"
+
+
+@respx.mock
+def test_the_how_to_restore_example_puts_read_capacity_on_the_wire(pc: Pinecone) -> None:
+    """Executes the how-to's own example rather than a transcription of it."""
+    route = respx.post(url__regex=rf"{BASE_URL}/backups/[^/]+/create-index$").mock(
+        return_value=httpx.Response(202, json={"restore_job_id": "rj-1", "index_id": "idx-1"}),
+    )
+    respx.get(url__regex=rf"{BASE_URL}/indexes/[^/]+$").mock(
+        return_value=httpx.Response(200, json=make_index_response(name="product-search-restored")),
+    )
+
+    for block in _python_blocks(_how_to_restore_section()):
+        exec(compile(block, str(HOW_TO), "exec"), {"pc": pc})  # noqa: S102
+
+    assert route.called
+    assert "read_capacity" in orjson.loads(route.calls.last.request.content)
+
+
+def test_the_how_to_lists_byoc_beside_the_other_restore_gates() -> None:
+    section = _how_to_restore_section().lower()
+    assert "byoc" in section, "the BYOC gate is missing from the restore section"
+    assert "pod indexes are not supported" in section, "the pod gate moved out of this section"
+
+
+_RESTORE_DOCS = [
+    pytest.param(
+        "Pinecone.create_index_from_backup",
+        Pinecone.create_index_from_backup.__doc__,
+        id="sync-restore",
+    ),
+    pytest.param(
+        "AsyncPinecone.create_index_from_backup",
+        AsyncPinecone.create_index_from_backup.__doc__,
+        id="async-restore",
+    ),
+]
+
+_BACKUP_DOCS = [
+    pytest.param("Backups.create", Backups.create.__doc__, id="sync-create"),
+    pytest.param("AsyncBackups.create", AsyncBackups.create.__doc__, id="async-create"),
+]
+
+
+@pytest.mark.parametrize(("label", "doc"), _RESTORE_DOCS + _BACKUP_DOCS)
+def test_both_client_surfaces_document_the_byoc_restore_refusal(
+    label: str, doc: str | None
+) -> None:
+    """A caller who backs up a BYOC index learns here, not from an opaque 400."""
+    assert doc is not None
+    text = " ".join(doc.split())
+    assert "BYOC" in text, f"{label} does not mention BYOC"
+    assert "cannot be restored" in text, f"{label} does not say a BYOC backup cannot be restored"
+
+
+@pytest.mark.parametrize(("label", "doc"), _RESTORE_DOCS)
+def test_no_raises_entry_opens_with_a_parenthesised_status_code(
+    label: str, doc: str | None
+) -> None:
+    """docutils reads a leading ``(400)`` as a list enumerator and drops the prose (#370)."""
+    assert doc is not None
+    raises = doc.split("Raises:", 1)[1].split("Examples:", 1)[0]
+    assert not re.search(r":\s*\(\d{3}\)", raises), f"{label} has a parenthesised status code"
+
+
+@pytest.mark.parametrize(("label", "doc"), _RESTORE_DOCS)
+def test_the_byoc_server_message_is_quoted_on_one_source_line(label: str, doc: str | None) -> None:
+    """A literal wrapped across source lines renders with stray ``&nbsp;`` runs."""
+    assert doc is not None
+    assert "``BYOC restore is not supported in this API version``" in doc, (
+        f"{label} splits the quoted server message across lines"
+    )

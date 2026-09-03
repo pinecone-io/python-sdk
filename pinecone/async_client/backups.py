@@ -61,7 +61,10 @@ class AsyncBackups:
         A backup is a stored, point-in-time snapshot of an index's data and
         schema. Restore one into a new index with
         :meth:`AsyncPinecone.create_index_from_backup`. Only serverless and
-        BYOC indexes can be backed up.
+        BYOC indexes can be backed up, but a BYOC backup cannot be restored:
+        it reaches ``"Ready"`` like any other, and nothing on the returned
+        :class:`BackupModel` marks it, yet
+        :meth:`AsyncPinecone.create_index_from_backup` refuses it.
 
         Args:
             index_name (str): Name of the index to back up.
