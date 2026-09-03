@@ -425,3 +425,15 @@ class TestRefreshedHeaderIsVisibleEverywhere:
                 assert http._post_default_headers["Authorization"] == expected
                 assert http._post_default_headers_obj["Authorization"] == expected
                 assert http._client.headers["Authorization"] == expected
+
+
+class TestMintClosureDoesNotLeakTheClientSecret:
+    """``_mint`` must not be a ``functools.partial`` whose repr bares the secret."""
+
+    def test_mint_repr_omits_the_client_secret(self, clock: _Clock) -> None:
+        secret = "SUPERSECRET_MARKER_abcd"
+        with respx.mock(assert_all_called=False) as router:
+            router.post(_OAUTH_URL).mock(side_effect=_rotating_tokens())
+
+            with Admin(client_id="id", client_secret=secret) as admin:
+                assert secret not in repr(admin._http._mint)

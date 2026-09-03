@@ -6,7 +6,6 @@ import os
 import threading
 import time
 from dataclasses import replace
-from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -306,15 +305,18 @@ class Admin:
 
         resolved_source_tag = source_tag or ""
 
-        mint = partial(
-            self._fetch_token,
-            resolved_id,
-            resolved_secret,
-            proxy_url=proxy_url,
-            ssl_verify=ssl_verify,
-            source_tag=resolved_source_tag,
-            oauth_url=normalize_host(oauth_url) or _OAUTH_URL,
-        )
+        resolved_oauth_url = normalize_host(oauth_url) or _OAUTH_URL
+
+        def mint() -> TokenResponse:
+            return self._fetch_token(
+                resolved_id,
+                resolved_secret,
+                proxy_url=proxy_url,
+                ssl_verify=ssl_verify,
+                source_tag=resolved_source_tag,
+                oauth_url=resolved_oauth_url,
+            )
+
         token = mint()
 
         headers: dict[str, str] = {
