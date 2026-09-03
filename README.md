@@ -1,8 +1,10 @@
 # Pinecone Python SDK
 
-The Pinecone Python SDK provides a client for the [Pinecone](https://www.pinecone.io/) vector database. Use it to create and manage indexes, upsert and query vectors, and run inference operations from Python.
+The Pinecone Python SDK provides a client for the [Pinecone](https://www.pinecone.io/) vector database. Use it to create and manage indexes, upsert and query records, and run inference operations from Python.
 
 Requires Python 3.10+.
+
+Upgrading from 9.x? `create` and `configure` moved from `spec=`/`dimension=` to `schema=`/`deployment=`; see the [v10 migration guide](https://sdk.pinecone.io/python/migration/v10-migration.html) for the field-by-field mapping.
 
 ## Installation
 
@@ -10,72 +12,84 @@ Requires Python 3.10+.
 pip install pinecone
 ```
 
-For development dependencies (testing, type checking, linting):
-
-```bash
-pip install pinecone[dev]
-```
-
 ## Quick start
 
+An index declares its fields as a schema. Declaring a schema makes it a document
+index: you read and write it through `index.documents`, and each record is a JSON
+document whose fields you named yourself.
+
 ```python
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import DenseVectorQuery, Pinecone
 
-# Initialize the client
-pc = Pinecone(api_key="your-api-key")
+pc = Pinecone(api_key="your-api-key")  # or omit and set PINECONE_API_KEY
 
-# Create a serverless index
+# Create an index. This blocks until the index is ready.
 pc.indexes.create(
     name="movie-recommendations",
-    dimension=1536,
-    metric="cosine",
-    spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+    schema={"fields": {"embedding": {"type": "dense_vector", "dimension": 3, "metric": "cosine"}}},
+    deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
 )
 
-# Connect to the index
+# Get a data-plane handle for that index
 index = pc.index("movie-recommendations")
 
-# Upsert vectors
-index.upsert(
-    vectors=[
-        ("movie-42", [0.012, -0.087, 0.153]),  # 1536-dim embedding
-        ("movie-87", [0.045, 0.021, -0.064]),  # 1536-dim embedding
+# Upsert documents. Each one needs an `_id`; every other key is either a field
+# you declared in the schema or arbitrary metadata.
+index.documents.upsert(
+    namespace="movies-en",
+    documents=[
+        {"_id": "movie-001", "embedding": [0.1, 0.2, 0.3], "title": "Arrival"},
+        {"_id": "movie-002", "embedding": [0.4, 0.5, 0.6], "title": "Interstellar"},
     ],
-    namespace="movies-en",
-    batch_size=100,  # split larger inputs into parallel batches automatically
 )
 
-# Query for similar vectors
-results = index.query(
-    vector=[0.012, -0.087, 0.153],  # 1536-dim embedding
-    top_k=10,
+# Search. `score_by` names the field to compare against.
+results = index.documents.search(
     namespace="movies-en",
+    top_k=5,
+    score_by=[DenseVectorQuery(field="embedding", values=[0.1, 0.2, 0.3])],
+    include_fields=["title"],
 )
-
-for match in results.matches:
-    print(f"{match.id}: {match.score:.4f}")
+for doc in results.matches:
+    print(doc.id, doc.score)
 ```
+
+Upserts apply asynchronously, so a document may not be visible to the next search
+immediately.
+
+Two other data-plane interfaces exist, and the way the index was created decides
+which one applies: an index created with the deprecated top-level vector
+arguments answers on `index.upsert` / `index.query`, and one created with
+`pc.indexes.create_for_model(...)` embeds text server-side and answers on
+`index.upsert_records` / `index.search`. See the
+[quickstart](https://sdk.pinecone.io/python/getting-started/quickstart.html) and
+the rest of the [documentation](https://sdk.pinecone.io/python/) for the full
+picture.
 
 ## Async usage
 
-The SDK provides an async client for use with `asyncio`:
+The SDK provides an async client for use with `asyncio`. Its `index()` is a
+coroutine, and the handle it returns is a context manager:
 
 ```python
 import asyncio
-from pinecone import AsyncPinecone
+
+from pinecone import AsyncPinecone, DenseVectorQuery
+
 
 async def main():
     async with AsyncPinecone(api_key="your-api-key") as pc:
-        desc = await pc.indexes.describe("movie-recommendations")
-        index = await pc.index(host=desc.host)
+        index = await pc.index("movie-recommendations")
         async with index:
-            results = await index.query(
-                vector=[0.012, -0.087, 0.153],  # 1536-dim vector
-                top_k=10,
+            results = await index.documents.search(
                 namespace="movies-en",
+                top_k=5,
+                score_by=[DenseVectorQuery(field="embedding", values=[0.1, 0.2, 0.3])],
+                include_fields=["title"],
             )
-            for match in results.matches:
-                print(f"{match.id}: {match.score:.4f}")
+            for doc in results.matches:
+                print(doc.id, doc.score)
+
 
 asyncio.run(main())
 ```
@@ -122,81 +136,29 @@ export PINECONE_DEBUG=1
 
 ## Development
 
-### Setup
-
-Clone the repository and install dependencies with [uv](https://docs.astral.sh/uv/):
-
-```bash
-uv sync
-```
-
-### Tests
+Clone the repository and install the dev dependency group with
+[uv](https://docs.astral.sh/uv/), which is what CI does:
 
 ```bash
-uv run pytest tests/unit/ -x -v
+uv sync --group dev
 ```
-
-The unit suite must leave the working tree clean: `git status` is expected to report no
-changes after a bare `uv run pytest tests/unit`. Tests must not write into the checkout —
-use `tmp_path` / `tmp_path_factory` if a test genuinely needs a file on disk. A test that
-writes a tracked file both dirties every contributor's tree and, if anything compares
-against that file, quietly rewrites the thing it is comparing against.
-
-#### Cross-transport storm parity
-
-`tests/unit/_internal/test_storm_parity.py` checks that the sync, async, and gRPC retry
-paths disperse a thundering herd comparably — dispersion widths within 2x and request
-amplifications within 1.5x of each other. It runs all three canonical storm scenarios
-itself, in-process, via `tests/unit/_internal/_storm_parity_scenarios.py`; there are no
-recorded metric files and nothing is a checked-in baseline.
-
-It used to work differently: each transport's storm test wrote a
-`_storm_parity_metrics_*.json` file into `tests/unit/_internal/`, and the parity test read
-all three back. Those files were tracked, so every unit run dirtied them, and because the
-gRPC producer collects *after* the parity consumer, the gRPC comparison always read the
-*previous* run's value — a stale-value failure that the same run then overwrote, so it
-disappeared on retry. Keep the metrics in-process; don't reintroduce the file handoff.
-
-#### Retry/throttle smoke tests (opt-in)
-
-A suite of live-API smoke tests verifies that the retry stack and AIMD adaptive concurrency
-hold up against real Pinecone rate limits. These are **not** run in normal CI because they
-require real credentials, create a live serverless index, and take 1–3 minutes per run.
-
-**Required environment variables:**
-
-| Variable | Description |
-|---|---|
-| `PINECONE_API_KEY` | A valid Pinecone API key |
-| `PINECONE_RETRY_SMOKE` | Set to `1` to enable the smoke tests |
-
-**Running the smoke tests:**
 
 ```bash
-PINECONE_API_KEY=your-api-key PINECONE_RETRY_SMOKE=1 \
-  uv run pytest tests/integration/test_retry_smoke.py -x -v -s
+uv run pytest tests/unit/ -x -v      # tests
+uv run mypy --strict pinecone/       # type checking
+uv run ruff check --fix              # linting
+uv run ruff format                   # formatting
 ```
 
-**Cost:** Each run creates three serverless indexes, upserts ~100K vectors per index, then
-deletes all indexes. Total cost is under $3 per run.
+The unit suite must leave the working tree clean: `git status` is expected to report
+no changes after a bare `uv run pytest tests/unit`. Use `tmp_path` /
+`tmp_path_factory` if a test genuinely needs a file on disk.
 
-**When to run:** Before any release that touches retry logic, HTTP transport, the AIMD
-adaptive-concurrency limiter (`pinecone._internal.adaptive`), or the batch-upsert path.
-The unit tests mock HTTP responses; this test catches divergence between the synthetic
-model and real API behavior (e.g., 503 instead of 429).
-
-### Type checking
-
-```bash
-uv run mypy --strict pinecone/
-```
-
-### Linting and formatting
-
-```bash
-uv run ruff check --fix
-uv run ruff format
-```
+Some suites are opt-in because they hit a real backend and cost money. The live
+retry/throttle smoke tests in `tests/integration/test_retry_smoke.py` need
+`PINECONE_API_KEY` plus `PINECONE_RETRY_SMOKE=1`; run them before any release that
+touches retry logic, HTTP transport, the AIMD adaptive-concurrency limiter, or the
+batch-upsert path. Each module documents its own gate and cost.
 
 ## License
 
