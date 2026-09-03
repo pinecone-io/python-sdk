@@ -128,7 +128,11 @@ def test_the_documented_description_stays_inside_the_byte_cap() -> None:
 
     section = _section()
     assert "256 bytes of UTF-8, not 256 characters" in section
-    assert "at most 100" in section
+
+    # The description cap is client-enforced (schema_builder._DESCRIPTION_MAX_BYTES) so
+    # the guide keeps its number; the full_text_search field cap is enforced nowhere in
+    # this repo, so the guide names the constraint rather than a value it cannot verify.
+    assert "capped on how many `full_text_search` fields" in section
 
 
 def test_a_stop_word_less_language_still_goes_out_unmolested() -> None:
@@ -221,17 +225,22 @@ def test_create_and_configure_prose_is_byte_identical_across_the_two_lanes() -> 
 def test_the_schedule_type_paragraph_is_byte_identical_across_the_two_lanes() -> None:
     import pinecone.async_client.backup_schedules as async_module
     import pinecone.client.backup_schedules as sync_module
+    from pinecone.models.backups.schedules import BackupScheduleModel
 
     def paragraph(module: Any) -> bytes:
         doc = module.__doc__ or ""
-        start = doc.index('The SDK always sends ``"time-based"``')
+        start = doc.index("The SDK always sends")
         return doc[start : doc.index("\n\n", start)].encode()
 
     block = paragraph(sync_module)
     assert paragraph(async_module) == block
-    assert b"client-side decision rather than an API\nconstraint" in block
-    assert b"echoes it back without validating" in block
+    assert b'``"time-based"``' in block
     assert b"x-enum" not in block
+
+    attribute = " ".join((inspect.getdoc(BackupScheduleModel) or "").split())
+    assert "the server does not constrain the field" in attribute
+    assert "another client can report something else" in attribute
+    assert "x-enum" not in attribute
 
 
 def test_the_configure_docstring_says_the_tag_cap_counts_the_merge() -> None:

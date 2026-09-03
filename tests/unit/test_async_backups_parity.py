@@ -305,12 +305,24 @@ def test_raises_section_parity_modulo_the_deprecated_alias(method_name: str) -> 
     assert async_raises == sync_raises, f"{method_name}: Raises section differs"
 
 
+def _lane_neutral(directives: list[str]) -> list[str]:
+    """Normalise the one legitimate divergence: a ``seealso`` has to point at
+    the sibling in its *own* lane, so ``AsyncIndexes.list_backups`` and
+    ``Indexes.list_backups`` are the same cross-reference under two spellings.
+    Normalised here rather than dropped, exactly as the ``Raises`` comparison
+    normalises ``ValidationError``."""
+    return [
+        d.replace("pinecone.async_client", "pinecone.client").replace("AsyncIndexes", "Indexes")
+        for d in directives
+    ]
+
+
 def test_list_directive_parity() -> None:
     """The 2026-07 ``versionchanged`` and 404-semantics notes must match verbatim."""
     sync_directives = _directives(Backups.list.__doc__)
     async_directives = _directives(AsyncBackups.list.__doc__)
 
-    assert sync_directives == async_directives
+    assert _lane_neutral(sync_directives) == _lane_neutral(async_directives)
     assert any(d.startswith("versionchanged::") for d in sync_directives)
     assert any("include_deleted=True" in d for d in sync_directives)
 

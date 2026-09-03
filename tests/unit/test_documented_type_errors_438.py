@@ -28,6 +28,8 @@ import pytest
 
 from pinecone._internal.data_plane_helpers import _build_search_records_body
 from pinecone.async_client.async_index import AsyncIndex
+from pinecone.async_client.documents import AsyncDocuments
+from pinecone.client.documents import Documents
 from pinecone.index import Index
 from pinecone.utils.filter_builder import Field
 
@@ -43,6 +45,14 @@ NAMESPACE_METHODS = [
 SEARCH_METHODS = [(Index, "search"), (AsyncIndex, "search")]
 
 TYPE_ERROR_ON_KWARGS = ":exc:`TypeError`: If unexpected keyword arguments are passed."
+
+DOCUMENT_METHODS = [
+    (cls, method)
+    for cls in (Documents, AsyncDocuments)
+    for method in ("batch_upsert", "delete", "fetch", "list", "search", "update", "upsert")
+]
+
+KEYWORD_ONLY_ON_CLASS = "misspelled keyword raises :exc:`TypeError`"
 
 
 def _raises_block(obj: Any) -> str:
@@ -156,3 +166,37 @@ def test_search_documents_both_type_error_conditions(cls: type, method: str) -> 
     assert "``query``" in block
     assert "both" in block, "the mutually-exclusive-argument condition is not described"
     assert "Mapping" in block or "mapping" in block, "the wrong-query-type condition is missing"
+
+
+@pytest.mark.parametrize(
+    ("cls", "method"), DOCUMENT_METHODS, ids=[f"{c.__name__}.{m}" for c, m in DOCUMENT_METHODS]
+)
+@pytest.mark.asyncio
+async def test_document_method_raises_type_error_for_an_unexpected_keyword(
+    cls: type, method: str
+) -> None:
+    namespace = _index().documents if cls is Documents else _async_index().documents
+
+    async def call() -> None:
+        result = getattr(namespace, method)(nmaespace="typo")
+        if inspect.isawaitable(result):
+            await result
+
+    with pytest.raises(TypeError) as excinfo:
+        await call()
+    assert "unexpected keyword argument" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("cls", [Documents, AsyncDocuments], ids=lambda c: c.__name__)
+def test_document_namespace_documents_that_type_error_on_the_class(cls: type) -> None:
+    """Stated once on the class, not 7 times per lane.
+
+    The condition is true of every method on these namespaces, so the
+    per-method ``Raises:`` entry the ``NAMESPACE_METHODS`` convention uses
+    would be 14 copies of one sentence. The guarantee is the same: a caller
+    who misspells a keyword can learn what to catch without reading source.
+    """
+    doc = " ".join(inspect.cleandoc(cls.__doc__ or "").split())
+    assert "keyword-only" in doc, f"{cls.__name__} never says its methods are keyword-only"
+    assert KEYWORD_ONLY_ON_CLASS in doc, f"{cls.__name__} does not name the TypeError"
+    assert ":exc:`PineconeValueError`" in doc, "the positional-misuse error is not named"

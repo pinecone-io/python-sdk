@@ -249,7 +249,7 @@ def _hybrid_docstring_block(create: Any) -> str:
     doc = inspect.getdoc(create)
     assert doc is not None
     match = re.search(
-        r"A \*\*hybrid\*\* index must declare.*?v10-migration\.md``\.", doc, re.DOTALL
+        r"A \*\*hybrid\*\* index must declare.*?/migration/v10-migration`\.", doc, re.DOTALL
     )
     assert match, "create() no longer documents the hybrid sparse-field requirement"
     return match.group(0)

@@ -261,8 +261,8 @@ def _documented_models(method: Any) -> tuple[str, ...]:
     return _quoted_run(_model_doc_block(method), "documents for this endpoint are")
 
 
-def _documented_aliases(method: Any) -> tuple[str, ...]:
-    return _quoted_run(_model_doc_block(method), "removed aliases")
+def _served_model_note(method: Any) -> str:
+    return _model_doc_block(method)
 
 
 @pytest.fixture
@@ -543,17 +543,23 @@ def test_documented_models_match_the_spec_enum(cls: type, method_name: str) -> N
 
 @pytest.mark.parametrize("method_name", sorted(_ENDPOINT_MODELS))
 @pytest.mark.parametrize("cls", [Assistants, AsyncAssistants], ids=["sync", "async"])
-def test_deprecated_aliases_are_documented_as_remapped(cls: type, method_name: str) -> None:
-    """#220: the backend remaps the retired claude aliases, it does not reject them.
+def test_model_remapping_is_documented_without_naming_retired_models(
+    cls: type, method_name: str
+) -> None:
+    """#220: the backend remaps retired model names, it does not reject them.
 
     Documenting them as rejected would send callers hunting for an error they
-    will never see; documenting nothing would leave the remap invisible.
+    will never see; documenting nothing would leave the remap invisible. Naming
+    each retired alias dates the docstring on every enum churn, so the durable
+    statement is that an unlisted name may be served by a successor and that
+    the response reports which model answered.
     """
-    block = _model_doc_block(getattr(cls, method_name))
+    block = _served_model_note(getattr(cls, method_name))
 
-    assert _documented_aliases(getattr(cls, method_name)) == DEPRECATED_ALIASES
-    assert "still accepted but deprecated" in block
-    assert 'remaps them to ``"claude-sonnet-4-5"``' in block
+    assert "served by a successor model" in block
+    assert "the response's ``model`` field" in block
+    for retired in DEPRECATED_ALIASES:
+        assert retired not in block, f"{retired} is named in the {method_name} model block"
 
 
 @pytest.mark.parametrize("cls", [Assistants, AsyncAssistants], ids=["sync", "async"])
