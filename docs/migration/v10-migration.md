@@ -1703,14 +1703,6 @@ index = await pc.create_index_from_backup(
 ::::
 :::::
 
-```{warning}
-A BYOC-sourced backup cannot be restored. A BYOC index can be backed up and
-its backup reaches `Ready`, but the restore is refused with `400` "BYOC
-restore is not supported in this API version", and nothing on `BackupModel`
-tells a BYOC-sourced backup apart from a serverless one beforehand. If you
-back up a mix of both, track the source index's capacity mode yourself.
-```
-
 `create_index_from_backup` remains the only supported restore path;
 `pc.create_index(source_backup_id=...)` raises a `PineconeTypeError` pointing
 at it.

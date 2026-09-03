@@ -60,10 +60,7 @@ class Backups:
         A backup is a stored, point-in-time snapshot of an index's data and
         schema. Restore one into a new index with
         :meth:`Pinecone.create_index_from_backup`. Only serverless and BYOC
-        indexes can be backed up, but a BYOC backup cannot be restored: it
-        reaches ``"Ready"`` like any other, and nothing on the returned
-        :class:`BackupModel` marks it, yet
-        :meth:`Pinecone.create_index_from_backup` refuses it.
+        indexes can be backed up.
 
         Args:
             index_name (str): Name of the index to back up.

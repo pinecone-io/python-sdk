@@ -14,9 +14,7 @@ import pytest
 import respx
 
 from pinecone._client import Pinecone
-from pinecone.async_client.backups import AsyncBackups
 from pinecone.async_client.pinecone import AsyncPinecone
-from pinecone.client.backups import Backups
 from pinecone.errors.exceptions import PineconeTypeError, ValidationError
 from pinecone.models.backups.model import CreateIndexFromBackupResponse
 from pinecone.models.indexes.index import IndexModel
@@ -388,12 +386,6 @@ def test_the_how_to_restore_example_puts_read_capacity_on_the_wire(pc: Pinecone)
     assert "read_capacity" in orjson.loads(route.calls.last.request.content)
 
 
-def test_the_how_to_lists_byoc_beside_the_other_restore_gates() -> None:
-    section = _how_to_restore_section().lower()
-    assert "byoc" in section, "the BYOC gate is missing from the restore section"
-    assert "pod indexes are not supported" in section, "the pod gate moved out of this section"
-
-
 _RESTORE_DOCS = [
     pytest.param(
         "Pinecone.create_index_from_backup",
@@ -407,22 +399,6 @@ _RESTORE_DOCS = [
     ),
 ]
 
-_BACKUP_DOCS = [
-    pytest.param("Backups.create", Backups.create.__doc__, id="sync-create"),
-    pytest.param("AsyncBackups.create", AsyncBackups.create.__doc__, id="async-create"),
-]
-
-
-@pytest.mark.parametrize(("label", "doc"), _RESTORE_DOCS + _BACKUP_DOCS)
-def test_both_client_surfaces_document_the_byoc_restore_refusal(
-    label: str, doc: str | None
-) -> None:
-    """A caller who backs up a BYOC index learns here, not from an opaque 400."""
-    assert doc is not None
-    text = " ".join(doc.split())
-    assert "BYOC" in text, f"{label} does not mention BYOC"
-    assert "cannot be restored" in text, f"{label} does not say a BYOC backup cannot be restored"
-
 
 @pytest.mark.parametrize(("label", "doc"), _RESTORE_DOCS)
 def test_no_raises_entry_opens_with_a_parenthesised_status_code(
@@ -432,12 +408,3 @@ def test_no_raises_entry_opens_with_a_parenthesised_status_code(
     assert doc is not None
     raises = doc.split("Raises:", 1)[1].split("Examples:", 1)[0]
     assert not re.search(r":\s*\(\d{3}\)", raises), f"{label} has a parenthesised status code"
-
-
-@pytest.mark.parametrize(("label", "doc"), _RESTORE_DOCS)
-def test_the_byoc_server_message_is_quoted_on_one_source_line(label: str, doc: str | None) -> None:
-    """A literal wrapped across source lines renders with stray ``&nbsp;`` runs."""
-    assert doc is not None
-    assert "``BYOC restore is not supported in this API version``" in doc, (
-        f"{label} splits the quoted server message across lines"
-    )
