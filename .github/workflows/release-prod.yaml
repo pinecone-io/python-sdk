@@ -586,14 +586,11 @@ jobs:
           pip install twine==6.1.0
           twine check dist/*
 
-      # NOTE: pin to a SHA before merging. release/v1 is the maintained branch
-      # of pypa/gh-action-pypi-publish; replace with `@<sha>  # v1.X.Y`.
-      #
       # `attestations: true` emits SLSA build provenance attestations that
       # PyPI displays on the project page. Requires `attestations: write`
       # permission above (in addition to `id-token: write` for OIDC).
       - name: Publish to PyPI (Trusted Publisher OIDC + SLSA attestation)
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
         with:
           packages-dir: dist
           attestations: true
