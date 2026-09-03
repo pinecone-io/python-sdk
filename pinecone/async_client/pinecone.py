@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 from urllib.parse import quote
 
 from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
@@ -1442,3 +1442,27 @@ class AsyncPinecone:
                         print(index.name)
         """
         await self.close()
+
+    if not TYPE_CHECKING:
+
+        def __getattr__(self, name: str) -> NoReturn:
+            """Explain a removed client attribute rather than failing bare.
+
+            Reached only for names normal lookup did not find. ``preview`` gets
+            a message naming its replacement; every other name raises Python's
+            own wording, so ``hasattr`` and ``getattr`` defaults behave as
+            usual. Hidden from type checkers on purpose: a visible
+            ``__getattr__`` makes every attribute name valid, which would stop
+            them reporting a misspelled one.
+
+            Raises:
+                AttributeError: Always.
+            """
+            from pinecone._client import (
+                _REMOVED_CLIENT_ATTRIBUTES,
+                _removed_client_attribute_message,
+            )
+
+            if name in _REMOVED_CLIENT_ATTRIBUTES:
+                raise AttributeError(_removed_client_attribute_message(type(self).__name__, name))
+            raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
