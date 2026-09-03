@@ -741,8 +741,12 @@ jobs:
           VERSION: ${{ needs.preflight.outputs.pep440_version }}
         run: |
           set -euo pipefail
+          cat > "$RUNNER_TEMP/notes.md" <<'EOF'
+          Upgrading from 9.x? Read the migration guide: https://sdk.pinecone.io/python/migration/v10-migration.html
+          EOF
           gh -R "${REPO}" release create "${TAG}" \
             --title "${VERSION}" \
+            --notes "$(cat "$RUNNER_TEMP/notes.md")" \
             --generate-notes \
             --verify-tag \
             --draft \
