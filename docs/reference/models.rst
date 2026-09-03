@@ -378,6 +378,18 @@ Namespace Models
    :members:
    :show-inheritance:
 
+.. autoclass:: pinecone.models.namespaces.models.NamespaceSchema
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.namespaces.models.NamespaceFieldConfig
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.namespaces.models.IndexedFields
+   :members:
+   :show-inheritance:
+
 Pagination Models
 -----------------
 
@@ -630,6 +642,10 @@ Filter Builder
 --------------
 
 .. autoclass:: pinecone.utils.filter_builder.Field
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.utils.filter_builder.Condition
    :members:
    :show-inheritance:
 

@@ -10,6 +10,14 @@ pc = Pinecone(api_key="your-api-key")
 index = pc.index("movie-recommendations")
 ```
 
+:::{note}
+The methods on this page serve indexes created with top-level `dimension` and `metric`.
+An index created with a `schema` naming your own vector field stores documents instead,
+and the server rejects `upsert` and `query` on it — use `index.documents` and see the
+[quickstart](../../getting-started/quickstart.md#choosing-an-interface) for how the two
+interfaces divide.
+:::
+
 
 ## Upsert vectors
 

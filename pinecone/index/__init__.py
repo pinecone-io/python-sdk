@@ -1328,6 +1328,11 @@ class Index:
         Raises:
             :exc:`PineconeValueError`: If ``namespace`` is not a string, ``top_k < 1``,
                 or ``rerank`` is missing required keys.
+            :exc:`TypeError`: If ``query`` is combined with any of the flat
+                keyword arguments it replaces (``top_k``, ``inputs``, ``vector``,
+                ``id``, ``filter``, ``match_terms``) — pass one form or the
+                other, not both — or if ``query`` is neither a
+                :class:`SearchQuery` nor a mapping.
             :exc:`ApiError`: If the API returns an error response (e.g. authentication
                 failure or server error).
             :exc:`PineconeConnectionError`: If a network-level connection
@@ -1513,6 +1518,7 @@ class Index:
         Raises:
             :exc:`PineconeValueError`: If *name* violates the rules above. Raised
                 before any HTTP request is made.
+            :exc:`TypeError`: If unexpected keyword arguments are passed.
             :exc:`NotFoundError`: no namespace of that name exists on the index.
             :exc:`RateLimitError`: this operation's per-index limit was
                 exceeded. Use :meth:`list_namespaces` to describe many namespaces.
@@ -1567,6 +1573,7 @@ class Index:
         Raises:
             :exc:`PineconeValueError`: If *name* violates the rules above. Raised
                 before any HTTP request is made.
+            :exc:`TypeError`: If unexpected keyword arguments are passed.
             :exc:`NotFoundError`: no namespace of that name exists on the index.
             :exc:`ApiError`: If the API returns any other error response (e.g.
                 authentication failure or server error).

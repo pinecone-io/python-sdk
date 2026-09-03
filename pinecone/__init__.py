@@ -2,7 +2,7 @@
 
 Quick Start::
 
-    from pinecone import Pinecone
+    from pinecone import DenseVectorQuery, Pinecone
 
     pc = Pinecone(api_key="your-api-key")  # or set PINECONE_API_KEY env var
 
@@ -14,36 +14,55 @@ Quick Start::
         deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
     )
 
-    # Data plane: operate on vectors
+    # Data plane: an index declaring a schema stores documents
     index = pc.index("movie-recommendations")
-    index.upsert(vectors=[("movie-42", [0.012, -0.087, 0.153])])  # 1536-dim vector
-    results = index.query(vector=[0.012, -0.087, 0.153], top_k=5)  # 1536-dim vector
+    index.documents.upsert(
+        namespace="movies-en",
+        documents=[{"_id": "movie-42", "embedding": [0.012, -0.087, 0.153]}],  # 1536-dim
+    )
+    results = index.documents.search(
+        namespace="movies-en",
+        top_k=5,
+        score_by=[DenseVectorQuery(field="embedding", values=[0.012, -0.087, 0.153])],
+    )
 
     # Integrated inference: search with text (server-side embedding)
     index = pc.index("my-integrated-index")
-    results = index.search(namespace="default", top_k=5, inputs={"text": "search query"})
+    results = index.search(namespace="articles-en", top_k=5, inputs={"text": "search query"})
 
 The :class:`Pinecone` client manages indexes (control plane). Call
-``pc.index(name)`` to get an :class:`Index` for vector operations (data plane).
+``pc.index(name)`` to get an :class:`Index` for data-plane work.
+
+How an index was created decides which data-plane interface it answers on. An
+index declaring a ``schema`` of your own field names stores documents, read and
+written through ``index.documents``. The vector methods :meth:`Index.upsert` and
+:meth:`Index.query` serve indexes created with top-level ``dimension`` and
+``metric``, and the server rejects them on a schema-based index. An index built
+by ``pc.indexes.create_for_model()`` embeds text server-side and is searched
+with :meth:`Index.search`.
 
 Upgrading from 9.x? ``create``/``configure`` moved from ``spec=``/``dimension=``
-to ``schema=``/``deployment=``; see ``docs/migration/v10-migration.md``
-for the field-by-field mapping and before/after code for each flow.
+to ``schema=``/``deployment=``; see :doc:`/migration/v10-migration` for the
+field-by-field mapping and before/after code for each flow.
 
 Async Quick Start::
 
-    from pinecone import AsyncPinecone
+    from pinecone import AsyncPinecone, DenseVectorQuery
 
     async with AsyncPinecone(api_key="your-api-key") as pc:
         # Control plane: manage indexes
         index_names = [idx.name async for idx in pc.indexes.list()]
 
         # Data plane: resolve host first, then create index client
-        desc = await pc.indexes.describe("my-index")
+        desc = await pc.indexes.describe("movie-recommendations")
         index = pc.index(host=desc.host)
 
         async with index:
-            results = await index.query(vector=[0.012, -0.087, 0.153], top_k=5)
+            results = await index.documents.search(
+                namespace="movies-en",
+                top_k=5,
+                score_by=[DenseVectorQuery(field="embedding", values=[0.012, -0.087, 0.153])],
+            )
 
 For async usage, see :class:`AsyncPinecone`. For admin/org management,
 see :class:`Admin`.

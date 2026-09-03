@@ -85,6 +85,20 @@ def _build_search_records_body(
     query: Any | None,
     wrap_dense_vector: bool = True,
 ) -> dict[str, Any]:
+    """Build the request body shared by the three public ``search()`` surfaces.
+
+    Accepts either the legacy ``query=SearchQuery(...)`` form or the flat
+    keyword arguments, and normalizes a dense query vector into the shape the
+    surface expects. ``method_name`` only names the caller in error messages.
+
+    Raises:
+        :exc:`TypeError`: If ``query`` is passed alongside any of the flat
+            keyword arguments it replaces — the two forms are mutually
+            exclusive — or if ``query`` is neither a :class:`SearchQuery` nor a
+            mapping. The message names the arguments that conflicted.
+        :exc:`PineconeValueError`: If ``rerank`` omits ``model`` or
+            ``rank_fields``, or if neither ``top_k`` nor ``query`` was given.
+    """
     if rerank is not None:
         if "model" not in rerank:
             raise ValidationError("rerank requires 'model' to be specified")
