@@ -15,6 +15,7 @@ per-operation release notes and an end-to-end RBAC walkthrough.
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
    :special-members: __init__
 
 
@@ -25,6 +26,7 @@ Organizations
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
 
 
 Projects
@@ -34,6 +36,7 @@ Projects
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
 
 
 API Keys
@@ -43,6 +46,7 @@ API Keys
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
 
 
 Users
@@ -52,6 +56,7 @@ Users
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
 
 
 Invites
@@ -61,6 +66,7 @@ Invites
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
 
 
 Service Accounts
@@ -74,6 +80,7 @@ exactly once — capture it or rotate again.
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
 
 
 Role Bindings
@@ -88,3 +95,4 @@ project.  Nothing else confers permissions, and bindings are immutable, so a rol
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource

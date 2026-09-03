@@ -24,6 +24,10 @@ Index Models
    :members:
    :show-inheritance:
 
+.. autoclass:: pinecone.models.indexes.index.IndexTags
+   :members:
+   :show-inheritance:
+
 .. autoclass:: pinecone.models.indexes.specs.ServerlessSpec
    :members:
    :show-inheritance:
@@ -165,7 +169,15 @@ Vector Models
    :members:
    :show-inheritance:
 
+.. autoclass:: pinecone.models.vectors.vector.ScoredVector
+   :members:
+   :show-inheritance:
+
 .. autoclass:: pinecone.models.vectors.sparse.SparseValues
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.vectors.usage.Usage
    :members:
    :show-inheritance:
 
@@ -193,7 +205,19 @@ Vector Models
    :members:
    :show-inheritance:
 
+.. autoclass:: pinecone.models.vectors.responses.ListItem
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.vectors.responses.Pagination
+   :members:
+   :show-inheritance:
+
 .. autoclass:: pinecone.models.vectors.responses.DescribeIndexStatsResponse
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.vectors.responses.NamespaceSummary
    :members:
    :show-inheritance:
 
@@ -206,6 +230,20 @@ Vector Models
    :show-inheritance:
 
 .. autoclass:: pinecone.models.response_info.ResponseInfo
+   :members:
+   :show-inheritance:
+
+Batch Models
+------------
+
+``index.documents.batch_upsert`` returns a :class:`~pinecone.models.batch.BatchResult`,
+which collects per-batch failures instead of raising on the first one.
+
+.. autoclass:: pinecone.models.batch.BatchResult
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.batch.BatchError
    :members:
    :show-inheritance:
 
@@ -236,11 +274,139 @@ Search Models
    :members:
    :show-inheritance:
 
+.. autoclass:: pinecone.models.vectors.search.SearchQuery
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.vectors.search.SearchQueryVector
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.vectors.search.SearchRerank
+   :members:
+   :show-inheritance:
+
 .. autoclass:: pinecone.models.vectors.query_aggregator.QueryNamespacesResults
    :members:
    :show-inheritance:
 
 .. autoclass:: pinecone.models.vectors.query_aggregator.QueryResultsAggregator
+   :members:
+   :show-inheritance:
+
+Document Models
+---------------
+
+The document interface — ``index.documents`` on either client — works in whole
+records rather than raw vectors.  You write :class:`~pinecone.models.documents.document.DocumentRecord`
+and read back :class:`~pinecone.models.documents.document.Document`.
+
+.. autoclass:: pinecone.models.documents.document.Document
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.documents.document.DocumentRecord
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.documents.document.UpdateDocumentRecord
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.documents.responses.ListedDocumentRecord
+   :members:
+   :show-inheritance:
+
+Document Scoring
+~~~~~~~~~~~~~~~~
+
+``score_by`` picks how a search ranks candidates.  Pass one of these query types.
+
+.. autodata:: pinecone.models.documents.score_by.DocumentScoringMethod
+
+.. autoclass:: pinecone.models.documents.score_by.TextQuery
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.documents.score_by.QueryStringQuery
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.documents.score_by.DenseVectorQuery
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.documents.score_by.SparseVectorQuery
+   :members:
+   :show-inheritance:
+
+Document Responses
+~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: pinecone.models.documents.responses.UpsertDocumentsResponse
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.documents.responses.SearchDocumentsResponse
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.documents.responses.FetchDocumentsResponse
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.documents.responses.ListDocumentsResponse
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.documents.responses.UpdateDocumentsResponse
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.documents.responses.DeleteDocumentsResponse
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.documents.responses.DocumentSearchUsage
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.documents.responses.DocumentFetchUsage
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.documents.responses.DocumentListUsage
+   :members:
+   :show-inheritance:
+
+Document Requests
+~~~~~~~~~~~~~~~~~
+
+Document methods are keyword-only; you never build one of these yourself.  They
+document the request body each method sends, which is what you are reading when
+a validation error names a field.
+
+.. autoclass:: pinecone.models.documents.requests.UpsertDocumentsRequest
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.documents.requests.SearchDocumentsRequest
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.documents.requests.FetchDocumentsRequest
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.documents.requests.ListDocumentsRequest
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.documents.requests.UpdateDocumentsRequest
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.documents.requests.DeleteDocumentsRequest
    :members:
    :show-inheritance:
 
@@ -255,7 +421,13 @@ Inference Models
    :members:
    :show-inheritance:
 
+.. autodata:: pinecone.models.inference.embed.Embedding
+
 .. autoclass:: pinecone.models.inference.embed.EmbeddingsList
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.inference.embed.EmbedUsage
    :members:
    :show-inheritance:
 
@@ -267,7 +439,15 @@ Inference Models
    :members:
    :show-inheritance:
 
+.. autoclass:: pinecone.models.inference.rerank.RerankUsage
+   :members:
+   :show-inheritance:
+
 .. autoclass:: pinecone.models.inference.models.ModelInfo
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.inference.models.ModelInfoSupportedParameter
    :members:
    :show-inheritance:
 
@@ -309,7 +489,7 @@ Collection Models
    :members:
    :show-inheritance:
 
-.. autoclass:: pinecone.db_control.models.collection_description.CollectionDescription
+.. autoclass:: pinecone.models.collections.description.CollectionDescription
    :members:
    :show-inheritance:
 
@@ -436,15 +616,19 @@ Enums
    :members:
    :show-inheritance:
 
-.. autoclass:: pinecone.db_control.enums.clouds.AwsRegion
+.. autoclass:: pinecone.models.enums.PodIndexEnvironment
    :members:
    :show-inheritance:
 
-.. autoclass:: pinecone.db_control.enums.clouds.AzureRegion
+.. autoclass:: pinecone.models.enums.AwsRegion
    :members:
    :show-inheritance:
 
-.. autoclass:: pinecone.db_control.enums.clouds.GcpRegion
+.. autoclass:: pinecone.models.enums.AzureRegion
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.enums.GcpRegion
    :members:
    :show-inheritance:
 
@@ -578,13 +762,52 @@ Assistant Models
    :members:
    :show-inheritance:
 
+Assistant Chat Models
+~~~~~~~~~~~~~~~~~~~~~
+
+:meth:`pc.assistants.chat() <pinecone.client.assistants.Assistants.chat>` returns a
+:class:`~pinecone.models.assistant.chat.ChatResponse`;
+:meth:`pc.assistants.chat_completions() <pinecone.client.assistants.Assistants.chat_completions>`
+returns the OpenAI-shaped :class:`~pinecone.models.assistant.chat.ChatCompletionResponse`.
+
 .. autoclass:: pinecone.models.assistant.chat.ChatResponse
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.chat.ChatMessage
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.chat.ChatCitation
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.chat.ChatReference
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.chat.ChatHighlight
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.chat.ChatUsage
    :members:
    :show-inheritance:
 
 .. autoclass:: pinecone.models.assistant.chat.ChatCompletionResponse
    :members:
    :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.chat.ChatCompletionChoice
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.chat.ChatCompletionMessage
+   :members:
+   :show-inheritance:
+
+Assistant Context Models
+~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. autoclass:: pinecone.models.assistant.context.ContextResponse
    :members:
@@ -594,9 +817,59 @@ Assistant Models
    :members:
    :show-inheritance:
 
+.. autodata:: pinecone.models.assistant.context.ContextSnippet
+
+.. autoclass:: pinecone.models.assistant.context.TextSnippet
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.context.MultimodalSnippet
+   :members:
+   :show-inheritance:
+
+.. autodata:: pinecone.models.assistant.context.ContextContentBlock
+
+.. autoclass:: pinecone.models.assistant.context.ContextTextBlock
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.context.ContextImageBlock
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.context.ContextImageData
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.context.ContextReference
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.context.FileReference
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.context.PageReference
+   :members:
+   :show-inheritance:
+
+Assistant Evaluation Models
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 .. autoclass:: pinecone.models.assistant.evaluation.AlignmentResult
    :members:
    :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.evaluation.AlignmentScores
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.evaluation.EntailmentResult
+   :members:
+   :show-inheritance:
+
+Assistant Streaming Models
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. autoclass:: pinecone.models.assistant.streaming.ChatStream
    :members:
@@ -611,6 +884,18 @@ Assistant Models
    :show-inheritance:
 
 .. autoclass:: pinecone.models.assistant.streaming.ChatCompletionStreamChunk
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.streaming.ChatCompletionStreamChoice
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.streaming.ChatCompletionStreamDelta
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.assistant.streaming.StreamContentDelta
    :members:
    :show-inheritance:
 
@@ -641,14 +926,17 @@ Assistant Models
 Filter Builder
 --------------
 
+:class:`~pinecone.utils.filter_builder.Field` builds metadata filter expressions
+with Python operators instead of nested dicts.  Comparisons return a
+:class:`~pinecone.utils.filter_builder.Condition`, which combines with ``&`` and
+``|`` and converts to the wire form with ``to_dict()``.
+
 .. autoclass:: pinecone.utils.filter_builder.Field
    :members:
+   :special-members: __init__, __eq__, __ne__
    :show-inheritance:
 
 .. autoclass:: pinecone.utils.filter_builder.Condition
    :members:
-   :show-inheritance:
-
-.. autoclass:: pinecone.utils.filter_builder.FilterBuilder
-   :members:
+   :special-members: __init__, __and__, __or__
    :show-inheritance:

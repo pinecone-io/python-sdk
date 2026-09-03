@@ -10,6 +10,7 @@ lazily initialized on first access.
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
    :special-members: __init__
 
 
@@ -20,6 +21,7 @@ Indexes
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
 
 
 Collections
@@ -29,6 +31,7 @@ Collections
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
 
 
 Backups
@@ -38,6 +41,7 @@ Backups
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
 
 
 BackupSchedules
@@ -47,6 +51,7 @@ BackupSchedules
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
 
 
 RestoreJobs
@@ -56,6 +61,7 @@ RestoreJobs
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
 
 
 Inference
@@ -65,6 +71,13 @@ Inference
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
+
+.. autoclass:: pinecone.client.inference.ModelResource
+   :members:
+   :undoc-members: False
+   :show-inheritance:
+   :member-order: bysource
 
 
 Assistants
@@ -74,3 +87,4 @@ Assistants
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource

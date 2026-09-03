@@ -28,7 +28,9 @@ from the ``*_async()`` methods.
   :meth:`~pinecone.grpc.GrpcIndex.upsert_from_dataframe`,
   :meth:`~pinecone.grpc.GrpcIndex.upsert_records`,
   :meth:`~pinecone.grpc.GrpcIndex.query`,
+  :meth:`~pinecone.grpc.GrpcIndex.query_namespaces`,
   :meth:`~pinecone.grpc.GrpcIndex.fetch`,
+  :meth:`~pinecone.grpc.GrpcIndex.fetch_by_metadata`,
   :meth:`~pinecone.grpc.GrpcIndex.update`,
   :meth:`~pinecone.grpc.GrpcIndex.delete`,
   :meth:`~pinecone.grpc.GrpcIndex.list`,
@@ -36,11 +38,28 @@ from the ``*_async()`` methods.
 - **Stats** — :meth:`~pinecone.grpc.GrpcIndex.describe_index_stats`
 - **Integrated Inference** — :meth:`~pinecone.grpc.GrpcIndex.search`,
   :meth:`~pinecone.grpc.GrpcIndex.search_records`
+- **Namespaces** — :meth:`~pinecone.grpc.GrpcIndex.create_namespace`,
+  :meth:`~pinecone.grpc.GrpcIndex.describe_namespace`,
+  :meth:`~pinecone.grpc.GrpcIndex.delete_namespace`,
+  :meth:`~pinecone.grpc.GrpcIndex.list_namespaces`,
+  :meth:`~pinecone.grpc.GrpcIndex.list_namespaces_paginated`
+- **Bulk Import** — :meth:`~pinecone.grpc.GrpcIndex.start_import`,
+  :meth:`~pinecone.grpc.GrpcIndex.describe_import`,
+  :meth:`~pinecone.grpc.GrpcIndex.cancel_import`,
+  :meth:`~pinecone.grpc.GrpcIndex.list_imports`,
+  :meth:`~pinecone.grpc.GrpcIndex.list_imports_paginated`
 - **Async variants** — :meth:`~pinecone.grpc.GrpcIndex.upsert_async`,
   :meth:`~pinecone.grpc.GrpcIndex.query_async`,
+  :meth:`~pinecone.grpc.GrpcIndex.query_namespaces_async`,
   :meth:`~pinecone.grpc.GrpcIndex.fetch_async`,
+  :meth:`~pinecone.grpc.GrpcIndex.update_async`,
   :meth:`~pinecone.grpc.GrpcIndex.delete_async`
-- **Lifecycle** — :meth:`~pinecone.grpc.GrpcIndex.close`
+- **Lifecycle** — :attr:`~pinecone.grpc.GrpcIndex.host`,
+  :meth:`~pinecone.grpc.GrpcIndex.close`
+
+``GrpcIndex`` has no ``documents`` namespace — the document interface is HTTP-only.
+Use :class:`~pinecone.index.Index` or
+:class:`~pinecone.async_client.async_index.AsyncIndex` for a schema-based index.
 
 .. autoclass:: pinecone.grpc.GrpcIndex
    :members:

@@ -52,6 +52,12 @@ autodoc_default_options = {
 
 autodoc_typehints = "description"
 
+# Source order, not alphabetical. Members then render in the order the author
+# wrote them (create/describe/list/delete rather than create/delete/describe),
+# and doctests in one group run in that order too, so an example no longer sees
+# a resource a later-alphabetically-named example deleted.
+autodoc_member_order = "bysource"
+
 napoleon_google_docstring = True
 napoleon_numpy_docstring = False
 napoleon_use_param = True
@@ -83,6 +89,7 @@ suppress_warnings = ["myst.header", "intersphinx", "toc.excluded", "toc.secnum"]
 
 doctest_global_setup = """
 import os
+import re
 import sys
 import json
 import httpx
@@ -105,6 +112,7 @@ sys.modules["pandas.core.frame"] = types.ModuleType("pandas.core.frame")
 
 _INDEX_RESPONSE = {
     "name": "my-index",
+    "read_capacity": {"mode": "OnDemand", "status": {"state": "Ready"}},
     "dimension": 1536,
     "metric": "cosine",
     "host": "my-index-abc123.svc.pinecone.io",
@@ -207,7 +215,14 @@ _RESTORE_JOB_RESPONSE = {
     "target_index_name": "product-search-restored",
     "target_index_id": "idx-def456",
     "status": "Completed",
+    "percent_complete": 100,
     "created_at": "2024-01-15T00:00:00Z",
+}
+
+_RESTORE_JOB_RESPONSE_2 = {
+    "restore_job_id": "rj-def456", "backup_id": "bk-def456",
+    "target_index_name": "support-tickets-restored", "target_index_id": "idx-ghi789",
+    "status": "Pending", "created_at": "2024-01-16T00:00:00Z",
 }
 
 _ASSISTANT_RESPONSE = {
@@ -226,8 +241,35 @@ _ASSISTANT_FILE_RESPONSE = {
 _ASSISTANT_OPERATION_RESPONSE = {
     "id": "op-1234-abcd-5678", "status": "Completed", "operation_type": "upload_file",
     "file_id": "file-abc123", "percent_complete": 100,
-    "created_at": "2024-01-15T00:00:00Z", "completed_on": "2024-01-15T00:00:05Z",
+    "created_on": "2024-01-15T00:00:00Z", "completed_on": "2024-01-15T00:00:05Z",
     "ingestion_units": 1.0,
+}
+
+_ASSISTANT_CHAT_RESPONSE = {
+    "id": "chat-abc123", "model": "gpt-4o-2024-11-20", "finish_reason": "stop",
+    "message": {"role": "assistant",
+                "content": "BYOC is available in aws us-east-1."},
+    "citations": [{"position": 34, "references": [
+        {"file": _ASSISTANT_FILE_RESPONSE, "pages": [3]}]}],
+    "context_snippet_count": 2,
+    "usage": {"prompt_tokens": 240, "completion_tokens": 18, "total_tokens": 258},
+}
+
+_ASSISTANT_CONTEXT_RESPONSE = {
+    "id": "ctx-abc123",
+    "snippets": [{"type": "text", "score": 0.87,
+                  "content": "BYOC is available in aws us-east-1.",
+                  "reference": {"type": "pdf", "pages": [3],
+                                "file": _ASSISTANT_FILE_RESPONSE}}],
+    "usage": {"prompt_tokens": 240, "completion_tokens": 0, "total_tokens": 240},
+}
+
+_ASSISTANT_COMPLETION_RESPONSE = {
+    "id": "chatcmpl-abc123", "model": "gpt-4o-2024-11-20",
+    "choices": [{"index": 0, "finish_reason": "stop",
+                 "message": {"role": "assistant",
+                             "content": "BYOC is available in aws us-east-1."}}],
+    "usage": {"prompt_tokens": 240, "completion_tokens": 18, "total_tokens": 258},
 }
 
 _ALIGNMENT_RESPONSE = {
@@ -347,6 +389,123 @@ _USER_RESPONSE = {
     "name": "Alice Nakamura",
 }
 
+_DOCUMENT_MATCHES = [
+    {"_id": "article-101", "_score": 0.92, "title": "Intro to vectors",
+     "content": "Vectors encode meaning as coordinates.", "category": "tech"},
+    {"_id": "article-102", "_score": 0.74, "title": "Advanced retrieval",
+     "content": "Hybrid retrieval mixes dense and sparse scores.", "category": "tech"},
+]
+
+
+def _documents_response(request):
+    _path = request.url.path
+    _body = json.loads(request.content or b"{}")
+    if _path.endswith("/documents/upsert"):
+        return {"upserted_count": len(_body.get("documents", []))}
+    if _path.endswith("/documents/search"):
+        _fields = _body.get("include_fields") or []
+        _matches = []
+        for _match in _DOCUMENT_MATCHES[: _body.get("top_k", len(_DOCUMENT_MATCHES))]:
+            if _fields == ["*"]:
+                _matches.append(dict(_match))
+            else:
+                _kept = {"_id": _match["_id"], "_score": _match["_score"]}
+                _kept.update({_f: _match[_f] for _f in _fields if _f in _match})
+                _matches.append(_kept)
+        return {"matches": _matches, "namespace": "published", "usage": {"read_units": 1}}
+    if _path.endswith("/documents/fetch"):
+        _ids = _body.get("ids") or [_m["_id"] for _m in _DOCUMENT_MATCHES]
+        return {
+            "documents": {
+                _m["_id"]: {_k: _v for _k, _v in _m.items() if _k != "_score"}
+                for _m in _DOCUMENT_MATCHES
+                if _m["_id"] in _ids
+            },
+            "namespace": "published",
+            "usage": {"read_units": 1},
+        }
+    if _path.endswith("/documents/list"):
+        _prefix = _body.get("prefix") or ""
+        return {
+            "documents": [
+                {"_id": _m["_id"]} for _m in _DOCUMENT_MATCHES
+                if _m["_id"].startswith(_prefix)
+            ],
+            "namespace": "published",
+            "usage": {"read_units": 1},
+        }
+    return {} if _body.get("filter") is None else {"matched_records": 2}
+
+
+_INVITE_RESPONSE = {
+    "id": "9c8e3528-b9c0-4358-84ce-84c28e91b566",
+    "email": "newhire@acme.com",
+    "status": "pending",
+    "expires_at": "2026-05-21T03:00:00Z",
+    "created_at": "2026-04-14T20:00:00Z",
+}
+
+_SERVICE_ACCOUNT_RESPONSE = {
+    "id": "f8a3b2c1-4d5e-6f7a-8b9c-0d1e2f3a4b5c",
+    "name": "ci-prod",
+    "client_id": "l3Ow0CmFyc4jOONcwiKUCRqQKN0tiCAn",
+    "created_at": "2026-04-10T15:23:00Z",
+    "updated_at": "2026-04-12T09:11:00Z",
+}
+
+_SERVICE_ACCOUNT_WITH_SECRET = {
+    "service_account": _SERVICE_ACCOUNT_RESPONSE,
+    "client_secret": "8p-kkC23XOWvkCosKq",
+}
+
+_ROLE_BINDING_RESPONSE = {
+    "id": "9a8e3528-b9c0-4358-84ce-84c28e91b566",
+    "principal_type": "user",
+    "principal_id": "e2e92523-85dc-4142-b8c2-e681be8b78df",
+    "resource_type": "organization",
+    "resource_id": "4f6a1e0c-8f2b-4c1a-9d3e-1b2c3d4e5f60",
+    "role": "OrgMember",
+    "created_at": "2026-04-10T15:23:00Z",
+}
+
+
+_SEARCH_HITS = [
+    {"_id": "article-1", "_score": 0.92,
+     "fields": {"chunk_text": "Vector databases accelerate AI search.",
+                "category": "tech"}},
+    {"_id": "article-2", "_score": 0.74,
+     "fields": {"chunk_text": "RAG pipelines combine retrieval with generation.",
+                "category": "tech"}},
+]
+
+
+def _records_search_response(request):
+    _body = json.loads(request.content or b"{}")
+    _query = _body.get("query") or {}
+    _rerank = _body.get("rerank") or {}
+    _limit = _rerank.get("top_n") or _query.get("top_k") or len(_SEARCH_HITS)
+    _usage = {"read_units": 1}
+    if _query.get("inputs"):
+        _usage["embed_total_tokens"] = 8
+    if _rerank:
+        _usage["rerank_units"] = 1
+    return {"result": {"hits": _SEARCH_HITS[:_limit]}, "usage": _usage}
+
+
+def _vectors_query_response(request):
+    _body = json.loads(request.content or b"{}")
+    _matches = [
+        {"id": "prod-%d" % i, "score": 0.9 - i / 10,
+         "metadata": {"description": "Noise-cancelling over-ear headphones %d" % i}}
+        for i in range(min(_body.get("topK") or 2, 2))
+    ]
+    if not _body.get("includeMetadata"):
+        for _match in _matches:
+            _match.pop("metadata")
+    return {"matches": _matches, "namespace": _body.get("namespace", ""),
+            "usage": {"readUnits": 1}}
+
+
 def _route_request(request):
     url = str(request.url)
     path = request.url.path
@@ -393,6 +552,47 @@ def _route_request(request):
                 {"data": [_USER_RESPONSE], "pagination": None}).encode(),
                                   headers={"content-type": "application/json"})
         return httpx.Response(200, content=json.dumps(_USER_RESPONSE).encode(),
+                              headers={"content-type": "application/json"})
+
+    if "/admin/invites" in path:
+        if method == "DELETE":
+            return httpx.Response(204, content=b"",
+                                  headers={"content-type": "application/json"})
+        if method == "GET" and path.rstrip("/").endswith("/admin/invites"):
+            return httpx.Response(200, content=json.dumps(
+                {"data": [_INVITE_RESPONSE], "pagination": None}).encode(),
+                                  headers={"content-type": "application/json"})
+        return httpx.Response(200, content=json.dumps(_INVITE_RESPONSE).encode(),
+                              headers={"content-type": "application/json"})
+
+    if "/admin/service-accounts" in path:
+        if method == "DELETE":
+            return httpx.Response(204, content=b"",
+                                  headers={"content-type": "application/json"})
+        if path.endswith("/rotate-secret"):
+            return httpx.Response(200,
+                                  content=json.dumps(_SERVICE_ACCOUNT_WITH_SECRET).encode(),
+                                  headers={"content-type": "application/json"})
+        if method == "GET" and path.rstrip("/").endswith("/admin/service-accounts"):
+            return httpx.Response(200, content=json.dumps(
+                {"data": [_SERVICE_ACCOUNT_RESPONSE], "pagination": None}).encode(),
+                                  headers={"content-type": "application/json"})
+        if method == "POST":
+            return httpx.Response(201,
+                                  content=json.dumps(_SERVICE_ACCOUNT_WITH_SECRET).encode(),
+                                  headers={"content-type": "application/json"})
+        return httpx.Response(200, content=json.dumps(_SERVICE_ACCOUNT_RESPONSE).encode(),
+                              headers={"content-type": "application/json"})
+
+    if "/admin/role-bindings" in path:
+        if method == "DELETE":
+            return httpx.Response(204, content=b"",
+                                  headers={"content-type": "application/json"})
+        if method == "GET" and path.rstrip("/").endswith("/admin/role-bindings"):
+            return httpx.Response(200, content=json.dumps(
+                {"data": [_ROLE_BINDING_RESPONSE], "pagination": None}).encode(),
+                                  headers={"content-type": "application/json"})
+        return httpx.Response(200, content=json.dumps(_ROLE_BINDING_RESPONSE).encode(),
                               headers={"content-type": "application/json"})
 
     if "/admin/projects" in path:
@@ -449,6 +649,12 @@ def _route_request(request):
                               headers={"content-type": "application/json"})
 
     if "/indexes" in path:
+        if path.endswith("/indexes/legacy-recommender"):
+            return httpx.Response(200, content=json.dumps({
+                **_INDEX_RESPONSE, "name": "legacy-recommender",
+                "deployment": {"deployment_type": "pod", "environment": "us-east-1-aws",
+                               "pod_type": "p1.x1", "replicas": 2, "shards": 1},
+            }).encode(), headers={"content-type": "application/json"})
         if "create-for-model" in path or path.endswith("/indexes/semantic-search"):
             return httpx.Response(200, content=json.dumps(_SEMANTIC_INDEX_RESPONSE).encode(),
                                   headers={"content-type": "application/json"})
@@ -498,7 +704,12 @@ def _route_request(request):
 
     if "/restore-jobs" in path:
         if method == "GET" and path.endswith("/restore-jobs"):
-            return httpx.Response(200, content=json.dumps({"data": [], "pagination": None}).encode(),
+            if request.url.params.get("paginationToken") is None:
+                _body = {"data": [_RESTORE_JOB_RESPONSE],
+                         "pagination": {"next": "rj-page-2"}}
+            else:
+                _body = {"data": [_RESTORE_JOB_RESPONSE_2], "pagination": None}
+            return httpx.Response(200, content=json.dumps(_body).encode(),
                                   headers={"content-type": "application/json"})
         return httpx.Response(200, content=json.dumps(_RESTORE_JOB_RESPONSE).encode(),
                               headers={"content-type": "application/json"})
@@ -520,6 +731,34 @@ def _route_request(request):
                                   headers={"content-type": "application/json"})
         return httpx.Response(200, content=json.dumps(_COLLECTION_RESPONSE).encode(),
                               headers={"content-type": "application/json"})
+
+    # Prefix-ordered: the two specific paths first. Real paths are /chat/{name},
+    # /chat/{name}/context and /chat/{name}/chat/completions.
+    if "/chat/" in path:
+        if path.endswith("/context"):
+            return httpx.Response(200,
+                content=json.dumps(_ASSISTANT_CONTEXT_RESPONSE).encode(),
+                headers={"content-type": "application/json"})
+        if path.endswith("/chat/completions"):
+            return httpx.Response(200,
+                content=json.dumps(_ASSISTANT_COMPLETION_RESPONSE).encode(),
+                headers={"content-type": "application/json"})
+        return httpx.Response(200,
+            content=json.dumps(_ASSISTANT_CHAT_RESPONSE).encode(),
+            headers={"content-type": "application/json"})
+
+    # Above the /assistant/* branches: list paths are /files/{name} and
+    # /operations/{name}, which those prefixes do not match, so a list decode
+    # would otherwise fail for want of its "files"/"operations" key.
+    if re.match(r"^/files/[^/]+$", path):
+        return httpx.Response(200, content=json.dumps(
+            {"files": [_ASSISTANT_FILE_RESPONSE], "pagination": None}).encode(),
+            headers={"content-type": "application/json"})
+
+    if re.match(r"^/operations/[^/]+$", path):
+        return httpx.Response(200, content=json.dumps(
+            {"operations": [_ASSISTANT_OPERATION_RESPONSE], "pagination": None}).encode(),
+            headers={"content-type": "application/json"})
 
     if "/assistant/evaluation/metrics/alignment" in path:
         return httpx.Response(200, content=json.dumps(_ALIGNMENT_RESPONSE).encode(),
@@ -579,8 +818,42 @@ def _route_request(request):
         if method == "POST":
             return httpx.Response(200, content=json.dumps({"id": "1", "status": "InProgress"}).encode(),
                                   headers={"content-type": "application/json"})
-        return httpx.Response(200, content=json.dumps({"id": "1", "status": "InProgress",
-            "percent_complete": 50.0, "records_imported": 0}).encode(),
+        return httpx.Response(200, content=json.dumps({
+            "id": "1", "status": "InProgress",
+            "uri": "s3://acme-exports/articles/",
+            "createdAt": "2026-01-15T00:00:00Z",
+            "percentComplete": 50.0, "recordsImported": 12000}).encode(),
+                              headers={"content-type": "application/json"})
+
+    # Above the generic data-plane branch: its "/upsert" and "/fetch" substring
+    # tests would otherwise shadow /namespaces/{ns}/documents/upsert and .../fetch.
+    if "/documents/" in path:
+        return httpx.Response(
+            200, content=json.dumps(_documents_response(request)).encode(),
+            headers={"content-type": "application/json"})
+
+    if "/records/namespaces/" in path and path.endswith("/search"):
+        return httpx.Response(
+            200, content=json.dumps(_records_search_response(request)).encode(),
+            headers={"content-type": "application/json"})
+
+    if path.endswith("/query"):
+        return httpx.Response(
+            200, content=json.dumps(_vectors_query_response(request)).encode(),
+            headers={"content-type": "application/json"})
+
+    if path.endswith("/vectors/upsert"):
+        _upserted = len(json.loads(request.content or b"{}").get("vectors", []))
+        return httpx.Response(
+            200, content=json.dumps({"upsertedCount": _upserted}).encode(),
+            headers={"content-type": "application/json"})
+
+    # Below /documents/ (those paths also end in /upsert) and above the generic
+    # data-plane branch. /records/.../upsert stays generic: upsert_records builds
+    # its own response locally.
+    if "/upsert" in path and "/records/" not in path:
+        _n = len(json.loads(request.content or b"{}").get("vectors", []) or [])
+        return httpx.Response(200, content=json.dumps({"upsertedCount": _n}).encode(),
                               headers={"content-type": "application/json"})
 
     if "/vectors" in path or "/query" in path or "/upsert" in path or "/fetch" in path:

@@ -45,7 +45,8 @@ Obtain an ``Index`` instance via :meth:`pinecone.Pinecone.index`.
   :meth:`~pinecone.index.Index.cancel_import`,
   :meth:`~pinecone.index.Index.list_imports`,
   :meth:`~pinecone.index.Index.list_imports_paginated`
-- **Lifecycle** — :meth:`~pinecone.index.Index.close`
+- **Lifecycle** — :attr:`~pinecone.index.Index.host`,
+  :meth:`~pinecone.index.Index.close`
 
 .. autoclass:: pinecone.index.Index
    :members:
