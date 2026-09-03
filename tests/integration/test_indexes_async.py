@@ -9,7 +9,12 @@ import pytest
 from pinecone import AsyncIndex, AsyncPinecone
 from pinecone.errors import ForbiddenError, PineconeValueError
 from pinecone.models.indexes.deployment import ManagedDeployment
-from pinecone.models.indexes.index import IndexModel, IndexStatus
+from pinecone.models.indexes.index import (
+    IndexModel,
+    IndexSpec,
+    IndexStatus,
+    ServerlessSpecInfo,
+)
 from pinecone.models.indexes.schema import (
     DenseVectorField,
     IndexSchema,
@@ -187,9 +192,17 @@ async def test_describe_index_returns_full_model(async_client: AsyncPinecone) ->
         assert desc.metric == "dotproduct"
         assert desc.vector_type == "dense"
 
-        for removed in ("spec", "embed", "created_at"):
-            with pytest.raises(AttributeError, match="was removed in the 2026-07"):
-                getattr(desc, removed)
+        assert isinstance(desc.spec, IndexSpec)
+        assert isinstance(desc.spec.serverless, ServerlessSpecInfo)
+        assert desc.spec.serverless.cloud == "aws"
+        assert desc.spec.serverless.region == "us-east-1"
+        assert desc.spec.pod is None
+        assert desc.spec.byoc is None
+
+        assert desc.embed is None
+
+        with pytest.raises(AttributeError, match="was removed in the 2026-07"):
+            _ = desc.created_at
     finally:
         await async_cleanup_resource(
             lambda: async_client.indexes.delete(name),
@@ -652,10 +665,17 @@ async def test_index_model_bracket_access_on_real_describe_async(
         assert model["schema"].fields["embedding"].metric == "cosine"
 
         assert "nonexistent_field_xyz" not in model, "Non-existent key must NOT be in IndexModel"
-        for removed in ("dimension", "metric", "vector_type", "spec", "embed"):
-            assert removed not in model, f"Removed field {removed!r} must not be in IndexModel"
-            with pytest.raises(KeyError):
-                _ = model[removed]
+
+        for legacy in ("dimension", "metric", "vector_type", "spec", "embed"):
+            assert legacy in model, f"Legacy accessor {legacy!r} must be in IndexModel"
+            assert model[legacy] == getattr(model, legacy), (
+                f"model[{legacy!r}] must equal model.{legacy}"
+            )
+        assert model["embed"] is None, "An index with no semantic text field has embed=None"
+
+        assert "created_at" not in model, "'created_at' must not be in IndexModel"
+        with pytest.raises(KeyError, match="was removed in the 2026-07"):
+            _ = model["created_at"]
 
         with pytest.raises(KeyError):
             _ = model["nonexistent_field_xyz"]
