@@ -10,16 +10,30 @@ from msgspec import Struct
 from pinecone._internal.config import normalize_host
 from pinecone.models._display import render_table
 from pinecone.models._mixin import StructDictMixin
-from pinecone.models.indexes.deployment import IndexDeployment
+from pinecone.models.indexes.deployment import (
+    ByocDeployment,
+    IndexDeployment,
+    PodDeployment,
+)
 from pinecone.models.indexes.read_capacity import ReadCapacityResponse
 from pinecone.models.indexes.schema import (
     DenseVectorField,
     IndexSchema,
+    SemanticTextField,
     SparseVectorField,
     _strip_untyped_tags,
 )
 
-__all__ = ["IndexModel", "IndexStatus", "IndexTags"]
+__all__ = [
+    "ByocSpecInfo",
+    "IndexModel",
+    "IndexSpec",
+    "IndexStatus",
+    "IndexTags",
+    "ModelIndexEmbed",
+    "PodSpecInfo",
+    "ServerlessSpecInfo",
+]
 
 
 class IndexStatus(StructDictMixin, Struct, kw_only=True):
@@ -56,18 +70,182 @@ class IndexTags(dict):  # type: ignore[type-arg]
         return dict(self)
 
 
+class ServerlessSpecInfo(StructDictMixin, Struct, kw_only=True):
+    """The serverless half of a 9.x ``index.spec``.
+
+    Built on demand by :attr:`IndexModel.spec` from a
+    :class:`~pinecone.models.indexes.deployment.ManagedDeployment` plus the
+    index's top-level ``read_capacity`` and ``schema``. Nothing decodes into
+    this class — it is a view over fields that now live elsewhere.
+
+    Attributes:
+        cloud: Cloud provider, from ``deployment.cloud``.
+        region: Cloud region, from ``deployment.region``.
+        read_capacity: The index's ``read_capacity`` as a plain dict with its
+            ``"mode"`` key, or ``None`` when the response omits it. 2026-07
+            carries this at the top level; read
+            :attr:`IndexModel.read_capacity` for the typed object.
+        source_collection: The index's top-level ``source_collection``.
+        schema: The index's typed :attr:`~IndexModel.schema` as a plain dict.
+            Note the shift: in 9.x this key held the *metadata-indexing*
+            schema and was ``None`` by default, whereas the 2026-07 schema
+            declares every field including the vector ones.
+
+    .. deprecated:: 10.0
+       Read ``index.deployment``, ``index.read_capacity`` and
+       ``index.schema`` directly.
+    """
+
+    cloud: str
+    region: str
+    read_capacity: dict[str, Any] | None = None
+    source_collection: str | None = None
+    schema: dict[str, Any] | None = None
+
+
+class PodSpecInfo(StructDictMixin, Struct, kw_only=True):
+    """The pod half of a 9.x ``index.spec``.
+
+    Built on demand by :attr:`IndexModel.spec` from a
+    :class:`~pinecone.models.indexes.deployment.PodDeployment`.
+
+    Attributes:
+        environment: Deployment environment, from ``deployment.environment``.
+        pod_type: Pod type, from ``deployment.pod_type``.
+        replicas: Replica count, from ``deployment.replicas``.
+        shards: Shard count, from ``deployment.shards``.
+        pods: Total pod count, computed as ``replicas * shards``. 2026-07 has
+            no independent pods field; that product is the same identity the
+            create path enforces when translating a 9.x ``pods=``.
+        metadata_config: Always ``None``. Metadata fields are indexed
+            automatically at upsert, so 2026-07 neither accepts nor returns a
+            metadata-indexing configuration.
+        source_collection: The index's top-level ``source_collection``.
+
+    .. deprecated:: 10.0
+       Read ``index.deployment`` directly.
+    """
+
+    environment: str
+    pod_type: str
+    replicas: int | None = None
+    shards: int | None = None
+    pods: int | None = None
+    metadata_config: dict[str, list[str]] | None = None
+    source_collection: str | None = None
+
+
+class ByocSpecInfo(StructDictMixin, Struct, kw_only=True):
+    """The BYOC half of a 9.x ``index.spec``.
+
+    Built on demand by :attr:`IndexModel.spec` from a
+    :class:`~pinecone.models.indexes.deployment.ByocDeployment` plus the
+    index's top-level ``read_capacity`` and ``schema``.
+
+    Attributes:
+        environment: BYOC environment, from ``deployment.environment``.
+        read_capacity: The index's ``read_capacity`` as a plain dict, or
+            ``None`` when the response omits it.
+        schema: The index's typed :attr:`~IndexModel.schema` as a plain dict,
+            with the same semantic shift noted on
+            :class:`ServerlessSpecInfo`.
+
+    .. deprecated:: 10.0
+       Read ``index.deployment``, ``index.read_capacity`` and
+       ``index.schema`` directly.
+    """
+
+    environment: str
+    read_capacity: dict[str, Any] | None = None
+    schema: dict[str, Any] | None = None
+
+
+class IndexSpec(StructDictMixin, Struct, kw_only=True):
+    """A 9.x-shaped view of where an index runs.
+
+    What :attr:`IndexModel.spec` returns. Exactly one of :attr:`serverless`,
+    :attr:`pod` and :attr:`byoc` is set, chosen by the ``deployment_type`` of
+    the index's :attr:`~IndexModel.deployment`.
+
+    Attributes:
+        serverless: A :class:`ServerlessSpecInfo` for a ``"managed"``
+            deployment, else ``None``.
+        pod: A :class:`PodSpecInfo` for a ``"pod"`` deployment, else ``None``.
+        byoc: A :class:`ByocSpecInfo` for a ``"byoc"`` deployment, else
+            ``None``.
+
+    .. deprecated:: 10.0
+       Branch on ``index.deployment`` with :func:`isinstance` instead. The
+       deployment classes carry the same values without a level of nesting,
+       and only they are what the API actually returns.
+    """
+
+    serverless: ServerlessSpecInfo | None = None
+    pod: PodSpecInfo | None = None
+    byoc: ByocSpecInfo | None = None
+
+
+class ModelIndexEmbed(StructDictMixin, Struct, kw_only=True):
+    """A 9.x-shaped view of an index's integrated-embedding configuration.
+
+    What :attr:`IndexModel.embed` returns, built from the single
+    :class:`~pinecone.models.indexes.schema.SemanticTextField` in the index's
+    schema.
+
+    Attributes:
+        model: Embedding model, from the semantic field's ``model``.
+        metric: Distance metric, from the semantic field's ``metric``, or
+            ``None`` when the field uses the model's own default.
+        dimension: Always ``None``. A 2026-07 ``semantic_text`` field does
+            not report the width of the vectors it produces.
+        vector_type: Always ``None``. The field does not say whether its
+            model is dense or sparse, and guessing ``"dense"`` would be wrong
+            for a sparse embedding model.
+        field_map: ``{"text": "<field name>"}``, rebuilt from the name of the
+            semantic field. ``create_for_model`` names the field after the
+            ``field_map`` text entry, so this recovers what was passed.
+        read_parameters: From the semantic field's ``read_parameters``.
+        write_parameters: From the semantic field's ``write_parameters``.
+
+    .. deprecated:: 10.0
+       Read the
+       :class:`~pinecone.models.indexes.schema.SemanticTextField` out of
+       ``index.schema.fields`` instead.
+    """
+
+    model: str
+    metric: str | None = None
+    dimension: int | None = None
+    vector_type: str | None = None
+    field_map: dict[str, str] | None = None
+    read_parameters: dict[str, Any] | None = None
+    write_parameters: dict[str, Any] | None = None
+
+
+#: Names that resolve through a deprecated computed property rather than a
+#: struct field. Attribute, item, ``in`` and ``to_dict()`` access all read it.
+_LEGACY_VECTOR_ACCESSORS: tuple[str, ...] = ("dimension", "metric", "vector_type")
+
+#: Every deprecated property, including the two that rebuild a 9.x object.
+_LEGACY_PROPERTIES: tuple[str, ...] = (*_LEGACY_VECTOR_ACCESSORS, "spec", "embed")
+
+_MIGRATION_GUIDE = "https://sdk.pinecone.io/python/migration/v10-migration.html"
+
 _REMOVED_FIELD_HINTS: dict[str, str] = {
-    "spec": (
-        "use index.deployment instead — a ManagedDeployment, PodDeployment, "
-        "or ByocDeployment tagged on deployment_type; read_capacity is now "
-        "top-level at index.read_capacity"
-    ),
-    "embed": (
-        "integrated-embedding configuration now appears as a SemanticTextField "
-        "in index.schema.fields"
-    ),
     "created_at": "the 2026-07 API does not return a creation timestamp",
 }
+
+
+def _removed_field_message(name: str) -> str:
+    """Build the guided message for a field the 2026-07 API no longer returns.
+
+    Shared by the attribute and mapping paths so ``index.created_at`` and
+    ``index["created_at"]`` explain the removal in the same words.
+    """
+    return (
+        f"IndexModel.{name} was removed in the 2026-07 Pinecone API: "
+        f"{_REMOVED_FIELD_HINTS[name]}. See {_MIGRATION_GUIDE}."
+    )
 
 
 class IndexModel(Struct, kw_only=True):
@@ -122,12 +300,30 @@ class IndexModel(Struct, kw_only=True):
         (True, 'aws', 'us-east-1')
         >>> index = pc.index(host=idx.host)
 
+    ``IndexModel`` also reads like a mapping: ``index["host"]`` and
+    ``"host" in index`` work for every attribute above, and
+    :meth:`to_dict` returns the same key set.
+
     .. versionchanged:: 10.0
        ``dimension``, ``metric``, ``vector_type``, ``spec``, ``embed`` and
-       ``created_at`` are no longer plain attributes. Reading one raises
-       :exc:`AttributeError` with the replacement named in the message; the
-       first three survive as deprecated properties that resolve when the
-       schema has exactly one vector field.
+       ``created_at`` are no longer plain attributes.
+
+       The first five survive as deprecated properties computed from the
+       fields above: ``dimension``, ``metric`` and ``vector_type`` resolve
+       when the schema has exactly one vector field, :attr:`spec` rebuilds
+       the 9.x ``IndexSpec`` from :attr:`deployment`, :attr:`read_capacity`
+       and :attr:`schema`, and :attr:`embed` rebuilds the 9.x
+       ``ModelIndexEmbed`` from the schema's semantic text field. Every
+       spelling agrees: ``index.metric``, ``index["metric"]``,
+       ``"metric" in index`` and the ``"metric"`` key of :meth:`to_dict` all
+       answer from the same lookup. Where an accessor is ambiguous — two
+       dense fields, say — the attribute raises :exc:`AttributeError`, the
+       item access raises :exc:`KeyError` carrying that same explanation,
+       ``in`` is ``False``, and :meth:`to_dict` omits the key.
+
+       ``created_at`` is genuinely gone, because the 2026-07 API does not
+       return a creation timestamp. Reading it raises :exc:`AttributeError`,
+       and ``index["created_at"]`` a :exc:`KeyError`, saying so.
     """
 
     name: str
@@ -153,17 +349,30 @@ class IndexModel(Struct, kw_only=True):
             self.tags = IndexTags(self.tags)
 
     def __getattr__(self, name: str) -> Any:
-        if name in ("dimension", "metric", "vector_type"):
+        if name in _LEGACY_VECTOR_ACCESSORS:
             raise self._legacy_vector_accessor_error(name)
+        if name == "embed":
+            raise self._ambiguous_semantic_field_error()
         if name in _REMOVED_FIELD_HINTS:
-            raise AttributeError(
-                f"IndexModel.{name} was removed in the 2026-07 Pinecone API: "
-                f"{_REMOVED_FIELD_HINTS[name]}. See https://sdk.pinecone.io/python/migration/v10-migration.html."
-            )
+            raise AttributeError(_removed_field_message(name))
         raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
 
     def _dense_fields(self) -> list[DenseVectorField]:
         return [f for f in self.schema.fields.values() if isinstance(f, DenseVectorField)]
+
+    def _semantic_fields(self) -> list[tuple[str, SemanticTextField]]:
+        return [
+            (name, f) for name, f in self.schema.fields.items() if isinstance(f, SemanticTextField)
+        ]
+
+    def _ambiguous_semantic_field_error(self) -> AttributeError:
+        names = ", ".join(sorted(name for name, _ in self._semantic_fields()))
+        return AttributeError(
+            f"IndexModel.embed is ambiguous: the schema has "
+            f"{len(self._semantic_fields())} semantic text fields ({names}); there is "
+            "no single field to resolve this deprecated accessor to. Read the specific "
+            "field directly, e.g. index.schema.fields['<field-name>']."
+        )
 
     def _sparse_fields(self) -> list[SparseVectorField]:
         return [f for f in self.schema.fields.values() if isinstance(f, SparseVectorField)]
@@ -208,6 +417,10 @@ class IndexModel(Struct, kw_only=True):
         one dense field, or no vector field at all: there is no single field to
         resolve to, and the message says which fields it found.
 
+        Also readable as ``index["dimension"]``, testable with
+        ``"dimension" in index``, and present in :meth:`to_dict` — all three
+        resolve exactly when this property does.
+
         .. deprecated:: 10.0
            Read ``index.schema.fields["<field-name>"].dimension`` instead.
         """
@@ -225,6 +438,10 @@ class IndexModel(Struct, kw_only=True):
         Resolves to ``"dotproduct"`` for a schema whose only vector field is
         sparse, since sparse scoring is always dot product. Raises
         :exc:`AttributeError` when more than one field could answer.
+
+        Also readable as ``index["metric"]``, testable with
+        ``"metric" in index``, and present in :meth:`to_dict` — all three
+        resolve exactly when this property does.
 
         .. deprecated:: 10.0
            Read ``index.schema.fields["<field-name>"].metric`` instead.
@@ -245,6 +462,10 @@ class IndexModel(Struct, kw_only=True):
         Raises :exc:`AttributeError` when the schema has several fields of one
         kind — a hybrid schema has no single vector type to report.
 
+        Also readable as ``index["vector_type"]``, testable with
+        ``"vector_type" in index``, and present in :meth:`to_dict` — all
+        three resolve exactly when this property does.
+
         .. deprecated:: 10.0
            Inspect the field types in ``index.schema.fields`` instead.
         """
@@ -260,13 +481,152 @@ class IndexModel(Struct, kw_only=True):
             return "sparse"
         raise AttributeError("vector_type")
 
+    def _read_capacity_dict(self) -> dict[str, Any] | None:
+        if self.read_capacity is None:
+            return None
+        capacity: dict[str, Any] = msgspec.to_builtins(self.read_capacity)
+        return capacity
+
+    @property
+    def spec(self) -> IndexSpec:
+        """The index's placement, in the 9.x ``spec`` shape.
+
+        An :class:`IndexSpec` with exactly one of ``serverless``, ``pod`` and
+        ``byoc`` set, chosen by ``deployment.deployment_type``, so 9.x reads
+        like ``index.spec.serverless.region`` and ``index.spec.pod.pod_type``
+        keep working. Every value is copied out of :attr:`deployment`,
+        :attr:`read_capacity`, :attr:`schema` and :attr:`source_collection` —
+        nothing here is fetched, and the object is rebuilt on each access
+        rather than cached.
+
+        ``pod.metadata_config`` is always ``None``: metadata is indexed
+        automatically at upsert, so 2026-07 has no such configuration to
+        report. ``pod.pods`` is computed as ``replicas * shards``, the same
+        identity the create path enforces when translating a 9.x ``pods=``.
+
+        Examples:
+            >>> idx = pc.indexes.describe("my-index")
+            >>> idx.spec.serverless.cloud, idx.spec.serverless.region
+            ('aws', 'us-east-1')
+
+        .. deprecated:: 10.0
+           Branch on :attr:`deployment` with :func:`isinstance` instead —
+           ``ManagedDeployment``, ``PodDeployment`` and ``ByocDeployment``
+           carry the same values with one less level of nesting, and read
+           capacity is top-level at :attr:`read_capacity`.
+        """
+        deployment = self.deployment
+        if isinstance(deployment, PodDeployment):
+            return IndexSpec(
+                pod=PodSpecInfo(
+                    environment=deployment.environment,
+                    pod_type=deployment.pod_type,
+                    replicas=deployment.replicas,
+                    shards=deployment.shards,
+                    pods=deployment.replicas * deployment.shards,
+                    metadata_config=None,
+                    source_collection=self.source_collection,
+                )
+            )
+        if isinstance(deployment, ByocDeployment):
+            return IndexSpec(
+                byoc=ByocSpecInfo(
+                    environment=deployment.environment,
+                    read_capacity=self._read_capacity_dict(),
+                    schema=self.schema.to_dict(),
+                )
+            )
+        return IndexSpec(
+            serverless=ServerlessSpecInfo(
+                cloud=deployment.cloud,
+                region=deployment.region,
+                read_capacity=self._read_capacity_dict(),
+                source_collection=self.source_collection,
+                schema=self.schema.to_dict(),
+            )
+        )
+
+    @property
+    def embed(self) -> ModelIndexEmbed | None:
+        """Integrated-embedding configuration, in the 9.x ``embed`` shape.
+
+        A :class:`ModelIndexEmbed` built from the schema's sole
+        :class:`~pinecone.models.indexes.schema.SemanticTextField`, so 9.x
+        reads like ``index.embed.model`` and ``index.embed.field_map`` keep
+        working. ``None`` for an index with no semantic text field, which is
+        what 9.x reported for a non-integrated index.
+
+        ``dimension`` and ``vector_type`` are always ``None``: a 2026-07
+        ``semantic_text`` field reports neither, and inventing them would mean
+        guessing. Raises :exc:`AttributeError` when the schema has more than
+        one semantic text field, naming them — as with :attr:`metric`, there
+        is no single field to resolve to.
+
+        Examples:
+            >>> idx = pc.indexes.describe("my-integrated-index")
+            >>> idx.embed.model, idx.embed.field_map
+            ('multilingual-e5-large', {'text': 'chunk_text'})
+
+        .. deprecated:: 10.0
+           Read the ``SemanticTextField`` out of ``index.schema.fields``
+           instead.
+        """
+        semantic = self._semantic_fields()
+        if not semantic:
+            return None
+        if len(semantic) > 1:
+            raise AttributeError("embed")
+        name, field = semantic[0]
+        return ModelIndexEmbed(
+            model=field.model,
+            metric=field.metric,
+            dimension=None,
+            vector_type=None,
+            field_map={"text": name},
+            read_parameters=field.read_parameters,
+            write_parameters=field.write_parameters,
+        )
+
+    def _legacy_accessor_resolves(self, key: str) -> bool:
+        try:
+            getattr(self, key)
+        except AttributeError:
+            return False
+        return True
+
     def __getitem__(self, key: str) -> Any:
-        if key not in self.__struct_fields__:
-            raise KeyError(key)
-        return getattr(self, key)
+        """Return the value for *key*, including the deprecated accessors.
+
+        ``index["dimension"]``, ``index["metric"]``,
+        ``index["vector_type"]``, ``index["spec"]`` and ``index["embed"]``
+        answer whatever the like-named property answers. When the property
+        cannot resolve — an ambiguous schema, or one with no vector field —
+        the :exc:`KeyError` carries that same explanation rather than a bare
+        key name, as does ``"created_at"``, removed in 10.0.
+        """
+        if key in self.__struct_fields__:
+            return getattr(self, key)
+        if key in _REMOVED_FIELD_HINTS:
+            raise KeyError(_removed_field_message(key))
+        if key in _LEGACY_PROPERTIES:
+            try:
+                return getattr(self, key)
+            except AttributeError as exc:
+                raise KeyError(str(exc)) from None
+        raise KeyError(key)
 
     def __contains__(self, key: object) -> bool:
-        return key in self.__struct_fields__
+        """Return whether *key* is readable through :meth:`__getitem__`.
+
+        ``True`` for every struct field, and for a deprecated accessor that
+        resolves against this index's schema. ``False`` for one that would
+        raise, and for a key removed in 10.0.
+        """
+        if key in self.__struct_fields__:
+            return True
+        if key in _LEGACY_PROPERTIES:
+            return self._legacy_accessor_resolves(str(key))
+        return False
 
     def __dir__(self) -> list[str]:
         attrs = set(super().__dir__())
@@ -283,10 +643,28 @@ class IndexModel(Struct, kw_only=True):
         emitted without a ``type``, matching the wire format. Optional fields
         that are ``None`` are present with a ``None`` value rather than
         omitted, so the key set is the same for every index.
+
+        The deprecated ``dimension``, ``metric``, ``vector_type``, ``spec``
+        and ``embed`` keys are included whenever the like-named property
+        resolves, which is the key set 9.x emitted. ``spec`` and ``embed``
+        are nested dicts, so ``d["spec"]["serverless"]["region"]`` reads as
+        it did in 9.x. An index whose schema makes a key ambiguous omits it
+        rather than guessing, and ``created_at`` is never emitted.
+
+        The result is still accepted by ``msgspec.convert(d, IndexModel)``,
+        which ignores the derived keys. It is not constructor input:
+        ``IndexModel(**d)`` rejects them, and never built a usable model
+        anyway, since the nested values are dicts rather than the structs the
+        fields are typed as.
         """
         result: dict[str, Any] = {
             field: _to_builtins_stripped(getattr(self, field)) for field in self.__struct_fields__
         }
+        for key in _LEGACY_PROPERTIES:
+            try:
+                result[key] = _to_builtins_stripped(getattr(self, key))
+            except AttributeError:
+                continue
         return result
 
     def __repr__(self) -> str:

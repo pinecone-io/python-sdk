@@ -48,6 +48,40 @@ Index Models
    :members:
    :show-inheritance:
 
+Deprecated 9.x Spec Views
+-------------------------
+
+What the deprecated :attr:`~pinecone.models.indexes.index.IndexModel.spec` and
+:attr:`~pinecone.models.indexes.index.IndexModel.embed` properties return.
+Nothing decodes into these classes — each is a view over
+:attr:`~pinecone.models.indexes.index.IndexModel.deployment`,
+:attr:`~pinecone.models.indexes.index.IndexModel.read_capacity` and
+:attr:`~pinecone.models.indexes.index.IndexModel.schema`, kept so 9.x reads
+like ``index.spec.serverless.region`` keep working.
+
+.. autoclass:: pinecone.models.indexes.index.IndexSpec
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.index.ServerlessSpecInfo
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.index.PodSpecInfo
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.index.ByocSpecInfo
+   :members:
+   :show-inheritance:
+
+.. autoclass:: pinecone.models.indexes.index.ModelIndexEmbed
+   :members:
+   :show-inheritance:
+
+Index Request Models
+--------------------
+
 .. autoclass:: pinecone.models.indexes.requests.CreateIndexRequest
    :members:
    :show-inheritance:
@@ -60,8 +94,8 @@ Index Schema Models
 -------------------
 
 ``IndexModel.schema`` describes every field in the index.  These types replace
-the removed ``IndexModel.dimension``, ``.metric``, ``.vector_type`` and
-``.embed`` attributes.
+the ``IndexModel.dimension``, ``.metric``, ``.vector_type`` and ``.embed``
+attributes, which survive only as deprecated computed properties.
 
 .. autoclass:: pinecone.models.indexes.schema.IndexSchema
    :members:
@@ -117,8 +151,8 @@ Index Deployment Models
 -----------------------
 
 ``IndexModel.deployment`` describes where and how the index runs.  These types
-replace the removed ``IndexSpec``, ``ServerlessSpecInfo``, ``PodSpecInfo`` and
-``ByocSpecInfo``.
+replace ``IndexSpec``, ``ServerlessSpecInfo``, ``PodSpecInfo`` and
+``ByocSpecInfo``, which survive only as the deprecated views above.
 
 .. autodata:: pinecone.models.indexes.deployment.IndexDeployment
 

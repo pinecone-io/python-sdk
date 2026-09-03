@@ -50,7 +50,7 @@ from pinecone.models.imports.error_mode import ImportErrorMode as ImportErrorMod
 from pinecone.models.imports.list import ImportList as ImportList
 from pinecone.models.imports.model import ImportModel as ImportModel, StartImportResponse as StartImportResponse
 from pinecone.models.indexes.deployment import ByocDeployment as ByocDeployment, IndexDeployment as IndexDeployment, ManagedDeployment as ManagedDeployment, PodDeployment as PodDeployment
-from pinecone.models.indexes.index import IndexModel as IndexModel, IndexStatus as IndexStatus, IndexTags as IndexTags
+from pinecone.models.indexes.index import ByocSpecInfo as ByocSpecInfo, IndexModel as IndexModel, IndexSpec as IndexSpec, IndexStatus as IndexStatus, IndexTags as IndexTags, ModelIndexEmbed as ModelIndexEmbed, PodSpecInfo as PodSpecInfo, ServerlessSpecInfo as ServerlessSpecInfo
 from pinecone.models.indexes.list import IndexList as IndexList
 from pinecone.models.indexes.read_capacity import ReadCapacityDedicatedConfig as ReadCapacityDedicatedConfig, ReadCapacityDedicatedResponse as ReadCapacityDedicatedResponse, ReadCapacityOnDemandResponse as ReadCapacityOnDemandResponse, ReadCapacityResponse as ReadCapacityResponse, ReadCapacityStatus as ReadCapacityStatus, ScalingConfigManual as ScalingConfigManual
 from pinecone.models.indexes.requests import ConfigureIndexRequest as ConfigureIndexRequest, CreateIndexRequest as CreateIndexRequest
@@ -100,6 +100,7 @@ __all__ = [
     "BooleanField",
     "ByocDeployment",
     "ByocSpec",
+    "ByocSpecInfo",
     "ChatCompletionMessage",
     "ChatCompletionResponse",
     "ChatCompletionStream",
@@ -160,6 +161,7 @@ __all__ = [
     "IndexModel",
     "IndexSchema",
     "IndexSchemaField",
+    "IndexSpec",
     "IndexStatus",
     "IndexTags",
     "IndexTerminatedError",
@@ -182,6 +184,7 @@ __all__ = [
     "ManagedDeployment",
     "Message",
     "Metric",
+    "ModelIndexEmbed",
     "ModelInfo",
     "ModelInfoList",
     "NamespaceDescription",
@@ -217,6 +220,7 @@ __all__ = [
     "PodDeployment",
     "PodIndexEnvironment",
     "PodSpec",
+    "PodSpecInfo",
     "PodType",
     "PrincipalType",
     "ProjectList",
@@ -259,6 +263,7 @@ __all__ = [
     "SearchUsage",
     "SemanticTextField",
     "ServerlessSpec",
+    "ServerlessSpecInfo",
     "ServiceAccountList",
     "ServiceAccountModel",
     "ServiceAccountWithSecret",

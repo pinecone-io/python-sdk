@@ -17,9 +17,14 @@ if TYPE_CHECKING:
         PodDeployment,
     )
     from pinecone.models.indexes.index import (  # noqa: F401
+        ByocSpecInfo,
         IndexModel,
+        IndexSpec,
         IndexStatus,
         IndexTags,
+        ModelIndexEmbed,
+        PodSpecInfo,
+        ServerlessSpecInfo,
     )
     from pinecone.models.indexes.list import IndexList  # noqa: F401
     from pinecone.models.indexes.read_capacity import (  # noqa: F401
@@ -61,6 +66,11 @@ _LAZY_IMPORTS: dict[str, str] = {
     "IndexModel": "pinecone.models.indexes.index",
     "IndexStatus": "pinecone.models.indexes.index",
     "IndexTags": "pinecone.models.indexes.index",
+    "IndexSpec": "pinecone.models.indexes.index",
+    "ServerlessSpecInfo": "pinecone.models.indexes.index",
+    "PodSpecInfo": "pinecone.models.indexes.index",
+    "ByocSpecInfo": "pinecone.models.indexes.index",
+    "ModelIndexEmbed": "pinecone.models.indexes.index",
     "IndexList": "pinecone.models.indexes.list",
     "ByocDeployment": "pinecone.models.indexes.deployment",
     "IndexDeployment": "pinecone.models.indexes.deployment",

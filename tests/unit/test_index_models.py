@@ -12,7 +12,15 @@ from pinecone.models.indexes.deployment import (
     ManagedDeployment,
     PodDeployment,
 )
-from pinecone.models.indexes.index import IndexModel, IndexStatus
+from pinecone.models.indexes.index import (
+    ByocSpecInfo,
+    IndexModel,
+    IndexSpec,
+    IndexStatus,
+    ModelIndexEmbed,
+    PodSpecInfo,
+    ServerlessSpecInfo,
+)
 from pinecone.models.indexes.list import IndexList
 from pinecone.models.indexes.schema import DenseVectorField
 from pinecone.models.indexes.specs import ByocSpec, PodSpec, ServerlessSpec
@@ -173,16 +181,11 @@ class TestIndexModel:
         assert model.source_backup_id == "670e8400-e29b-41d4-a716-446655440000"
         assert model.cmek_id == "arn:aws:kms:us-east-1:123456789012:key/mrk-abc123"
 
-    @pytest.mark.parametrize("removed", ["spec", "embed", "created_at"])
+    @pytest.mark.parametrize("removed", ["created_at"])
     def test_removed_attribute_names_replacement(self, removed: str) -> None:
         model = msgspec.convert(make_index_response(), IndexModel)
         with pytest.raises(AttributeError, match="removed in the 2026-07"):
             getattr(model, removed)
-
-    def test_removed_spec_hint_names_deployment(self) -> None:
-        model = msgspec.convert(make_index_response(), IndexModel)
-        with pytest.raises(AttributeError, match="deployment"):
-            model.spec
 
     def test_unknown_attribute_plain_error(self) -> None:
         model = msgspec.convert(make_index_response(), IndexModel)
@@ -370,6 +373,507 @@ class TestIndexModel:
         assert hasattr(model, "dimension")
         assert hasattr(model, "metric")
         assert hasattr(model, "vector_type")
+
+
+_ONE_DENSE = {
+    "fields": {"embedding": {"type": "dense_vector", "dimension": 1536, "metric": "cosine"}}
+}
+_DENSE_AND_SPARSE = {
+    "fields": {
+        "dv": {"type": "dense_vector", "dimension": 8, "metric": "euclidean"},
+        "sv": {"type": "sparse_vector"},
+    }
+}
+_SPARSE_ONLY = {"fields": {"sv": {"type": "sparse_vector"}}}
+_TWO_DENSE = {
+    "fields": {
+        "a": {"type": "dense_vector", "dimension": 4, "metric": "cosine"},
+        "b": {"type": "dense_vector", "dimension": 8, "metric": "cosine"},
+    }
+}
+_TWO_SPARSE = {"fields": {"a": {"type": "sparse_vector"}, "b": {"type": "sparse_vector"}}}
+_NO_VECTORS: dict[str, Any] = {"fields": {}}
+
+_AMBIGUOUS = "ambiguous"
+_UNDETERMINED = "no dense or sparse vector fields"
+
+#: (schema, accessor, resolved value) for every shape where the accessor answers.
+_RESOLVING_CASES = [
+    (_ONE_DENSE, "dimension", 1536),
+    (_ONE_DENSE, "metric", "cosine"),
+    (_ONE_DENSE, "vector_type", "dense"),
+    (_DENSE_AND_SPARSE, "dimension", 8),
+    (_DENSE_AND_SPARSE, "metric", "euclidean"),
+    (_DENSE_AND_SPARSE, "vector_type", "dense"),
+    (_SPARSE_ONLY, "dimension", None),
+    (_SPARSE_ONLY, "metric", "dotproduct"),
+    (_SPARSE_ONLY, "vector_type", "sparse"),
+    (_TWO_SPARSE, "dimension", None),
+]
+
+#: (schema, accessor, expected message fragment) for every shape where it raises.
+_FAILING_CASES = [
+    (_TWO_DENSE, "dimension", _AMBIGUOUS),
+    (_TWO_DENSE, "metric", _AMBIGUOUS),
+    (_TWO_DENSE, "vector_type", _AMBIGUOUS),
+    (_TWO_SPARSE, "metric", _AMBIGUOUS),
+    (_TWO_SPARSE, "vector_type", _AMBIGUOUS),
+    (_NO_VECTORS, "dimension", _UNDETERMINED),
+    (_NO_VECTORS, "metric", _UNDETERMINED),
+    (_NO_VECTORS, "vector_type", _UNDETERMINED),
+]
+
+
+def _model_with(schema: dict[str, Any]) -> IndexModel:
+    return msgspec.convert(make_index_response(schema=schema), IndexModel)
+
+
+class TestLegacyVectorAccessorMappingParity:
+    """Every spelling of a deprecated accessor agrees with the property.
+
+    9.x carried ``dimension``/``metric``/``vector_type`` as struct fields, so
+    ``index.metric``, ``index["metric"]``, ``"metric" in index`` and
+    ``to_dict()["metric"]`` all worked. 10.0 made them computed properties;
+    these tests pin that the other three spellings kept up.
+    """
+
+    @pytest.mark.parametrize("schema,accessor,expected", _RESOLVING_CASES)
+    def test_attribute_resolves(self, schema: dict[str, Any], accessor: str, expected: Any) -> None:
+        assert getattr(_model_with(schema), accessor) == expected
+
+    @pytest.mark.parametrize("schema,accessor,expected", _RESOLVING_CASES)
+    def test_getitem_matches_attribute(
+        self, schema: dict[str, Any], accessor: str, expected: Any
+    ) -> None:
+        assert _model_with(schema)[accessor] == expected
+
+    @pytest.mark.parametrize("schema,accessor,expected", _RESOLVING_CASES)
+    def test_contains_is_true(self, schema: dict[str, Any], accessor: str, expected: Any) -> None:
+        assert accessor in _model_with(schema)
+
+    @pytest.mark.parametrize("schema,accessor,expected", _RESOLVING_CASES)
+    def test_to_dict_carries_key(
+        self, schema: dict[str, Any], accessor: str, expected: Any
+    ) -> None:
+        assert _model_with(schema).to_dict()[accessor] == expected
+
+    @pytest.mark.parametrize("schema,accessor,message", _FAILING_CASES)
+    def test_attribute_raises_attribute_error(
+        self, schema: dict[str, Any], accessor: str, message: str
+    ) -> None:
+        with pytest.raises(AttributeError, match=message):
+            getattr(_model_with(schema), accessor)
+
+    @pytest.mark.parametrize("schema,accessor,message", _FAILING_CASES)
+    def test_getitem_raises_key_error_carrying_the_same_text(
+        self, schema: dict[str, Any], accessor: str, message: str
+    ) -> None:
+        with pytest.raises(KeyError, match=message):
+            _model_with(schema)[accessor]
+
+    @pytest.mark.parametrize("schema,accessor,message", _FAILING_CASES)
+    def test_contains_is_false(self, schema: dict[str, Any], accessor: str, message: str) -> None:
+        assert accessor not in _model_with(schema)
+
+    @pytest.mark.parametrize("schema,accessor,message", _FAILING_CASES)
+    def test_to_dict_omits_key(self, schema: dict[str, Any], accessor: str, message: str) -> None:
+        assert accessor not in _model_with(schema).to_dict()
+
+    def test_getitem_key_error_text_equals_attribute_error_text(self) -> None:
+        model = _model_with(_TWO_DENSE)
+        try:
+            model.metric
+        except AttributeError as exc:
+            attribute_message = str(exc)
+        with pytest.raises(KeyError) as excinfo:
+            model["metric"]
+        assert excinfo.value.args[0] == attribute_message
+
+
+class TestRemovedKeyMappingParity:
+    """``index["spec"]`` explains the removal instead of raising a bare KeyError."""
+
+    @pytest.mark.parametrize("removed", ["created_at"])
+    def test_getitem_raises_guided_key_error(self, removed: str) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        with pytest.raises(KeyError, match="removed in the 2026-07"):
+            model[removed]
+
+    @pytest.mark.parametrize("removed", ["created_at"])
+    def test_key_error_text_equals_attribute_error_text(self, removed: str) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        try:
+            getattr(model, removed)
+        except AttributeError as exc:
+            attribute_message = str(exc)
+        with pytest.raises(KeyError) as excinfo:
+            model[removed]
+        assert excinfo.value.args[0] == attribute_message
+
+    @pytest.mark.parametrize("removed", ["created_at"])
+    def test_contains_is_false(self, removed: str) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        assert removed not in model
+
+    @pytest.mark.parametrize("removed", ["created_at"])
+    def test_to_dict_omits_key(self, removed: str) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        assert removed not in model.to_dict()
+
+    def test_unknown_key_still_raises_bare_key_error(self) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        with pytest.raises(KeyError) as excinfo:
+            model["bogus"]
+        assert excinfo.value.args[0] == "bogus"
+
+    def test_dunder_key_rejected(self) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        assert "__class__" not in model
+        with pytest.raises(KeyError):
+            model["__class__"]
+
+    def test_non_string_key_not_contained(self) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        assert 3 not in model
+
+
+class TestToDictRoundTrip:
+    def test_msgspec_convert_accepts_to_dict_output(self) -> None:
+        """The derived keys must not make to_dict() output undecodable."""
+        model = msgspec.convert(make_index_response(), IndexModel)
+        payload = model.to_dict()
+        assert {"dimension", "metric", "vector_type"} <= set(payload)
+
+        restored = msgspec.convert(payload, IndexModel)
+        assert restored.name == model.name
+        assert restored.dimension == model.dimension
+        assert restored.metric == model.metric
+
+    def test_struct_field_keys_still_all_present(self) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        assert set(IndexModel.__struct_fields__) <= set(model.to_dict())
+
+    def test_spec_and_embed_keys_are_nested_dicts(self) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        payload = model.to_dict()
+        assert payload["spec"]["serverless"]["region"] == "us-east-1"
+        assert payload["spec"]["pod"] is None
+        assert payload["embed"] is None
+        assert msgspec.convert(payload, IndexModel).name == model.name
+
+
+_ON_DEMAND = {"mode": "OnDemand", "status": {"state": "Ready"}}
+_DEDICATED = {
+    "mode": "Dedicated",
+    "dedicated": {
+        "node_type": "t1",
+        "scaling": "Manual",
+        "manual": {"shards": 2, "replicas": 3},
+    },
+    "status": {"state": "Ready", "current_shards": 2, "current_replicas": 3},
+}
+_SEMANTIC_SCHEMA = {
+    "fields": {
+        "chunk_text": {
+            "type": "semantic_text",
+            "model": "multilingual-e5-large",
+            "metric": "cosine",
+            "read_parameters": {"input_type": "query"},
+            "write_parameters": {"input_type": "passage"},
+        }
+    }
+}
+
+
+class TestLegacySpecProperty:
+    """``index.spec`` rebuilds the 9.x IndexSpec from deployment + read_capacity."""
+
+    def test_managed_deployment_populates_serverless_only(self) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        spec = model.spec
+        assert isinstance(spec, IndexSpec)
+        assert isinstance(spec.serverless, ServerlessSpecInfo)
+        assert spec.pod is None
+        assert spec.byoc is None
+        assert spec.serverless.cloud == "aws"
+        assert spec.serverless.region == "us-east-1"
+
+    def test_pod_deployment_populates_pod_only(self) -> None:
+        data = make_index_response(
+            deployment={
+                "deployment_type": "pod",
+                "environment": "us-east1-gcp",
+                "pod_type": "p2.x2",
+                "replicas": 2,
+                "shards": 3,
+            },
+            source_collection="movie-embeddings",
+        )
+        spec = msgspec.convert(data, IndexModel).spec
+        assert isinstance(spec.pod, PodSpecInfo)
+        assert spec.serverless is None
+        assert spec.byoc is None
+        assert spec.pod.environment == "us-east1-gcp"
+        assert spec.pod.pod_type == "p2.x2"
+        assert spec.pod.replicas == 2
+        assert spec.pod.shards == 3
+        assert spec.pod.source_collection == "movie-embeddings"
+
+    def test_pod_pods_is_replicas_times_shards(self) -> None:
+        """The inverse of the identity spec_to_deployment() enforces on create."""
+        data = make_index_response(
+            deployment={
+                "deployment_type": "pod",
+                "environment": "us-east1-gcp",
+                "pod_type": "p1.x1",
+                "replicas": 2,
+                "shards": 3,
+            }
+        )
+        assert msgspec.convert(data, IndexModel).spec.pod.pods == 6  # type: ignore[union-attr]
+
+    def test_pod_metadata_config_is_none(self) -> None:
+        data = make_index_response(
+            deployment={
+                "deployment_type": "pod",
+                "environment": "us-east1-gcp",
+                "pod_type": "p1.x1",
+                "replicas": 1,
+                "shards": 1,
+            }
+        )
+        assert msgspec.convert(data, IndexModel).spec.pod.metadata_config is None  # type: ignore[union-attr]
+
+    def test_byoc_deployment_populates_byoc_only(self) -> None:
+        data = make_index_response(
+            deployment={"deployment_type": "byoc", "environment": "aws-us-east-1-b921"}
+        )
+        spec = msgspec.convert(data, IndexModel).spec
+        assert isinstance(spec.byoc, ByocSpecInfo)
+        assert spec.serverless is None
+        assert spec.pod is None
+        assert spec.byoc.environment == "aws-us-east-1-b921"
+
+    @pytest.mark.parametrize("read_capacity", [_ON_DEMAND, _DEDICATED])
+    def test_serverless_read_capacity_lifted_as_dict(self, read_capacity: dict[str, Any]) -> None:
+        data = make_index_response(read_capacity=read_capacity)
+        lifted = msgspec.convert(data, IndexModel).spec.serverless.read_capacity  # type: ignore[union-attr]
+        assert lifted is not None
+        assert lifted["mode"] == read_capacity["mode"]
+
+    def test_dedicated_read_capacity_keeps_nested_config(self) -> None:
+        data = make_index_response(read_capacity=_DEDICATED)
+        lifted = msgspec.convert(data, IndexModel).spec.serverless.read_capacity  # type: ignore[union-attr]
+        assert lifted["dedicated"]["node_type"] == "t1"  # type: ignore[index]
+        assert lifted["dedicated"]["manual"] == {"shards": 2, "replicas": 3}  # type: ignore[index]
+
+    @pytest.mark.parametrize("read_capacity", [_ON_DEMAND, _DEDICATED])
+    def test_byoc_read_capacity_lifted_as_dict(self, read_capacity: dict[str, Any]) -> None:
+        data = make_index_response(
+            deployment={"deployment_type": "byoc", "environment": "e1"},
+            read_capacity=read_capacity,
+        )
+        lifted = msgspec.convert(data, IndexModel).spec.byoc.read_capacity  # type: ignore[union-attr]
+        assert lifted is not None
+        assert lifted["mode"] == read_capacity["mode"]
+
+    def test_read_capacity_absent_is_none(self) -> None:
+        data = make_index_response()
+        del data["read_capacity"]
+        assert msgspec.convert(data, IndexModel).spec.serverless.read_capacity is None  # type: ignore[union-attr]
+
+    def test_pod_spec_has_no_read_capacity_field(self) -> None:
+        """9.x PodSpecInfo never carried read capacity, and neither does this view."""
+        assert "read_capacity" not in PodSpecInfo.__struct_fields__
+
+    def test_schema_is_the_typed_schema_as_a_dict(self) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        assert model.spec.serverless.schema == model.schema.to_dict()  # type: ignore[union-attr]
+
+    def test_source_collection_absent_is_none(self) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        assert model.spec.serverless.source_collection is None  # type: ignore[union-attr]
+
+    def test_spec_is_rebuilt_not_cached(self) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        assert model.spec is not model.spec
+        assert model.spec.serverless.region == model.spec.serverless.region  # type: ignore[union-attr]
+
+    @pytest.mark.parametrize("with_semantic", [False, True])
+    def test_spec_resolves_regardless_of_semantic_field(self, with_semantic: bool) -> None:
+        data = (
+            make_index_response(schema=_SEMANTIC_SCHEMA) if with_semantic else make_index_response()
+        )
+        assert msgspec.convert(data, IndexModel).spec.serverless is not None
+
+    def test_spec_readable_as_item_and_contained(self) -> None:
+        model = msgspec.convert(make_index_response(), IndexModel)
+        assert "spec" in model
+        assert model["spec"].serverless.region == "us-east-1"
+
+
+class TestLegacyEmbedProperty:
+    """``index.embed`` rebuilds the 9.x ModelIndexEmbed from the semantic field."""
+
+    def test_none_without_a_semantic_field(self) -> None:
+        assert msgspec.convert(make_index_response(), IndexModel).embed is None
+
+    def test_built_from_the_single_semantic_field(self) -> None:
+        model = msgspec.convert(make_index_response(schema=_SEMANTIC_SCHEMA), IndexModel)
+        embed = model.embed
+        assert isinstance(embed, ModelIndexEmbed)
+        assert embed.model == "multilingual-e5-large"
+        assert embed.metric == "cosine"
+        assert embed.read_parameters == {"input_type": "query"}
+        assert embed.write_parameters == {"input_type": "passage"}
+
+    def test_field_map_recovers_the_field_name(self) -> None:
+        model = msgspec.convert(make_index_response(schema=_SEMANTIC_SCHEMA), IndexModel)
+        assert model.embed.field_map == {"text": "chunk_text"}  # type: ignore[union-attr]
+
+    def test_dimension_and_vector_type_are_none(self) -> None:
+        """A 2026-07 semantic_text field reports neither, so neither is guessed."""
+        model = msgspec.convert(make_index_response(schema=_SEMANTIC_SCHEMA), IndexModel)
+        assert model.embed.dimension is None  # type: ignore[union-attr]
+        assert model.embed.vector_type is None  # type: ignore[union-attr]
+
+    def test_metric_none_when_field_omits_it(self) -> None:
+        data = make_index_response(
+            schema={"fields": {"body": {"type": "semantic_text", "model": "m1"}}}
+        )
+        assert msgspec.convert(data, IndexModel).embed.metric is None  # type: ignore[union-attr]
+
+    def test_semantic_field_alongside_dense_field(self) -> None:
+        data = make_index_response(
+            schema={
+                "fields": {
+                    "chunk_text": {"type": "semantic_text", "model": "m1"},
+                    "embedding": {"type": "dense_vector", "dimension": 8, "metric": "cosine"},
+                }
+            }
+        )
+        model = msgspec.convert(data, IndexModel)
+        assert model.embed.model == "m1"  # type: ignore[union-attr]
+        assert model.dimension == 8
+
+    def test_two_semantic_fields_are_ambiguous(self) -> None:
+        data = make_index_response(
+            schema={
+                "fields": {
+                    "a": {"type": "semantic_text", "model": "m1"},
+                    "b": {"type": "semantic_text", "model": "m2"},
+                }
+            }
+        )
+        model = msgspec.convert(data, IndexModel)
+        with pytest.raises(AttributeError, match=r"ambiguous.*semantic text fields \(a, b\)"):
+            model.embed
+        with pytest.raises(KeyError, match="ambiguous"):
+            model["embed"]
+        assert "embed" not in model
+        assert "embed" not in model.to_dict()
+
+    @pytest.mark.parametrize("deployment_type", ["managed", "pod", "byoc"])
+    def test_embed_resolves_for_every_deployment_type(self, deployment_type: str) -> None:
+        deployments: dict[str, dict[str, Any]] = {
+            "managed": {"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
+            "pod": {
+                "deployment_type": "pod",
+                "environment": "us-east1-gcp",
+                "pod_type": "p1.x1",
+                "replicas": 1,
+                "shards": 1,
+            },
+            "byoc": {"deployment_type": "byoc", "environment": "e1"},
+        }
+        data = make_index_response(deployment=deployments[deployment_type], schema=_SEMANTIC_SCHEMA)
+        assert msgspec.convert(data, IndexModel).embed.model == "multilingual-e5-large"  # type: ignore[union-attr]
+
+    def test_embed_readable_as_item_and_contained(self) -> None:
+        model = msgspec.convert(make_index_response(schema=_SEMANTIC_SCHEMA), IndexModel)
+        assert "embed" in model
+        assert model["embed"].model == "multilingual-e5-large"
+
+
+#: A describe-index response shaped like the 2026-07 conformance fixtures.
+_DESCRIBE_INDEX_2026_07: dict[str, Any] = {
+    "name": "conformance-index",
+    "host": "https://conformance-index-abc123.svc.aws-us-east-1.pinecone.io",
+    "status": {"ready": True, "state": "Ready"},
+    "deployment": {
+        "deployment_type": "managed",
+        "cloud": "aws",
+        "region": "us-east-1",
+        "environment": "aped-4627-b74a",
+    },
+    "schema": {
+        "fields": {
+            "chunk_text": {
+                "type": "semantic_text",
+                "model": "multilingual-e5-large",
+                "metric": "cosine",
+            }
+        }
+    },
+    "read_capacity": {"mode": "OnDemand", "status": {"state": "Ready"}},
+    "deletion_protection": "disabled",
+    "tags": {"env": "conformance"},
+}
+
+
+class TestNineXSpellingsAgainstRealisticResponse:
+    """The 9.1.0 reads a user would have written, against a 2026-07 payload."""
+
+    def test_spec_serverless_spellings(self) -> None:
+        index = msgspec.convert(_DESCRIBE_INDEX_2026_07, IndexModel)
+        assert index.spec.serverless.region == "us-east-1"  # type: ignore[union-attr]
+        assert index.spec.serverless.cloud == "aws"  # type: ignore[union-attr]
+        assert index.spec.serverless.read_capacity["mode"] == "OnDemand"  # type: ignore[index,union-attr]
+
+    def test_embed_spellings(self) -> None:
+        index = msgspec.convert(_DESCRIBE_INDEX_2026_07, IndexModel)
+        assert index.embed.model == "multilingual-e5-large"  # type: ignore[union-attr]
+        assert index.embed.field_map == {"text": "chunk_text"}  # type: ignore[union-attr]
+        assert index.embed.metric == "cosine"  # type: ignore[union-attr]
+
+    def test_to_dict_carries_the_nine_x_key_set(self) -> None:
+        payload = msgspec.convert(_DESCRIBE_INDEX_2026_07, IndexModel).to_dict()
+        assert payload["spec"]["serverless"]["region"] == "us-east-1"
+        assert payload["embed"]["model"] == "multilingual-e5-large"
+        assert payload["embed"]["field_map"] == {"text": "chunk_text"}
+
+    def test_pod_spellings(self) -> None:
+        payload = {
+            **_DESCRIBE_INDEX_2026_07,
+            "deployment": {
+                "deployment_type": "pod",
+                "environment": "us-east1-gcp",
+                "pod_type": "p1.x1",
+                "replicas": 2,
+                "shards": 2,
+            },
+        }
+        index = msgspec.convert(payload, IndexModel)
+        assert index.spec.pod.environment == "us-east1-gcp"  # type: ignore[union-attr]
+        assert index.spec.pod.pod_type == "p1.x1"  # type: ignore[union-attr]
+        assert index.spec.pod.replicas == 2  # type: ignore[union-attr]
+        assert index.spec.pod.shards == 2  # type: ignore[union-attr]
+        assert index.spec.pod.pods == 4  # type: ignore[union-attr]
+
+    def test_byoc_spellings(self) -> None:
+        payload = {
+            **_DESCRIBE_INDEX_2026_07,
+            "deployment": {"deployment_type": "byoc", "environment": "aws-us-east-1-b921"},
+        }
+        index = msgspec.convert(payload, IndexModel)
+        assert index.spec.byoc.environment == "aws-us-east-1-b921"  # type: ignore[union-attr]
+
+    def test_created_at_is_the_only_removal_left(self) -> None:
+        index = msgspec.convert(_DESCRIBE_INDEX_2026_07, IndexModel)
+        with pytest.raises(AttributeError, match="does not return a creation timestamp"):
+            index.created_at
+        with pytest.raises(KeyError, match="does not return a creation timestamp"):
+            index["created_at"]
 
 
 class TestIndexList:
@@ -618,15 +1122,19 @@ class TestReExports:
         ):
             assert symbol is not None
 
-    def test_removed_names_gone_from_models(self) -> None:
+    @pytest.mark.parametrize(
+        "name",
+        ["ByocSpecInfo", "IndexSpec", "ModelIndexEmbed", "PodSpecInfo", "ServerlessSpecInfo"],
+    )
+    def test_legacy_spec_views_importable_from_v9_module_path(self, name: str) -> None:
+        """9.x code imported these from pinecone.models.indexes.index."""
+        import pinecone
         import pinecone.models as models
+        import pinecone.models.indexes as indexes
+        import pinecone.models.indexes.index as canonical
 
-        for removed in (
-            "ByocSpecInfo",
-            "IndexSpec",
-            "PodSpecInfo",
-            "ServerlessSpecInfo",
-        ):
-            assert removed not in models.__all__
-            with pytest.raises(AttributeError):
-                getattr(models, removed)
+        expected = getattr(canonical, name)
+        assert name in canonical.__all__
+        for module in (models, indexes, pinecone):
+            assert getattr(module, name) is expected
+            assert name in module.__all__
