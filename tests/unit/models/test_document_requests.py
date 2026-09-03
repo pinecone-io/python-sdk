@@ -142,6 +142,13 @@ def test_fetch_request_never_serializes_limit() -> None:
         assert "limit" not in orjson.loads(msgspec.json.encode(request))
 
 
+def test_fetch_request_docstring_does_not_claim_a_fixed_page_size() -> None:
+    doc = " ".join((FetchDocumentsRequest.__doc__ or "").split())
+    assert "the server chooses the page size" in doc
+    assert "fixed" not in doc
+    assert "10000" not in doc
+
+
 def test_fetch_request_rejects_ids_with_filter() -> None:
     with pytest.raises(ValueError, match="'ids' and 'filter' fields are mutually exclusive"):
         FetchDocumentsRequest(ids=["doc-1"], filter={"a": {"$eq": 1}})

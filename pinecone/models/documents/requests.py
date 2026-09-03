@@ -150,9 +150,8 @@ class FetchDocumentsRequest(Struct, kw_only=True, omit_defaults=True):
             ``None`` omits the key, which the server treats the same as
             ``[]`` or ``["*"]``: every field is returned.
         pagination_token: Token from a previous fetch response to retrieve
-            the next page of matching documents. A page holds up to 10000
-            documents; the page size is fixed and cannot be set per
-            request. Only valid together with ``filter``.
+            the next page of matching documents; the server chooses the page
+            size. Only valid together with ``filter``.
     """
 
     ids: list[str] | None = None
