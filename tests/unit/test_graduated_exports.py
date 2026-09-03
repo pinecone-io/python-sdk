@@ -155,3 +155,53 @@ def test_schema_builder_constructs_and_builds() -> None:
         SchemaBuilder().add_dense_vector_field("embedding", dimension=8, metric="cosine").build()
     )
     assert schema["fields"]["embedding"]["dimension"] == 8
+
+
+# ``describe_namespace`` hands callers nested ``IndexedFields`` and
+# ``NamespaceSchema`` values, so a caller has to be able to name those types for
+# an ``isinstance`` check or an annotation (#330).
+NAMESPACE_EXPORTS = {
+    "IndexedFields": "pinecone.models.namespaces.models",
+    "ListNamespacesResponse": "pinecone.models.namespaces.models",
+    "NamespaceDescription": "pinecone.models.namespaces.models",
+    "NamespaceFieldConfig": "pinecone.models.namespaces.models",
+    "NamespaceSchema": "pinecone.models.namespaces.models",
+}
+
+
+@pytest.mark.parametrize(("name", "module_path"), sorted(NAMESPACE_EXPORTS.items()))
+def test_namespace_export_reachable_from_every_level(name: str, module_path: str) -> None:
+    from importlib import import_module
+
+    import pinecone
+    import pinecone.models
+    import pinecone.models.namespaces
+
+    defining = getattr(import_module(module_path), name)
+
+    assert name in pinecone.models.namespaces.__all__
+    assert getattr(pinecone.models.namespaces, name) is defining
+
+    assert name in pinecone.models.__all__
+    assert getattr(pinecone.models, name) is defining
+
+    assert name in pinecone.__all__
+    assert pinecone._LAZY_IMPORTS[name] == (module_path, name)
+    assert getattr(pinecone, name) is defining
+
+
+def test_namespaces_all_matches_lazy_imports() -> None:
+    """One derived list, because two hand-maintained lists drift."""
+    import pinecone.models.namespaces as ns
+
+    assert ns.__all__ == list(ns._LAZY_IMPORTS)
+
+
+def test_models_namespaces_export_parity() -> None:
+    """Every public name in pinecone.models.namespaces is reachable further up."""
+    import pinecone
+    import pinecone.models
+    import pinecone.models.namespaces as ns
+
+    assert [n for n in ns.__all__ if n not in pinecone.models.__all__] == []
+    assert [n for n in ns.__all__ if n not in pinecone.__all__] == []

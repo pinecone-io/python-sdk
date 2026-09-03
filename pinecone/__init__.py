@@ -277,8 +277,11 @@ if TYPE_CHECKING:
     from pinecone.models.inference.models import ModelInfo
     from pinecone.models.inference.rerank import RankedDocument, RerankResult
     from pinecone.models.namespaces.models import (
+        IndexedFields,
         ListNamespacesResponse,
         NamespaceDescription,
+        NamespaceFieldConfig,
+        NamespaceSchema,
     )
     from pinecone.models.pagination import AsyncPaginator, Page, Paginator
     from pinecone.models.response_info import BatchResponseInfo
@@ -407,6 +410,7 @@ __all__ = [
     "IndexStatus",
     "IndexTags",
     "IndexTerminatedError",
+    "IndexedFields",
     "IntegerField",
     "IntegratedSpec",
     "InviteList",
@@ -428,6 +432,8 @@ __all__ = [
     "ModelInfo",
     "ModelInfoList",
     "NamespaceDescription",
+    "NamespaceFieldConfig",
+    "NamespaceSchema",
     "NgramConfig",
     "NotFoundError",
     "NotFoundException",
@@ -655,6 +661,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "IndexStatus": ("pinecone.models.indexes.index", "IndexStatus"),
     "IndexTags": ("pinecone.models.indexes.index", "IndexTags"),
     "IndexTerminatedError": ("pinecone.errors.exceptions", "IndexTerminatedError"),
+    "IndexedFields": ("pinecone.models.namespaces.models", "IndexedFields"),
     "IntegerField": ("pinecone.models.indexes.schema", "IntegerField"),
     "IntegratedSpec": ("pinecone.models.indexes.specs", "IntegratedSpec"),
     "InviteList": ("pinecone.models.admin.invite", "InviteList"),
@@ -676,6 +683,8 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "ModelInfo": ("pinecone.models.inference.models", "ModelInfo"),
     "ModelInfoList": ("pinecone.models.inference.model_list", "ModelInfoList"),
     "NamespaceDescription": ("pinecone.models.namespaces.models", "NamespaceDescription"),
+    "NamespaceFieldConfig": ("pinecone.models.namespaces.models", "NamespaceFieldConfig"),
+    "NamespaceSchema": ("pinecone.models.namespaces.models", "NamespaceSchema"),
     "NgramConfig": ("pinecone.models.indexes.schema", "NgramConfig"),
     "NotFoundError": ("pinecone.errors.exceptions", "NotFoundError"),
     "NotFoundException": ("pinecone.errors.exceptions", "NotFoundException"),

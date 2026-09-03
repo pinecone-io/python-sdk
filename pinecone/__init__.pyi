@@ -60,7 +60,7 @@ from pinecone.models.inference.embed import DenseEmbedding as DenseEmbedding, Em
 from pinecone.models.inference.model_list import ModelInfoList as ModelInfoList
 from pinecone.models.inference.models import ModelInfo as ModelInfo
 from pinecone.models.inference.rerank import RankedDocument as RankedDocument, RerankResult as RerankResult
-from pinecone.models.namespaces.models import ListNamespacesResponse as ListNamespacesResponse, NamespaceDescription as NamespaceDescription
+from pinecone.models.namespaces.models import IndexedFields as IndexedFields, ListNamespacesResponse as ListNamespacesResponse, NamespaceDescription as NamespaceDescription, NamespaceFieldConfig as NamespaceFieldConfig, NamespaceSchema as NamespaceSchema
 from pinecone.models.pagination import AsyncPaginator as AsyncPaginator, Page as Page, Paginator as Paginator
 from pinecone.models.response_info import BatchResponseInfo as BatchResponseInfo, ResponseInfo as ResponseInfo
 from pinecone.models.vectors.query_aggregator import QueryNamespacesResults as QueryNamespacesResults, QueryResultsAggregator as QueryResultsAggregator
@@ -163,6 +163,7 @@ __all__ = [
     "IndexStatus",
     "IndexTags",
     "IndexTerminatedError",
+    "IndexedFields",
     "IntegerField",
     "IntegratedSpec",
     "InviteList",
@@ -184,6 +185,8 @@ __all__ = [
     "ModelInfo",
     "ModelInfoList",
     "NamespaceDescription",
+    "NamespaceFieldConfig",
+    "NamespaceSchema",
     "NgramConfig",
     "NotFoundError",
     "NotFoundException",

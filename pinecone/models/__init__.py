@@ -214,8 +214,11 @@ if TYPE_CHECKING:
         RerankUsage,
     )
     from pinecone.models.namespaces.models import (  # noqa: F401
+        IndexedFields,
         ListNamespacesResponse,
         NamespaceDescription,
+        NamespaceFieldConfig,
+        NamespaceSchema,
     )
     from pinecone.models.response_info import BatchResponseInfo  # noqa: F401
     from pinecone.models.vectors.query_aggregator import QueryNamespacesResults  # noqa: F401
@@ -419,8 +422,11 @@ _LAZY_IMPORTS: dict[str, str] = {
     "RerankResult": "pinecone.models.inference.rerank",
     "RerankUsage": "pinecone.models.inference.rerank",
     # Namespaces
+    "IndexedFields": "pinecone.models.namespaces.models",
     "ListNamespacesResponse": "pinecone.models.namespaces.models",
     "NamespaceDescription": "pinecone.models.namespaces.models",
+    "NamespaceFieldConfig": "pinecone.models.namespaces.models",
+    "NamespaceSchema": "pinecone.models.namespaces.models",
     # Vectors
     "QueryNamespacesResults": "pinecone.models.vectors.query_aggregator",
     "DescribeIndexStatsResponse": "pinecone.models.vectors.responses",
