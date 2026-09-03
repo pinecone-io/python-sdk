@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 from pinecone._internal.adapters.admin_adapter import AdminAdapter
 from pinecone._internal.role_bindings import binding_to_payload
@@ -355,7 +356,7 @@ class RoleBindings:
         """
         require_non_empty("role_binding_id", role_binding_id)
         logger.info("Describing role binding %r", role_binding_id)
-        response = self._http.get(f"/admin/role-bindings/{role_binding_id}")
+        response = self._http.get(f"/admin/role-bindings/{quote(role_binding_id, safe='')}")
         result = self._adapter.to_role_binding(response.content)
         logger.debug("Described role binding %r", role_binding_id)
         return result
@@ -404,5 +405,5 @@ class RoleBindings:
         """
         require_non_empty("role_binding_id", role_binding_id)
         logger.info("Deleting role binding %r", role_binding_id)
-        self._http.delete(f"/admin/role-bindings/{role_binding_id}")
+        self._http.delete(f"/admin/role-bindings/{quote(role_binding_id, safe='')}")
         logger.debug("Deleted role binding %r", role_binding_id)

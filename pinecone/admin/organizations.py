@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 from pinecone._internal.adapters.admin_adapter import AdminAdapter
 from pinecone._internal.validation import require_non_empty
@@ -83,7 +84,7 @@ class Organizations:
         """
         require_non_empty("organization_id", organization_id)
         logger.info("Describing organization %r", organization_id)
-        response = self._http.get(f"/admin/organizations/{organization_id}")
+        response = self._http.get(f"/admin/organizations/{quote(organization_id, safe='')}")
         result = self._adapter.to_organization(response.content)
         logger.debug("Described organization %r", organization_id)
         return result
@@ -113,7 +114,7 @@ class Organizations:
         require_non_empty("organization_id", organization_id)
         logger.info("Updating organization %r", organization_id)
         response = self._http.patch(
-            f"/admin/organizations/{organization_id}",
+            f"/admin/organizations/{quote(organization_id, safe='')}",
             json={"name": name},
         )
         result = self._adapter.to_organization(response.content)
@@ -148,5 +149,5 @@ class Organizations:
         """
         require_non_empty("organization_id", organization_id)
         logger.info("Deleting organization %r", organization_id)
-        self._http.delete(f"/admin/organizations/{organization_id}")
+        self._http.delete(f"/admin/organizations/{quote(organization_id, safe='')}")
         logger.debug("Deleted organization %r", organization_id)

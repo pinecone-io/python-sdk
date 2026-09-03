@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 from pinecone._internal.adapters.admin_adapter import AdminAdapter
 from pinecone._internal.validation import require_in_range, require_non_empty
@@ -144,7 +145,7 @@ class Users:
         """
         require_non_empty("user_id", user_id)
         logger.info("Describing user %r", user_id)
-        response = self._http.get(f"/admin/users/{user_id}")
+        response = self._http.get(f"/admin/users/{quote(user_id, safe='')}")
         result = self._adapter.to_user(response.content)
         logger.debug("Described user %r", user_id)
         return result
@@ -177,5 +178,5 @@ class Users:
         """
         require_non_empty("user_id", user_id)
         logger.info("Deleting user %r", user_id)
-        self._http.delete(f"/admin/users/{user_id}")
+        self._http.delete(f"/admin/users/{quote(user_id, safe='')}")
         logger.debug("Deleted user %r", user_id)

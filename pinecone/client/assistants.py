@@ -7,6 +7,7 @@ import os
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from typing import IO, TYPE_CHECKING, Any
+from urllib.parse import quote
 
 import msgspec
 import msgspec.structs
@@ -415,12 +416,16 @@ class Assistants(AssistantsLegacyNamespaceMixin):
                     assistant_name,
                 )
                 response = data_http.put(
-                    f"/files/{assistant_name}/{file_id}", files=form, params=params
+                    f"/files/{quote(str(assistant_name), safe='')}/{quote(str(file_id), safe='')}",
+                    files=form,
+                    params=params,
                 )
             else:
                 action = "Upload"
                 logger.info("Uploading file %r to assistant %r", upload_name, assistant_name)
-                response = data_http.post(f"/files/{assistant_name}", files=form, params=params)
+                response = data_http.post(
+                    f"/files/{quote(str(assistant_name), safe='')}", files=form, params=params
+                )
             operation = self._adapter.to_operation(response.content)
         finally:
             if opened_file is not None:
@@ -495,7 +500,10 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         if include_url:
             params["include_url"] = "true"
         logger.info("Describing file %r in assistant %r", file_id, assistant_name)
-        response = data_http.get(f"/files/{assistant_name}/{file_id}", params=params)
+        response = data_http.get(
+            f"/files/{quote(str(assistant_name), safe='')}/{quote(str(file_id), safe='')}",
+            params=params,
+        )
         return self._adapter.to_file(response.content)
 
     def list_files(
@@ -637,7 +645,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             params["filter"] = _json.dumps(filter)
 
         logger.info("Listing files page for assistant %r", assistant_name)
-        response = list_http.get(f"/files/{assistant_name}", params=params)
+        response = list_http.get(f"/files/{quote(str(assistant_name), safe='')}", params=params)
         result = self._adapter.to_file_list(response.content)
         logger.debug(
             "Listed %d files for assistant %r (has_next=%s)",
@@ -690,7 +698,9 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         """
         data_http = self._data_plane_http(assistant_name)
         logger.info("Deleting file %r from assistant %r", file_id, assistant_name)
-        response = data_http.delete(f"/files/{assistant_name}/{file_id}")
+        response = data_http.delete(
+            f"/files/{quote(str(assistant_name), safe='')}/{quote(str(file_id), safe='')}"
+        )
 
         if response.status_code == 204 or not response.content:
             logger.debug("File %r was deleted immediately (no operation)", file_id)
@@ -758,7 +768,9 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         """
         data_http = self._data_plane_http(assistant_name)
         logger.info("Describing operation %r in assistant %r", operation_id, assistant_name)
-        response = data_http.get(f"/operations/{assistant_name}/{operation_id}")
+        response = data_http.get(
+            f"/operations/{quote(str(assistant_name), safe='')}/{quote(str(operation_id), safe='')}"
+        )
         return self._adapter.to_operation(response.content)
 
     def list_operations(
@@ -900,7 +912,9 @@ class Assistants(AssistantsLegacyNamespaceMixin):
 
         data_http = self._data_plane_http(assistant_name)
         logger.info("Listing operations page for assistant %r", assistant_name)
-        response = data_http.get(f"/operations/{assistant_name}", params=params)
+        response = data_http.get(
+            f"/operations/{quote(str(assistant_name), safe='')}", params=params
+        )
         result = self._adapter.to_operation_list(response.content)
         logger.debug(
             "Listed %d operations for assistant %r (has_next=%s)",
@@ -1065,7 +1079,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             )
 
         logger.info("Describing assistant %r", name)
-        response = self._http.get(f"/assistants/{name}")
+        response = self._http.get(f"/assistants/{quote(str(name), safe='')}")
         model = self._attach_ref(self._adapter.to_assistant(response.content))
         logger.debug("Described assistant %r (status=%s)", name, model.status)
         return model
@@ -1283,7 +1297,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             body["metadata"] = metadata
 
         logger.info("Updating assistant %r", name)
-        response = self._http.patch(f"/assistants/{name}", json=body)
+        response = self._http.patch(f"/assistants/{quote(str(name), safe='')}", json=body)
         model = self._attach_ref(self._adapter.to_assistant(response.content))
         logger.debug("Updated assistant %r", name)
         return model
@@ -1361,7 +1375,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             )
 
         logger.info("Deleting assistant %r", name)
-        self._http.delete(f"/assistants/{name}")
+        self._http.delete(f"/assistants/{quote(str(name), safe='')}")
         logger.debug("Deleted assistant %r", name)
 
         if timeout == -1:
@@ -1485,7 +1499,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             body["include_binary_content"] = include_binary_content
 
         http = self._data_plane_http(assistant_name)
-        response = http.post(f"/chat/{assistant_name}/context", json=body)
+        response = http.post(f"/chat/{quote(str(assistant_name), safe='')}/context", json=body)
         return self._adapter.to_context_response(response.content)
 
     def chat(
@@ -1621,11 +1635,16 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         if stream:
             return ChatStream(
                 self._chat_streaming(
-                    http=http, url=f"/chat/{assistant_name}", body=body, timeout=timeout
+                    http=http,
+                    url=f"/chat/{quote(str(assistant_name), safe='')}",
+                    body=body,
+                    timeout=timeout,
                 )
             )
 
-        response = http.post(f"/chat/{assistant_name}", timeout=timeout, json=body)
+        response = http.post(
+            f"/chat/{quote(str(assistant_name), safe='')}", timeout=timeout, json=body
+        )
         return self._adapter.to_chat_response(response.content)
 
     def chat_completions(
@@ -1734,12 +1753,16 @@ class Assistants(AssistantsLegacyNamespaceMixin):
 
         http = self._data_plane_http(assistant_name)
         if stream:
-            url = f"/chat/{assistant_name}/chat/completions"
+            url = f"/chat/{quote(str(assistant_name), safe='')}/chat/completions"
             return ChatCompletionStream(
                 self._chat_completions_streaming(http=http, url=url, body=body, timeout=timeout)
             )
 
-        response = http.post(f"/chat/{assistant_name}/chat/completions", timeout=timeout, json=body)
+        response = http.post(
+            f"/chat/{quote(str(assistant_name), safe='')}/chat/completions",
+            timeout=timeout,
+            json=body,
+        )
         return self._adapter.to_chat_completion_response(response.content)
 
     def _chat_streaming(
@@ -1915,7 +1938,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
         """Poll ``GET /assistants/{name}`` until status is ``"Ready"`` or timeout."""
         start = time.monotonic()
         while True:
-            response = self._http.get(f"/assistants/{name}")
+            response = self._http.get(f"/assistants/{quote(str(name), safe='')}")
             model = self._attach_ref(self._adapter.to_assistant(response.content))
             if model.status == "Ready":
                 return model

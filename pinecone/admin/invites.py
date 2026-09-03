@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from pinecone._internal.adapters.admin_adapter import AdminAdapter
 from pinecone._internal.role_bindings import normalize_role_bindings
@@ -239,7 +240,7 @@ class Invites:
         """
         require_non_empty("invite_id", invite_id)
         logger.info("Describing invite %r", invite_id)
-        response = self._http.get(f"/admin/invites/{invite_id}")
+        response = self._http.get(f"/admin/invites/{quote(invite_id, safe='')}")
         result = self._adapter.to_invite(response.content)
         logger.debug("Described invite %r", invite_id)
         return result
@@ -273,7 +274,7 @@ class Invites:
         """
         require_non_empty("invite_id", invite_id)
         logger.info("Deleting invite %r", invite_id)
-        self._http.delete(f"/admin/invites/{invite_id}")
+        self._http.delete(f"/admin/invites/{quote(invite_id, safe='')}")
         logger.debug("Deleted invite %r", invite_id)
 
     def resend(self, *, invite_id: str) -> InviteModel:
@@ -321,7 +322,7 @@ class Invites:
         """
         require_non_empty("invite_id", invite_id)
         logger.info("Resending invite %r", invite_id)
-        response = self._http.post(f"/admin/invites/{invite_id}/resend")
+        response = self._http.post(f"/admin/invites/{quote(invite_id, safe='')}/resend")
         result = self._adapter.to_invite(response.content)
         logger.debug("Resent invite %r", invite_id)
         return result

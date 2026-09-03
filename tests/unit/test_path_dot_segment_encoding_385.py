@@ -466,9 +466,8 @@ def test_namespace_request_is_never_collapsed(value: str) -> None:
     counterexample is what originally exposed this, and a different seed would
     otherwise be free to stop finding it.
 
-    This deliberately does not assert that ``/`` is percent-encoded. Most path
-    sites still interpolate with no encoding at all, which is a separate defect
-    with its own ticket, so asserting it here would be a knowingly failing test.
+    The segment count is asserted alongside, so no value can reach a sibling of
+    ``/namespaces/{name}`` either.
     """
     with respx.mock(assert_all_called=False) as router:
         router.route().mock(return_value=httpx.Response(200, json={}))
@@ -482,7 +481,9 @@ def test_namespace_request_is_never_collapsed(value: str) -> None:
 
     if not calls:
         return
-    _assert_not_collapsed("/namespaces/", value, calls[0].request.url.raw_path.decode())
+    path = calls[0].request.url.raw_path.decode()
+    _assert_not_collapsed("/namespaces/", value, path)
+    assert path.count("/") == 2, f"{value!r} injected a path segment: {path!r}"
 
 
 @settings(max_examples=200, suppress_health_check=[HealthCheck.function_scoped_fixture])
@@ -495,11 +496,9 @@ def test_namespace_request_is_never_collapsed(value: str) -> None:
 def test_index_request_is_never_collapsed(value: str) -> None:
     """Same invariant on a control-plane route, plus the stronger one #417 bought.
 
-    ``/indexes/{name}`` now percent-encodes its parameter, so this route can
-    assert what the namespace one above still cannot: the name occupies exactly
-    one segment, so no value can reach ``/indexes/{name}/backups`` or any other
-    sibling route. The namespace assertion stays weaker only because most path
-    sites remain unencoded.
+    ``/indexes/{name}`` percent-encodes its parameter, so the name occupies
+    exactly one segment and no value can reach ``/indexes/{name}/backups`` or
+    any other sibling route.
     """
     with respx.mock(assert_all_called=False) as router:
         router.route().mock(return_value=httpx.Response(200, json={}))

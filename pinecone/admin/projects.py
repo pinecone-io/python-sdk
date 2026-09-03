@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from pinecone._internal.adapters.admin_adapter import AdminAdapter
 from pinecone._internal.validation import require_non_empty
@@ -156,7 +157,7 @@ class Projects:
         """
         require_non_empty("project_id", project_id)
         logger.info("Describing project %r", project_id)
-        response = self._http.get(f"/admin/projects/{project_id}")
+        response = self._http.get(f"/admin/projects/{quote(project_id, safe='')}")
         result = self._adapter.to_project(response.content)
         logger.debug("Described project %r", project_id)
         return result
@@ -306,7 +307,7 @@ class Projects:
             body["force_encryption_with_cmek"] = force_encryption_with_cmek
         logger.info("Updating project %r", project_id)
         response = self._http.patch(
-            f"/admin/projects/{project_id}",
+            f"/admin/projects/{quote(project_id, safe='')}",
             json=body,
         )
         result = self._adapter.to_project(response.content)
@@ -520,5 +521,5 @@ class Projects:
         """
         require_non_empty("project_id", project_id)
         logger.info("Deleting project %r", project_id)
-        self._http.delete(f"/admin/projects/{project_id}")
+        self._http.delete(f"/admin/projects/{quote(project_id, safe='')}")
         logger.debug("Deleted project %r", project_id)
