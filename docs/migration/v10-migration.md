@@ -12,6 +12,7 @@ that section and start with [Index creation and configuration](#index-model).
 
 ## Contents
 
+- [Import paths](#import-paths)
 - [Documents API](#documents-api)
   - [Preview namespace removed](#preview-graduation)
   - [Index creation and configuration](#index-model)
@@ -29,6 +30,39 @@ that section and start with [Index creation and configuration](#index-model).
 - [Admin and OAuth](#admin-oauth)
 - [TLS/SSL configuration](#ssl-config)
   - [The gRPC endpoint scheme](#grpc-scheme)
+
+(import-paths)=
+## Import paths
+
+Almost nothing here needs editing, so it's worth settling first. The
+top-level `pinecone` package is the canonical import surface, and every name
+this guide mentions is reachable from it — models, specs, `SchemaBuilder`,
+`Admin`, and the whole exception hierarchy included. `pinecone.models` also
+carries every model name.
+
+The module paths that pre-date the package layout still resolve, so a `9.x`
+import line is not by itself something to fix:
+
+| Import | Names it still resolves |
+| --- | --- |
+| `from pinecone.pinecone import Pinecone` | `Pinecone` |
+| `from pinecone.exceptions import ...` | the `*Exception` aliases (`PineconeException`, `NotFoundException`, `PineconeApiException`, and the rest) |
+| `from pinecone.control import ...` | the control-plane models and specs (`ServerlessSpec`, `PodSpec`, `IndexModel`, `IndexList`, `BackupModel`, the enums) |
+| `from pinecone.data import ...` | `Index`, `AsyncIndex`, `Vector`, `SparseValues`, `QueryResponse`, `UpsertResponse`, `FetchResponse`, `DescribeIndexStatsResponse`, `ImportErrorMode`, `SearchQuery`, `SearchRerank` |
+
+Three paths are the exception. `pinecone.config`, `pinecone.db_control`, and
+`pinecone.db_data` import as modules but export nothing usable, so a name
+read out of any of them raises:
+
+```python
+from pinecone.config import Config          # ImportError
+from pinecone.db_control import ServerlessSpec   # ImportError
+from pinecone.db_data import Index          # ImportError
+```
+
+Import those three from `pinecone` instead: `ServerlessSpec`, `Index`, and
+`PineconeConfig` are all top-level. Apart from the `Preview*` names covered
+next, that is the whole of the import work the upgrade asks of you.
 
 (documents-api)=
 ## Documents API
@@ -268,6 +302,7 @@ with pc.index(name="articles-en") as index:
         namespace="articles-en",
         top_k=10,
         score_by=[{"type": "text", "query": "roman aqueducts", "field": "title"}],
+        include_fields=["title"],
     )
     for match in hits.matches:
         print(match.id, match.title)
@@ -290,6 +325,7 @@ async def main() -> None:
             namespace="articles-en",
             top_k=10,
             score_by=[{"type": "text", "query": "roman aqueducts", "field": "title"}],
+            include_fields=["title"],
         )
         for match in hits.matches:
             print(match.id, match.title)
@@ -330,8 +366,9 @@ options: exactly one of `ids`, `filter`, or `delete_all` must be given.
 ##### `documents.fetch` gained a filter and pagination
 
 Preview's `fetch` took `ids` only. `documents.fetch` takes exactly one of
-`ids` or `filter`, and a filtered fetch is paginated: a page holds up to
-10000 documents and the page size is fixed.
+`ids` or `filter`, and a filtered fetch is paginated. The server fixes the
+page size, so there's no page-size argument to pass — follow
+`response.pagination.next` until it's `None`.
 
 ```python
 page = index.documents.fetch(namespace="articles-en", filter={"views": {"$gt": 100}})
@@ -361,6 +398,13 @@ effective concurrency below whenever the backend is pushing back.
 at the call site instead of being silently swallowed. `documents=` accepts
 `Sequence[Mapping[...]]`, not just `list[dict]`, and also accepts typed
 `DocumentRecord` / `UpdateDocumentRecord` objects; lists of dicts keep working.
+
+`include_fields` defaults in opposite directions on the two read operations,
+which is worth pinning down before you write either call. On `search`,
+omitting it (or passing `[]`) returns only `_id` and `_score`, so a hit
+carries none of your own fields and `match.title` raises `AttributeError`.
+On `fetch`, omitting it returns every field. Name the fields you're going to
+read on a `search`, or pass `["*"]` for all of them.
 
 `GrpcIndex` has no document operations. The `2026-07` documents surface is
 REST-only.
@@ -449,8 +493,11 @@ from pinecone import (
 ```
 
 `OperationModel` pairs with the assistant file lifecycle, see
-[Assistant](#assistant-files). The admin RBAC models belong to
-`pc.admin.users` / `.invites` / `.service_accounts` / `.role_bindings`.
+[Assistant](#assistant-files). The admin RBAC models belong to the separate
+`Admin` client — `admin.users` / `.invites` / `.service_accounts` /
+`.role_bindings`. `Pinecone` has no `admin` attribute; `Admin` authenticates
+with OAuth2 client credentials rather than an API key, so it's constructed on
+its own. See [Admin and OAuth](#admin-oauth).
 
 (index-model)=
 ### Index creation and configuration
@@ -539,16 +586,27 @@ An empty index name now raises `PineconeValueError` from `exists()` /
 #### create and configure
 
 `dimension=`, `metric=`, `vector_type=`, and `spec=` are deprecated,
-keyword-only sugar on `create_index()`: they translate into the
-`schema=`/`deployment=` call below, addressing the vector by the reserved
-`_values` (dense) or `_sparse_values` (sparse) field name, since the SDK
-can't invent the field name your own data-plane code will use. `replicas=`,
-`pod_type=`, and `serverless_read_capacity=` work the same way on
-`configure_index()`. Everything else with no faithful translation raises a
-`PineconeTypeError` whose message shows the equivalent `2026-07` call with
-your own values filled in.
+keyword-only sugar. They still work, on both `pc.create_index()` and
+`pc.indexes.create()`: they translate into the `schema=`/`deployment=` call
+below, addressing the vector by the reserved `_values` (dense) or
+`_sparse_values` (sparse) field name, since the SDK can't invent the field
+name your own data-plane code will use. `replicas=`, `pod_type=`, and
+`serverless_read_capacity=` work the same way on both `pc.configure_index()`
+and `pc.indexes.configure()`. Everything else with no faithful translation
+raises a `PineconeTypeError` whose message shows the equivalent `2026-07`
+call with your own values filled in.
+
+The flow runs one way only. `pc.create_index()` is the `9.x`-shaped shim and
+accepts the deprecated keywords alone: passing `schema=`, `deployment=`,
+`read_capacity=`, or `cmek_id=` to it is a `PineconeTypeError` naming
+`pc.indexes.create()` as the place those belong. On `pc.indexes.create()`
+itself the two vocabularies are mutually exclusive — `schema=` together with
+any of `dimension=`/`metric=`/`vector_type=`, or `deployment=` together with
+`spec=`, raises `PineconeValueError` naming both.
 
 ```python
+from pinecone import ServerlessSpec
+
 # Deprecated sugar, produces a classic vector index served by the vectors
 # API, addressing the vector by the reserved `_values` field rather than
 # one you choose.
@@ -681,10 +739,11 @@ warning. Audit call sites that pass it before upgrading.
 ```
 
 `AsyncPinecone.indexes` mirrors all of this one-for-one, with these
-async-visible deltas: `list()` (and the `pc.list_indexes()` shim) returns an
-`AsyncPaginator[IndexModel]` and isn't a coroutine, so replace
-`(await pc.indexes.list()).names()` with
-`[idx.name async for idx in pc.indexes.list()]`. `exists("")` now raises
+async-visible deltas: `list()` returns an `AsyncPaginator[IndexModel]` and
+isn't a coroutine, so replace `(await pc.indexes.list()).names()` with
+`[idx.name async for idx in pc.indexes.list()]`. The `pc.list_indexes()` shim
+is unaffected: it stays a coroutine and still hands back an `IndexList`, so
+`(await pc.list_indexes()).names()` keeps working. `exists("")` now raises
 `PineconeValueError` where the old async client returned `False`.
 `create_for_model()` is new on the async namespace. The index-scoped backup
 methods graduated too: `create_backup()` and `describe_backup()` are
@@ -841,12 +900,25 @@ index = await pc.indexes.configure(
 
 #### Create-time limits worth knowing about
 
-None of these are checked before the request is sent, so each arrives as an
-`ApiError` carrying the server's message verbatim.
+Which of these you find out about locally depends on how you build the
+schema. `SchemaBuilder` checks what it can before the request is sent and
+raises `PineconeValueError`; a raw `schema=` dict is forwarded as written, so
+the same mistake comes back as an `ApiError` carrying the server's message
+verbatim.
 
 A field `description` is capped at 256 bytes of UTF-8, not 256 characters, so
-emoji and CJK text reach the cap at a fraction of their character count. A
-schema may declare at most 100 `full_text_search` fields.
+emoji and CJK text reach the cap at a fraction of their character count — 64
+emoji fit, 65 don't. A field *name* is capped the same way, at 64 bytes.
+`SchemaBuilder` enforces both and names the byte count it measured, so
+`add_dense_vector_field("embedding", ..., description="🙂" * 65)` raises
+before any request:
+
+```text
+PineconeValueError: Field 'embedding' description is too long: 260 bytes (max 256)
+```
+
+A schema is also capped on how many `full_text_search` fields it may declare.
+That one is the server's, so it arrives as an `ApiError` naming the limit.
 
 ```python
 pc.indexes.create(
@@ -865,11 +937,11 @@ pc.indexes.create(
 )
 ```
 
-`full_text_search.language` accepts a fixed set of 18 language codes, and
-`stop_words` is not supported for every language in that set, five are
-excluded. `language="tr"` on its own is fine; `language="tr", stemming=True,
-stop_words=True` is a 400, and the server's message names the unsupported
-language by its English name rather than the code you sent. `ngram` doesn't
+`full_text_search.language` accepts a fixed set of language codes, and
+`stop_words` is not supported for every language in that set. `language="tr"`
+on its own is fine; `language="tr", stemming=True, stop_words=True` is a 400,
+and the server's message names the unsupported language by its English name
+rather than the code you sent. `ngram` doesn't
 reject a `language`, it replaces it: a `language` sent alongside `ngram` is
 accepted and the created index reports `en` regardless of what you sent.
 
@@ -943,6 +1015,13 @@ This covers the classic `upsert`/`query`/`fetch` vector operations, which
 keep serving indexes created before `2026-07` unchanged. Nothing here is
 about the documents API above.
 
+Every snippet in this section takes `idx` from one call, unchanged from
+`9.x`:
+
+```python
+idx = pc.index("movies")
+```
+
 (vector-models)=
 ### Model and wire-format changes
 
@@ -966,7 +1045,7 @@ Metadata values are validated before the request is sent. A metadata value
 must be a string, number, boolean, or list of strings:
 
 ```python
-index.upsert([("id-1", [0.1, 0.2], {
+idx.upsert([("id-1", [0.1, 0.2], {
     "genre": "documentary",     # string
     "year": 2019,               # number
     "featured": True,           # boolean
@@ -979,7 +1058,7 @@ too, so a bad value raises locally instead of failing the whole batch
 server-side:
 
 ```python
-index.upsert([("id-1", [0.1, 0.2], {"price": {"usd": 10}})])
+idx.upsert([("id-1", [0.1, 0.2], {"price": {"usd": 10}})])
 # PineconeTypeError: Metadata value must be a string, number, boolean or list of
 # strings, got '{"usd":10.0}' for field 'price'
 ```
@@ -994,7 +1073,7 @@ values on write rather than refusing them, so this has always silently
 dropped the key rather than storing it:
 
 ```python
-index.upsert([("id-1", [0.1, 0.2], {"tag": None})])  # no error
+idx.upsert([("id-1", [0.1, 0.2], {"tag": None})])  # no error
 ```
 
 This now holds on both transports. The gRPC transport used to encode a
@@ -1030,6 +1109,8 @@ the dense field, and the sparse field takes neither `dimension` nor `metric`.
 # call, and that is exactly the trap: it creates a dense-only schema (the
 # reserved `_values` field) with no sparse_vector field, so sparse writes
 # still fail silently, with no error at create time.
+from pinecone import ServerlessSpec
+
 pc.create_index(
     name="hybrid",
     dimension=1536,
@@ -1113,6 +1194,8 @@ so the hybrid pair reads as a single chain and you never have to know the
 wire spelling.
 
 ```python
+from pinecone import SchemaBuilder
+
 schema = (
     SchemaBuilder()
     .add_dense_vector_field("embedding", dimension=1536, metric="dotproduct")
@@ -1254,6 +1337,8 @@ default, so the shortest documented call produced a create the backend
 rejected outright. The key is now always present:
 
 ```python
+from pinecone import SchemaBuilder
+
 schema = (
     SchemaBuilder()
     .add_boolean_field("is_published")
@@ -1461,10 +1546,12 @@ doubles the number of concurrent conversations a single ingest opens with one
 host, not the attempts within any one of them.
 
 `upsert_from_dataframe` arrives at the same `8` by a different route, because
-`9.x` gave it no concurrency argument at all: the `Index` and `GrpcIndex`
-versions took `df`, `namespace`, `batch_size` and `show_progress`, and the
-`AsyncIndex` version raised `NotImplementedError`. On `10.x` all three take a
-keyword-only `max_concurrency` that defaults to `None` and resolves to `8`.
+`9.x` gave it no concurrency argument at all — just `df`, `namespace`,
+`batch_size` and `show_progress`. On `10.x` all three lanes — `Index`,
+`AsyncIndex` and `GrpcIndex` — take a keyword-only `max_concurrency` that
+defaults to `None` and resolves to `8`. pandas is not an SDK dependency; it's
+imported when you call this method, and its absence is the one thing that
+raises here.
 `documents.batch_upsert` resolves `None` the same way, and was `4` under
 `pc.preview`; see [Smaller signature deltas](#preview-graduation) for the
 rest of that signature's changes.
@@ -1592,6 +1679,9 @@ now a typed `IndexSchema`, the same class returned by `index.schema`.
 | `backup.metric` | `backup.schema.fields["<field>"].metric` |
 | `backup.schema["fields"]["<name>"]["filterable"]` | `backup.schema.fields["<name>"].filterable` |
 
+Below, `backup` is a `BackupModel` from `pc.backups.describe(backup_id=...)`.
+The `9.x` lines are the ones that now raise:
+
 ```python
 # 9.x
 dim = backup.dimension
@@ -1625,10 +1715,35 @@ a keyword-only `read_capacity: dict | None = None`. And
 `pc.indexes.create_backup` / `list_backups` / `describe_backup` graduated out
 of the preview namespace onto `pc.indexes` directly.
 
+#### The two backup namespaces are not interchangeable
+
+`pc.indexes.*` and `pc.backups.*` reach the same backups, and it's tempting
+to treat one as an alias of the other. Two differences will catch a
+find-and-replace between them:
+
+| `pc.indexes` | `pc.backups` |
+| --- | --- |
+| `create_backup(index_name, *, name=...)` | `create(*, index_name=..., name=...)` |
+| `describe_backup(backup_id)` | `describe(*, backup_id=...)` |
+| `list_backups(index_name, ...)` → `Paginator[BackupModel]` | `list(*, index_name=..., ...)` → `BackupList` |
+
+The identifier is keyword-only on `pc.backups` and positional-or-keyword on
+`pc.indexes`, so the conversion only breaks in one direction:
+`pc.backups.describe("bk-abc123")` is a `TypeError`, while both spellings
+work on `pc.indexes.describe_backup`.
+
+The listing types differ too, and that one is silent: `list_backups` hands
+back a lazy `Paginator` you iterate, `list` hands back a materialized
+`BackupList` you can index and take `len()` of. Swapping the call without
+changing what you do with the result is where this bites.
+
+`pc.backups` is also the only place `delete` and the project-wide listing
+live, since neither belongs to any one index.
+
 #### `include_deleted` and what a 404 means
 
-`pc.backups.list(index_name=...)` (and `pc.indexes.list_backups(...)`)
-resolve the name against active indexes by default. If every index that
+`pc.backups.list(index_name=...)` and `pc.indexes.list_backups(...)`
+both resolve the name against active indexes by default. If every index that
 used the name has been deleted, the API returns 404 rather than an empty
 list, so a 404 alone is not proof the name was never used:
 
@@ -1834,7 +1949,7 @@ Accessing either attribute raises an `AttributeError` naming
 `describe_operation` as the replacement:
 
 ```python
-file = pc.assistant.describe_file(assistant_name="my-assistant", file_id="f-1")
+file = pc.assistants.describe_file(assistant_name="my-assistant", file_id="f-1")
 file.error_message
 # AttributeError: AssistantFileModel.error_message was removed in the 2026-07
 # Pinecone API: processing failure detail is reported by the operations API
@@ -1857,6 +1972,8 @@ matching on the old message text needs updating.
 caller supplied. Code that parses a file ID as a UUID breaks:
 
 ```python
+import uuid
+
 uuid.UUID(file.id)  # no longer safe
 ```
 
@@ -1963,6 +2080,8 @@ Upload failures now quote the server. With `error_message` gone from
 operation, and the server's message verbatim:
 
 ```python
+from pinecone import PineconeError
+
 try:
     pc.assistants.upload_file(assistant_name="my-assistant", file_path="/data/logo.gif")
 except PineconeError as exc:
@@ -2057,7 +2176,7 @@ common case is handled before you see it. Catch it when you want to back off
 on your own schedule:
 
 ```python
-from pinecone.errors.exceptions import RateLimitError
+from pinecone import RateLimitError
 
 try:
     pc.assistants.list()
@@ -2089,7 +2208,7 @@ what an unknown model name has always raised. Code that only caught
 `ForbiddenError` around `rerank` was catching the wrong one:
 
 ```python
-from pinecone.errors.exceptions import ForbiddenError, NotFoundError
+from pinecone import ForbiddenError, NotFoundError
 
 try:
     pc.inference.rerank(model="bge-reranker-v2-m3-typo", query="q", documents=["d"])
@@ -2141,6 +2260,8 @@ Model 'EmbedModel.Multilingual_E5_Large' not found
 ```
 
 ```python
+from pinecone import EmbedModel
+
 pc.inference.embed(model=EmbedModel.Multilingual_E5_Large.value, inputs=["hello"])
 ```
 
@@ -2181,6 +2302,8 @@ Invalid vector_type, expected one of [dense, sparse]
 ```
 
 ```python
+from pinecone import VectorType
+
 pc.inference.list_models(type="embed", vector_type=VectorType.DENSE.value)
 ```
 

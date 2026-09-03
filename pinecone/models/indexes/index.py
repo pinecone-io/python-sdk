@@ -1,4 +1,4 @@
-"""Index and IndexStatus response models (2026-07 API)."""
+"""The model an index describe returns, and its status."""
 
 from __future__ import annotations
 
@@ -23,14 +23,22 @@ __all__ = ["IndexModel", "IndexStatus", "IndexTags"]
 
 
 class IndexStatus(StructDictMixin, Struct, kw_only=True):
-    """Status of an index.
+    """Whether an index can serve requests yet, and what it is busy doing.
+
+    Branch on :attr:`ready`; read :attr:`state` when you want to say *why* an
+    index is not ready, or to distinguish a scaling operation from a failed
+    initialization.
 
     Attributes:
-        ready: Whether the index is ready to accept requests.
-        state: Current state of the index. Possible values:
+        ready: Whether the index accepts requests. This is the field to poll,
+            and the one :meth:`create <pinecone.client.indexes.Indexes.create>`
+            waits on for you unless you passed ``timeout=-1``.
+        state: What the index is doing, as a readable label —
             ``"Initializing"``, ``"InitializationFailed"``, ``"ScalingUp"``,
             ``"ScalingDown"``, ``"ScalingUpPodSize"``, ``"ScalingDownPodSize"``,
-            ``"Terminating"``, ``"Ready"``, or ``"Disabled"``.
+            ``"Terminating"``, ``"Ready"``, or ``"Disabled"``. An index can
+            report ``ready`` while a scaling state is in progress, so the two
+            answer different questions.
     """
 
     ready: bool
@@ -38,7 +46,11 @@ class IndexStatus(StructDictMixin, Struct, kw_only=True):
 
 
 class IndexTags(dict):  # type: ignore[type-arg]
-    """A dict subclass for index tags that adds a ``to_dict()`` helper."""
+    """An index's tags: an ordinary dict, plus ``to_dict()`` for symmetry.
+
+    ``IndexModel`` wraps whatever tags come back in this so that every nested
+    model on the response answers ``to_dict()``.
+    """
 
     def to_dict(self) -> dict[str, str]:
         return dict(self)
@@ -59,19 +71,32 @@ _REMOVED_FIELD_HINTS: dict[str, str] = {
 
 
 class IndexModel(Struct, kw_only=True):
-    """Response model for a Pinecone index (2026-07 API).
+    """Everything the control plane knows about one index.
+
+    What :meth:`describe <pinecone.client.indexes.Indexes.describe>`,
+    :meth:`create <pinecone.client.indexes.Indexes.create>` and
+    :meth:`configure <pinecone.client.indexes.Indexes.configure>` return, and
+    what iterating :meth:`list <pinecone.client.indexes.Indexes.list>` yields.
+    Two fields carry most of the traffic: ``status.ready`` is what you poll
+    to know the index can serve requests, and :attr:`host` is what
+    you hand to :meth:`Pinecone.index() <pinecone.Pinecone.index>` to get a
+    data-plane client. Everything about the index's shape — dimension, metric,
+    which fields are searchable — is in :attr:`schema`.
 
     Attributes:
         name: The name of the index.
-        host: The hostname where this index is served, or ``None`` if the
-            index is still initializing and has not yet been assigned a host.
+        host: Where the index is served. Pass it to
+            :meth:`Pinecone.index() <pinecone.Pinecone.index>` to open a
+            data-plane client. ``None`` while the index is still initializing
+            and has not been assigned one.
         private_host: The private-endpoint hostname for this index when the
             project has Private Endpoints configured, or ``None`` otherwise.
             Clients inside a VPC should connect to this host instead of
             ``host``.
-        status: Current status of the index.
-        schema: Field-level schema definition (vector, text, and metadata
-            fields), keyed by field name.
+        status: An :class:`IndexStatus`; ``status.ready`` is the field to poll.
+        schema: An :class:`~pinecone.models.indexes.schema.IndexSchema` naming
+            every field in the index and what each can do — where dimension,
+            metric and vector type live.
         deployment: Deployment configuration — a
             :class:`~pinecone.models.indexes.deployment.ManagedDeployment`,
             :class:`~pinecone.models.indexes.deployment.PodDeployment`, or
@@ -90,6 +115,19 @@ class IndexModel(Struct, kw_only=True):
             or ``None``.
         cmek_id: ID of the customer-managed encryption key protecting this
             index, or ``None`` if CMEK is not configured.
+
+    Examples:
+        >>> idx = pc.indexes.describe("my-index")
+        >>> idx.status.ready, idx.deployment.cloud, idx.deployment.region
+        (True, 'aws', 'us-east-1')
+        >>> index = pc.index(host=idx.host)
+
+    .. versionchanged:: 10.0
+       ``dimension``, ``metric``, ``vector_type``, ``spec``, ``embed`` and
+       ``created_at`` are no longer plain attributes. Reading one raises
+       :exc:`AttributeError` with the replacement named in the message; the
+       first three survive as deprecated properties that resolve when the
+       schema has exactly one vector field.
     """
 
     name: str
@@ -120,7 +158,7 @@ class IndexModel(Struct, kw_only=True):
         if name in _REMOVED_FIELD_HINTS:
             raise AttributeError(
                 f"IndexModel.{name} was removed in the 2026-07 Pinecone API: "
-                f"{_REMOVED_FIELD_HINTS[name]}. See docs/migration/v10-migration.md."
+                f"{_REMOVED_FIELD_HINTS[name]}. See https://sdk.pinecone.io/python/migration/v10-migration.html."
             )
         raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
 
@@ -163,10 +201,15 @@ class IndexModel(Struct, kw_only=True):
 
     @property
     def dimension(self) -> int | None:
-        """**Deprecated.** Use ``index.schema.fields["<field-name>"].dimension`` instead.
+        """Width of the schema's sole dense vector field.
 
-        Returns ``None`` for a sparse-only schema, since sparse vectors have
-        no fixed dimension.
+        ``None`` for a sparse-only schema, since sparse vectors have no fixed
+        dimension. Raises :exc:`AttributeError` when the schema has more than
+        one dense field, or no vector field at all: there is no single field to
+        resolve to, and the message says which fields it found.
+
+        .. deprecated:: 10.0
+           Read ``index.schema.fields["<field-name>"].dimension`` instead.
         """
         dense = self._dense_fields()
         if len(dense) == 1:
@@ -177,11 +220,14 @@ class IndexModel(Struct, kw_only=True):
 
     @property
     def metric(self) -> str:
-        """**Deprecated.** Use ``index.schema.fields["<field-name>"].metric`` instead.
+        """Metric of the schema's sole dense vector field.
 
-        Resolves to the sole dense field's metric, or ``"dotproduct"`` if the
-        schema has a sole sparse field and no dense field — sparse indexes
-        always use dot product.
+        Resolves to ``"dotproduct"`` for a schema whose only vector field is
+        sparse, since sparse scoring is always dot product. Raises
+        :exc:`AttributeError` when more than one field could answer.
+
+        .. deprecated:: 10.0
+           Read ``index.schema.fields["<field-name>"].metric`` instead.
         """
         dense = self._dense_fields()
         if len(dense) == 1:
@@ -194,7 +240,14 @@ class IndexModel(Struct, kw_only=True):
 
     @property
     def vector_type(self) -> str:
-        """**Deprecated.** Inspect ``index.schema.fields`` field types instead."""
+        """``"dense"`` or ``"sparse"``, for a schema with one vector field.
+
+        Raises :exc:`AttributeError` when the schema has several fields of one
+        kind — a hybrid schema has no single vector type to report.
+
+        .. deprecated:: 10.0
+           Inspect the field types in ``index.schema.fields`` instead.
+        """
         dense = self._dense_fields()
         if len(dense) > 1:
             raise AttributeError("vector_type")
@@ -221,14 +274,15 @@ class IndexModel(Struct, kw_only=True):
         return sorted(public)
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a plain dict representation, recursively converting nested fields.
+        """Return the whole model as nested plain dicts, for logging or JSON.
 
-        Nested structs (``status``, ``schema``, ``deployment``,
-        ``read_capacity``) become plain dicts. Tagged-union members include
-        their discriminator key (``deployment_type``, ``mode``, ``type``);
-        legacy untyped schema fields are emitted without a ``type`` key,
-        matching the wire format. Optional fields that are ``None`` are
-        included with their ``None`` values.
+        ``status``, ``schema``, ``deployment`` and ``read_capacity`` become
+        dicts too, each keeping the key that identifies which variant it is
+        (``deployment_type``, ``mode``, ``type``). A
+        :class:`~pinecone.models.indexes.schema.LegacyMetadataField` is
+        emitted without a ``type``, matching the wire format. Optional fields
+        that are ``None`` are present with a ``None`` value rather than
+        omitted, so the key set is the same for every index.
         """
         result: dict[str, Any] = {
             field: _to_builtins_stripped(getattr(self, field)) for field in self.__struct_fields__

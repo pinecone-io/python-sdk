@@ -1,4 +1,4 @@
-"""Namespace response models."""
+"""What ``describe`` and ``list`` on ``index.namespaces`` hand back."""
 
 from __future__ import annotations
 
@@ -12,46 +12,58 @@ from pinecone.models.vectors.responses import Pagination
 
 
 class NamespaceFieldConfig(StructDictMixin, Struct, kw_only=True):
-    """Configuration for a single metadata field in a namespace schema.
+    """Whether one metadata field is indexed for filtering.
 
-    ``filterable`` defaults to ``False`` only so that responses decode when the
-    server omits the flag. As a *request* value it is invalid: 2026-07 rejects
-    any field config that does not carry ``filterable: true``. To leave a field
-    unindexed, omit it from ``fields`` rather than sending ``filterable=False``.
+    ``filterable`` defaults to ``False`` only so a response decodes when the server omits
+    the flag. As a *request* value ``False`` is rejected — the only accepted value is
+    ``True``. To leave a field unindexed, omit it from ``fields`` rather than sending
+    ``filterable=False``.
 
     Attributes:
-        filterable: Whether the field is indexed and usable in filters.
+        filterable: Whether the field is indexed and can appear in a filter.
     """
 
     filterable: bool = False
 
 
 class NamespaceSchema(StructDictMixin, Struct, kw_only=True):
-    """Schema configuration for a namespace's metadata index."""
+    """Which metadata fields a namespace indexes for filtering.
+
+    Attributes:
+        fields: Field name to its :class:`NamespaceFieldConfig`. A field absent here is
+            stored but cannot be filtered on.
+    """
 
     fields: dict[str, NamespaceFieldConfig] = {}
 
 
 class IndexedFields(StructDictMixin, Struct, kw_only=True):
-    """List of indexed metadata fields in a namespace."""
+    """The indexed metadata field names, without the per-field configuration.
+
+    Attributes:
+        fields: The names of the fields that can appear in a filter.
+    """
 
     fields: list[str] = []
 
 
 class NamespaceDescription(StructDictMixin, Struct, kw_only=True):
-    """Description of a namespace including name, record count, size, and schema.
+    """One namespace: its name, how much is in it, and which fields it indexes.
 
     Attributes:
-        name: The name of the namespace.
-        record_count: The total number of records in the namespace.
-        schema: Schema configuration for metadata indexing, or None.
-        indexed_fields: List of indexed metadata fields, or None.
+        name: The namespace's name. ``""`` is the default namespace.
+        record_count: Records in the namespace. Eventually consistent, so a record you
+            just wrote may not be counted yet.
+        schema: Which metadata fields are indexed for filtering, or ``None`` when the
+            namespace has no schema.
+        indexed_fields: The same field names without the per-field configuration, or
+            ``None``.
         size_bytes: The total size of the namespace's data, in bytes. This is an
             approximation, not an exact byte count: data written before size
             tracking was enabled reads as 0, and recently deleted data may still
             be counted until compaction converges the value. Defaults to 0,
-            which also covers API versions before 2026-07 that omit the field —
-            a 0 therefore does not by itself mean the namespace is empty.
+            which also covers responses that omit the field entirely — a 0 therefore
+            does not by itself mean the namespace is empty.
     """
 
     name: str = ""
@@ -61,23 +73,35 @@ class NamespaceDescription(StructDictMixin, Struct, kw_only=True):
     size_bytes: int = 0
 
     def __getitem__(self, key: str) -> Any:
-        """Support bracket access (e.g. ns['name'])."""
+        """Read a field by name, so ``ns["name"]`` works as well as ``ns.name``.
+
+        Raises:
+            KeyError: If *key* is not one of this model's fields.
+        """
         if key not in self.__struct_fields__:
             raise KeyError(key)
         return getattr(self, key)
 
     def __contains__(self, key: object) -> bool:
-        """Support ``in`` operator (e.g. ``'name' in ns``)."""
+        """Report whether *key* names a field on this description."""
         return key in self.__struct_fields__
 
 
 class ListNamespacesResponse(StructDictMixin, Struct, kw_only=True):
-    """Response from a list namespaces operation.
+    """One page of namespace descriptions.
+
+    Iterable and sized directly, so ``for ns in response`` and ``len(response)`` walk this
+    page. ``total_count`` counts every matching namespace, not just this page, so compare
+    the two to tell whether more pages remain — or just follow ``pagination`` until it is
+    ``None``.
 
     Attributes:
-        namespaces: List of namespace descriptions in this page.
-        pagination: Pagination token for the next page, or None if last page.
-        total_count: Total number of namespaces matching the query.
+        namespaces: The :class:`NamespaceDescription` entries on this page.
+        pagination: Token for the next page, or ``None`` when this is the last page.
+        total_count: Namespaces matching the request, across every page.
+
+    .. seealso::
+       :doc:`/guides/pagination` — the paging loop used across the SDK.
     """
 
     namespaces: list[NamespaceDescription] = []
@@ -91,13 +115,18 @@ class ListNamespacesResponse(StructDictMixin, Struct, kw_only=True):
     def __getitem__(self, key: str) -> Any: ...
 
     def __getitem__(self, key: int | str) -> Any:
-        """Support integer indexing into namespaces and string bracket access.
+        """Index into the page's namespaces, or read a field by name.
 
         Args:
-            key: An integer index into ``namespaces``, or a string field name.
+            key (int | str): An integer position in ``namespaces``, or the name of a field
+                on this response.
 
         Returns:
-            The namespace at the given index, or the field value.
+            The :class:`NamespaceDescription` at that position, or the named field's value.
+
+        Raises:
+            KeyError: If a string *key* does not name a field.
+            IndexError: If an integer *key* is past the end of this page.
         """
         if isinstance(key, int):
             return self.namespaces[key]
@@ -106,7 +135,7 @@ class ListNamespacesResponse(StructDictMixin, Struct, kw_only=True):
         return getattr(self, key)
 
     def __contains__(self, key: object) -> bool:
-        """Support ``in`` for field names (str) and namespace membership."""
+        """Report field-name membership for a string, and namespace membership otherwise."""
         if isinstance(key, str):
             return key in self.__struct_fields__
         return key in self.namespaces

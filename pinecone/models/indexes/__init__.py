@@ -1,4 +1,9 @@
-"""Index models subpackage with lazy loading."""
+"""Index models, lazily imported.
+
+:class:`~pinecone.models.indexes.index.IndexModel` is the entry point;
+:class:`~pinecone.models.indexes.schema.IndexSchema` documents the field types
+an index is built from.
+"""
 
 from __future__ import annotations
 

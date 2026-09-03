@@ -1,9 +1,14 @@
-"""Score-by query models for document search (2026-07 API).
+"""The four ways a document search can score a document, and the union over them.
 
-``DocumentScoringMethod`` is the typed union of the four scoring method
-variants, discriminated on the ``type`` tag. Each variant validates its
-required fields at construction, using the backend's error vocabulary, so
-invalid queries fail before any HTTP request.
+Every ``score_by`` clause is one of these four, told apart by its ``type`` tag:
+``text`` for BM25 keyword scoring, ``query_string`` for a Lucene expression,
+``dense_vector`` for similarity to an embedding, and ``sparse_vector`` for similarity to
+a sparse vector. Pass them as typed instances or as plain dicts with a ``type`` key —
+either way each one checks its required fields on construction, so a malformed clause is
+rejected at the call site.
+
+``text`` and ``query_string`` clauses can be combined in one search to score on several
+signals at once. A vector clause has to stand alone.
 """
 
 from __future__ import annotations
@@ -24,14 +29,30 @@ __all__ = [
 
 
 class TextQuery(Struct, tag="text", tag_field="type", kw_only=True, omit_defaults=True):
-    """Full-text (BM25) search query for scoring documents.
+    """Score documents by BM25 keyword relevance over named text fields.
+
+    The clause to reach for when the words themselves matter — exact terms, names, codes
+    — rather than meaning. Scoring is per field, so name every field you want searched.
 
     Attributes:
-        query: Search query string.
-        fields: One or more text field names to search across.
-        field: Deprecated alias for ``fields``. If provided, it is migrated
-            to ``fields=[field]`` and a ``DeprecationWarning`` is emitted.
-            Cleared to ``None`` after migration; read ``fields`` instead.
+        query: The words to search for, e.g. ``"sparse index scoring"``.
+        fields: The text fields to search across, e.g. ``["title", "chunk"]``. At least
+            one is required.
+        field: Deprecated single-field form of ``fields``. A value here is moved into
+            ``fields`` with a :exc:`DeprecationWarning` and this attribute reads back as
+            ``None``, so read ``fields`` whichever way you set it.
+
+    Raises:
+        ValueError: If ``fields`` ends up empty, or if both ``fields`` and ``field`` are
+            given.
+
+    Examples:
+        >>> from pinecone.models.documents.score_by import TextQuery
+        >>> TextQuery(query="sparse index scoring", fields=["title", "chunk"]).fields
+        ['title', 'chunk']
+
+    .. seealso::
+       :class:`QueryStringQuery` — when you need boolean operators in the query itself.
     """
 
     query: str
@@ -58,16 +79,26 @@ class TextQuery(Struct, tag="text", tag_field="type", kw_only=True, omit_default
 class QueryStringQuery(
     Struct, tag="query_string", tag_field="type", kw_only=True, omit_defaults=True
 ):
-    """Lucene query string search with boolean operators (AND, OR, NOT).
+    """Score documents by a Lucene query string, with ``AND``, ``OR`` and ``NOT``.
 
-    Target a specific field with a field qualifier inside the query string
-    (``field_name:(clause)``), or omit qualifiers to search against all
-    text-searchable fields.
+    Choose this over :class:`TextQuery` when the query itself needs structure — combining
+    terms, excluding one, or scoping a clause to one field. Fields are named *inside* the
+    query string as ``field_name:(clause)``; leave the qualifiers off and every
+    text-searchable field is searched.
 
     Attributes:
-        query: Query string with operators.
-        field: Not accepted for this scoring type; always ``None``.
-        fields: Not accepted for this scoring type; always ``None``.
+        query: The Lucene expression, e.g. ``'title:(sparse OR hybrid) NOT draft'``.
+        field: Not accepted here — use a qualifier in ``query`` instead.
+        fields: Not accepted here — use a qualifier in ``query`` instead.
+
+    Raises:
+        ValueError: If ``field`` or ``fields`` is given. Passing either is rejected rather
+            than ignored, because the field would silently not be applied.
+
+    Examples:
+        >>> from pinecone.models.documents.score_by import QueryStringQuery
+        >>> QueryStringQuery(query="title:(sparse OR hybrid) NOT draft").query
+        'title:(sparse OR hybrid) NOT draft'
     """
 
     query: str
@@ -84,11 +115,29 @@ class QueryStringQuery(
 
 
 class DenseVectorQuery(Struct, tag="dense_vector", tag_field="type", kw_only=True):
-    """Dense vector similarity query for scoring documents.
+    """Score documents by dense vector similarity to a query embedding.
+
+    The clause for finding documents by meaning. It scores against one field, so the
+    field named has to be declared ``dense_vector`` in the index schema, and ``values``
+    has to be as long as that field's ``dimension``. A dense clause cannot be combined
+    with any other scoring method in the same search.
 
     Attributes:
-        field: Name of the field containing dense vectors to search.
-        values: Query vector as a list of floats.
+        field: The dense vector field to score against, e.g. ``"embedding"``.
+        values: The query embedding, one float per dimension of that field.
+
+    Raises:
+        ValueError: If ``field`` is empty, or ``values`` is empty.
+
+    Examples:
+        The three floats here stand in for a full-length embedding.
+
+        >>> from pinecone.models.documents.score_by import DenseVectorQuery
+        >>> DenseVectorQuery(field="embedding", values=[0.12, 0.34, 0.56]).field
+        'embedding'
+
+    .. seealso::
+       :class:`SparseVectorQuery` — the same idea against a sparse field.
     """
 
     field: str
@@ -104,11 +153,32 @@ class DenseVectorQuery(Struct, tag="dense_vector", tag_field="type", kw_only=Tru
 
 
 class SparseVectorQuery(Struct, tag="sparse_vector", tag_field="type", kw_only=True):
-    """Sparse vector similarity query for scoring documents.
+    """Score documents by sparse vector similarity to a query sparse vector.
+
+    The clause for finding documents by term overlap when you already hold a sparse
+    encoding of the query. The field named has to be declared ``sparse_vector`` in the
+    index schema, and, like a dense clause, this one cannot be combined with any other
+    scoring method in the same search.
 
     Attributes:
-        field: Name of the field containing sparse vectors to search.
-        sparse_values: Sparse vector with indices and values.
+        field: The sparse vector field to score against, e.g. ``"keywords"``.
+        sparse_values: The query's sparse vector, as
+            :class:`~pinecone.models.vectors.sparse.SparseValues`.
+
+    Raises:
+        ValueError: If ``field`` is empty.
+
+    Examples:
+        >>> from pinecone import SparseValues
+        >>> from pinecone.models.documents.score_by import SparseVectorQuery
+        >>> SparseVectorQuery(
+        ...     field="keywords",
+        ...     sparse_values=SparseValues(indices=[10, 42], values=[0.4, 0.9]),
+        ... ).field
+        'keywords'
+
+    .. seealso::
+       :class:`TextQuery` — when you have the words rather than a sparse encoding of them.
     """
 
     field: str

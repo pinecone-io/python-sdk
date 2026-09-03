@@ -1,12 +1,17 @@
 """Pinecone Python SDK — vector database for similarity search.
 
-Quick Start::
+:class:`Pinecone` is the control plane: it creates, inspects, configures, and
+deletes indexes. :class:`Index` is the data plane: it reads and writes the
+records inside one index, against that index's own host. ``pc.index(name)`` is
+the bridge between the two.
 
-    from pinecone import DenseVectorQuery, Pinecone
+Start by declaring the fields the index searches. Pass ``api_key``, or omit it
+and set ``PINECONE_API_KEY``::
 
-    pc = Pinecone(api_key="your-api-key")  # or set PINECONE_API_KEY env var
+    from pinecone import Pinecone
 
-    # Control plane: manage indexes
+    pc = Pinecone(api_key="your-api-key")
+
     pc.indexes.create(
         name="movie-recommendations",
         schema={"fields": {"embedding": {
@@ -14,11 +19,15 @@ Quick Start::
         deployment={"deployment_type": "managed", "cloud": "aws", "region": "us-east-1"},
     )
 
-    # Data plane: an index declaring a schema stores documents
+Then write and read documents through the handle. The three floats below stand
+in for a full 1536-dimensional embedding::
+
+    from pinecone import DenseVectorQuery
+
     index = pc.index("movie-recommendations")
     index.documents.upsert(
         namespace="movies-en",
-        documents=[{"_id": "movie-42", "embedding": [0.012, -0.087, 0.153]}],  # 1536-dim
+        documents=[{"_id": "movie-42", "embedding": [0.012, -0.087, 0.153]}],
     )
     results = index.documents.search(
         namespace="movies-en",
@@ -26,46 +35,47 @@ Quick Start::
         score_by=[DenseVectorQuery(field="embedding", values=[0.012, -0.087, 0.153])],
     )
 
-    # Integrated inference: search with text (server-side embedding)
-    index = pc.index("my-integrated-index")
-    results = index.search(namespace="articles-en", top_k=5, inputs={"text": "search query"})
-
-The :class:`Pinecone` client manages indexes (control plane). Call
-``pc.index(name)`` to get an :class:`Index` for data-plane work.
-
-How an index was created decides which data-plane interface it answers on. An
+How the index was created decides which data-plane interface it answers on. An
 index declaring a ``schema`` of your own field names stores documents, read and
 written through ``index.documents``. The vector methods :meth:`Index.upsert` and
 :meth:`Index.query` serve indexes created with top-level ``dimension`` and
 ``metric``, and the server rejects them on a schema-based index. An index built
-by ``pc.indexes.create_for_model()`` embeds text server-side and is searched
-with :meth:`Index.search`.
+by ``pc.indexes.create_for_model()`` embeds text server-side, so you search it
+with text rather than with a vector::
 
-Upgrading from 9.x? ``create``/``configure`` moved from ``spec=``/``dimension=``
-to ``schema=``/``deployment=``; see :doc:`/migration/v10-migration` for the
-field-by-field mapping and before/after code for each flow.
+    index = pc.index("semantic-search")
+    results = index.search(
+        namespace="articles-en",
+        top_k=5,
+        inputs={"text": "how does vector search work?"},
+    )
 
-Async Quick Start::
+:class:`AsyncPinecone` is the same control plane for ``asyncio``. Its
+``index()`` is a coroutine, and the handle it returns is a context manager::
 
     from pinecone import AsyncPinecone, DenseVectorQuery
 
     async with AsyncPinecone(api_key="your-api-key") as pc:
-        # Control plane: manage indexes
         index_names = [idx.name async for idx in pc.indexes.list()]
 
-        # Data plane: resolve host first, then create index client
-        desc = await pc.indexes.describe("movie-recommendations")
-        index = pc.index(host=desc.host)
-
+        index = await pc.index("movie-recommendations")
         async with index:
             results = await index.documents.search(
                 namespace="movies-en",
                 top_k=5,
-                score_by=[DenseVectorQuery(field="embedding", values=[0.012, -0.087, 0.153])],
+                score_by=[DenseVectorQuery(field="embedding",
+                                           values=[0.012, -0.087, 0.153])],
             )
 
-For async usage, see :class:`AsyncPinecone`. For admin/org management,
-see :class:`Admin`.
+Organizations, projects, and API keys are managed through :class:`Admin`, which
+authenticates with OAuth2 client credentials rather than an API key. Every
+error the SDK raises derives from :class:`PineconeError`; see
+:doc:`/guides/error-handling` for which call produces which.
+
+Upgrading from 9.x? ``create`` and ``configure`` moved from
+``spec=``/``dimension=`` to ``schema=``/``deployment=``; see
+:doc:`/migration/v10-migration` for the field-by-field mapping and
+before/after code for each flow.
 """
 
 from __future__ import annotations

@@ -18,6 +18,30 @@ bulk upsert workloads; see [When to Use gRPC](#when-to-use-grpc). For the
 REST clients, parallel batched upsert (below) is what you reach for to drive
 concurrency.
 
+## Choosing How to Load Data
+
+Throughput depends more on picking the right write path than on tuning any
+knob on the wrong one.
+
+| Path | Reach for it when | Batching |
+|---|---|---|
+| `index.upsert(vectors=[...])` | You have pre-computed vectors and one request will hold them | None — one request, one payload |
+| `index.upsert(vectors=[...], batch_size=N)` | You have more vectors than one request can carry | Client-side, in parallel, with partial-failure reporting |
+| `index.upsert_from_dataframe(df)` | Your vectors are already in a pandas DataFrame | Client-side, `batch_size=500` by default |
+| `index.upsert_records(records=[...])` | The index has integrated inference, so the server embeds your text | None — one NDJSON request per call |
+| `index.start_import(uri="s3://...")` | Millions of records already sit in Parquet in cloud storage | Server-side and asynchronous; no client bandwidth spent |
+
+An unbatched `upsert()` sends everything in one request, so a large enough
+`vectors` list is rejected by the server for exceeding the request size
+limit. Pass `batch_size=` and the SDK splits the work for you instead; that
+is the fix, not a smaller loop of your own. `upsert_records()` takes neither
+`batch_size` nor `max_concurrency`, so chunk the record list yourself and
+call it once per chunk.
+
+`upsert_from_dataframe()` needs pandas, which is not an SDK dependency and
+not an optional extra. Install it yourself if you want that method; without
+it the call raises and says so.
+
 ## Connection Pooling
 
 Both `Pinecone` and `Index` maintain a persistent `httpx.Client` (or `httpx.AsyncClient`
@@ -32,23 +56,27 @@ time:
 from pinecone import Pinecone
 
 pc = Pinecone()
-desc = pc.indexes.describe("product-search")
-index = pc.index(host=desc.host)
+index = pc.index(name="product-search")
 
 for batch in batches:
     index.upsert(vectors=batch)
 
 # Bad: a new HTTP client for every upsert
 for batch in batches:
-    index = pc.index(host=desc.host)  # new client every time
+    index = pc.index(name="product-search")  # new client every time
     index.upsert(vectors=batch)
 ```
 
-Use the context manager protocol to ensure connections are released when you are done:
+After the first resolution the host comes from the client's cache, so the
+second loop costs no extra describe requests — but it does build a fresh
+`httpx.Client`, and a fresh TLS handshake, every time around.
+
+Use the context manager protocol to ensure connections are released when you
+are done:
 
 ```python
-with pc.index(host=desc.host) as index:
-    index.upsert(vectors=large_batch)
+with pc.index(name="product-search") as index:
+    index.upsert(vectors=batch)
 ```
 
 ## Fast Serialization with msgspec and orjson
@@ -73,18 +101,21 @@ module-level code that runs before it is needed:
 
 ```python
 # Fine: deferred to first use
-def get_index() -> Index:
+def get_index():
     from pinecone import Pinecone
+
     pc = Pinecone()
-    return pc.index(host="...")
+    return pc.index(name="product-search")
 ```
 
 ## Batching Large Upserts
 
 For datasets larger than a single request payload, pass `batch_size` to
-`Index.upsert()`. The SDK splits the input into batches and sends them in parallel:
-sync via a cached `ThreadPoolExecutor`, async via an `asyncio.Semaphore`. HTTP-level
-retries happen automatically per batch.
+`Index.upsert()`. The SDK splits the input into batches and sends them in
+parallel — a `ThreadPoolExecutor` on the sync client, tasks bounded by an
+`asyncio.Semaphore` on the async one — and above both sits a per-host
+adaptive gate that can hold effective concurrency below your cap when the
+backend pushes back. HTTP-level retries happen automatically per batch.
 
 ```python
 response = index.upsert(
@@ -97,11 +128,8 @@ print(response.failed_item_count)      # 0 if everything succeeded
 ```
 
 `AsyncIndex.upsert()` accepts the same `batch_size` and `max_concurrency` kwargs.
-`Index.upsert_from_dataframe()` accepts `batch_size`, `max_concurrency`, and `total_timeout`,
+`upsert_from_dataframe()` accepts `batch_size`, `max_concurrency`, and `total_timeout`,
 with the same meanings on all three clients (REST sync, asyncio, and gRPC).
-`Index.upsert_records()` does **not** accept `batch_size` or `max_concurrency`; it
-sends a single NDJSON request per call, so chunk the record list yourself and call
-`upsert_records()` once per chunk.
 
 When `batch_size` is set, `upsert()` returns an `UpsertResponse` with partial-failure
 information instead of raising on the first failed batch; see
@@ -128,20 +156,19 @@ The v8 row is the published `pinecone==8.x` client running its sequential
 `batch_size=` loop; the v9 rows are this client using native parallel batched
 upsert. The headline win for the typical caller, v8 REST sync sequential vs v9
 REST sync, is ~12× at `max_concurrency=4` and ~20× at the default `8`.
-Async REST shows a
-similar shape with a smaller multiplier because v8 async sequential was
-already faster than v8 sync sequential. gRPC is faster than REST at high
-concurrency; see [When to Use gRPC](#when-to-use-grpc).
+Async REST shows a similar shape with a smaller multiplier, since v8 async
+sequential started from a faster baseline than v8 sync sequential. gRPC is
+faster than REST at high concurrency; see
+[When to Use gRPC](#when-to-use-grpc).
 
 The `max_concurrency=1` row isn't a setting you'd reach for in practice: at
 `c=1` you've opted out of the main reason to pass `batch_size=` in the first
-place. But it's a useful diagnostic. It isolates how much of the v8 → v9
-speedup comes from non-parallelism improvements in the client (request
-building, serialization, response decoding, retry layer) versus the explicit
-fan-out parallel batching adds on top. For REST sync, ~3.6× of the 11.7×
-win at `max_concurrency=4` comes from those raw client improvements alone; the
-remaining ~3.3× is parallelism. For gRPC, almost the entire win comes from
-parallelism: v8 gRPC was already efficient at the request level.
+place. But it's a useful diagnostic. It separates the speedup that comes from
+the client itself — request building, serialization, response decoding, the
+retry layer — from the speedup that parallel fan-out adds on top. For REST
+sync, ~3.6× of the 11.7× win at `max_concurrency=4` is there before any
+parallelism; the remaining ~3.3× is parallelism. For gRPC, nearly all of the
+win is parallelism.
 
 ### Tuning `max_concurrency`
 
@@ -225,7 +252,7 @@ reporting:
 from pinecone import AsyncPinecone
 
 async with AsyncPinecone() as pc:
-    index = await pc.index(host="product-search-abc123.svc.pinecone.io")
+    index = await pc.index(name="product-search")
     async with index:
         response = await index.upsert(
             vectors=large_list,
@@ -239,8 +266,11 @@ many namespaces), `asyncio.gather` over `AsyncIndex` calls is still the natural
 pattern:
 
 ```python
+import asyncio
+from pinecone import AsyncPinecone
+
 async with AsyncPinecone() as pc:
-    index = await pc.index(host="product-search-abc123.svc.pinecone.io")
+    index = await pc.index(name="product-search")
     async with index:
         results = await asyncio.gather(
             index.upsert(vectors=writes_batch, batch_size=100),
@@ -250,35 +280,26 @@ async with AsyncPinecone() as pc:
 ```
 
 Sync vs async at high concurrency: with native batched upsert at `max_concurrency=32`,
-sync (~4.4 s) edges out async (~5.0 s) on the 10k-vector benchmark: the cached
-`ThreadPoolExecutor` is competitive with `asyncio.Semaphore` once cluster-side
-ingress dominates. Pick the client that matches your application style; throughput
+sync (~4.4 s) edges out async (~5.0 s) on the 10k-vector benchmark: the thread
+pool is competitive with semaphore-bounded tasks once cluster-side ingress
+dominates. Pick the client that matches your application style; throughput
 is similar at the saturation point.
 
 ## When to Use gRPC
 
-`pinecone.grpc.GrpcIndex` accepts the same `batch_size=` and `max_concurrency=`
-kwargs as the REST `Index`, so the call site looks identical. The wire-level
-differences are HTTP/2 framing (vs HTTP/1.1 + keepalive on REST) and binary
-protobuf encoding (vs JSON). The gRPC channel ships with the package; no
-separate install step.
+`GrpcIndex` accepts the same `batch_size=` and `max_concurrency=` kwargs as
+the REST `Index`, so the call site looks identical. For how to open one, what
+it does and does not support, and how its errors and retries differ, see
+{doc}`/guides/grpc`. This section covers only the throughput question.
 
 Reading off the [throughput table above](#how-much-faster-is-parallel-batching),
-a few things about gRPC stand out:
+two things about gRPC stand out:
 
-- **Even sequential, v8 gRPC was ~3× faster than v8 REST sync** (34 s vs 112 s).
-  HTTP/2 multiplexing and protobuf encoding buy a lot before any parallelism
-  enters the picture, and that gap is structural to the protocols, not
-  something parallel batching alone closes.
 - **At the default `max_concurrency=8`, the three transports are essentially
   tied** (~5.7–5.9 s). For typical workloads, the choice is about API style,
   not throughput.
 - **gRPC pulls ahead as concurrency rises**: at `max_concurrency=32`, gRPC
   finishes the same work 1.5–1.9× faster than REST.
-- **`max_concurrency=1` doesn't help gRPC**: v8 gRPC was already pipelining
-  requests over its HTTP/2 channel, so the new code path's win at gRPC comes
-  from explicit fan-out at higher concurrency, not from the new partial-success
-  machinery.
 
 Pick gRPC when:
 
@@ -310,6 +331,7 @@ with pc.index(name="product-search", grpc=True) as index:
 
 | Technique | Where it helps |
 |-----------|---------------|
+| [Right write path](#choosing-how-to-load-data) | Before any tuning: batched upsert, DataFrame, or server-side import |
 | HTTP keepalive (REST) / HTTP/2 (gRPC) | Reused TCP connections, lower per-call setup cost |
 | Reuse `Index` instance | Eliminate per-call TLS/connection overhead |
 | msgspec structs | Response deserialization, faster than Pydantic |

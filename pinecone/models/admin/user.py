@@ -14,11 +14,15 @@ from pinecone.models.admin.pagination import PaginationResponse
 class UserModel(StructDictMixin, Struct, kw_only=True):
     """Response model for a user who is a member of the organization.
 
-    Role bindings are not included; use the role binding operations with
-    ``principal_type="user"`` to see what a user can do.
+    What the user is allowed to do is not part of this model. Permissions come
+    only from role bindings, so read them through
+    :meth:`RoleBindings.list() <pinecone.admin.role_bindings.RoleBindings.list>` with
+    ``principal_type="user"`` and this ``id`` as ``principal_id``.
 
     Attributes:
-        id (str): Unique identifier (UUID) for the user.
+        id (str): Unique identifier (UUID) for the user. This is the
+            ``principal_id`` role-binding queries take, and it is not the ID of
+            the invite the user accepted.
         email (str): The user's email address.
         name (str | None): The user's display name, or ``None`` when the user
             has not set one. The server omits the field entirely in that case.
@@ -30,6 +34,10 @@ class UserModel(StructDictMixin, Struct, kw_only=True):
         'alice@example.com'
         >>> user.name is None
         True
+
+    .. seealso::
+       - :class:`~pinecone.models.admin.invite.InviteModel` — the same person
+         before they accepted, carrying a separate ID and a ``status``.
     """
 
     id: str
@@ -40,6 +48,11 @@ class UserModel(StructDictMixin, Struct, kw_only=True):
 class UserList(Struct, kw_only=True):
     """A page of users, plus the cursor for the next page.
 
+    One raw page of a user listing. Callers who reach users through
+    :meth:`Users.list() <pinecone.admin.users.Users.list>` get a
+    :class:`~pinecone.models.pagination.Paginator` instead, which follows these
+    cursors for them.
+
     Attributes:
         data (list[UserModel]): The users on this page.
         pagination (PaginationResponse | None): Cursor envelope for the next
@@ -47,7 +60,14 @@ class UserList(Struct, kw_only=True):
 
     Examples:
         >>> from pinecone.models.admin.user import UserList, UserModel
-        >>> users = UserList(data=[UserModel(id="u1", email="alice@example.com")])
+        >>> users = UserList(
+        ...     data=[
+        ...         UserModel(
+        ...             id="e2e92523-85dc-4142-b8c2-e681be8b78df",
+        ...             email="alice@example.com",
+        ...         )
+        ...     ]
+        ... )
         >>> len(users)
         1
         >>> users.has_more

@@ -12,12 +12,18 @@ from pinecone.models.assistant.file_model import AssistantFileModel
 
 
 class ChatUsage(StructDictMixin, Struct, kw_only=True):
-    """Token usage information for a chat request.
+    """Token counts the API reported for one assistant request.
+
+    Reached as ``usage`` on :class:`ChatResponse`,
+    :class:`ChatCompletionResponse`,
+    :class:`~pinecone.models.assistant.context.ContextResponse`,
+    :class:`~pinecone.models.assistant.evaluation.AlignmentResult`, and on the
+    closing chunk of a stream.
 
     Attributes:
-        prompt_tokens: Number of tokens in the prompt.
-        completion_tokens: Number of tokens in the completion.
-        total_tokens: Total number of tokens used.
+        prompt_tokens: Tokens counted in the prompt.
+        completion_tokens: Tokens counted in the generated answer.
+        total_tokens: Total the API reported for the request.
     """
 
     prompt_tokens: int
@@ -26,9 +32,15 @@ class ChatUsage(StructDictMixin, Struct, kw_only=True):
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ChatUsage:
-        """Construct a ``ChatUsage`` from a plain dict representation.
+        """Build a :class:`ChatUsage` from a plain dict.
 
-        Missing token count fields default to 0.
+        Args:
+            d: Mapping with any of ``prompt_tokens``, ``completion_tokens``,
+                and ``total_tokens``. A missing key becomes ``0`` rather than
+                raising, so a partial payload yields a partial count.
+
+        Returns:
+            :class:`ChatUsage` with the three counts filled in.
         """
         return cls(
             prompt_tokens=d.get("prompt_tokens", 0),
@@ -67,11 +79,15 @@ class ChatUsage(StructDictMixin, Struct, kw_only=True):
 
 
 class ChatHighlight(StructDictMixin, Struct, kw_only=True):
-    """A highlighted portion of a referenced document.
+    """The passage of a source document that a citation drew on.
+
+    Reached as ``reference.highlight``, and present only when the chat request
+    set ``include_highlights=True``. Render it to show the reader the source
+    text behind a citation without fetching the file.
 
     Attributes:
-        type: The type of highlight (e.g. ``"text"``).
-        content: The highlighted text content.
+        type: The kind of highlighted content (e.g. ``"text"``).
+        content: The highlighted passage, taken from the source document.
     """
 
     type: str
@@ -96,13 +112,21 @@ class ChatHighlight(StructDictMixin, Struct, kw_only=True):
 
 
 class ChatReference(StructDictMixin, Struct, kw_only=True):
-    """A single reference within a citation.
+    """One source document behind a citation.
+
+    Reached as an entry of ``citation.references``. These three fields are
+    what a RAG caller renders as a source link.
 
     Attributes:
-        file: The source file object with metadata.
-        pages: Optional list of page numbers in the source file.
-        highlight: Optional highlight from the referenced document,
-            or ``None`` when highlights are not requested.
+        file: The source file, as an
+            :class:`~pinecone.models.assistant.file_model.AssistantFileModel`
+            — ``file.name`` for a label, ``file.id`` to fetch it again, and
+            ``file.metadata`` for whatever you attached at upload.
+        pages: Page numbers within the source file, for paginated documents
+            such as PDFs. ``None`` for sources that have no pages.
+        highlight: The :class:`ChatHighlight` passage this reference drew on,
+            or ``None`` unless the chat request set
+            ``include_highlights=True``.
     """
 
     file: AssistantFileModel
@@ -147,11 +171,18 @@ class ChatReference(StructDictMixin, Struct, kw_only=True):
 
 
 class ChatCitation(StructDictMixin, Struct, kw_only=True):
-    """A citation linking a position in the response to source references.
+    """A point in the answer, tied to the documents that support it.
+
+    Reached as an entry of ``response.citations`` on a
+    :class:`ChatResponse`, or as ``chunk.citation`` on a
+    :class:`~pinecone.models.assistant.streaming.StreamCitationChunk`.
 
     Attributes:
-        position: The character position of the citation in the response content.
-        references: The list of references supporting this citation.
+        position: Character position in ``response.message.content`` that this
+            citation annotates. Insert a footnote marker there to render the
+            answer with inline sources.
+        references: The :class:`ChatReference` entries supporting the answer
+            at that position. Can hold more than one document.
     """
 
     position: int
@@ -194,11 +225,16 @@ class ChatCitation(StructDictMixin, Struct, kw_only=True):
 
 
 class ChatMessage(StructDictMixin, Struct, kw_only=True):
-    """A message in a chat conversation.
+    """The assistant's reply inside a :class:`ChatResponse`.
+
+    Reached as ``response.message``. To *send* a message, build a
+    :class:`~pinecone.models.assistant.message.Message` instead — this class
+    only comes back from the API.
 
     Attributes:
-        role: The role of the message author (e.g. ``"user"``, ``"assistant"``).
-        content: The text content of the message.
+        role: The role of the message author (e.g. ``"user"``,
+            ``"assistant"``).
+        content: The answer text. Citation positions index into this string.
     """
 
     role: str
@@ -225,30 +261,75 @@ class ChatMessage(StructDictMixin, Struct, kw_only=True):
 
 
 class ChatResponse(StructDictMixin, Struct, kw_only=True):
-    """Non-streaming response from the assistant chat endpoint.
+    """The generated answer to a chat request, with its citations.
+
+    Returned by :meth:`~pinecone.client.assistants.Assistants.chat` when
+    ``stream`` is left ``False``. The answer text is at
+    ``response.message.content``, and the sources come back as structured
+    objects rather than markers woven into that text — which is what a caller
+    needs to render source links. The full path is
+    ``response.citations[i].references[j].file.name``, with
+    ``citations[i].position`` saying where in the answer each citation belongs.
 
     Attributes:
-        id: Unique identifier for the chat response.
-        model: The model used to generate the response.
-        usage: Token usage statistics for the request.
-        message: The assistant's response message.
-        finish_reason: The reason the model stopped generating — one of
-            ``"stop"`` (the model finished), ``"length"`` (the token limit was
-            reached), ``"content_filter"`` (content filtering rules blocked the
-            output), ``"tool_calls"`` (a tool call was triggered), or the
-            literal string ``"null"``. The backend enum carries that fifth
-            ``null`` variant and serializes it as the JSON string ``"null"``,
-            not as JSON ``null``; the 2026-07 OAS ``x-enum`` omits it, which is
-            why this is typed ``str`` rather than a closed set.
-        citations: List of citations linking response text to source documents.
+        id: Identifier of this chat response.
+        model: Name of the model that generated the answer, which need not be
+            the name you requested.
+        usage: :class:`ChatUsage` token counts for the request.
+        message: The assistant's reply as a :class:`ChatMessage`; the text is
+            at ``message.content``.
+        finish_reason: Why generation stopped: ``"stop"`` (the model
+            finished), ``"length"`` (the token limit was reached),
+            ``"content_filter"`` (content filtering rules blocked the output),
+            or ``"tool_calls"`` (a tool call was triggered). The literal
+            string ``"null"`` also reaches callers, so treat this as an open
+            set of strings rather than switching exhaustively on the four
+            above.
+        citations: The :class:`ChatCitation` entries tying positions in
+            ``message.content`` to source documents. Empty when the answer
+            drew on no file.
         context_snippet_count: Number of retrieved context snippets that were
             provided to the model, or ``None`` if the server did not report it.
-            ``0`` means no relevant context was found for the query.
+            ``0`` means no relevant context was found for the query, which
+            explains an answer with no citations.
         content_filter_results: Safety classifications reported by the LLM
-            provider, or ``None`` when the provider returned none. The payload
-            carries a ``spec`` key naming the provider (e.g. ``"openai"``,
-            ``"gemini"``) and a ``results`` value whose structure is defined by
-            that provider, so it is left as a plain dict.
+            provider, or ``None`` when the provider returned none. Read
+            ``spec`` for the provider's name and ``results`` for a payload
+            whose shape that provider defines.
+
+    Examples:
+        The answer is one string, and each citation names a position in it
+        together with the documents backing the claim at that position:
+
+        >>> response = pc.assistants.chat(
+        ...     assistant_name="acme-support-bot",
+        ...     messages=[{"content": "Which regions support BYOC?"}],
+        ... )
+        >>> response.message.content
+        'BYOC is available in aws us-east-1.'
+        >>> citation = response.citations[0]
+        >>> citation.position
+        34
+        >>> citation.references[0].file.name
+        'q3-revenue-review.pdf'
+        >>> citation.references[0].pages
+        [3]
+        >>> citation.references[0].highlight is None
+        True
+
+        That last line is the default: pass ``include_highlights=True`` to
+        :meth:`~pinecone.client.assistants.Assistants.chat` to get the source
+        passage as well as the file name.
+
+    .. seealso::
+       - :class:`~pinecone.models.assistant.context.ContextResponse` — the
+         retrieved snippets with no answer generated over them, from
+         :meth:`~pinecone.client.assistants.Assistants.context`. Use that when
+         you want to run your own model over Pinecone's retrieval.
+       - :class:`ChatCompletionResponse` — the same answer in the
+         OpenAI-compatible shape, without structured citations.
+       - :class:`~pinecone.models.assistant.streaming.ChatStream` — the same
+         answer delivered as chunks, from ``chat(..., stream=True)``.
     """
 
     id: str
@@ -324,11 +405,15 @@ class ChatResponse(StructDictMixin, Struct, kw_only=True):
 
 
 class ChatCompletionMessage(StructDictMixin, Struct, kw_only=True):
-    """A message in a chat completion response.
+    """The answer message inside a chat completion choice.
+
+    Reached as ``response.choices[0].message``. Both fields are optional, so
+    guard on ``content`` before using it.
 
     Attributes:
-        role: The role of the message author, or ``None`` if not provided.
-        content: The text content of the message, or ``None`` if not provided.
+        role: The role of the message author, or ``None`` when the API did not
+            report one.
+        content: The answer text, or ``None`` when the choice carries none.
     """
 
     role: str | None = None
@@ -355,19 +440,21 @@ class ChatCompletionMessage(StructDictMixin, Struct, kw_only=True):
 
 
 class ChatCompletionChoice(StructDictMixin, Struct, kw_only=True):
-    """A single choice in a chat completion response.
+    """A single answer in a chat completion response.
+
+    Reached as ``response.choices[0]``.
 
     Attributes:
-        index: The index of this choice in the choices list.
-        message: The message content for this choice.
-        finish_reason: The reason the model stopped generating — one of
-            ``"stop"`` (the model finished), ``"length"`` (the token limit was
-            reached), ``"content_filter"`` (content filtering rules blocked the
-            output), ``"tool_calls"`` (a tool call was triggered), or the
-            literal string ``"null"``. The backend enum carries that fifth
-            ``null`` variant and serializes it as the JSON string ``"null"``,
-            not as JSON ``null``; the 2026-07 OAS ``x-enum`` omits it, which is
-            why this is typed ``str`` rather than a closed set.
+        index: Position of this choice in the response's ``choices`` list.
+        message: The :class:`ChatCompletionMessage` for this choice; the text
+            is at ``message.content``.
+        finish_reason: Why generation stopped: ``"stop"`` (the model
+            finished), ``"length"`` (the token limit was reached),
+            ``"content_filter"`` (content filtering rules blocked the output),
+            or ``"tool_calls"`` (a tool call was triggered). The literal
+            string ``"null"`` also reaches callers, so treat this as an open
+            set of strings rather than switching exhaustively on the four
+            above.
     """
 
     index: int
@@ -411,13 +498,46 @@ class ChatCompletionChoice(StructDictMixin, Struct, kw_only=True):
 
 
 class ChatCompletionResponse(StructDictMixin, Struct, kw_only=True):
-    """Non-streaming response from the OpenAI-compatible chat completion endpoint.
+    """The generated answer to a chat request, in OpenAI-compatible shape.
+
+    Returned by
+    :meth:`~pinecone.client.assistants.Assistants.chat_completions` when
+    ``stream`` is left ``False``. The answer text is nested at
+    ``response.choices[0].message.content``. There is no structured citation
+    list here; citations arrive woven into the answer text, so prefer
+    :class:`ChatResponse` unless you are pointing existing OpenAI client code
+    at Pinecone.
 
     Attributes:
-        id: Unique identifier for the chat completion.
-        model: The model used to generate the response.
-        usage: Token usage statistics for the request.
-        choices: List of completion choices.
+        id: Identifier of this completion.
+        model: Name of the model that generated the answer, which need not be
+            the name you requested.
+        usage: :class:`ChatUsage` token counts for the request.
+        choices: The :class:`ChatCompletionChoice` answers, normally one. Read
+            the text from ``choices[0].message.content``.
+
+    Examples:
+        The text is two levels down, under ``choices``, and there is no
+        ``citations`` attribute to read — that absence is the whole difference
+        from :class:`ChatResponse`:
+
+        >>> response = pc.assistants.chat_completions(
+        ...     assistant_name="acme-support-bot",
+        ...     messages=[{"content": "Which regions support BYOC?"}],
+        ... )
+        >>> response.choices[0].message.content
+        'BYOC is available in aws us-east-1.'
+        >>> response.choices[0].finish_reason
+        'stop'
+        >>> hasattr(response, "citations")
+        False
+
+    .. seealso::
+       - :class:`ChatResponse` — the Pinecone-native shape, whose
+         ``citations`` are objects you can render as source links.
+       - :class:`~pinecone.models.assistant.streaming.ChatCompletionStream` —
+         the same answer delivered as chunks, from
+         ``chat_completions(..., stream=True)``.
     """
 
     id: str

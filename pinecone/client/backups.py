@@ -22,22 +22,31 @@ logger = logging.getLogger(__name__)
 
 
 class Backups:
-    """Control-plane operations for Pinecone backups.
+    """Stored, point-in-time snapshots of a serverless or BYOC index.
 
-    Provides methods to create, list, describe, and delete backups.
+    A backup captures an index's records and schema so that a new index can
+    be created from it later with
+    :meth:`~pinecone.Pinecone.create_index_from_backup`. Backups are
+    identified by a ``backup_id`` of their own and outlive the index they
+    were taken from. Reached as ``pc.backups``; not constructed directly.
 
-    Args:
-        http (HTTPClient): HTTP client for making API requests.
+    Backups are the snapshot mechanism for serverless and BYOC indexes.
+    :class:`~pinecone.client.collections.Collections` is the pod-based
+    equivalent, and the two do not interchange: a pod-based index is
+    snapshotted into a collection, a serverless or BYOC index into a backup.
 
     Examples:
+        >>> from pinecone import Pinecone
+        >>> pc = Pinecone(api_key="your-api-key")
+        >>> page = pc.backups.list(limit=100)
+        >>> [b.backup_id for b in page]
+        ['bk-abc123', 'bk-def456']
 
-        .. code-block:: python
-
-            from pinecone import Pinecone
-
-            pc = Pinecone(api_key="your-api-key")
-            first_page = pc.backups.list(limit=100)
-            ids = [b.backup_id for b in first_page]
+    .. seealso::
+       - :meth:`~pinecone.client.indexes.Indexes.list_backups` — the
+         index-scoped listing, which walks every page for you.
+       - :doc:`/guides/error-handling` — the exceptions any of these methods
+         can raise, and which ones are worth retrying.
     """
 
     def __init__(self, http: HTTPClient) -> None:
@@ -57,10 +66,8 @@ class Backups:
     ) -> BackupModel:
         """Create a backup of an existing index.
 
-        A backup is a stored, point-in-time snapshot of an index's data and
-        schema. Restore one into a new index with
-        :meth:`Pinecone.create_index_from_backup`. Only serverless and BYOC
-        indexes can be backed up.
+        Only serverless and BYOC indexes can be backed up. The call returns as
+        soon as the snapshot is initiated, not when it is ready.
 
         Args:
             index_name (str): Name of the index to back up.
@@ -71,8 +78,9 @@ class Backups:
 
         Returns:
             A :class:`BackupModel` describing the new backup. The call
-            returns once the backup is initiated; check its ``status`` via
-            :meth:`describe` to see when it's ready.
+            returns once the backup is initiated, so ``status`` is
+            ``"Initializing"`` rather than ``"Ready"``; poll
+            :meth:`describe` to follow it.
 
         Raises:
             :exc:`PineconeValueError`: If *index_name* is empty.
@@ -80,16 +88,13 @@ class Backups:
                 include backups.
             :exc:`NotFoundError`: If *index_name* does not resolve to an
                 index in this project.
-            :exc:`ApiError`: If the API returns another error response, for
-                example because *index_name* names a pod-based index.
+            :exc:`ApiError`: If *index_name* names a pod-based index, which
+                is snapshotted into a collection rather than a backup.
 
         Examples:
-            Creating a backup is asynchronous. The call returns as soon as
-            the backup is initiated, so the model it hands back reports
-            ``"Initializing"`` until the snapshot is complete. Poll
-            :meth:`describe` until the status leaves ``"Initializing"``: a
-            backup that fails settles on ``"Failed"``, so waiting for
-            ``"Ready"`` specifically would never return.
+            Poll :meth:`describe` until the status *leaves*
+            ``"Initializing"``: a backup that fails settles on ``"Failed"``,
+            so waiting for ``"Ready"`` specifically would never return.
 
             >>> import time
             >>> from pinecone import Pinecone
@@ -113,6 +118,12 @@ class Backups:
             ... )
             >>> backup.name
             'daily-20240115'
+
+        .. seealso::
+           - :meth:`~pinecone.client.backup_schedules.BackupSchedules.create`
+             — a recurring cadence instead of this one-off snapshot.
+           - :meth:`~pinecone.Pinecone.create_index_from_backup` — restoring
+             a backup into a new index.
         """
         require_non_empty("index_name", index_name)
         body: dict[str, Any] = {}
@@ -134,26 +145,13 @@ class Backups:
         pagination_token: str | None = None,
         include_deleted: bool | None = None,
     ) -> BackupList:
-        """List backups.
+        """List one page of backups.
 
         When *index_name* is given, lists backups of that index only.
-        Otherwise lists every backup in the project.
-
-        .. versionchanged:: 10.0
-           Added *include_deleted*. :class:`BackupModel` now carries
-           :attr:`~pinecone.models.backups.model.BackupModel.source_index_deleted_at`
-           instead of ``dimension``/``metric``.
-
-        .. note::
-           If every index that ever used *index_name* has since been
-           deleted, listing without *include_deleted* raises
-           :exc:`NotFoundError` rather than returning an empty list. Pass
-           ``include_deleted=True`` to see backups of deleted indexes too.
-
-           Because paging walks a live result set rather than a fixed
-           snapshot, backups created or deleted between requests can shift
-           later pages. De-duplicate by ``backup_id`` rather than relying on
-           page order, and stop once ``pagination`` is ``None``.
+        Otherwise lists every backup in the project. One call returns one
+        page: iterating the result walks that page and stops rather than
+        following ``pagination`` on your behalf. Drive the token yourself to
+        walk the rest — see :doc:`/guides/pagination`.
 
         Args:
             index_name (str | None): Index name to scope the listing to, or
@@ -174,27 +172,27 @@ class Backups:
 
         Returns:
             A :class:`BackupList` supporting iteration, len(), and index access.
-            ``BackupList.pagination`` is ``None`` on the final page.
+            ``BackupList.pagination`` is ``None`` on the final page. Paging
+            walks a live result set rather than a fixed snapshot, so
+            de-duplicate by ``backup_id`` rather than relying on page order.
 
         Raises:
             :exc:`PineconeValueError`: If *include_deleted* is given without
                 *index_name*.
             :exc:`NotFoundError`: If *index_name* does not resolve to an
                 active index and *include_deleted* is not ``True``.
-            :exc:`ApiError`: If the API returns another error response.
 
         Examples:
-            One call returns one page. Iterating the result walks that page
-            and stops — it does not follow ``pagination`` on your behalf:
+            Passing *index_name* scopes the listing to one index:
 
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
-            >>> page = pc.backups.list(limit=100)
-            >>> [(b.backup_id, b.name) for b in page]
-            [('bk-abc123', 'daily-20240115'), ('bk-def456', 'daily-20240116')]
+            >>> for backup in pc.backups.list(index_name="product-search"):
+            ...     print(backup.name, backup.status)
+            daily-20240115 Ready
 
-            Walk the rest by driving the token yourself, consuming each page
-            before asking for the next one:
+            Walk the project-wide listing by driving the token yourself,
+            consuming each page before asking for the next one:
 
             >>> page = pc.backups.list(limit=100)
             >>> backups = list(page)
@@ -203,14 +201,6 @@ class Backups:
             ...     backups.extend(page)
             >>> [b.backup_id for b in backups]
             ['bk-abc123', 'bk-def456', 'bk-ghi789']
-
-            Passing *index_name* scopes the listing to one index.
-            :meth:`~pinecone.client.indexes.Indexes.list_backups` covers the
-            same ground with a paginator that walks every page for you:
-
-            >>> for backup in pc.backups.list(index_name="product-search"):
-            ...     print(backup.name, backup.status)
-            daily-20240115 Ready
 
             Backups outlive the index they were taken from, but an
             index-scoped listing resolves *index_name* against the active
@@ -222,6 +212,22 @@ class Backups:
             ... )
             >>> [b.backup_id for b in orphaned if b.source_index_deleted_at]
             ['bk-old111']
+
+        .. note::
+           If every index that ever used *index_name* has since been
+           deleted, listing without *include_deleted* raises
+           :exc:`NotFoundError` rather than returning an empty list. Pass
+           ``include_deleted=True`` to see backups of deleted indexes too.
+
+        .. seealso::
+           :meth:`~pinecone.client.indexes.Indexes.list_backups` — the same
+           index-scoped listing as a paginator that walks every page, instead
+           of one page plus a token.
+
+        .. versionchanged:: 10.0
+           Added *include_deleted*. :class:`BackupModel` now carries
+           :attr:`~pinecone.models.backups.model.BackupModel.source_index_deleted_at`
+           instead of ``dimension``/``metric``.
         """
         require_index_scope_for_include_deleted(index_name, include_deleted)
         params: dict[str, Any] = backup_list_params(
@@ -242,18 +248,20 @@ class Backups:
         return result
 
     def describe(self, *, backup_id: str) -> BackupModel:
-        """Get detailed information about a backup.
+        """Get the current state of one backup.
 
         Args:
             backup_id (str): The identifier of the backup to describe.
 
         Returns:
-            A :class:`BackupModel` with full backup details.
+            A :class:`BackupModel` whose ``status`` is ``"Initializing"``,
+            ``"Ready"``, or ``"Failed"``, alongside the ``source_index_name``
+            it was taken from, the captured ``schema``, and the
+            ``record_count`` and ``size_bytes`` of the snapshot.
 
         Raises:
             :exc:`PineconeValueError`: If *backup_id* is empty.
             :exc:`NotFoundError`: If the backup does not exist.
-            :exc:`ApiError`: If the API returns another error response.
 
         Examples:
             >>> from pinecone import Pinecone
@@ -263,6 +271,11 @@ class Backups:
             'Ready'
             >>> backup.source_index_name
             'product-search'
+
+        .. seealso::
+           :meth:`~pinecone.client.indexes.Indexes.describe_backup` — the
+           same call reached from the ``indexes`` namespace, taking the
+           backup id positionally.
         """
         require_non_empty("backup_id", backup_id)
         logger.info("Describing backup %r", backup_id)
@@ -278,12 +291,14 @@ class Backups:
             backup_id (str): The identifier of the backup.
 
         Returns:
-            A :class:`BackupModel` with full backup details.
+            A :class:`BackupModel` whose ``status`` is ``"Initializing"``,
+            ``"Ready"``, or ``"Failed"``, alongside the ``source_index_name``
+            it was taken from, the captured ``schema``, and the
+            ``record_count`` and ``size_bytes`` of the snapshot.
 
         Raises:
             :exc:`PineconeValueError`: If *backup_id* is empty.
             :exc:`NotFoundError`: If the backup does not exist.
-            :exc:`ApiError`: If the API returns another error response.
 
         Examples:
             >>> from pinecone import Pinecone
@@ -305,7 +320,6 @@ class Backups:
         Raises:
             :exc:`PineconeValueError`: If *backup_id* is empty.
             :exc:`NotFoundError`: If the backup does not exist.
-            :exc:`ApiError`: If the API returns another error response.
 
         Examples:
             Deleting a backup discards the snapshot only. The index it was

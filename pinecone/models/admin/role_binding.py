@@ -55,6 +55,11 @@ class RoleName(str, Enum):
     ``ProjectViewer``, ``ControlPlaneEditor``, ``ControlPlaneViewer``,
     ``DataPlaneEditor``, ``DataPlaneViewer``.
 
+    Membership in this enum only means the SDK will forward the value. Which of
+    these roles may be bound to which scope and principal type, and which the
+    organization's plan includes, is the server's decision and is reported as
+    :exc:`~pinecone.errors.exceptions.ForbiddenError` at bind time.
+
     Examples:
         >>> from pinecone.models.admin.role_binding import RoleName
         >>> RoleName.DATA_PLANE_EDITOR == "DataPlaneEditor"
@@ -94,13 +99,20 @@ class RoleBindingModel(StructDictMixin, Struct, kw_only=True):
     directly — they are ``str`` values.
 
     Attributes:
-        id (str): Unique identifier (UUID) for the role binding.
+        id (str): Unique identifier (UUID) for the role binding. This is what
+            :meth:`RoleBindings.delete()
+            <pinecone.admin.role_bindings.RoleBindings.delete>` takes — revoking a role is
+            addressed by the binding, never by the principal/scope/role triple.
         principal_type (str): One of the :class:`PrincipalType` values.
         principal_id (str): The principal's UUID.
         resource_type (str): One of the :class:`ResourceType` values.
         resource_id (str): The organization or project the binding is scoped to.
+            Always populated, including on organization-scoped bindings whose
+            create request omitted it.
         role (str): One of the :class:`RoleName` values.
         created_at (str): RFC 3339 timestamp for when the binding was created.
+            There is no updated timestamp: bindings are immutable, so a role
+            change is a create plus a delete rather than an edit.
 
     Examples:
         >>> from pinecone.models.admin.role_binding import RoleBindingModel, RoleName
@@ -145,9 +157,11 @@ class RoleBindingInput(StructDictMixin, Struct, kw_only=True, omit_defaults=True
             unset for ``organization`` scope.
 
     Raises:
-        :exc:`~pinecone.errors.PineconeValueError`: If ``resource_type`` or
-            ``role`` is not a recognized value, or if ``resource_type`` is
-            ``project`` and ``resource_id`` is missing or empty.
+        :exc:`~pinecone.errors.exceptions.PineconeValueError`: If
+            ``resource_type`` or ``role`` is not a recognized value, or if
+            ``resource_type`` is ``project`` and ``resource_id`` is missing or
+            empty. Raised at construction, so a malformed binding fails before
+            the call that would have sent it.
 
     Examples:
         >>> from pinecone.models.admin.role_binding import (
@@ -168,6 +182,15 @@ class RoleBindingInput(StructDictMixin, Struct, kw_only=True, omit_defaults=True
         ...     resource_id="a2f7dddb-1597-4eff-9f71-535fde243f58",
         ... ).resource_id
         'a2f7dddb-1597-4eff-9f71-535fde243f58'
+
+    .. seealso::
+       - :class:`RoleBindingModel` — what the server returns. This input type
+         names only the scope and the role; the response adds the binding's own
+         ``id`` and the principal.
+       - :meth:`RoleBindings.create()
+         <pinecone.admin.role_bindings.RoleBindings.create>` — grants a role to an
+         existing principal, taking the same fields as keyword arguments rather
+         than as this struct.
     """
 
     resource_type: str
@@ -189,6 +212,11 @@ class RoleBindingInput(StructDictMixin, Struct, kw_only=True, omit_defaults=True
 class RoleBindingList(Struct, kw_only=True):
     """A page of role bindings, plus the cursor for the next page.
 
+    One raw page of a role-binding listing. Callers who reach bindings through
+    :meth:`RoleBindings.list() <pinecone.admin.role_bindings.RoleBindings.list>` get a
+    :class:`~pinecone.models.pagination.Paginator` instead, which follows these
+    cursors for them.
+
     Attributes:
         data (list[RoleBindingModel]): The role bindings on this page.
         pagination (PaginationResponse | None): Cursor envelope for the next
@@ -199,11 +227,11 @@ class RoleBindingList(Struct, kw_only=True):
         >>> bindings = RoleBindingList(
         ...     data=[
         ...         RoleBindingModel(
-        ...             id="rb1",
+        ...             id="9a8e3528-b9c0-4358-84ce-84c28e91b566",
         ...             principal_type="user",
-        ...             principal_id="u1",
+        ...             principal_id="e2e92523-85dc-4142-b8c2-e681be8b78df",
         ...             resource_type="organization",
-        ...             resource_id="org-1",
+        ...             resource_id="4f6a1e0c-8f2b-4c1a-9d3e-1b2c3d4e5f60",
         ...             role="OrgMember",
         ...             created_at="2026-04-10T15:23:00Z",
         ...         )

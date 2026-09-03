@@ -20,20 +20,26 @@ logger = logging.getLogger(__name__)
 class Collections:
     """Control-plane operations for Pinecone collections.
 
-    Provides methods to create, list, describe, and delete collections.
+    A collection is a static, point-in-time copy of a pod-based index's vector data,
+    held outside the index. Reach it as ``pc.collections``; not constructed directly —
+    :class:`~pinecone.Pinecone` builds and caches its own instance on first access.
 
-    Args:
-        http (HTTPClient): HTTP client for making API requests.
+    Collections are the snapshot mechanism for pod-based indexes;
+    :class:`~pinecone.client.backups.Backups` is the one for serverless and BYOC
+    indexes. The difference that decides which you want is restore: a backup can be
+    restored into a new index with
+    :meth:`~pinecone.Pinecone.create_index_from_backup`, and a collection cannot be
+    restored at all.
 
     Examples:
+        >>> for col in pc.collections.list():
+        ...     print(col.name, col.status)
+        movie-embeddings-snapshot Ready
+        product-catalog-snapshot Initializing
 
-        .. code-block:: python
-
-            from pinecone import Pinecone
-
-            pc = Pinecone(api_key="your-api-key")
-            for col in pc.collections.list():
-                print(col.name, col.status)
+    .. seealso::
+       :class:`~pinecone.client.backups.Backups` — the equivalent for serverless and
+       BYOC indexes, and the only snapshot you can restore.
     """
 
     def __init__(self, http: HTTPClient) -> None:
@@ -53,18 +59,6 @@ class Collections:
         be ready. The call returns as soon as creation starts — it does not
         wait for the collection to become ready.
 
-        .. note::
-           The 2026-07 API has no path from a collection back to an index.
-           :meth:`Pinecone.indexes.create` rejects ``source_collection`` with
-           a :exc:`PineconeTypeError` in both spellings — as a top-level
-           keyword argument, and nested in a
-           :class:`~pinecone.models.indexes.specs.PodSpec` passed to the
-           deprecated ``spec=`` argument. The backend rejects the request
-           too, with ``400 Creating an index from collection or backup is
-           not yet supported``. Use
-           :meth:`Pinecone.create_index_from_backup` for the supported
-           restore path.
-
         Args:
             name (str): Name for the new collection. 1-45 characters,
                 lowercase alphanumeric and hyphens only, and can't start or
@@ -72,7 +66,8 @@ class Collections:
             source (str): Name of the pod-based index to copy.
 
         Returns:
-            A CollectionModel describing the created collection.
+            :class:`~pinecone.models.collections.model.CollectionModel` whose
+            ``status`` is ``"Initializing"`` until the snapshot has been built.
 
         Raises:
             PineconeValueError: If *name* or *source* is empty, or *name*
@@ -100,6 +95,23 @@ class Collections:
             ...     col = pc.collections.describe(col.name)
             >>> col.status
             'Ready'
+
+        .. note::
+           There is no path from a collection back to an index.
+           :meth:`Indexes.create() <pinecone.client.indexes.Indexes.create>` rejects
+           ``source_collection``
+           with a :exc:`PineconeTypeError` in both spellings — as a top-level keyword
+           argument, and nested in a
+           :class:`~pinecone.models.indexes.specs.PodSpec` passed to the
+           deprecated ``spec=`` argument. If you need a snapshot you can
+           restore, back up a serverless index with
+           :meth:`Backups.create() <pinecone.client.backups.Backups.create>` and restore it with
+           :meth:`~pinecone.Pinecone.create_index_from_backup`.
+
+        .. seealso::
+           :meth:`Backups.create() <pinecone.client.backups.Backups.create>` — the serverless
+           equivalent,
+           whose snapshot can be restored into a new index.
         """
         require_valid_resource_name("name", name)
         require_non_empty("source", source)
@@ -116,8 +128,8 @@ class Collections:
         back at once.
 
         Returns:
-            A CollectionList supporting iteration, len(), index access,
-            and a names() convenience method.
+            :class:`~pinecone.models.collections.list.CollectionList`, which supports
+            iteration, ``len()``, index access, and a ``names()`` convenience method.
 
         Examples:
             >>> collections = pc.collections.list()
@@ -127,6 +139,11 @@ class Collections:
             ...     print(col.name, col.status)
             movie-embeddings-snapshot Ready
             product-catalog-snapshot Initializing
+
+        .. seealso::
+           :meth:`Backups.list() <pinecone.client.backups.Backups.list>` — lists snapshots of
+           serverless
+           and BYOC indexes, and unlike this one is paginated.
         """
         logger.info("Listing collections")
         response = self._http.get("/collections")
@@ -141,8 +158,9 @@ class Collections:
             name (str): Name of the collection to describe.
 
         Returns:
-            A CollectionModel with the collection's name, status, size,
-            dimension, vector_count, and environment.
+            :class:`~pinecone.models.collections.model.CollectionModel` with ``name``,
+            ``status``, ``environment``, ``size`` (bytes on disk), ``dimension``, and
+            ``vector_count``.
 
         Raises:
             PineconeValueError: If *name* is empty.
@@ -157,6 +175,10 @@ class Collections:
             >>> desc = pc.collections.describe("movie-embeddings-snapshot")
             >>> print(desc.status, desc.dimension, desc.vector_count, desc.size)
             Ready 1024 99 3126700
+
+        .. seealso::
+           :meth:`Backups.describe() <pinecone.client.backups.Backups.describe>` — the serverless
+           equivalent, which reports ``record_count`` and ``size_bytes`` instead.
         """
         require_non_empty("name", name)
         logger.info("Describing collection %r", name)
@@ -182,6 +204,11 @@ class Collections:
 
         Examples:
             >>> pc.collections.delete("movie-embeddings-snapshot")
+
+        .. seealso::
+           :meth:`Backups.delete() <pinecone.client.backups.Backups.delete>` — the serverless
+           equivalent,
+           which takes a ``backup_id`` rather than a name.
         """
         require_non_empty("name", name)
         logger.info("Deleting collection %r", name)

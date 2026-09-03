@@ -1,4 +1,12 @@
-"""Request-side spec structs for index creation."""
+"""The ``spec=`` objects that 9.x-style index creation takes.
+
+:class:`ServerlessSpec`, :class:`PodSpec` and :class:`ByocSpec` are deprecated
+sugar: the SDK translates each into the ``deployment=`` (and where present the
+``read_capacity=``) that :meth:`~pinecone.client.indexes.Indexes.create` now
+takes directly. :class:`EmbedConfig` is not deprecated — it is one of the
+shapes :meth:`~pinecone.client.indexes.Indexes.create_for_model` accepts for
+``embed=``.
+"""
 
 from __future__ import annotations
 
@@ -10,17 +18,30 @@ from pinecone.models._mixin import StructDictMixin
 
 
 class EmbedConfig(Struct, frozen=True, kw_only=True):
-    """Configuration for integrated (model-backed) embedding.
+    """Which model embeds your text, and which field it reads.
+
+    One of the shapes :meth:`~pinecone.client.indexes.Indexes.create_for_model`
+    accepts for ``embed=`` — a plain dict with the same keys works too. The
+    field it names comes back on the created index as a
+    :class:`~pinecone.models.indexes.schema.SemanticTextField`, and the model
+    cannot be changed afterwards.
 
     Attributes:
-        model: Name of the embedding model (e.g. ``"multilingual-e5-large"``).
-        field_map: Maps document field names to embedding inputs
-            (e.g. ``{"text": "my_text_field"}``).
-        dimension: Optional dimension hint or override for the embedding model.
-            When absent the backend infers the dimension from the model.
-        metric: Similarity metric override, or ``None`` to use the model default.
-        read_parameters: Optional read-time model parameters.
-        write_parameters: Optional write-time model parameters.
+        model: Embedding model to use, e.g. ``"multilingual-e5-large"``. See
+            :class:`~pinecone.models.enums.EmbedModel`.
+        field_map: Which document field holds the text to embed, as
+            ``{"text": "<your field name>"}`` — e.g.
+            ``{"text": "chunk_text"}``.
+        dimension: Output width to ask the model for, when it supports more
+            than one. ``None`` takes the model's own dimension. Note that
+            :meth:`to_dict` omits this field; ``create_for_model`` reads the
+            attribute directly, so the create path is unaffected, but a dict
+            you build with :meth:`to_dict` loses it.
+        metric: How similarity is scored, or ``None`` for the model default.
+        read_parameters: Extra arguments passed to the model when embedding a
+            query, e.g. ``{"input_type": "query"}``.
+        write_parameters: Extra arguments passed to the model when embedding
+            an upsert, e.g. ``{"input_type": "passage"}``.
     """
 
     model: str
@@ -31,9 +52,13 @@ class EmbedConfig(Struct, frozen=True, kw_only=True):
     write_parameters: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize to a plain dictionary.
+        """Serialize to a plain dict of ``model``, ``field_map`` and metric.
 
-        Read and write parameters default to empty dicts when not set.
+        ``read_parameters`` and ``write_parameters`` come out as empty dicts
+        rather than being omitted when they were never set, and ``dimension``
+        is left out entirely — pass the :class:`EmbedConfig` itself to
+        ``create_for_model``, which reads the attribute, rather than the
+        output of this method.
         """
         result: dict[str, Any] = {
             "model": self.model.value if hasattr(self.model, "value") else self.model,
@@ -49,16 +74,21 @@ class EmbedConfig(Struct, frozen=True, kw_only=True):
 
 
 class IntegratedSpec(StructDictMixin, Struct, frozen=True, kw_only=True):  # type: ignore[misc]
-    """Integrated (model-backed) index deployment spec.
+    """Cloud, region and embedding config bundled into one 9.x-style spec.
 
-    Wraps cloud/region and embed config into a single convenience
-    object. On the wire the ``embed`` config is sent at the top level
-    alongside the serverless spec — serialization handles the split.
+    Unlike its sibling specs this one has no ``deployment=`` translation, so
+    passing it as ``spec=`` to :meth:`~pinecone.client.indexes.Indexes.create`
+    raises :exc:`~pinecone.errors.exceptions.PineconeTypeError` rather than being rewritten. Call
+    :meth:`~pinecone.client.indexes.Indexes.create_for_model` with ``cloud``,
+    ``region`` and ``embed`` instead — the same three values, as arguments.
 
     Attributes:
-        cloud: Cloud provider (e.g. ``"aws"``, ``"gcp"``, ``"azure"``).
-        region: Cloud region (e.g. ``"us-east-1"``).
-        embed: Embedding model configuration.
+        cloud: Public cloud to run in, e.g. ``"aws"``.
+        region: Region within that cloud, e.g. ``"us-east-1"``.
+        embed: An :class:`EmbedConfig`.
+
+    .. deprecated:: 10.0
+       Pass ``cloud=``, ``region=`` and ``embed=`` to ``create_for_model()``.
     """
 
     cloud: str
@@ -67,15 +97,27 @@ class IntegratedSpec(StructDictMixin, Struct, frozen=True, kw_only=True):  # typ
 
 
 class ServerlessSpec(StructDictMixin, Struct, frozen=True, kw_only=True, omit_defaults=True):  # type: ignore[misc]
-    """Serverless index deployment spec.
+    """A serverless index, described the 9.x way.
+
+    Deprecated sugar for :meth:`~pinecone.client.indexes.Indexes.create`'s
+    ``spec=``: the SDK turns it into a managed ``deployment=``, lifting any
+    ``read_capacity`` out to the top level as it goes. ``spec=`` and
+    ``deployment=`` are mutually exclusive.
 
     Attributes:
-        cloud: Cloud provider (e.g. ``"aws"``, ``"gcp"``, ``"azure"``).
-        region: Cloud region (e.g. ``"us-east-1"``, ``"eu-west-1"``).
-        read_capacity: Optional read capacity configuration (OnDemand or Dedicated),
-            or ``None`` to use the default.
-        schema: Optional metadata schema configuration mapping field names to their
-            config, or ``None`` for no schema.
+        cloud: Public cloud to run in, e.g. ``"aws"``.
+        region: Region within that cloud, e.g. ``"us-east-1"``.
+        read_capacity: Read capacity configuration, or ``None`` for the
+            default.
+        schema: Not translated. A schema set here does not reach the create
+            request, and a ``create()`` call that relied on it fails with
+            :exc:`~pinecone.errors.exceptions.PineconeValueError` saying
+            ``schema is required`` — which reads as though you passed none.
+            Pass ``schema=`` to ``create()`` directly.
+
+    .. deprecated:: 10.0
+       Pass ``deployment={"deployment_type": "managed", "cloud": ...,
+       "region": ...}`` instead.
     """
 
     cloud: str
@@ -84,7 +126,7 @@ class ServerlessSpec(StructDictMixin, Struct, frozen=True, kw_only=True, omit_de
     schema: dict[str, Any] | None = None
 
     def asdict(self) -> dict[str, Any]:
-        """Return a dict with spec data nested under a ``"serverless"`` key."""
+        """Return the 9.x request shape, ``{"serverless": {...}}``."""
         body: dict[str, Any] = {"cloud": self.cloud, "region": self.region}
         if self.read_capacity is not None:
             body["read_capacity"] = self.read_capacity
@@ -94,18 +136,39 @@ class ServerlessSpec(StructDictMixin, Struct, frozen=True, kw_only=True, omit_de
 
 
 class PodSpec(StructDictMixin, Struct, frozen=True, kw_only=True):  # type: ignore[misc]
-    """Pod-based index deployment spec.
+    """A pod-based index, described the 9.x way.
+
+    Deprecated sugar for :meth:`~pinecone.client.indexes.Indexes.create`'s
+    ``spec=``, translated into a pod ``deployment=``. ``spec=`` and
+    ``deployment=`` are mutually exclusive. The struct still carries every
+    9.x field so an old spec object survives a round trip, but two of them
+    have nowhere to go in a create request and are rejected rather than
+    dropped.
 
     Attributes:
-        environment: Deployment environment (e.g. ``"us-east-1-aws"``).
-        pod_type: Pod type and size (default: ``"p1.x1"``).
-        replicas: Number of replicas (default: 1).
-        shards: Number of shards (default: 1).
-        pods: Total number of pods (default: 1).
-        metadata_config: Configuration for metadata indexing, or ``None``
-            to use the default configuration.
-        source_collection: Name of a collection to create the index from,
-            or ``None`` if creating an empty index.
+        environment: The environment hosting the index, e.g.
+            ``"us-east-1-aws"``.
+        pod_type: Hardware family and size. Defaults to ``"p1.x1"``.
+        replicas: How many copies of the index to run. Defaults to 1.
+        shards: How many pods to split the data across. Defaults to 1.
+        pods: Total pod count, kept only for 9.x compatibility. Leave it at
+            its default of 1 or set it to exactly ``replicas * shards``;
+            anything else raises
+            :exc:`~pinecone.errors.exceptions.PineconeValueError`, because
+            there is no independent pod count to translate it into.
+        metadata_config: Rejected with
+            :exc:`~pinecone.errors.exceptions.PineconeTypeError` when set —
+            metadata fields are indexed automatically at upsert, so there is
+            nothing to declare at create time.
+        source_collection: Rejected with
+            :exc:`~pinecone.errors.exceptions.PineconeTypeError` when set.
+            Use :meth:`Pinecone.create_index_from_backup
+            <pinecone.Pinecone.create_index_from_backup>` to restore a backup
+            instead.
+
+    .. deprecated:: 10.0
+       Pass ``deployment={"deployment_type": "pod", "environment": ...,
+       "pod_type": ..., "replicas": ..., "shards": ...}`` instead.
     """
 
     environment: str
@@ -117,7 +180,7 @@ class PodSpec(StructDictMixin, Struct, frozen=True, kw_only=True):  # type: igno
     source_collection: str | None = None
 
     def asdict(self) -> dict[str, Any]:
-        """Return a dict with spec data nested under a ``"pod"`` key."""
+        """Return the 9.x request shape, ``{"pod": {...}}``."""
         body: dict[str, Any] = {
             "environment": self.environment,
             "pod_type": self.pod_type,
@@ -133,12 +196,24 @@ class PodSpec(StructDictMixin, Struct, frozen=True, kw_only=True):  # type: igno
 
 
 class ByocSpec(StructDictMixin, Struct, frozen=True, kw_only=True, omit_defaults=True):  # type: ignore[misc]
-    """Bring-your-own-cloud index deployment spec.
+    """A BYOC index, described the 9.x way.
+
+    Deprecated sugar for :meth:`~pinecone.client.indexes.Indexes.create`'s
+    ``spec=``, translated into a BYOC ``deployment=`` with any
+    ``read_capacity`` lifted to the top level. ``spec=`` and ``deployment=``
+    are mutually exclusive.
 
     Attributes:
-        environment: BYOC environment identifier (e.g. ``"aws-us-east-1-b921"``).
-        read_capacity: Optional read capacity configuration (OnDemand or Dedicated).
-        schema: Optional metadata schema configuration.
+        environment: The BYOC environment to run in, e.g.
+            ``"aws-us-east-1-b921"``.
+        read_capacity: Read capacity configuration, or ``None`` for the
+            default.
+        schema: Not translated, exactly as on :class:`ServerlessSpec`. Pass
+            ``schema=`` to ``create()`` directly.
+
+    .. deprecated:: 10.0
+       Pass ``deployment={"deployment_type": "byoc", "environment": ...}``
+       instead.
     """
 
     environment: str
@@ -146,7 +221,7 @@ class ByocSpec(StructDictMixin, Struct, frozen=True, kw_only=True, omit_defaults
     schema: dict[str, Any] | None = None
 
     def asdict(self) -> dict[str, Any]:
-        """Return a dict with spec data nested under a ``"byoc"`` key."""
+        """Return the 9.x request shape, ``{"byoc": {...}}``."""
         body: dict[str, Any] = {"environment": self.environment}
         if self.read_capacity is not None:
             body["read_capacity"] = self.read_capacity

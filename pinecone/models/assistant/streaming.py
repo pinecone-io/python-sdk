@@ -1,7 +1,10 @@
 """Streaming chunk models for the Assistant API.
 
-Models for chat streaming (Pinecone-native format with type-based dispatch)
-and chat completion streaming (OpenAI-compatible format).
+Two stream shapes live here. The Pinecone-native chat stream yields the four
+:data:`ChatStreamChunk` variants, dispatched on a ``type`` tag, and only
+:class:`StreamContentChunk` carries response text. The OpenAI-compatible
+completion stream yields :class:`ChatCompletionStreamChunk`, which carries its
+text nested under ``choices``.
 """
 
 from __future__ import annotations
@@ -19,23 +22,30 @@ from pinecone.models.assistant.chat import ChatCitation, ChatUsage
 class StreamMessageStart(
     StructDictMixin, Struct, kw_only=True, tag="message_start", tag_field="type"
 ):
-    """First chunk in a chat stream, containing the model and role.
+    """The chunk that opens a chat stream, carrying no response text.
+
+    Arrives once, before any content. Carries nothing you have to render, but
+    ``context_snippet_count`` lets you detect "no relevant context found"
+    before the answer starts arriving.
 
     Attributes:
         type: Discriminator value ``"message_start"``.
-        model: The model used to generate the response.
+        model: Name of the model that generated the answer, which need not be
+            the name you requested.
         role: The role of the message author (e.g. ``"assistant"``).
-        id: Unique identifier for this chat response, shared by every chunk in
-            the stream, or ``None`` if the server did not report it.
+        id: Identifier of the chat response, the same on every chunk of the
+            stream, or ``None`` if the server did not report it here.
         context_snippet_count: Number of retrieved context snippets that were
             provided to the model, or ``None`` if the server did not report it.
-            Arrives before any content, so a value of ``0`` lets callers react
-            to "no relevant context found" without waiting for the full stream.
+            ``0`` means no relevant context was found for the query.
         content_filter_results: Safety classifications reported by the LLM
-            provider, or ``None`` when the provider returned none. The payload
-            carries a ``spec`` key naming the provider (e.g. ``"openai"``,
-            ``"gemini"``) and a ``results`` value whose structure is defined by
-            that provider, so it is left as a plain dict.
+            provider, or ``None`` when the provider returned none. Read
+            ``spec`` for the provider's name and ``results`` for a payload
+            whose shape that provider defines.
+
+    .. seealso::
+       :data:`ChatStreamChunk` — the four chunk types and the loop that
+       consumes them.
     """
 
     model: str
@@ -102,8 +112,12 @@ class StreamMessageStart(
 class StreamContentDelta(StructDictMixin, Struct, kw_only=True):
     """The delta payload within a content chunk.
 
+    Reached as ``chunk.delta`` on a :class:`StreamContentChunk`. This is where
+    the response text lives in a Pinecone-native chat stream.
+
     Attributes:
-        content: The text fragment for this chunk.
+        content: The text fragment for this chunk. Concatenate the fragments
+            in arrival order to rebuild the full answer.
     """
 
     content: str
@@ -131,18 +145,28 @@ class StreamContentDelta(StructDictMixin, Struct, kw_only=True):
 class StreamContentChunk(
     StructDictMixin, Struct, kw_only=True, tag="content_chunk", tag_field="type"
 ):
-    """A content chunk containing a text fragment in a delta object.
+    """The only chunk type that carries response text, at ``delta.content``.
+
+    Arrives many times per response, each with one fragment of the answer.
+    A caller that renders the answer as it streams needs this chunk and
+    nothing else.
 
     Attributes:
         type: Discriminator value ``"content_chunk"``.
-        id: Unique identifier for this chunk.
-        delta: The delta object containing the text fragment.
-        model: The model used to generate this response, or ``None`` if not provided.
+        id: Identifier of the chat response, the same on every chunk of the
+            stream.
+        delta: The :class:`StreamContentDelta` holding this fragment; the text
+            is at ``delta.content``.
+        model: Name of the model that generated the answer, or ``None`` if the
+            server did not repeat it on this chunk.
         content_filter_results: Safety classifications reported by the LLM
             provider for this fragment, or ``None`` when the provider returned
-            none. The payload carries a ``spec`` key naming the provider (e.g.
-            ``"openai"``, ``"gemini"``) and a ``results`` value whose structure
-            is defined by that provider, so it is left as a plain dict.
+            none. Read ``spec`` for the provider's name and ``results`` for a
+            payload whose shape that provider defines.
+
+    .. seealso::
+       :data:`ChatStreamChunk` — the four chunk types and the loop that
+       consumes them.
     """
 
     id: str
@@ -194,13 +218,29 @@ class StreamContentChunk(
 
 
 class StreamCitationChunk(StructDictMixin, Struct, kw_only=True, tag="citation", tag_field="type"):
-    """A citation chunk linking response text to source references.
+    """The chunk that links a position in the answer to its source documents.
+
+    Arrives zero or more times, alongside the content chunks. This is the
+    chunk a RAG caller needs to render sources: ``chunk.citation.position`` is
+    the character position in the response text the citation annotates, and
+    each entry of ``chunk.citation.references`` exposes ``reference.file``
+    (an :class:`~pinecone.models.assistant.file_model.AssistantFileModel`,
+    so ``reference.file.name`` and ``reference.file.metadata``),
+    ``reference.pages``, and ``reference.highlight``. The highlight is
+    ``None`` unless the chat request set ``include_highlights=True``.
 
     Attributes:
         type: Discriminator value ``"citation"``.
-        id: Unique identifier for this chunk.
-        citation: The citation data with position and references.
-        model: The model used to generate this response, or ``None`` if not provided.
+        id: Identifier of the chat response, the same on every chunk of the
+            stream.
+        citation: The :class:`~pinecone.models.assistant.chat.ChatCitation`
+            holding ``position`` and ``references``.
+        model: Name of the model that generated the answer, or ``None`` if the
+            server did not repeat it on this chunk.
+
+    .. seealso::
+       :data:`ChatStreamChunk` — the four chunk types and the loop that
+       consumes them.
     """
 
     id: str
@@ -244,27 +284,35 @@ class StreamCitationChunk(StructDictMixin, Struct, kw_only=True, tag="citation",
 
 
 class StreamMessageEnd(StructDictMixin, Struct, kw_only=True, tag="message_end", tag_field="type"):
-    """Final chunk in a chat stream, containing token usage statistics.
+    """The chunk that closes a chat stream, carrying usage and finish reason.
+
+    Arrives once, last, and carries no response text. Read ``finish_reason``
+    here to tell a complete answer from one the model cut short.
 
     Attributes:
         type: Discriminator value ``"message_end"``.
-        id: Unique identifier for this chunk.
-        usage: Token usage statistics for the request.
-        model: The model used to generate this response, or ``None`` if not provided.
-        finish_reason: The reason generation stopped — one of ``"stop"`` (the
-            model finished), ``"length"`` (the token limit was reached),
+        id: Identifier of the chat response, the same on every chunk of the
+            stream.
+        usage: :class:`~pinecone.models.assistant.chat.ChatUsage` token counts
+            for the whole request, or ``None`` if the server did not report
+            them.
+        model: Name of the model that generated the answer, or ``None`` if the
+            server did not repeat it on this chunk.
+        finish_reason: Why generation stopped: ``"stop"`` (the model
+            finished), ``"length"`` (the token limit was reached),
             ``"content_filter"`` (content filtering rules blocked the output),
-            ``"tool_calls"`` (a tool call was triggered), or the literal string
-            ``"null"``. The backend enum carries that fifth ``null`` variant
-            and serializes it as the JSON string ``"null"``, not as JSON
-            ``null``; the 2026-07 OAS ``x-enum`` omits it. Python ``None`` is
-            distinct, and only appears for payloads recorded before the field
-            was documented.
+            or ``"tool_calls"`` (a tool call was triggered). The literal
+            string ``"null"`` also reaches callers and is a different value
+            from Python ``None``, so treat this as an open set of strings
+            rather than switching exhaustively on the four above.
         content_filter_results: Safety classifications reported by the LLM
-            provider, or ``None`` when the provider returned none. The payload
-            carries a ``spec`` key naming the provider (e.g. ``"openai"``,
-            ``"gemini"``) and a ``results`` value whose structure is defined by
-            that provider, so it is left as a plain dict.
+            provider, or ``None`` when the provider returned none. Read
+            ``spec`` for the provider's name and ``results`` for a payload
+            whose shape that provider defines.
+
+    .. seealso::
+       :data:`ChatStreamChunk` — the four chunk types and the loop that
+       consumes them.
     """
 
     id: str
@@ -332,43 +380,106 @@ class StreamMessageEnd(StructDictMixin, Struct, kw_only=True, tag="message_end",
 ChatStreamChunk: TypeAlias = (
     StreamMessageStart | StreamContentChunk | StreamCitationChunk | StreamMessageEnd
 )
-"""Union of all Pinecone-native chat streaming chunk types."""
+"""One chunk of a Pinecone-native chat stream, tagged by its ``type`` field.
+
+Iterating a :class:`ChatStream` yields these four classes, and branching on
+which one arrived is the whole contract. Each also exposes its tag as
+``chunk.type``, so a caller can dispatch on ``isinstance`` or on the string.
+
+:class:`StreamMessageStart` (``type == "message_start"``)
+    Arrives once, first. No response text. ``model``, ``role``, and
+    ``context_snippet_count`` — a ``0`` there means nothing relevant was
+    retrieved, which you learn before the answer starts.
+
+:class:`StreamContentChunk` (``type == "content_chunk"``)
+    Arrives many times, and is **the only chunk carrying response text**, at
+    ``chunk.delta.content``. Concatenate the fragments in arrival order.
+
+:class:`StreamCitationChunk` (``type == "citation"``)
+    Arrives zero or more times, alongside the content chunks.
+    ``chunk.citation.position`` is a character position in the response text,
+    and each of ``chunk.citation.references`` has ``reference.file.name``,
+    ``reference.pages``, and ``reference.highlight``.
+
+:class:`StreamMessageEnd` (``type == "message_end"``)
+    Arrives once, last. No response text. ``usage`` token counts and
+    ``finish_reason``.
+
+Examples:
+    .. code-block:: python
+
+        from pinecone import (
+            Pinecone,
+            StreamCitationChunk,
+            StreamContentChunk,
+            StreamMessageEnd,
+            StreamMessageStart,
+        )
+
+        pc = Pinecone(api_key="your-api-key")
+        stream = pc.assistants.chat(
+            assistant_name="acme-support-bot",
+            messages=[{"content": "Which regions support BYOC?"}],
+            stream=True,
+        )
+
+        answer: list[str] = []
+        sources: list[str] = []
+        for chunk in stream:
+            if isinstance(chunk, StreamMessageStart):
+                if chunk.context_snippet_count == 0:
+                    print("no relevant context was retrieved")
+            elif isinstance(chunk, StreamContentChunk):
+                answer.append(chunk.delta.content)
+                print(chunk.delta.content, end="", flush=True)
+            elif isinstance(chunk, StreamCitationChunk):
+                for reference in chunk.citation.references:
+                    sources.append(reference.file.name)
+            elif isinstance(chunk, StreamMessageEnd):
+                print(f"\\nstopped because: {chunk.finish_reason}")
+
+        print("".join(answer), sources)
+
+    Use :meth:`ChatStream.text` instead when you only want the text and no
+    citations.
+
+.. seealso::
+   :class:`ChatCompletionStreamChunk` — the chunk type of the
+   OpenAI-compatible stream, whose text is nested under ``choices`` and whose
+   citations are woven into the text rather than delivered as objects.
+"""
 
 
 class ChatStream:
-    """Wraps a Pinecone-native streaming response for convenient text access.
+    """A Pinecone-native chat stream, returned by ``chat(..., stream=True)``.
 
-    Iterating over this object yields the full :class:`ChatStreamChunk` sequence,
-    preserving the existing typed-chunk contract for callers that need it.
-    :meth:`text` and :meth:`collect` give direct access to text content without
-    manual type dispatch.
-
-    The stream is single-pass: iterating, calling :meth:`text`, or calling
-    :meth:`collect` all consume the same underlying iterator.
+    Iterating it yields the :data:`ChatStreamChunk` variants, which is the
+    only way to reach citations and token usage. :meth:`text` and
+    :meth:`collect` skip the dispatch and hand you text alone. The stream is
+    single-pass: iterating, :meth:`text`, and :meth:`collect` all consume the
+    same underlying iterator, so pick one.
 
     Examples:
         .. code-block:: python
 
             from pinecone import Pinecone
+
             pc = Pinecone(api_key="your-api-key")
             stream = pc.assistants.chat(
                 assistant_name="acme-support-bot",
                 messages=[{"content": "What can you help me with?"}],
                 stream=True,
             )
-            for text in stream.text():
-                print(text, end="", flush=True)
+            for fragment in stream.text():
+                print(fragment, end="", flush=True)
 
-        Use :meth:`collect` to drain the stream and return the full content as a single string:
-
-        .. code-block:: python
-
-            stream = pc.assistants.chat(
-                assistant_name="acme-support-bot",
-                messages=[{"content": "Summarize your capabilities."}],
-                stream=True,
-            )
-            full_content = stream.collect()
+    .. seealso::
+       - :data:`ChatStreamChunk` — the four chunk types, and the loop to write
+         when you need citations rather than text alone.
+       - :class:`ChatCompletionStream` — the same request in the
+         OpenAI-compatible shape, from
+         :meth:`~pinecone.client.assistants.Assistants.chat_completions`.
+       - :class:`AsyncChatStream` — the ``AsyncPinecone`` equivalent.
     """
 
     def __init__(self, stream: Iterator[ChatStreamChunk]) -> None:
@@ -397,47 +508,58 @@ class ChatStream:
         return self._stream
 
     def text(self) -> Iterator[str]:
-        """Yield text fragments, skipping start/citation/end chunks.
+        """Yield only the response text, dropping every non-content chunk.
 
         Returns:
-            Iterator of text fragment strings. Each fragment is a partial
-            response as it arrives from the server.
+            Iterator over ``delta.content`` of each
+            :class:`StreamContentChunk`, in arrival order. The start,
+            citation and end chunks are discarded, so citations and token
+            usage are not reachable through this method — iterate the stream
+            itself for those.
 
         Examples:
             .. code-block:: python
 
-                from pinecone import Pinecone
-                pc = Pinecone(api_key="your-api-key")
                 stream = pc.assistants.chat(
                     assistant_name="acme-support-bot",
                     messages=[{"content": "Explain vector databases in one sentence."}],
                     stream=True,
                 )
-                for chunk_text in stream.text():
-                    print(chunk_text, end="", flush=True)
+                for fragment in stream.text():
+                    print(fragment, end="", flush=True)
+
+        .. seealso::
+           :meth:`collect` — the same fragments already joined into one
+           string, for when you do not need to render as they arrive.
         """
         for chunk in self._stream:
             if isinstance(chunk, StreamContentChunk):
                 yield chunk.delta.content
 
     def collect(self) -> str:
-        """Drain the stream and return all content fragments concatenated.
+        """Drain the whole stream and return the answer as one string.
+
+        Blocks until the server closes the stream, so nothing is rendered
+        while the model is still generating.
 
         Returns:
-            The complete response as a single string.
+            Every :class:`StreamContentChunk` fragment joined in arrival
+            order. Citations and token usage are discarded along with the
+            other chunk types — iterate the stream itself for those.
 
         Examples:
             .. code-block:: python
 
-                from pinecone import Pinecone
-                pc = Pinecone(api_key="your-api-key")
                 stream = pc.assistants.chat(
                     assistant_name="acme-support-bot",
                     messages=[{"content": "Explain vector databases in one sentence."}],
                     stream=True,
                 )
-                full = stream.collect()
-                print(full)
+                print(stream.collect())
+
+        .. seealso::
+           :meth:`text` — the fragments one at a time, for rendering the
+           answer as it arrives.
         """
         return "".join(
             chunk.delta.content for chunk in self._stream if isinstance(chunk, StreamContentChunk)
@@ -445,39 +567,38 @@ class ChatStream:
 
 
 class AsyncChatStream:
-    """Async version of :class:`ChatStream` for use with ``AsyncPinecone``.
+    """A Pinecone-native chat stream from ``AsyncPinecone``.
 
-    The stream is single-pass: iterating, calling :meth:`text`, or calling
-    :meth:`collect` all consume the same underlying async iterator.
+    Iterating it yields the same :data:`ChatStreamChunk` variants as
+    :class:`ChatStream`, so the branching contract is identical; only the
+    ``async for``/``await`` mechanics differ. The stream is single-pass:
+    iterating, :meth:`text`, and :meth:`collect` all consume the same
+    underlying async iterator, so pick one.
 
     Examples:
         .. code-block:: python
 
             import asyncio
-            from pinecone import Pinecone
-            pc = Pinecone(api_key="your-api-key")
-            async def main() -> None:
-                stream = await pc.assistants.chat(
-                    assistant_name="acme-support-bot",
-                    messages=[{"content": "What can you help me with?"}],
-                    stream=True,
-                )
-                async for text in stream.text():
-                    print(text, end="", flush=True)
-            asyncio.run(main())
 
-        Use :meth:`collect` to drain the stream and return the full content as a single string:
-
-        .. code-block:: python
+            from pinecone import AsyncPinecone
 
             async def main() -> None:
-                stream = await pc.assistants.chat(
-                    assistant_name="acme-support-bot",
-                    messages=[{"content": "Summarize your capabilities."}],
-                    stream=True,
-                )
-                full_content = await stream.collect()
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    stream = await pc.assistants.chat(
+                        assistant_name="acme-support-bot",
+                        messages=[{"content": "What can you help me with?"}],
+                        stream=True,
+                    )
+                    async for fragment in stream.text():
+                        print(fragment, end="", flush=True)
+
             asyncio.run(main())
+
+    .. seealso::
+       - :data:`ChatStreamChunk` — the four chunk types, and the loop to write
+         when you need citations rather than text alone.
+       - :class:`AsyncChatCompletionStream` — the same request in the
+         OpenAI-compatible shape.
     """
 
     def __init__(self, stream: AsyncIterator[ChatStreamChunk]) -> None:
@@ -506,53 +627,60 @@ class AsyncChatStream:
         return self._stream
 
     async def text(self) -> AsyncIterator[str]:
-        """Yield text fragments, skipping start/citation/end chunks.
+        """Yield only the response text, dropping every non-content chunk.
 
         Returns:
-            Async iterator of text fragment strings. Each fragment is a partial
-            response as it arrives from the server.
+            Async iterator over ``delta.content`` of each
+            :class:`StreamContentChunk`, in arrival order. The start,
+            citation and end chunks are discarded, so citations and token
+            usage are not reachable through this method — iterate the stream
+            itself for those.
 
         Examples:
             .. code-block:: python
 
-                import asyncio
-                from pinecone import Pinecone
-                pc = Pinecone(api_key="your-api-key")
                 async def main() -> None:
                     stream = await pc.assistants.chat(
                         assistant_name="acme-support-bot",
                         messages=[{"content": "Explain vector databases in one sentence."}],
                         stream=True,
                     )
-                    async for chunk_text in stream.text():
-                        print(chunk_text, end="", flush=True)
-                asyncio.run(main())
+                    async for fragment in stream.text():
+                        print(fragment, end="", flush=True)
+
+        .. seealso::
+           :meth:`collect` — the same fragments already joined into one
+           string, for when you do not need to render as they arrive.
         """
         async for chunk in self._stream:
             if isinstance(chunk, StreamContentChunk):
                 yield chunk.delta.content
 
     async def collect(self) -> str:
-        """Drain the stream and return all content fragments concatenated.
+        """Drain the whole stream and return the answer as one string.
+
+        Awaits until the server closes the stream, so nothing is rendered
+        while the model is still generating.
 
         Returns:
-            The complete response as a single string.
+            Every :class:`StreamContentChunk` fragment joined in arrival
+            order. Citations and token usage are discarded along with the
+            other chunk types — iterate the stream itself for those.
 
         Examples:
             .. code-block:: python
 
-                import asyncio
-                from pinecone import Pinecone
-                pc = Pinecone(api_key="your-api-key")
                 async def main() -> None:
                     stream = await pc.assistants.chat(
                         assistant_name="acme-support-bot",
                         messages=[{"content": "Explain vector databases in one sentence."}],
                         stream=True,
                     )
-                    full = await stream.collect()
-                    print(full)
-                asyncio.run(main())
+                    print(await stream.collect())
+
+        .. seealso::
+           :meth:`text` — the fragments one at a time, for rendering the
+           answer as it arrives.
         """
         return "".join(
             [
@@ -564,38 +692,36 @@ class AsyncChatStream:
 
 
 class ChatCompletionStream:
-    """Wraps an OpenAI-compatible streaming response for convenient text access.
+    """An OpenAI-compatible stream, from ``chat_completions(..., stream=True)``.
 
-    Iterating over this object yields the full :class:`ChatCompletionStreamChunk`
-    sequence.  :meth:`text` filters to non-empty content fragments and handles
-    the ``None`` sentinel values that appear in role-only and finish chunks.
-
-    The stream is single-pass: iterating, calling :meth:`text`, or calling
-    :meth:`collect` all consume the same underlying iterator.
+    Iterating it yields :class:`ChatCompletionStreamChunk`, whose text sits at
+    ``chunk.choices[0].delta.content`` and can be ``None`` or ``""`` on the
+    role-only first chunk and the finish chunk; :meth:`text` and
+    :meth:`collect` filter those out for you. Reach for this shape when you
+    are pointing existing OpenAI client code at Pinecone. The stream is
+    single-pass: iterating, :meth:`text`, and :meth:`collect` all consume the
+    same underlying iterator, so pick one.
 
     Examples:
         .. code-block:: python
 
             from pinecone import Pinecone
+
             pc = Pinecone(api_key="your-api-key")
             stream = pc.assistants.chat_completions(
                 assistant_name="acme-support-bot",
                 messages=[{"content": "What can you help me with?"}],
                 stream=True,
             )
-            for text in stream.text():
-                print(text, end="", flush=True)
+            for fragment in stream.text():
+                print(fragment, end="", flush=True)
 
-        Use :meth:`collect` to drain the stream and return the full content as a single string:
-
-        .. code-block:: python
-
-            stream = pc.assistants.chat_completions(
-                assistant_name="acme-support-bot",
-                messages=[{"content": "Summarize your capabilities."}],
-                stream=True,
-            )
-            full_content = stream.collect()
+    .. seealso::
+       - :class:`ChatStream` — the Pinecone-native shape, which delivers
+         citations as objects you can render instead of weaving them into the
+         text. Prefer it unless you need OpenAI compatibility.
+       - :class:`AsyncChatCompletionStream` — the ``AsyncPinecone``
+         equivalent.
     """
 
     def __init__(self, stream: Iterator[ChatCompletionStreamChunk]) -> None:
@@ -624,24 +750,28 @@ class ChatCompletionStream:
         return self._stream
 
     def text(self) -> Iterator[str]:
-        """Yield non-empty content strings, skipping role-only and finish chunks.
+        """Yield the response text, skipping role-only and finish chunks.
 
         Returns:
-            Iterator of non-empty text fragment strings. Role-only chunks and
-            finish-reason chunks with ``None`` or empty content are skipped.
+            Iterator over ``choices[0].delta.content`` of each chunk that has
+            one, in arrival order. Chunks whose content is ``None`` or ``""``,
+            and chunks with an empty ``choices`` list, are skipped, as is
+            ``usage`` on the final chunk — iterate the stream itself for that.
 
         Examples:
             .. code-block:: python
 
-                from pinecone import Pinecone
-                pc = Pinecone(api_key="your-api-key")
                 stream = pc.assistants.chat_completions(
                     assistant_name="acme-support-bot",
                     messages=[{"content": "Explain vector databases in one sentence."}],
                     stream=True,
                 )
-                for chunk_text in stream.text():
-                    print(chunk_text, end="", flush=True)
+                for fragment in stream.text():
+                    print(fragment, end="", flush=True)
+
+        .. seealso::
+           :meth:`collect` — the same fragments already joined into one
+           string, for when you do not need to render as they arrive.
         """
         for chunk in self._stream:
             if chunk.choices:
@@ -650,23 +780,29 @@ class ChatCompletionStream:
                     yield content
 
     def collect(self) -> str:
-        """Drain the stream and return all content fragments concatenated.
+        """Drain the whole stream and return the answer as one string.
+
+        Blocks until the server closes the stream, so nothing is rendered
+        while the model is still generating.
 
         Returns:
-            The complete response as a single string.
+            Every non-empty ``choices[0].delta.content`` fragment joined in
+            arrival order. The final chunk's ``usage`` is discarded — iterate
+            the stream itself for that.
 
         Examples:
             .. code-block:: python
 
-                from pinecone import Pinecone
-                pc = Pinecone(api_key="your-api-key")
                 stream = pc.assistants.chat_completions(
                     assistant_name="acme-support-bot",
                     messages=[{"content": "Explain vector databases in one sentence."}],
                     stream=True,
                 )
-                full = stream.collect()
-                print(full)
+                print(stream.collect())
+
+        .. seealso::
+           :meth:`text` — the fragments one at a time, for rendering the
+           answer as it arrives.
         """
         parts: list[str] = []
         for chunk in self._stream:
@@ -678,39 +814,38 @@ class ChatCompletionStream:
 
 
 class AsyncChatCompletionStream:
-    """Async version of :class:`ChatCompletionStream` for use with ``AsyncPinecone``.
+    """An OpenAI-compatible stream from ``AsyncPinecone``.
 
-    The stream is single-pass: iterating, calling :meth:`text`, or calling
-    :meth:`collect` all consume the same underlying async iterator.
+    Iterating it yields the same :class:`ChatCompletionStreamChunk` objects as
+    :class:`ChatCompletionStream`, with text at
+    ``chunk.choices[0].delta.content``; only the ``async for``/``await``
+    mechanics differ. The stream is single-pass: iterating, :meth:`text`, and
+    :meth:`collect` all consume the same underlying async iterator, so pick
+    one.
 
     Examples:
         .. code-block:: python
 
             import asyncio
-            from pinecone import Pinecone
-            pc = Pinecone(api_key="your-api-key")
-            async def main() -> None:
-                stream = await pc.assistants.chat_completions(
-                    assistant_name="acme-support-bot",
-                    messages=[{"content": "What can you help me with?"}],
-                    stream=True,
-                )
-                async for text in stream.text():
-                    print(text, end="", flush=True)
-            asyncio.run(main())
 
-        Use :meth:`collect` to drain the stream and return the full content as a single string:
-
-        .. code-block:: python
+            from pinecone import AsyncPinecone
 
             async def main() -> None:
-                stream = await pc.assistants.chat_completions(
-                    assistant_name="acme-support-bot",
-                    messages=[{"content": "Summarize your capabilities."}],
-                    stream=True,
-                )
-                full_content = await stream.collect()
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    stream = await pc.assistants.chat_completions(
+                        assistant_name="acme-support-bot",
+                        messages=[{"content": "What can you help me with?"}],
+                        stream=True,
+                    )
+                    async for fragment in stream.text():
+                        print(fragment, end="", flush=True)
+
             asyncio.run(main())
+
+    .. seealso::
+       :class:`AsyncChatStream` — the Pinecone-native shape, which delivers
+       citations as objects you can render instead of weaving them into the
+       text. Prefer it unless you need OpenAI compatibility.
     """
 
     def __init__(self, stream: AsyncIterator[ChatCompletionStreamChunk]) -> None:
@@ -739,27 +874,30 @@ class AsyncChatCompletionStream:
         return self._stream
 
     async def text(self) -> AsyncIterator[str]:
-        """Yield non-empty content strings, skipping role-only and finish chunks.
+        """Yield the response text, skipping role-only and finish chunks.
 
         Returns:
-            Async iterator of non-empty text fragment strings. Role-only chunks
-            and finish-reason chunks with ``None`` or empty content are skipped.
+            Async iterator over ``choices[0].delta.content`` of each chunk
+            that has one, in arrival order. Chunks whose content is ``None``
+            or ``""``, and chunks with an empty ``choices`` list, are skipped,
+            as is ``usage`` on the final chunk — iterate the stream itself for
+            that.
 
         Examples:
             .. code-block:: python
 
-                import asyncio
-                from pinecone import Pinecone
-                pc = Pinecone(api_key="your-api-key")
                 async def main() -> None:
                     stream = await pc.assistants.chat_completions(
                         assistant_name="acme-support-bot",
                         messages=[{"content": "Explain vector databases in one sentence."}],
                         stream=True,
                     )
-                    async for chunk_text in stream.text():
-                        print(chunk_text, end="", flush=True)
-                asyncio.run(main())
+                    async for fragment in stream.text():
+                        print(fragment, end="", flush=True)
+
+        .. seealso::
+           :meth:`collect` — the same fragments already joined into one
+           string, for when you do not need to render as they arrive.
         """
         async for chunk in self._stream:
             if chunk.choices:
@@ -768,26 +906,30 @@ class AsyncChatCompletionStream:
                     yield content
 
     async def collect(self) -> str:
-        """Drain the stream and return all content fragments concatenated.
+        """Drain the whole stream and return the answer as one string.
+
+        Awaits until the server closes the stream, so nothing is rendered
+        while the model is still generating.
 
         Returns:
-            The complete response as a single string.
+            Every non-empty ``choices[0].delta.content`` fragment joined in
+            arrival order. The final chunk's ``usage`` is discarded — iterate
+            the stream itself for that.
 
         Examples:
             .. code-block:: python
 
-                import asyncio
-                from pinecone import Pinecone
-                pc = Pinecone(api_key="your-api-key")
                 async def main() -> None:
                     stream = await pc.assistants.chat_completions(
                         assistant_name="acme-support-bot",
                         messages=[{"content": "Explain vector databases in one sentence."}],
                         stream=True,
                     )
-                    full = await stream.collect()
-                    print(full)
-                asyncio.run(main())
+                    print(await stream.collect())
+
+        .. seealso::
+           :meth:`text` — the fragments one at a time, for rendering the
+           answer as it arrives.
         """
         parts: list[str] = []
         async for chunk in self._stream:
@@ -801,9 +943,16 @@ class AsyncChatCompletionStream:
 class ChatCompletionStreamDelta(StructDictMixin, Struct, kw_only=True):
     """The delta payload within a chat completion streaming chunk.
 
+    Reached as ``chunk.choices[0].delta``. Both fields are optional and both
+    are commonly absent: the first chunk of a response typically carries
+    ``role`` and no ``content``, and the finish chunk carries neither.
+
     Attributes:
-        role: The role of the message author, or ``None`` if not provided.
-        content: The text content fragment, or ``None`` if not provided.
+        role: The role of the message author, or ``None`` when the chunk does
+            not restate it.
+        content: The text fragment, or ``None`` when this chunk carries no
+            text. Concatenate the non-empty fragments in arrival order to
+            rebuild the answer.
     """
 
     role: str | None = None
@@ -850,17 +999,21 @@ class ChatCompletionStreamDelta(StructDictMixin, Struct, kw_only=True):
 class ChatCompletionStreamChoice(StructDictMixin, Struct, kw_only=True):
     """A single choice in a chat completion streaming chunk.
 
+    Reached as ``chunk.choices[0]``, and the wrapper for the fragment of text
+    this chunk carries.
+
     Attributes:
-        index: The index of this choice in the choices list.
-        delta: The delta message for this choice.
-        finish_reason: The reason the model stopped generating, or ``None`` if
-            generation is ongoing. When set it is one of ``"stop"`` (the model
-            finished), ``"length"`` (the token limit was reached),
-            ``"content_filter"`` (content filtering rules blocked the output),
-            ``"tool_calls"`` (a tool call was triggered), or the literal string
-            ``"null"`` — the backend enum's fifth variant, serialized as the
-            JSON string ``"null"`` rather than JSON ``null``, and absent from
-            the 2026-07 OAS ``x-enum``. Python ``None`` is distinct from it.
+        index: Position of this choice in the chunk's ``choices`` list.
+        delta: The :class:`ChatCompletionStreamDelta` for this choice; the
+            text is at ``delta.content``.
+        finish_reason: ``None`` while generation is ongoing. Once set, why
+            generation stopped: ``"stop"`` (the model finished), ``"length"``
+            (the token limit was reached), ``"content_filter"`` (content
+            filtering rules blocked the output), or ``"tool_calls"`` (a tool
+            call was triggered). The literal string ``"null"`` also reaches
+            callers and is a different value from Python ``None``, so treat
+            this as an open set of strings rather than switching exhaustively
+            on the four above.
     """
 
     index: int
@@ -902,16 +1055,31 @@ class ChatCompletionStreamChoice(StructDictMixin, Struct, kw_only=True):
 
 
 class ChatCompletionStreamChunk(StructDictMixin, Struct, kw_only=True):
-    """A streaming chunk from the OpenAI-compatible chat completion endpoint.
+    """One chunk of an OpenAI-compatible completion stream.
+
+    Unlike the Pinecone-native stream there is a single chunk type, so there
+    is nothing to branch on: the text is at ``chunk.choices[0].delta.content``
+    and is ``None`` or ``""`` on the role-only first chunk and the finish
+    chunk. ``choices`` can also arrive empty, so guard on it before indexing.
 
     Attributes:
-        id: Unique identifier for this chunk.
-        choices: List of streaming choices.
-        model: The model used to generate the response, or ``None`` if not provided.
-        object: The object type (typically ``"chat.completion.chunk"``), or ``None``.
+        id: Identifier of the completion, the same on every chunk of the
+            stream.
+        choices: The streaming choices, normally one. Read the text from
+            ``choices[0].delta.content``.
+        model: Name of the model that generated the answer, or ``None`` if the
+            server did not report it on this chunk.
+        object: The object type (typically ``"chat.completion.chunk"``), or
+            ``None``.
         created: Unix timestamp when the chunk was created, or ``None``.
-        system_fingerprint: Opaque fingerprint identifying the backend, or ``None``.
-        usage: Token usage statistics, populated on the final chunk, or ``None``.
+        system_fingerprint: Opaque fingerprint of the serving configuration,
+            or ``None``. Useful only for comparing two responses.
+        usage: :class:`~pinecone.models.assistant.chat.ChatUsage` token counts,
+            populated on the final chunk and ``None`` on every earlier one.
+
+    .. seealso::
+       :data:`ChatStreamChunk` — the Pinecone-native chunk types, which
+       deliver citations as objects you can render.
     """
 
     id: str

@@ -14,8 +14,10 @@ from pinecone.models.admin.pagination import PaginationResponse
 class ServiceAccountModel(StructDictMixin, Struct, kw_only=True):
     """Response model for a service account. The OAuth secret is not included.
 
-    Role bindings are not included; use the role binding operations with
-    ``principal_type="service_account"`` to see what the account can do.
+    What the account is allowed to do is not part of this model. Permissions
+    come only from role bindings, so read them through
+    :meth:`RoleBindings.list() <pinecone.admin.role_bindings.RoleBindings.list>` with
+    ``principal_type="service_account"`` and this ``id`` as ``principal_id``.
 
     Attributes:
         id (str): Unique identifier (UUID) for the service account. Use this as
@@ -24,7 +26,8 @@ class ServiceAccountModel(StructDictMixin, Struct, kw_only=True):
         name (str): Short human-readable label set at creation time.
         client_id (str): OAuth client ID the service account uses to obtain
             access tokens. Used only for OAuth token exchange — it is not the
-            service account's identifier for role bindings.
+            service account's identifier for role bindings, and passing it where
+            ``id`` is expected reads back as not found.
         created_at (str): RFC 3339 timestamp for when the account was created.
         updated_at (str): RFC 3339 timestamp of the most recent metadata update.
 
@@ -32,13 +35,23 @@ class ServiceAccountModel(StructDictMixin, Struct, kw_only=True):
         >>> from pinecone.models.admin.service_account import ServiceAccountModel
         >>> account = ServiceAccountModel(
         ...     id="f8a3b2c1-4d5e-6f7a-8b9c-0d1e2f3a4b5c",
-        ...     name="My Service Account",
+        ...     name="ci-prod",
         ...     client_id="l3Ow0CmFyc4jOONcwiKUCRqQKN0tiCAn",
         ...     created_at="2026-04-10T15:23:00Z",
         ...     updated_at="2026-04-12T09:11:00Z",
         ... )
         >>> account.name
-        'My Service Account'
+        'ci-prod'
+
+    .. seealso::
+       - :class:`~pinecone.models.admin.service_account.ServiceAccountWithSecret`
+         — what :meth:`ServiceAccounts.create()
+         <pinecone.admin.service_accounts.ServiceAccounts.create>`
+         and :meth:`ServiceAccounts.rotate_secret()
+         <pinecone.admin.service_accounts.ServiceAccounts.rotate_secret>` return instead,
+         wrapping this model alongside the one-time secret.
+       - :class:`~pinecone.models.admin.user.UserModel` — the human equivalent,
+         which has an email address rather than OAuth credentials.
     """
 
     id: str
@@ -51,12 +64,16 @@ class ServiceAccountModel(StructDictMixin, Struct, kw_only=True):
 class ServiceAccountWithSecret(StructDictMixin, Struct, kw_only=True):
     """Response model for a service account with a newly issued OAuth secret.
 
-    The secret is returned exactly once — at creation and on secret rotation —
-    and cannot be retrieved later. :meth:`__repr__` masks it so it does not
-    leak into logs; ``to_dict()`` and JSON encoding return it in full.
+    Returned only by :meth:`ServiceAccounts.create()
+    <pinecone.admin.service_accounts.ServiceAccounts.create>`
+    and :meth:`ServiceAccounts.rotate_secret()
+    <pinecone.admin.service_accounts.ServiceAccounts.rotate_secret>`, and
+    the secret it carries is obtainable exactly once — nothing can retrieve it
+    afterwards, so capture it before the object goes out of scope.
 
     Attributes:
-        service_account (ServiceAccountModel): The service account metadata.
+        service_account (ServiceAccountModel): The service account metadata,
+            including the ``id`` every other service-account operation takes.
         client_secret (str): The OAuth client secret. Treat as a credential.
 
     Examples:
@@ -66,9 +83,9 @@ class ServiceAccountWithSecret(StructDictMixin, Struct, kw_only=True):
         ... )
         >>> created = ServiceAccountWithSecret(
         ...     service_account=ServiceAccountModel(
-        ...         id="sa1",
+        ...         id="f8a3b2c1-4d5e-6f7a-8b9c-0d1e2f3a4b5c",
         ...         name="ci-prod",
-        ...         client_id="cid",
+        ...         client_id="l3Ow0CmFyc4jOONcwiKUCRqQKN0tiCAn",
         ...         created_at="2026-04-10T15:23:00Z",
         ...         updated_at="2026-04-10T15:23:00Z",
         ...     ),
@@ -76,8 +93,17 @@ class ServiceAccountWithSecret(StructDictMixin, Struct, kw_only=True):
         ... )
         >>> created.client_secret
         '8p-kkC23XOWvkCosKq'
+
+        ``repr()`` keeps only the last four characters, so an object logged
+        whole does not leak the secret:
+
         >>> repr(created).endswith("client_secret='...osKq')")
         True
+
+    .. warning::
+        The masking stops at ``repr()``. ``to_dict()`` and JSON encoding return
+        ``client_secret`` in full, so a result serialized wholesale into a log
+        line, an error report, or a cache writes the live credential out.
     """
 
     service_account: ServiceAccountModel
@@ -97,8 +123,14 @@ class ServiceAccountWithSecret(StructDictMixin, Struct, kw_only=True):
 class ServiceAccountList(Struct, kw_only=True):
     """A page of service accounts, plus the cursor for the next page.
 
+    One raw page of a service-account listing. Callers who reach accounts
+    through :meth:`ServiceAccounts.list() <pinecone.admin.service_accounts.ServiceAccounts.list>`
+    get a :class:`~pinecone.models.pagination.Paginator` instead, which follows
+    these cursors for them.
+
     Attributes:
         data (list[ServiceAccountModel]): The service accounts on this page.
+            None of them carries a ``client_secret``.
         pagination (PaginationResponse | None): Cursor envelope for the next
             page, or ``None`` on the final page.
 
@@ -110,9 +142,9 @@ class ServiceAccountList(Struct, kw_only=True):
         >>> accounts = ServiceAccountList(
         ...     data=[
         ...         ServiceAccountModel(
-        ...             id="sa1",
+        ...             id="f8a3b2c1-4d5e-6f7a-8b9c-0d1e2f3a4b5c",
         ...             name="ci-prod",
-        ...             client_id="cid",
+        ...             client_id="l3Ow0CmFyc4jOONcwiKUCRqQKN0tiCAn",
         ...             created_at="2026-04-10T15:23:00Z",
         ...             updated_at="2026-04-10T15:23:00Z",
         ...         )

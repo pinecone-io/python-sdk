@@ -22,11 +22,17 @@ class EmbedUsage(StructDictMixin, Struct, kw_only=True):
 
 
 class DenseEmbedding(DictLikeStruct, Struct, kw_only=True):
-    """A dense embedding vector.
+    """One embedding from a dense model, as a list of floats.
+
+    ``values`` is the vector, ready to pass to
+    :meth:`~pinecone.Index.upsert` or as a query vector. Its length is the
+    model's output dimension, which
+    :meth:`~pinecone.client.inference.Inference.get_model` reports as
+    ``default_dimension``.
 
     Attributes:
-        values: The embedding values as a list of floats.
-        vector_type: The type of embedding, always ``"dense"``.
+        values: The embedding, one float per dimension.
+        vector_type: Always ``"dense"``.
     """
 
     values: list[float]
@@ -42,13 +48,21 @@ class DenseEmbedding(DictLikeStruct, Struct, kw_only=True):
 
 
 class SparseEmbedding(StructDictMixin, Struct, kw_only=True):
-    """A sparse embedding vector.
+    """One embedding from a sparse model, stored as index/value pairs.
+
+    There is no ``values`` field here — the vector lives in
+    ``sparse_indices`` and ``sparse_values``, paired position by position.
+    Reading ``.values`` on one of these hands back a dict-view method rather
+    than a vector and raises nothing to warn you, so branch on the enclosing
+    :class:`EmbeddingsList`'s ``vector_type`` when the model is not fixed in
+    advance.
 
     Attributes:
         sparse_values: The non-zero values of the sparse embedding.
-        sparse_indices: The indices of the non-zero values.
-        sparse_tokens: Optional token strings corresponding to each index.
-        vector_type: The type of embedding, always ``"sparse"``.
+        sparse_indices: The index each of those values sits at.
+        sparse_tokens: The token each index came from, when the model reports
+            them; ``None`` otherwise.
+        vector_type: Always ``"sparse"``.
     """
 
     sparse_values: list[float]
@@ -81,16 +95,38 @@ Embedding = DenseEmbedding | SparseEmbedding
 
 
 class EmbeddingsList(Struct, kw_only=True):
-    """Response from the embed endpoint.
+    """What :meth:`~pinecone.client.inference.Inference.embed` returns.
 
-    Supports integer indexing, iteration, and ``len()`` over the
-    embedded data items, as well as bracket access for field names.
+    One embedding per input, in the order the inputs were given. Iterating the
+    list is the usual way in; integer indexing and ``len()`` reach the same
+    items, and bracket access with a field name (``embeddings["model"]``) reads
+    the fields below. Returned by the SDK rather than constructed by callers.
 
     Attributes:
-        model: The model used to generate embeddings.
-        vector_type: The type of embeddings returned (``"dense"`` or ``"sparse"``).
-        data: The list of embedding objects.
-        usage: Token usage information.
+        model: The model that served the request.
+        vector_type: ``"dense"`` or ``"sparse"`` — which of
+            :class:`DenseEmbedding` or :class:`SparseEmbedding` ``data`` holds,
+            and so which fields each item carries.
+        data: The embeddings themselves.
+        usage: Token usage, as ``usage.total_tokens``.
+
+    Examples:
+        >>> from pinecone import Pinecone
+        >>> pc = Pinecone(api_key="your-api-key")
+        >>> embeddings = pc.inference.embed(
+        ...     model="multilingual-e5-large",
+        ...     inputs=[
+        ...         "Vector databases index embeddings for similarity search.",
+        ...         "Reranking reorders candidate results by relevance.",
+        ...     ],
+        ...     parameters={"input_type": "passage"},
+        ... )
+        >>> len(embeddings)
+        2
+        >>> [embedding.vector_type for embedding in embeddings]
+        ['dense', 'dense']
+        >>> embeddings["model"]
+        'multilingual-e5-large'
     """
 
     model: str

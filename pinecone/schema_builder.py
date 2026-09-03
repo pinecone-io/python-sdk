@@ -1,29 +1,40 @@
-"""SchemaBuilder for constructing index schemas (2026-07 create-schema rules).
+"""Build the ``schema`` argument for creating an index.
 
-Returns a plain ``{"fields": {...}}`` dict (not a model) so forward-compatible
-fields the SDK does not yet model can pass through unmodified.
+A schema names the fields an index searches and says how each one is scored.
+:class:`SchemaBuilder` assembles that structure a field at a time and hands
+back a plain ``{"fields": {...}}`` dict rather than a model, so a key this SDK
+version does not yet model still reaches the server unchanged.
 
-Create-schema rules at API version ``2026-07``:
+What belongs in a create schema is narrower than what an index stores. Declare
+the fields you search — a ``dense_vector`` field, a ``sparse_vector`` field,
+and ``string`` fields with full-text search enabled — and at least one of
+those is required. Everything else is metadata: put those values in the
+documents you upsert and they are indexed for filtering automatically, with no
+declaration at all. A schema may hold at most one ``dense_vector`` and one
+``sparse_vector`` field.
 
-- Every schema must declare at least one **searched** field: ``dense_vector``,
-  ``sparse_vector``, or ``string`` with ``full_text_search``.
-- At most one ``dense_vector`` and at most one ``sparse_vector`` field per
-  schema (server-enforced).
-- Metadata-only field declarations (``boolean``, ``float``, ``string_list``,
-  and ``string`` without ``full_text_search``) are rejected by the server on
-  every deployment type ``2026-07`` can create, and one rejected field fails
-  the whole request. Leave them out — metadata is indexed for filtering
-  automatically at upsert time.
-- ``semantic_text`` fields are not accepted in create schemas at ``2026-07``
-  and the builder does not offer a method for them.
-- ``integer`` is a **response-only** field type: it appears in describe/list
-  responses for indexes that pre-date numeric normalisation, but the create
-  schema has no ``integer`` variant and the server rejects one with a ``422``.
-  The builder offers no method for it and refuses it client-side wherever a
-  raw field dict can carry a ``type`` key (see :meth:`SchemaBuilder.add_custom_field`
-  and the ``additional_options`` parameters), so a describe-then-create
-  round-trip fails locally with an explanatory error instead of a server
-  ``422``.
+The builder still has methods for the metadata-only declarations
+(:meth:`SchemaBuilder.add_boolean_field`,
+:meth:`SchemaBuilder.add_float_field`,
+:meth:`SchemaBuilder.add_string_list_field`, and
+:meth:`SchemaBuilder.add_string_field` without full-text search). The server
+rejects all of them on create, and one rejected field fails the whole request.
+
+Two field types have no method at all. Text embedded server-side is a
+``semantic_text`` field, which a create schema does not accept — reach it
+through :meth:`~pinecone.client.indexes.Indexes.create_for_model` instead.
+``integer`` is response-only: describe and list return it for indexes that
+pre-date numeric normalisation, but there is no ``integer`` variant to create
+and the server answers one with a ``422``. The builder refuses it wherever a
+raw ``type`` key could reach a field dict — see
+:meth:`SchemaBuilder.add_custom_field` and the ``additional_options``
+parameters — so replaying a described schema into a create request fails
+locally with an explanation instead of remotely with a status code.
+
+.. seealso::
+   :meth:`~pinecone.client.indexes.Indexes.create` — the method that consumes
+   the result, and the deprecated ``dimension=``/``metric=`` sugar this
+   replaces.
 """
 
 from __future__ import annotations
@@ -197,32 +208,17 @@ def _normalize_fts_language(language: str) -> str:
 
 
 class SchemaBuilder:
-    """Fluent builder for index schema dicts (API version ``2026-07``).
+    """Assembles an index schema field by field.
 
-    Each ``add_*`` method appends or replaces a field definition and returns
-    ``self`` so calls can be chained.  Call :meth:`build` at the end to
-    obtain the ``{"fields": {...}}`` dict.
+    Construct one directly — ``SchemaBuilder()`` — then chain ``add_*``
+    calls, each of which returns ``self``, and finish with :meth:`build`.
+    Adding a field under a name already present replaces the earlier
+    definition rather than raising, so a later call wins.
 
-    Adding a field whose name already exists silently replaces the previous
-    definition (last writer wins).
-
-    A create schema declares the fields that are **searched**: a dense
-    vector field, a sparse vector field, or string fields with full-text
-    search enabled. Every other field type is metadata — include those
-    values in documents instead of the schema and they are indexed for
-    filtering automatically at upsert time. The metadata-only declarations
-    (:meth:`add_boolean_field`, :meth:`add_float_field`,
-    :meth:`add_string_list_field`, and :meth:`add_string_field` without
-    full-text search) are rejected on create, whichever deployment type you
-    ask for.
-
-    There is no ``add_integer_field``. ``integer`` is a response-only field
-    type at ``2026-07`` — it is returned by describe/list but has no create
-    variant — so the builder rejects it wherever a raw ``type`` key can reach
-    a field dict (:meth:`add_custom_field`, or ``additional_options``),
-    raising :exc:`~pinecone.errors.exceptions.PineconeValueError` rather than
-    letting the server answer with a ``422``. Numeric metadata needs no
-    declaration at all — put the values in documents.
+    Building the ``{"fields": {...}}`` dict by hand is equally valid and
+    equally supported; the builder exists so the field types, their required
+    keys, and the declarations the server refuses are checked as you write
+    rather than on the create call.
 
     Examples:
         >>> from pinecone.schema_builder import SchemaBuilder
@@ -232,6 +228,24 @@ class SchemaBuilder:
         ...     .add_string_field("title", full_text_search={"language": "en"})
         ...     .build()
         ... )
+        >>> sorted(schema["fields"])
+        ['embedding', 'title']
+
+    Pass the result straight to the create call:
+
+    .. code-block:: python
+
+        pc.indexes.create(
+            name="movie-recommendations",
+            schema=schema,
+            deployment={"deployment_type": "managed", "cloud": "aws",
+                        "region": "us-east-1"},
+        )
+
+    .. seealso::
+       :meth:`~pinecone.client.indexes.Indexes.create` — the ``schema``
+       argument this builds, and the ``deployment`` argument that goes with
+       it.
     """
 
     def __init__(self) -> None:
@@ -250,18 +264,27 @@ class SchemaBuilder:
         description: str | None = None,
         **additional_options: Any,
     ) -> SchemaBuilder:
-        """Add a dense vector field for similarity search.
+        """Add the field that holds an embedding, for vector similarity search.
 
-        A schema may contain at most one dense vector field; the server
-        rejects schemas with more than one.
+        This is the field most indexes are built around, and a schema may
+        hold at most one of them. ``dimension`` and ``metric`` are fixed for
+        the life of the field, so they have to match the embedding model you
+        intend to use.
 
         Args:
-            name: Field name. Replaces any existing field with the same name.
-            dimension: Vector dimensionality. Must be between 1 and 20000
-                inclusive; values outside that range are rejected client-side.
-            metric: Distance metric — ``"cosine"``, ``"euclidean"``, or
-                ``"dotproduct"``.
-            description: Optional human-readable description.
+            name: Field name, up to 64 bytes; the documents you upsert carry
+                their vector under this key, e.g. ``"embedding"``. Replaces
+                any existing field with the same name.
+            dimension: Length of the vectors this field stores — the output
+                width of your embedding model, e.g. ``1536``. Must be between
+                1 and 20000 inclusive; the SDK rejects anything else before
+                the request goes out.
+            metric: How similarity is scored — ``"cosine"``, ``"euclidean"``,
+                or ``"dotproduct"``. ``"cosine"`` is what most text embedding
+                models are trained for. See
+                :class:`~pinecone.models.enums.Metric`.
+            description: Human-readable note stored with the field, up to 256
+                bytes. Optional.
             **additional_options: Extra parameters merged into the field dict
                 last, for forward compatibility with new API features.
 
@@ -269,8 +292,19 @@ class SchemaBuilder:
             ``self`` for method chaining.
 
         Raises:
-            PineconeValueError: If ``dimension`` is outside the range
-                1–20000 inclusive.
+            :exc:`~pinecone.errors.exceptions.PineconeValueError`: If
+                ``dimension`` is outside 1–20000, or if ``name`` or
+                ``description`` exceeds its byte limit. Both limits count
+                UTF-8 bytes rather than characters, so a name of non-ASCII
+                text runs out sooner than its length suggests.
+
+        Examples:
+            >>> from pinecone.schema_builder import SchemaBuilder
+            >>> schema = SchemaBuilder().add_dense_vector_field(
+            ...     "embedding", dimension=1536, metric="cosine"
+            ... ).build()
+            >>> schema["fields"]["embedding"]
+            {'type': 'dense_vector', 'dimension': 1536, 'metric': 'cosine'}
         """
         from pinecone.errors.exceptions import PineconeValueError
 
@@ -299,20 +333,22 @@ class SchemaBuilder:
         description: str | None = None,
         **additional_options: Any,
     ) -> SchemaBuilder:
-        """Add a sparse vector field for keyword-weighted or learned-sparse search.
+        """Add a sparse vector field, for keyword-weighted or learned-sparse search.
 
-        The wire type is ``"sparse_vector"``, and ``description`` is the only
-        other key a create schema accepts on it. A sparse vector field has no
-        ``metric`` — sparse scoring is not configurable — and no ``dimension``,
-        because sparse vectors are variable-length. Passing either raises
-        instead of putting a key on the wire that configures nothing.
+        Declare one alongside a dense vector field for hybrid search, or on
+        its own for pure sparse retrieval. A schema may hold at most one.
 
-        A schema may contain at most one sparse vector field; the server
-        rejects schemas with more than one.
+        ``description`` is the only other key a create schema accepts here. A
+        sparse vector field takes no ``metric`` — sparse scoring is not
+        configurable — and no ``dimension``, because sparse vectors are
+        variable-length. Passing either raises rather than putting a key on
+        the wire that configures nothing.
 
         Args:
-            name: Field name. Replaces any existing field with the same name.
-            description: Optional human-readable description.
+            name: Field name, up to 64 bytes, e.g. ``"keyword_terms"``.
+                Replaces any existing field with the same name.
+            description: Human-readable note stored with the field, up to 256
+                bytes. Optional.
             **additional_options: Extra parameters merged into the field dict
                 last, for forward compatibility with new API features.
 
@@ -320,18 +356,23 @@ class SchemaBuilder:
             ``self`` for method chaining.
 
         Raises:
-            PineconeValueError: If ``metric`` or ``dimension`` is passed —
-                a sparse vector field has neither.
+            :exc:`~pinecone.errors.exceptions.PineconeValueError`: If
+                ``metric`` or ``dimension`` is passed — a sparse vector field
+                has neither — or if ``name`` or ``description`` exceeds its
+                byte limit.
 
         Examples:
-            .. code-block:: python
-
-                schema = (
-                    SchemaBuilder()
-                    .add_dense_vector_field("embedding", dimension=1536, metric="dotproduct")
-                    .add_sparse_vector_field("sparse_terms")
-                    .build()
-                )
+            >>> from pinecone.schema_builder import SchemaBuilder
+            >>> schema = (
+            ...     SchemaBuilder()
+            ...     .add_dense_vector_field(
+            ...         "embedding", dimension=1536, metric="dotproduct"
+            ...     )
+            ...     .add_sparse_vector_field("keyword_terms")
+            ...     .build()
+            ... )
+            >>> schema["fields"]["keyword_terms"]
+            {'type': 'sparse_vector'}
         """
         _validate_field_name(name)
         _validate_description(name, description)
@@ -355,65 +396,53 @@ class SchemaBuilder:
         description: str | None = None,
         **additional_options: Any,
     ) -> SchemaBuilder:
-        """Add a string field for full-text search.
+        """Add a string field searchable by keyword, using full-text search.
 
-        Full-text search is enabled by passing ``full_text_search=True``, a
-        ``full_text_search`` dict, or any of the typed FTS keyword arguments
-        (``language``, ``stemming``, ``stop_words``).
+        Always pass ``full_text_search``: enabling it is what makes the field
+        searched, and a string field without it is a metadata-only
+        declaration the server refuses on create. Any of
+        ``full_text_search=True``, a ``full_text_search`` dict, or one of the
+        typed keyword arguments (``language``, ``stemming``, ``stop_words``)
+        turns it on; where a dict and a keyword argument set the same key,
+        the keyword argument wins.
 
-        .. important::
-
-           Pass ``full_text_search``. A string field declared without it is
-           a metadata-only declaration, which the server rejects on create
-           at API version ``2026-07`` on every deployment type that version
-           can create (``400``: the schema only accepts fields used for
-           search). Leave metadata-only fields out of the schema and include
-           the values in documents instead; they are indexed for filtering
-           automatically at upsert time.
-
-        When both ``full_text_search`` dict and keyword arguments are provided,
-        the keyword arguments take precedence for the same key.
-
-        ``lowercase`` and ``max_term_len`` are server-managed and cannot be
-        configured via the SDK.
+        ``lowercase`` and ``max_term_len`` are managed for you and cannot be
+        set here.
 
         Args:
-            name: Field name. Replaces any existing field with the same name.
-            full_text_search: ``True`` or ``{}`` to enable FTS with server
-                defaults, a ``dict`` of FTS-config keys (``language``,
-                ``stemming``, ``stop_words``, ``ngram``), or ``None``
-                (default) to leave FTS disabled, which makes the field a
-                metadata-only declaration; see the note above.
-            language: Language for FTS tokenisation and analysis. Accepts
-                ISO short codes or long-form aliases. Both ``"en"`` and
-                ``"english"`` are valid; the SDK normalises known
-                long-form aliases to the short-code form on the wire.
-                Codes known to the SDK at this version: ``ar``, ``da``,
-                ``de``, ``el``, ``en``, ``es``, ``fi``, ``fr``, ``hu``,
-                ``it``, ``nl``, ``no``, ``pt``, ``ro``, ``ru``, ``sv``,
-                ``ta``, ``tr`` (and their long-form aliases: ``arabic``,
-                ``danish``, ``german``, ``greek``, ``english``,
-                ``spanish``, ``finnish``, ``french``, ``hungarian``,
-                ``italian``, ``dutch``, ``norwegian``, ``portuguese``,
-                ``romanian``, ``russian``, ``swedish``, ``tamil``,
-                ``turkish``). The SDK does not validate this value
-                against that list — unknown codes are passed through
-                unchanged so newly-supported languages work without an
-                SDK upgrade. The server is the source of truth.
-            stemming: Enable word stemming. Required when ``stop_words=True``.
-            stop_words: Enable stop-word filtering. Requires
-                ``stemming=True``. Not all languages support stop words;
-                the server will reject unsupported combinations — the SDK
-                does not pre-validate that rule.
-            filterable: Enable metadata-filter support. Sent on the wire,
-                including the ``False`` default, unless ``full_text_search``
-                is also enabled and ``filterable`` was not requested. On
-                create, a string field is either searchable or filterable,
-                never both: passing ``filterable=True`` alongside
-                ``full_text_search`` makes the server keep the filter and
-                discard the search configuration, and it reports no error
-                for doing so.
-            description: Optional human-readable description.
+            name: Field name, up to 64 bytes; the documents you upsert carry
+                the text under this key, e.g. ``"title"``. Replaces any
+                existing field with the same name.
+            full_text_search: ``True`` or ``{}`` for full-text search with
+                default analysis, or a dict of the config keys
+                (``language``, ``stemming``, ``stop_words``, ``ngram``).
+                ``None``, the default, leaves the field unsearched — see the
+                note below before choosing it.
+            language: Language whose rules drive tokenisation and analysis.
+                Both short codes and their English names work — ``"en"`` and
+                ``"english"`` are the same request, and the SDK sends the
+                short form. It knows ``ar``, ``da``, ``de``, ``el``, ``en``,
+                ``es``, ``fi``, ``fr``, ``hu``, ``it``, ``nl``, ``no``,
+                ``pt``, ``ro``, ``ru``, ``sv``, ``ta`` and ``tr``, and
+                passes anything else through untouched so a
+                newly-supported language works without an SDK upgrade; the
+                server decides what it accepts.
+            stemming: Match words by their root, so a search for
+                ``"running"`` also finds ``"run"``. Required when
+                ``stop_words=True``.
+            stop_words: Drop the language's most common words from the
+                index. Requires ``stemming=True``. Not every language
+                supports stop words, and the server is what rejects an
+                unsupported pairing — the SDK does not pre-check it.
+            filterable: Make the field filterable instead of searched.
+                Requesting it together with ``full_text_search`` is the trap:
+                a string field is one or the other, and the server keeps the
+                filter, silently discards the search configuration, and
+                reports no error. Sent on the wire including its ``False``
+                default, except when ``full_text_search`` is enabled and you
+                did not ask to be filterable.
+            description: Human-readable note stored with the field, up to 256
+                bytes. Optional.
             **additional_options: Extra parameters merged into the field dict
                 last, for forward compatibility with new API features.
 
@@ -421,26 +450,49 @@ class SchemaBuilder:
             ``self`` for method chaining.
 
         Raises:
-            PineconeValueError: If ``stop_words=True`` is requested without
-                ``stemming=True``, or if an ``ngram`` config is combined
-                with ``stemming=True`` or ``stop_words=True``.
+            :exc:`~pinecone.errors.exceptions.PineconeValueError`: If
+                ``stop_words=True`` is requested without ``stemming=True``,
+                if an ``ngram`` config is combined with ``stemming=True`` or
+                ``stop_words=True``, or if ``name`` or ``description``
+                exceeds its byte limit.
 
         Examples:
-            .. code-block:: python
+            Default analysis is enough for most text:
 
-                # Enable FTS with server defaults:
-                builder.add_string_field("title", full_text_search=True)
+            >>> from pinecone.schema_builder import SchemaBuilder
+            >>> schema = SchemaBuilder().add_string_field(
+            ...     "title", full_text_search=True
+            ... ).build()
+            >>> schema["fields"]["title"]
+            {'type': 'string', 'full_text_search': {}}
 
-                # Enable FTS with explicit kwargs:
-                builder.add_string_field(
-                    "title", language="en", stemming=True, stop_words=True
-                )
+            Naming the language turns on that language's analysis, and the
+            long form is accepted and normalised:
 
-                # Character n-gram tokenization (e.g. substring/autocomplete):
-                builder.add_string_field(
-                    "title",
-                    full_text_search={"ngram": {"min_gram": 2, "max_gram": 3}},
-                )
+            >>> schema = SchemaBuilder().add_string_field(
+            ...     "title", language="english", stemming=True, stop_words=True
+            ... ).build()
+            >>> schema["fields"]["title"]["full_text_search"]
+            {'language': 'en', 'stemming': True, 'stop_words': True}
+
+            Character n-grams match substrings rather than whole words, which
+            is what autocomplete needs. They cannot be combined with stemming
+            or stop words:
+
+            >>> schema = SchemaBuilder().add_string_field(
+            ...     "title", full_text_search={"ngram": {"min_gram": 2, "max_gram": 3}}
+            ... ).build()
+            >>> schema["fields"]["title"]["full_text_search"]
+            {'ngram': {'min_gram': 2, 'max_gram': 3}}
+
+        .. note::
+           A string field with no ``full_text_search`` is a metadata-only
+           declaration, and the server rejects those on create — a ``400``
+           saying the schema only accepts fields used for search — whatever
+           deployment you ask for, failing the whole request over the one
+           field. Leave such fields out of the schema and put the values in
+           the documents you upsert; they are indexed for filtering
+           automatically.
         """
         from pinecone.errors.exceptions import PineconeValueError
 
@@ -502,41 +554,46 @@ class SchemaBuilder:
         description: str | None = None,
         **additional_options: Any,
     ) -> SchemaBuilder:
-        """Add a list-of-strings field for metadata filtering (the server rejects these).
+        """Declare a list-of-strings field — which no index you can create accepts.
 
-        .. important::
-
-           At API version ``2026-07``, ``string_list`` is a metadata-only
-           declaration and no index you can create accepts one. The server
-           rejects it on every deployment type this version creates
-           (``400``: the schema only accepts fields used for search),
-           regardless of ``filterable``, and one rejected field fails the
-           whole schema. Pod indexes are not a way around it: ``2026-07``
-           refuses to create a pod index at all. Leave list-of-string
-           values out of the schema and put them in documents instead;
-           they are indexed for filtering automatically at upsert time.
-
-        String-list fields store a list of strings per row — useful for
-        tag-style metadata (e.g. ``["sci-fi", "mystery"]``) that should be
-        filterable against individual elements.
-
-        The wire type is ``"string_list"``.
+        A string-list field holds several strings per record, the shape
+        tag-style metadata takes (``["sci-fi", "mystery"]``) when you want to
+        filter on individual elements. Declaring it is what does not work:
+        see the note below, and upsert the list as an ordinary document field
+        instead.
 
         Args:
-            name: Field name. Replaces any existing field with the same name.
-            filterable: Enable metadata-filter support. Always included in the
-                built schema, whether ``True`` or ``False``.
-            description: Optional human-readable description.
+            name: Field name, up to 64 bytes, e.g. ``"tags"``. Replaces any
+                existing field with the same name.
+            filterable: Enable metadata filtering on the field. Always
+                included in the built schema, whether ``True`` or ``False``.
+            description: Human-readable note stored with the field, up to 256
+                bytes. Optional.
             **additional_options: Extra parameters merged into the field dict
                 last, for forward compatibility with new API features.
 
         Returns:
             ``self`` for method chaining.
 
-        Examples:
-            .. code-block:: python
+        Raises:
+            :exc:`~pinecone.errors.exceptions.PineconeValueError`: If ``name``
+                or ``description`` exceeds its byte limit.
 
-                builder.add_string_list_field("tags", filterable=True)
+        Examples:
+            >>> from pinecone.schema_builder import SchemaBuilder
+            >>> schema = SchemaBuilder().add_string_list_field(
+            ...     "tags", filterable=True
+            ... ).build()
+            >>> schema["fields"]["tags"]
+            {'type': 'string_list', 'filterable': True}
+
+        .. note::
+           ``string_list`` is a metadata-only declaration, and the server
+           rejects those on create — a ``400`` saying the schema only accepts
+           fields used for search — whatever deployment you ask for and
+           whatever ``filterable`` says, failing the whole schema over the
+           one field. Leave the field out and put the values in the documents
+           you upsert; they are indexed for filtering automatically.
         """
         _validate_field_name(name)
         _validate_description(name, description)
@@ -555,37 +612,44 @@ class SchemaBuilder:
         description: str | None = None,
         **additional_options: Any,
     ) -> SchemaBuilder:
-        """Add a boolean field for metadata filtering (the server rejects these).
+        """Declare a boolean field — which no index you can create accepts.
 
-        .. important::
-
-           At API version ``2026-07``, ``boolean`` is a metadata-only
-           declaration and no index you can create accepts one. The server
-           rejects it on every deployment type this version creates
-           (``400``: the schema only accepts fields used for search),
-           regardless of ``filterable``, and one rejected field fails the
-           whole schema. Pod indexes are not a way around it: ``2026-07``
-           refuses to create a pod index at all. Leave boolean values out
-           of the schema and put them in documents instead; they are
-           indexed for filtering automatically at upsert time.
-
-        The wire type is ``"boolean"``.
+        Declaring the field is what does not work; a boolean is filterable
+        once it is in a document. See the note below, and upsert the flag as
+        an ordinary document field instead.
 
         Args:
-            name: Field name. Replaces any existing field with the same name.
-            filterable: Enable metadata-filter support on this field. Always
+            name: Field name, up to 64 bytes, e.g. ``"is_published"``.
+                Replaces any existing field with the same name.
+            filterable: Enable metadata filtering on the field. Always
                 included in the built schema, whether ``True`` or ``False``.
-            description: Optional human-readable description.
+            description: Human-readable note stored with the field, up to 256
+                bytes. Optional.
             **additional_options: Extra parameters merged into the field dict
                 last, for forward compatibility with new API features.
 
         Returns:
             ``self`` for method chaining.
 
-        Examples:
-            .. code-block:: python
+        Raises:
+            :exc:`~pinecone.errors.exceptions.PineconeValueError`: If ``name``
+                or ``description`` exceeds its byte limit.
 
-                builder.add_boolean_field("is_published", filterable=True)
+        Examples:
+            >>> from pinecone.schema_builder import SchemaBuilder
+            >>> schema = SchemaBuilder().add_boolean_field(
+            ...     "is_published", filterable=True
+            ... ).build()
+            >>> schema["fields"]["is_published"]
+            {'type': 'boolean', 'filterable': True}
+
+        .. note::
+           ``boolean`` is a metadata-only declaration, and the server rejects
+           those on create — a ``400`` saying the schema only accepts fields
+           used for search — whatever deployment you ask for and whatever
+           ``filterable`` says, failing the whole schema over the one field.
+           Leave the field out and put the values in the documents you
+           upsert; they are indexed for filtering automatically.
         """
         _validate_field_name(name)
         _validate_description(name, description)
@@ -604,41 +668,50 @@ class SchemaBuilder:
         description: str | None = None,
         **additional_options: Any,
     ) -> SchemaBuilder:
-        """Add a numeric field for metadata filtering (the server rejects these).
+        """Declare a numeric field — which no index you can create accepts.
 
-        .. important::
+        This is the only numeric declaration there is: a create schema has no
+        integer type, and whole numbers are stored and filtered as
+        double-precision floats. Declaring the field is what does not work;
+        numbers are filterable once they are in a document. See the note
+        below, and upsert the value as an ordinary document field instead.
 
-           At API version ``2026-07``, ``float`` is a metadata-only
-           declaration and no index you can create accepts one. The server
-           rejects it on every deployment type this version creates
-           (``400``: the schema only accepts fields used for search),
-           regardless of ``filterable``, and one rejected field fails the
-           whole schema. Pod indexes are not a way around it: ``2026-07``
-           refuses to create a pod index at all. Leave numeric values out
-           of the schema and put them in documents instead; they are
-           indexed for filtering automatically at upsert time.
-
-        The wire type is ``"float"``. The create schema has no integer type;
-        integers are stored and filtered as double-precision floats.
-        (Describe/list responses can still return ``integer`` for indexes
-        that pre-date that normalisation; see
-        :class:`~pinecone.models.indexes.schema.IntegerField`.)
+        Describe and list responses can still return ``integer`` for indexes
+        that pre-date that normalisation — see
+        :class:`~pinecone.models.indexes.schema.IntegerField`.
 
         Args:
-            name: Field name. Replaces any existing field with the same name.
-            filterable: Enable filtering on this field. Always included in the
-                built schema, whether ``True`` or ``False``.
-            description: Optional human-readable description.
+            name: Field name, up to 64 bytes, e.g. ``"release_year"``.
+                Replaces any existing field with the same name.
+            filterable: Enable metadata filtering on the field. Always
+                included in the built schema, whether ``True`` or ``False``.
+            description: Human-readable note stored with the field, up to 256
+                bytes. Optional.
             **additional_options: Extra parameters merged into the field dict
                 last, for forward compatibility with new API features.
 
         Returns:
             ``self`` for method chaining.
 
-        Examples:
-            .. code-block:: python
+        Raises:
+            :exc:`~pinecone.errors.exceptions.PineconeValueError`: If ``name``
+                or ``description`` exceeds its byte limit.
 
-                builder.add_float_field("release_year", filterable=True)
+        Examples:
+            >>> from pinecone.schema_builder import SchemaBuilder
+            >>> schema = SchemaBuilder().add_float_field(
+            ...     "release_year", filterable=True
+            ... ).build()
+            >>> schema["fields"]["release_year"]
+            {'type': 'float', 'filterable': True}
+
+        .. note::
+           ``float`` is a metadata-only declaration, and the server rejects
+           those on create — a ``400`` saying the schema only accepts fields
+           used for search — whatever deployment you ask for and whatever
+           ``filterable`` says, failing the whole schema over the one field.
+           Leave the field out and put the values in the documents you
+           upsert; they are indexed for filtering automatically.
         """
         _validate_field_name(name)
         _validate_description(name, description)
@@ -654,37 +727,50 @@ class SchemaBuilder:
         name: str,
         field_definition: dict[str, Any],
     ) -> SchemaBuilder:
-        """Escape hatch — store a raw field dict verbatim.
+        """Store a raw field dict verbatim — the escape hatch.
 
-        Use when you need a field type the SDK does not yet model, or when
-        experimenting with new API features before the SDK adds support.
-        The field name is validated and the definition's ``type`` is checked
-        against the response-only types listed below; nothing else about the
-        definition is validated.
-
-        .. important::
-
-           ``{"type": "integer"}`` is rejected client-side. ``integer`` is a
-           response-only field type: it comes back from describe/list for
-           indexes created before numeric values were normalised to float,
-           but the ``2026-07`` create schema has no integer variant and the
-           server answers a create request carrying one with a ``422``. When
-           replaying a described schema into a create request, drop integer
-           fields; numeric metadata is indexed for filtering automatically at
-           upsert time, and :meth:`add_float_field` is no help — a ``float``
-           declaration is rejected on create too.
+        Two jobs: copying a field definition out of a describe response into
+        a new index's schema, and declaring a field type a newer API version
+        offers that this SDK does not model yet. The name is checked and the
+        definition's ``type`` is rejected if it is response-only; the rest of
+        the definition goes through untouched, so anything else wrong with it
+        surfaces as a server error on create rather than here.
 
         Args:
-            name: Field name. Replaces any existing field with the same name.
-            field_definition: Complete field definition dict; stored as-is.
+            name: Field name, up to 64 bytes. Replaces any existing field
+                with the same name.
+            field_definition: The complete field definition, stored as-is and
+                deep-copied into the built schema.
 
         Returns:
             ``self`` for method chaining.
 
         Raises:
-            PineconeValueError: If the field name is invalid, or if
-                ``field_definition["type"]`` is a response-only type such as
-                ``"integer"``.
+            :exc:`~pinecone.errors.exceptions.PineconeValueError`: If the
+                field name is empty or over its byte limit, or if
+                ``field_definition["type"]`` is response-only, which today
+                means ``"integer"``.
+
+        Examples:
+            >>> from pinecone.schema_builder import SchemaBuilder
+            >>> described = {"type": "dense_vector", "dimension": 1536,
+            ...              "metric": "cosine"}
+            >>> schema = SchemaBuilder().add_custom_field(
+            ...     "embedding", described
+            ... ).build()
+            >>> schema["fields"]["embedding"]
+            {'type': 'dense_vector', 'dimension': 1536, 'metric': 'cosine'}
+
+        .. note::
+           ``{"type": "integer"}`` is refused here rather than on the wire.
+           ``integer`` comes back from describe and list for indexes created
+           before numeric values were normalised to float, but there is no
+           integer variant to create and the server answers a create request
+           carrying one with a ``422``. When replaying a described schema
+           into a create request, drop those fields —
+           :meth:`add_float_field` is no help, because a ``float``
+           declaration is rejected on create too, and numeric metadata needs
+           no declaration.
         """
         _validate_field_name(name)
         self._set_field(name, field_definition)
@@ -699,10 +785,11 @@ class SchemaBuilder:
         untouched. One builder can be reused across several indexes even when
         each schema is edited after the fact.
 
-        The server requires at least one searched field (``dense_vector``,
-        ``sparse_vector``, or ``string`` with ``full_text_search``) per
-        schema; the builder does not enforce that here so partial schemas
-        can be built and inspected.
+        Nothing here checks that the schema is complete. The server requires
+        at least one searched field (``dense_vector``, ``sparse_vector``, or
+        ``string`` with ``full_text_search``), and a schema without one is
+        built and returned all the same, so that partial schemas can be
+        inspected; the create call is where it fails.
 
         Returns:
             ``{"fields": {name: field_dict, ...}}`` ready to pass as the

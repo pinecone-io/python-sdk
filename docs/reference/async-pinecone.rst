@@ -35,6 +35,7 @@ Sub-clients for each resource type are accessed as properties (e.g.
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
    :special-members: __init__, __aenter__, __aexit__
 
 
@@ -45,6 +46,7 @@ AsyncIndexes
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
 
 
 AsyncCollections
@@ -54,6 +56,7 @@ AsyncCollections
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
 
 
 AsyncBackups
@@ -63,6 +66,7 @@ AsyncBackups
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
 
 
 AsyncBackupSchedules
@@ -72,6 +76,7 @@ AsyncBackupSchedules
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
 
 
 AsyncRestoreJobs
@@ -81,6 +86,7 @@ AsyncRestoreJobs
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
 
 
 AsyncInference
@@ -90,6 +96,13 @@ AsyncInference
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource
+
+.. autoclass:: pinecone.async_client.inference.AsyncModelResource
+   :members:
+   :undoc-members: False
+   :show-inheritance:
+   :member-order: bysource
 
 
 AsyncAssistants
@@ -99,3 +112,4 @@ AsyncAssistants
    :members:
    :undoc-members: False
    :show-inheritance:
+   :member-order: bysource

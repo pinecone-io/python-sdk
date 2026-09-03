@@ -5,7 +5,7 @@ retryable response; the bulk paths read ``current_limit(host, ceiling)``
 before dispatching work. The limiter self-tunes effective concurrency
 between ``1`` and the user-provided ``max_concurrency`` ceiling.
 
-Not thread-coordinated across processes. See ``docs/guides/retries.md``
+Not thread-coordinated across processes. See :doc:`/guides/retries`
 for multi-process guidance.
 """
 

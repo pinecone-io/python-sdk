@@ -14,14 +14,20 @@ EntailmentType = Literal["entailed", "contradicted", "neutral"] | str
 
 
 class EntailmentResult(StructDictMixin, Struct, kw_only=True):
-    """A single fact with its entailment judgment.
+    """One evaluated fact, and how the answer stood against it.
+
+    Reached as an entry of ``result.facts``. Filtering for
+    ``"contradicted"`` gives you the specific places the answer and the ground
+    truth disagree, which the aggregate scores cannot tell you.
 
     Attributes:
-        fact: The content of the evaluated fact.
-        entailment: The entailment classification — one of
-            ``"entailed"``, ``"contradicted"``, or ``"neutral"``.
-        reasoning: The reasoning behind the entailment judgment.
-            Empty string when not provided by the API.
+        fact: The fact under evaluation, as a sentence.
+        entailment: How the answer stood against the fact — ``"entailed"``,
+            ``"contradicted"``, or ``"neutral"``. Typed as :class:`str` rather
+            than a closed set, so an unrecognized value decodes instead of
+            raising.
+        reasoning: Why the judgment was made. ``""`` when the API returned
+            none, so test for truthiness rather than for ``None``.
     """
 
     fact: str
@@ -67,12 +73,18 @@ class EntailmentResult(StructDictMixin, Struct, kw_only=True):
 
 
 class AlignmentScores(StructDictMixin, Struct, kw_only=True):
-    """Aggregate alignment scores for an evaluation.
+    """The three aggregate scores of an alignment evaluation.
+
+    Reached as ``result.scores``. Because ``alignment`` is a harmonic mean, a
+    low score on either input drags it down, so read all three rather than
+    tracking ``alignment`` alone.
 
     Attributes:
-        correctness: Precision of the generated answer.
-        completeness: Recall of the generated answer.
-        alignment: Harmonic mean of correctness and completeness.
+        correctness: Precision of the generated answer — how much of what it
+            said holds up.
+        completeness: Recall of the generated answer — how much of the ground
+            truth it covered.
+        alignment: Harmonic mean of ``correctness`` and ``completeness``.
     """
 
     correctness: float
@@ -110,12 +122,45 @@ class AlignmentScores(StructDictMixin, Struct, kw_only=True):
 
 
 class AlignmentResult(StructDictMixin, Struct, kw_only=True):
-    """Full result of an alignment evaluation.
+    """How well a generated answer matched a ground-truth answer.
+
+    Returned by
+    :meth:`~pinecone.client.assistants.Assistants.evaluate_alignment`. Read
+    ``result.scores`` for the aggregate numbers and ``result.facts`` for the
+    per-fact judgments that explain them — the scores tell you an answer is
+    wrong, and the facts tell you where.
 
     Attributes:
-        scores: Aggregate correctness, completeness, and alignment scores.
-        facts: Per-fact entailment results with reasoning.
-        usage: Token usage statistics for the evaluation request.
+        scores: The :class:`AlignmentScores` for the answer as a whole —
+            ``scores.correctness`` (precision of what the answer said),
+            ``scores.completeness`` (recall against the ground truth), and
+            ``scores.alignment``, their harmonic mean. Read all three: a low
+            score on either input drags the mean down.
+        facts: An :class:`EntailmentResult` per fact, each with a judgment and
+            the reasoning behind it.
+        usage: :class:`~pinecone.models.assistant.chat.ChatUsage` token counts
+            for the evaluation request itself, not for the answer being
+            evaluated.
+
+    Examples:
+        The answer below contradicts the ground truth, so the scores come back
+        low and ``facts`` records exactly where the disagreement is:
+
+        >>> result = pc.assistants.evaluate_alignment(
+        ...     question="What is the capital of Spain?",
+        ...     answer="Barcelona.",
+        ...     ground_truth_answer="Madrid.",
+        ... )
+        >>> result.scores
+        AlignmentScores(correctness=0.000, completeness=0.000, alignment=0.000)
+        >>> result.facts[0].entailment
+        'contradicted'
+        >>> result.facts[0].reasoning
+        'The answer names Barcelona instead of Madrid.'
+        >>> [f.fact for f in result.facts if f.entailment == "contradicted"]
+        ['The capital of Spain is Madrid.']
+        >>> result.usage.total_tokens
+        38
     """
 
     scores: AlignmentScores

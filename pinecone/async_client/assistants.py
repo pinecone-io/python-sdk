@@ -139,9 +139,15 @@ def _operation_failure_message(action: str, file_id: str | None, operation: Oper
 class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
     """Async control-plane operations for Pinecone assistants.
 
-    Args:
-        config (PineconeConfig): SDK configuration used to construct an
-            HTTP client targeting the assistant API version.
+    A Pinecone assistant is a managed question-answering service grounded in
+    documents you upload to it: create the assistant, upload files, then chat
+    against them and get answers with citations back to the files that
+    supported each claim.
+
+    Reached as ``pc.assistants`` on an :class:`AsyncPinecone` client; not
+    constructed directly. Unlike an index, which you query for records you
+    then feed to your own model, an assistant does the retrieval and the
+    generation for you.
 
     Examples:
 
@@ -152,6 +158,10 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             async with AsyncPinecone(api_key="your-api-key") as pc:
                 async for assistant in pc.assistants.list():
                     print(assistant.name, assistant.status)
+
+    .. seealso::
+       :doc:`/guides/error-handling` — the exceptions any of these methods can
+       raise, and which ones are worth retrying.
     """
 
     def __init__(self, config: PineconeConfig) -> None:
@@ -284,19 +294,22 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             name (str): Name for the new assistant, e.g. ``"docs-assistant"``.
                 Must be unique within the project.
             instructions (str | None): Guidance the assistant applies to every
-                response, e.g. ``"Always cite the source document."``. Maximum
-                16 KB.
+                response, e.g. ``"Always cite the source document."``.
+                Rejected if it exceeds the server's size cap for the field.
             metadata (dict[str, Any] | None): Optional metadata to attach to
                 the assistant, e.g. ``{"team": "docs"}``.
             region (str): Region to deploy the assistant in, ``"us"`` or
-                ``"eu"``. Defaults to ``"us"``. EU availability depends on your
-                plan.
+                ``"eu"``. Defaults to ``"us"``. Cannot be changed afterwards —
+                an assistant in the wrong region has to be recreated.
             environment (str | None): Advanced override for select internal
                 Pinecone deployments. Most users should leave this unset.
             timeout (float | None): Seconds to wait for the assistant to become
                 ready. Use ``None`` (default) to poll indefinitely, ``-1`` to
                 return immediately without polling, or a non-negative value to
                 poll with a deadline.
+            **kwargs (Any): Accepts the legacy alias ``assistant_name`` for
+                *name*. Passing both, or any other keyword, raises
+                :exc:`PineconeValueError`.
 
         Returns:
             :class:`AssistantModel` describing the created assistant.
@@ -305,8 +318,9 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :exc:`PineconeValueError`: If *region* is not ``"us"`` or ``"eu"``.
             :exc:`PineconeTimeoutError`: If the assistant does not become ready
                 before the deadline.
-            :exc:`ApiError`: If the API returns an error response, such as
-                reaching your project's assistant limit.
+            :exc:`ApiError`: If an assistant of this name already exists in the
+                project, or the project has reached its assistant quota —
+                delete one you no longer need before retrying.
 
         Examples:
             .. code-block:: python
@@ -314,7 +328,7 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 from pinecone import AsyncPinecone
 
                 async with AsyncPinecone(api_key="your-api-key") as pc:
-                    assistant = await pc.assistants.create(name="my-assistant")
+                    assistant = await pc.assistants.create(name="research-assistant")
                     print(assistant.status)
 
             Instructions, metadata and region are all optional. ``create``
@@ -324,9 +338,9 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             .. code-block:: python
 
                 assistant = await pc.assistants.create(
-                    name="research-assistant",
+                    name="support-docs-assistant",
                     instructions="Always cite the source document.",
-                    metadata={"team": "research", "cost_center": "R-4120"},
+                    metadata={"team": "support", "cost_center": "R-4120"},
                     region="eu",
                 )
         """
@@ -381,6 +395,9 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
 
         Args:
             name (str): The name of the assistant to describe.
+            **kwargs (Any): Accepts the legacy alias ``assistant_name`` for
+                *name*. Passing both, or any other keyword, raises
+                :exc:`PineconeValueError`.
 
         Returns:
             :class:`AssistantModel` with name, status, created_at, updated_at,
@@ -388,12 +405,11 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
 
         Raises:
             :exc:`NotFoundError`: If the assistant does not exist.
-            :exc:`ApiError`: If the API returns another error response.
 
         Examples:
             .. code-block:: python
 
-                assistant = await pc.assistants.describe(name="my-assistant")
+                assistant = await pc.assistants.describe(name="research-assistant")
                 print(assistant.status)
         """
         from pinecone._internal.kwargs_aliases import (
@@ -444,9 +460,6 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             Supports ``async for`` loops, ``.to_list()``, ``.pages()``, and
             ``limit``.
 
-        Raises:
-            :exc:`ApiError`: If the API returns an error response.
-
         Examples:
             .. code-block:: python
 
@@ -460,6 +473,12 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             .. code-block:: python
 
                 all_assistants = await pc.assistants.list().to_list()
+
+        .. seealso::
+           - :meth:`list_page` — one page at a time, when you want to hold
+             the continuation token yourself.
+           - :doc:`/guides/pagination` — how the paginator and the
+             continuation tokens work.
         """
         logger.info("Listing assistants")
 
@@ -488,13 +507,13 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 back as an :exc:`ApiError` naming the bound it broke.
             pagination_token (str | None): Token from a previous response
                 to fetch the next page.
+            **kwargs (Any): Accepts the legacy alias ``limit`` for
+                *page_size*. Passing both, or any other keyword, raises
+                :exc:`PineconeValueError`.
 
         Returns:
             :class:`ListAssistantsResponse` with an ``assistants`` list and
             an optional ``next`` continuation token.
-
-        Raises:
-            :exc:`ApiError`: If the API returns an error response.
 
         Examples:
             .. code-block:: python
@@ -507,6 +526,10 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                         page_size=10,
                         pagination_token=page.next,
                     )
+
+        .. seealso::
+           :doc:`/guides/pagination` — the continuation-token loop this method
+           expects you to drive, and the paginator that drives it for you.
         """
         from pinecone._internal.kwargs_aliases import (
             reject_unknown_kwargs,
@@ -571,6 +594,9 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             metadata (dict[str, Any] | None): New metadata dictionary. Fully
                 replaces any existing metadata rather than merging. Pass an
                 empty dict to clear existing metadata.
+            **kwargs (Any): Accepts the legacy alias ``assistant_name`` for
+                *name*. Passing both, or any other keyword, raises
+                :exc:`PineconeValueError`.
 
         Returns:
             :class:`AssistantModel` describing the updated assistant.
@@ -579,7 +605,6 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :exc:`PineconeValueError`: If neither *instructions* nor
                 *metadata* is provided.
             :exc:`NotFoundError`: If the assistant does not exist.
-            :exc:`ApiError`: If the API returns another error response.
 
         Examples:
             Patch only the instructions. ``metadata`` is left out of the
@@ -589,7 +614,7 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             .. code-block:: python
 
                 assistant = await pc.assistants.update(
-                    name="my-assistant",
+                    name="research-assistant",
                     instructions="Always cite the source document.",
                 )
 
@@ -602,7 +627,7 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             .. code-block:: python
 
                 assistant = await pc.assistants.update(
-                    name="my-assistant",
+                    name="research-assistant",
                     metadata={"team": "docs-platform"},
                 )
         """
@@ -672,11 +697,12 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 Use a positive value to poll with a deadline. Raises
                 :exc:`PineconeTimeoutError` if the assistant is not gone
                 before the deadline.
-            **kwargs (Any): Accepted for backwards compatibility only.
-                Unknown kwargs raise :exc:`PineconeValueError`.
+            **kwargs (Any): Accepts the legacy alias ``assistant_name`` for
+                *name*. Passing both, or any other keyword, raises
+                :exc:`PineconeValueError`.
 
         Returns:
-            None.
+            None
 
         Raises:
             :exc:`PineconeError`: If the assistant enters a terminal failure
@@ -684,14 +710,13 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 deleted.
             :exc:`PineconeTimeoutError`: If the assistant still exists after
                 *timeout* seconds.
-            :exc:`ApiError`: If the API returns an error response.
 
         :rtype: None
 
         Examples:
             .. code-block:: python
 
-                await pc.assistants.delete(name="my-assistant")
+                await pc.assistants.delete(name="research-assistant")
 
             The call above blocks until the assistant is confirmed gone. Pass
             ``timeout=-1`` to return as soon as the request is accepted — the
@@ -772,22 +797,20 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
 
         Raises:
             :exc:`NotFoundError`: If the file does not exist.
-            :exc:`ApiError`: If the API returns an error response.
-
-        Note:
-            Unlike :meth:`list_files`, this applies no age filter: a
-            ``"ProcessingFailed"`` file whose ``created_on`` is more than 7
-            days old is still returned here after it has dropped out of that
-            listing.
 
         Examples:
             .. code-block:: python
 
                 file = await pc.assistants.describe_file(
-                    assistant_name="my-assistant",
+                    assistant_name="research-assistant",
                     file_id="file-abc123",
                 )
                 print(file.status)
+
+        .. seealso::
+           :meth:`list_files` — every file on the assistant. That listing
+           drops a ``"ProcessingFailed"`` file once it is old enough; this
+           method still returns it by id.
         """
         data_http = await self._data_plane_http(assistant_name)
         params: dict[str, str] = {}
@@ -822,6 +845,9 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 next page.
             filter: Optional metadata filter expression. Serialized to a JSON
                 string before being sent to the API.
+            **kwargs (Any): Accepts the legacy alias ``limit`` for
+                *page_size*. Passing both, or any other keyword, raises
+                :exc:`PineconeValueError`.
 
         Returns:
             :class:`ListFilesResponse` with a ``files`` list and an optional
@@ -829,23 +855,26 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
 
         Raises:
             :exc:`NotFoundError`: If the assistant does not exist.
-            :exc:`ApiError`: If the API returns an error response.
 
         Examples:
             .. code-block:: python
 
                 page = await pc.assistants.list_files_page(
-                    assistant_name="my-assistant",
+                    assistant_name="research-assistant",
                     page_size=10,
                 )
                 for f in page.files:
                     print(f.name)
                 if page.next:
                     next_page = await pc.assistants.list_files_page(
-                        assistant_name="my-assistant",
+                        assistant_name="research-assistant",
                         page_size=10,
                         pagination_token=page.next,
                     )
+
+        .. seealso::
+           :doc:`/guides/pagination` — the continuation-token loop this method
+           expects you to drive, and the paginator that drives it for you.
         """
         from pinecone._internal.kwargs_aliases import (
             reject_unknown_kwargs,
@@ -900,6 +929,10 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
     ) -> AsyncPaginator[AssistantFileModel]:
         """List files for an assistant with lazy async pagination.
 
+        A ``"ProcessingFailed"`` file drops out of this listing once its
+        ``created_on`` passes the listing's age cutoff. It is not gone — it
+        stays retrievable by id through :meth:`describe_file`.
+
         Args:
             assistant_name: Name of the assistant whose files to list.
             filter: Optional metadata filter expression. Serialized to a JSON
@@ -915,17 +948,11 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
 
         Raises:
             :exc:`NotFoundError`: If the assistant does not exist.
-            :exc:`ApiError`: If the API returns an error response.
-
-        Note:
-            A ``"ProcessingFailed"`` file drops out of this listing once its
-            ``created_on`` is more than 7 days old. It is not gone — it stays
-            retrievable by id through :meth:`describe_file`.
 
         Examples:
             .. code-block:: python
 
-                async for f in pc.assistants.list_files(assistant_name="my-assistant"):
+                async for f in pc.assistants.list_files(assistant_name="research-assistant"):
                     print(f.name, f.status)
 
             The paginator fetches pages lazily as you iterate. Call
@@ -934,7 +961,17 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
 
             .. code-block:: python
 
-                files = await pc.assistants.list_files(assistant_name="my-assistant").to_list()
+                paginator = pc.assistants.list_files(assistant_name="research-assistant")
+                files = await paginator.to_list()
+
+        .. seealso::
+           - :meth:`describe_file` — one file by id, with no age filter: a
+             ``"ProcessingFailed"`` file that has dropped out of this listing
+             is still retrievable there.
+           - :meth:`list_files_page` — one page at a time, when you want to
+             hold the continuation token yourself.
+           - :doc:`/guides/pagination` — how the paginator and the
+             continuation tokens work.
         """
         logger.info("Listing files for assistant %r", assistant_name)
 
@@ -1017,7 +1054,9 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 processed. Ignored when *file_path* is given, since its
                 basename already supplies the extension.
             metadata: Optional metadata to attach to the file, e.g.
-                ``{"department": "research"}``. At most 16 KB once encoded.
+                ``{"department": "research"}``. Rejected if it exceeds the
+                server's metadata size cap, which is measured on the encoded
+                bytes rather than on the number of keys.
             multimodal: Whether to enable multimodal processing for PDFs.
             file_id: Optional identifier for the uploaded file. When given,
                 any existing file with that id is replaced. Otherwise the
@@ -1177,13 +1216,12 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :exc:`PineconeError`: If the deletion operation reports failure.
             :exc:`PineconeTimeoutError`: If the deletion has not finished
                 after *timeout* seconds.
-            :exc:`ApiError`: If the API returns an error response.
 
         Examples:
             .. code-block:: python
 
                 await pc.assistants.delete_file(
-                    assistant_name="my-assistant",
+                    assistant_name="research-assistant",
                     file_id="file-abc123",
                 )
         """
@@ -1247,16 +1285,19 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :exc:`NotFoundError`: If the assistant or the operation does not
                 exist. A finished operation stays describable until it ages out
                 of the API's retention window, and 404s from then on.
-            :exc:`ApiError`: If the API returns an error response.
 
         Examples:
             .. code-block:: python
 
                 operation = await pc.assistants.describe_operation(
-                    assistant_name="my-assistant",
+                    assistant_name="research-assistant",
                     operation_id="op-1234-abcd-5678",
                 )
                 print(operation.status, operation.percent_complete)
+
+        .. seealso::
+           :meth:`list_operations` — every operation on the assistant, when
+           you did not keep the operation id.
         """
         data_http = await self._data_plane_http(assistant_name)
         logger.info("Describing operation %r in assistant %r", operation_id, assistant_name)
@@ -1301,12 +1342,11 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :exc:`PineconeValueError`: If *operation_type* or *status* is not
                 one of the values above.
             :exc:`NotFoundError`: If the assistant does not exist.
-            :exc:`ApiError`: If the API returns an error response.
 
         Examples:
             .. code-block:: python
 
-                async for op in pc.assistants.list_operations(assistant_name="my-assistant"):
+                async for op in pc.assistants.list_operations(assistant_name="research-assistant"):
                     print(op.operation_id, op.status, op.percent_complete)
 
             Filter server-side to narrow the listing — here, uploads that have
@@ -1315,10 +1355,18 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             .. code-block:: python
 
                 pending = await pc.assistants.list_operations(
-                    assistant_name="my-assistant",
+                    assistant_name="research-assistant",
                     operation_type="upload_file",
                     status="Processing",
                 ).to_list()
+
+        .. seealso::
+           - :meth:`describe_operation` — one operation by id, when you kept
+             the id a ``timeout=-1`` call handed back.
+           - :meth:`list_operations_page` — one page at a time, when you want
+             to hold the continuation token yourself.
+           - :doc:`/guides/pagination` — how the paginator and the
+             continuation tokens work.
         """
         logger.info("Listing operations for assistant %r", assistant_name)
 
@@ -1371,13 +1419,12 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             :exc:`PineconeValueError`: If *operation_type* or *status* is not
                 one of the values above.
             :exc:`NotFoundError`: If the assistant does not exist.
-            :exc:`ApiError`: If the API returns an error response.
 
         Examples:
             .. code-block:: python
 
                 page = await pc.assistants.list_operations_page(
-                    assistant_name="my-assistant",
+                    assistant_name="research-assistant",
                     status="Failed",
                     page_size=10,
                 )
@@ -1385,11 +1432,15 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                     print(op.operation_id, op.error)
                 if page.next:
                     next_page = await pc.assistants.list_operations_page(
-                        assistant_name="my-assistant",
+                        assistant_name="research-assistant",
                         status="Failed",
                         page_size=10,
                         pagination_token=page.next,
                     )
+
+        .. seealso::
+           :doc:`/guides/pagination` — the continuation-token loop this method
+           expects you to drive, and the paginator that drives it for you.
         """
         params: dict[str, str | int] = {}
         if operation_type is not None:
@@ -1459,23 +1510,31 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 Omitted from the request when ``None``.
 
         Returns:
-            :class:`ContextResponse` containing the matching context snippets.
+            :class:`ContextResponse` with ``snippets`` (each carrying
+            ``content``, a relevance ``score``, and a ``reference`` naming the
+            source file and, for paginated documents, the pages) and
+            ``usage``.
 
         Raises:
             :exc:`PineconeValueError`: If both or neither of *query* and
                 *messages* are provided, or if *top_k* or *snippet_size* is
                 negative.
-            :exc:`ApiError`: If the API returns an error response.
 
         Examples:
             .. code-block:: python
 
                 response = await pc.assistants.context(
-                    assistant_name="my-assistant",
+                    assistant_name="research-assistant",
                     query="What is Pinecone?",
                 )
                 for snippet in response.snippets:
                     print(snippet.content)
+
+        .. seealso::
+           - :meth:`chat` — a generated answer with structured citations,
+             when you want Pinecone to do the generation as well.
+           - :meth:`chat_completions` — a generated answer in OpenAI's
+             response shape.
         """
         query_truthy = query is not None and query != ""
         messages_truthy = messages is not None and len(messages) > 0
@@ -1535,6 +1594,12 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
     ) -> ChatResponse | AsyncChatStream:
         """Chat with an assistant and receive citations in Pinecone-native format.
 
+        Citations come back as a structured list keyed to character positions
+        in the answer, which is what separates this from
+        :meth:`chat_completions`. The assistant answers only from the files
+        you uploaded to it, so an assistant with nothing ingested yet errors
+        rather than replying from general knowledge.
+
         Args:
             assistant_name (str): Name of the assistant to chat with.
             messages (list[Message | dict[str, str]]): Conversation messages.
@@ -1542,15 +1607,15 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 to ``"user"`` when not present. Roles are case-sensitive
                 ``"user"`` or ``"assistant"`` and content must be non-blank —
                 see :class:`Message`. Neither is checked client-side.
-            model (str): Name of the large language model to use. Defaults
-                to ``"gpt-4o"``. The models the ``2026-07`` API documents for
-                this endpoint are ``"gpt-4o"``, ``"gpt-4.1"``, ``"gpt-5"``,
-                ``"o4-mini"``, ``"claude-sonnet-4-5"``, and
-                ``"gemini-2.5-pro"``. The removed aliases
-                ``"claude-3-5-sonnet"`` and ``"claude-3-7-sonnet"`` are still
-                accepted but deprecated — the backend silently remaps them to
-                ``"claude-sonnet-4-5"``, so migrate to that name. Not
-                validated client-side; the API rejects an unrecognized name.
+            model (str): Name of the large language model that generates the
+                answer. Defaults to ``"gpt-4o"``. The models the API
+                documents for this endpoint are ``"gpt-4o"``, ``"gpt-4.1"``,
+                ``"gpt-5"``, ``"o4-mini"``, ``"claude-sonnet-4-5"``, and
+                ``"gemini-2.5-pro"``. A name outside that list may be served
+                by a successor model rather than rejected, so the response's
+                ``model`` field, not this argument, says which model
+                answered. Not validated client-side; the API rejects an
+                unrecognized name with an error enumerating what it accepts.
             stream (bool): If ``True``, return an :class:`AsyncChatStream`.
                 Defaults to ``False``.
             temperature (float | None): Controls randomness. Lower values produce
@@ -1568,22 +1633,18 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 gap between chunks rather than the whole response (see below).
 
         Returns:
-            :class:`ChatResponse` for non-streaming requests, or an
-            :class:`AsyncChatStream` for streaming requests.
+            :class:`ChatResponse` for non-streaming requests, carrying
+            ``message`` (the answer), ``citations`` (each with the ``position``
+            in the answer it supports and the ``references`` behind it),
+            ``model`` (the model that answered), ``finish_reason`` and
+            ``usage``. For streaming requests, an :class:`AsyncChatStream`.
 
         Raises:
             :exc:`PineconeValueError`: If both ``stream=True`` and
                 ``json_response=True`` are specified.
-            :exc:`ApiError`: If the API returns an error response, for example
-                if the assistant has no processed files yet.
-
-        Note:
-            On a streaming request, the timeout applies to the gap between
-            chunks rather than the whole response, and the default is raised
-            so a model that thinks for a while isn't mistaken for a dead
-            connection. Pass *timeout* to change it. A stream that exceeds its
-            timeout raises :exc:`PineconeTimeoutError` partway through
-            iteration, after earlier chunks have already been yielded.
+            :exc:`ApiError`: If the assistant has no file in ``"Available"``
+                status yet — check with :meth:`list_files` before reading this
+                as a transport failure.
 
         Examples:
             .. code-block:: python
@@ -1595,7 +1656,7 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
 
                 async def main() -> None:
                     response = await pc.assistants.chat(
-                        assistant_name="my-assistant",
+                        assistant_name="research-assistant",
                         messages=[{"content": "What is Pinecone?"}],
                     )
                     print(response.message.content)
@@ -1604,9 +1665,7 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                             print(citation.position, reference.file.name)
                 asyncio.run(main())
 
-            The citations come back as structured objects here rather than
-            woven into the text, which is what separates this method from
-            :meth:`chat_completions`. Set ``stream=True`` for an
+            Set ``stream=True`` for an
             :class:`AsyncChatStream` instead of a single response — ``text()``
             yields content fragments as they arrive, skipping the start,
             citation and end chunks:
@@ -1615,13 +1674,28 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
 
                 async def stream_main() -> None:
                     stream = await pc.assistants.chat(
-                        assistant_name="my-assistant",
+                        assistant_name="research-assistant",
                         messages=[{"content": "What is Pinecone?"}],
                         stream=True,
                     )
                     async for text in stream.text():
                         print(text, end="", flush=True)
                 asyncio.run(stream_main())
+
+        .. seealso::
+           - :meth:`chat_completions` — the same conversation in OpenAI's
+             response shape, with citations woven into the message text
+             instead of returned as a structured list.
+           - :meth:`context` — the retrieved snippets on their own, with no
+             generated answer, when you want to prompt your own model.
+
+        .. note::
+           On a streaming request the timeout applies to the gap between
+           chunks rather than the whole response, and the default is raised so
+           a model that thinks for a while isn't mistaken for a dead
+           connection. Pass *timeout* to change it. A stream that exceeds its
+           timeout raises :exc:`PineconeTimeoutError` partway through
+           iteration, after earlier chunks have already been yielded.
         """
         if stream and json_response:
             raise PineconeValueError("json_response cannot be used with stream=True")
@@ -1754,17 +1828,17 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 to ``"user"`` when not present. Roles are case-sensitive
                 ``"user"`` or ``"assistant"`` and content must be non-blank —
                 see :class:`Message`. Neither is checked client-side.
-            model (str): Name of the large language model to use. Defaults
-                to ``"gpt-4o"``. The models the ``2026-07`` API documents for
-                this endpoint are ``"gpt-4o"``, ``"gpt-4.1"``, ``"o4-mini"``,
-                ``"claude-sonnet-4-5"``, and ``"gemini-2.5-pro"`` — the same
-                list :meth:`chat` accepts, minus ``"gpt-5"``, which the spec
-                documents only on the Pinecone-native chat endpoint. The
-                removed aliases ``"claude-3-5-sonnet"`` and
-                ``"claude-3-7-sonnet"`` are still accepted but deprecated —
-                the backend silently remaps them to ``"claude-sonnet-4-5"``,
-                so migrate to that name. Not validated client-side; the API
-                rejects an unrecognized name.
+            model (str): Name of the large language model that generates the
+                answer. Defaults to ``"gpt-4o"``. The models the API
+                documents for this endpoint are ``"gpt-4o"``, ``"gpt-4.1"``,
+                ``"o4-mini"``, ``"claude-sonnet-4-5"``, and
+                ``"gemini-2.5-pro"`` — the same list :meth:`chat` accepts,
+                minus ``"gpt-5"``, which is documented only on :meth:`chat`.
+                A name outside that list may be served by a successor model
+                rather than rejected, so the response's ``model`` field, not
+                this argument, says which model answered. Not validated
+                client-side; the API rejects an unrecognized name with an
+                error enumerating what it accepts.
             stream (bool): If ``True``, return an
                 :class:`AsyncChatCompletionStream`. Defaults to ``False``.
             temperature (float | None): Controls randomness. Lower values produce
@@ -1776,21 +1850,16 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                 gap between chunks rather than the whole response (see below).
 
         Returns:
-            :class:`ChatCompletionResponse` for non-streaming requests, or an
-            :class:`AsyncChatCompletionStream` for streaming requests.
+            :class:`ChatCompletionResponse` for non-streaming requests,
+            carrying ``choices`` (read ``choices[0].message.content`` for the
+            answer, with citations woven into that text), ``model`` (the model
+            that answered), and ``usage``. For streaming requests, an
+            :class:`AsyncChatCompletionStream`.
 
         Raises:
-            :exc:`ApiError`: If the API returns an error response, for example
-                if the assistant has no processed files yet.
-
-        Note:
-            On a streaming request, the timeout applies to the gap between
-            chunks rather than the whole response, and the default is raised
-            so a model that pauses for longer while reasoning isn't mistaken
-            for a dead connection. Pass *timeout* to widen it further. A
-            stream that exceeds its timeout raises
-            :exc:`PineconeTimeoutError` partway through iteration, after
-            earlier chunks have already been yielded.
+            :exc:`ApiError`: If the assistant has no file in ``"Available"``
+                status yet — check with :meth:`list_files` before reading this
+                as a transport failure.
 
         Examples:
             .. code-block:: python
@@ -1823,6 +1892,21 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
                     async for chunk in stream:
                         print(chunk)
                 asyncio.run(stream_main())
+
+        .. seealso::
+           - :meth:`chat` — the Pinecone-native shape, and the only one of the
+             two that accepts ``include_highlights``, ``context_options`` and
+             ``json_response`` or returns a structured ``citations`` list.
+           - :meth:`context` — the retrieved snippets on their own, with no
+             generated answer.
+
+        .. note::
+           On a streaming request the timeout applies to the gap between
+           chunks rather than the whole response, and the default is raised so
+           a model that pauses for longer while reasoning isn't mistaken for a
+           dead connection. Pass *timeout* to widen it further. A stream that
+           exceeds its timeout raises :exc:`PineconeTimeoutError` partway
+           through iteration, after earlier chunks have already been yielded.
         """
         parsed: list[Message] = [
             m if isinstance(m, Message) else Message.from_dict(m) for m in messages
@@ -1936,10 +2020,6 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
         Returns:
             :class:`AlignmentResult` with aggregate scores, per-fact entailment
             results, and token usage statistics.
-
-        Raises:
-            :exc:`ApiError`: If the API returns an error response. This
-                endpoint requires a paid plan.
 
         Examples:
             The answer below contradicts the ground truth on purpose, so the

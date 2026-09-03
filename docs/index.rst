@@ -82,9 +82,6 @@ Pinecone Python SDK
 
    reference/pinecone
    reference/sync-index
-   reference/models
-   reference/schema-builder
-   reference/exceptions
 
 .. toctree::
    :maxdepth: 1
@@ -105,4 +102,12 @@ Pinecone Python SDK
    :caption: Admin
 
    reference/admin
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Shared Types
+
+   reference/models
+   reference/schema-builder
+   reference/exceptions
 

@@ -1,4 +1,4 @@
-"""Search records response models."""
+"""What ``Index.search`` sends and gets back: hits, usage, and the typed request keys."""
 
 from __future__ import annotations
 
@@ -30,20 +30,36 @@ class _RerankConfigRequired(TypedDict):
 
 
 class RerankConfig(_RerankConfigRequired, total=False):
-    """Typed configuration for the ``rerank`` parameter of :meth:`~pinecone.Index.search`.
+    """The ``rerank`` argument of :meth:`~pinecone.Index.search`, as a typed dict.
 
-    Required keys: ``model``, ``rank_fields``.
-    All other keys are optional.
+    Reranking runs a second, slower model over the hits the search already found and
+    reorders them, which usually buys precision at the top of the list at the cost of
+    latency. Pass this as a plain dict — it is a :class:`~typing.TypedDict`, so your
+    editor and type checker see the keys, but there is nothing to instantiate.
+
+    ``model`` and ``rank_fields`` are required; the rest are optional.
 
     Attributes:
-        model (str): Reranking model name (e.g. ``"bge-reranker-v2-m3"``).
-        rank_fields (list[str]): Record fields to rank on (e.g. ``["text"]``).
-        top_n (int): Number of top results to return after reranking.
-            Defaults to the value of ``top_k`` when omitted.
-        parameters (dict[str, Any]): Model-specific parameters forwarded to
-            the reranker. See the model documentation for supported keys.
-        query (str): Override query text used for reranking.  When omitted the
-            query is inferred from the search inputs.
+        model (str): The reranking model to use, e.g. ``"bge-reranker-v2-m3"``. The model
+            you request may not be the model that serves the request; the response reports
+            which one did.
+        rank_fields (list[str]): The record fields the reranker reads, e.g. ``["chunk"]``.
+            These must be fields the search returns.
+        top_n (int): How many hits to keep after reranking. Defaults to ``top_k``, so set
+            it lower to have the reranker narrow a wider candidate set.
+        parameters (dict[str, Any]): Extra parameters the chosen model accepts.
+        query (str): Text to rerank against, when it should differ from the search query —
+            omit it and the search inputs are used.
+
+    Examples:
+        .. code-block:: python
+
+            response = idx.search(
+                namespace="articles-en",
+                top_k=20,
+                inputs={"text": "how do sparse indexes score matches"},
+                rerank={"model": "bge-reranker-v2-m3", "rank_fields": ["chunk"], "top_n": 5},
+            )
     """
 
     top_n: int
@@ -58,24 +74,41 @@ class _SearchInputsRequired(TypedDict):
 
 
 class SearchInputs(_SearchInputsRequired, total=False):
-    """Typed configuration for the ``inputs`` parameter of :meth:`~pinecone.Index.search`.
+    """The ``inputs`` argument of :meth:`~pinecone.Index.search`, as a typed dict.
 
-    Required keys: ``text``.
+    Use this when you want the index to embed your query for you rather than sending a
+    vector — the path available on indexes with integrated inference. Like
+    :class:`RerankConfig` it is a :class:`~typing.TypedDict`, so pass a plain dict and let
+    your editor check the keys.
 
     Attributes:
-        text (str): Text to embed server-side for the search query.
+        text (str): The query text to embed server-side, e.g.
+            ``"how do sparse indexes score matches"``.
+
+    Examples:
+        .. code-block:: python
+
+            response = idx.search(
+                namespace="articles-en",
+                top_k=5,
+                inputs={"text": "how do sparse indexes score matches"},
+            )
     """
 
 
 class SearchUsage(StructDictMixin, Struct, kw_only=True):
-    """Usage statistics for a search operation.
+    """What one search cost, broken out by the work it did.
+
+    Which fields are populated tells you which stages ran: ``embed_total_tokens`` appears
+    only when the index embedded your text, and ``rerank_units`` only when you passed
+    ``rerank``. Both being ``None`` is normal for a search that supplied its own vector.
 
     Attributes:
-        read_units (int): Number of read units consumed.
-        embed_total_tokens (int | None): Total tokens used for embedding, or ``None``
-            if the search did not use integrated embedding.
-        rerank_units (int | None): Number of rerank units consumed, or ``None`` if the
-            search did not use reranking.
+        read_units (int): Read units the search consumed.
+        embed_total_tokens (int | None): Tokens embedded server-side, or ``None`` when the
+            search did not embed anything.
+        rerank_units (int | None): Rerank units consumed, or ``None`` when the search did
+            not rerank.
     """
 
     read_units: int
@@ -84,16 +117,37 @@ class SearchUsage(StructDictMixin, Struct, kw_only=True):
 
 
 class Hit(StructDictMixin, Struct, kw_only=True, rename={"id_": "_id", "score_": "_score"}):
-    """A single search result hit.
+    """One search result: which record matched, how well, and the fields you asked for.
 
-    The API returns ``_id`` and ``_score`` as field names. These are mapped
-    to ``id_`` and ``score_`` internally (to avoid Python name mangling),
-    with convenience properties ``id`` and ``score`` for clean access.
+    Read a hit as ``hit.id``, ``hit.score`` and ``hit.fields``. The underscore-suffixed
+    ``id_`` and ``score_`` exist because the wire names are ``_id`` and ``_score``, which
+    Python would name-mangle inside a class; prefer the unsuffixed properties in your own
+    code. Bracket access works too, under the unsuffixed names: ``hit["id"]``.
+
+    ``fields`` holds your record's own data, so what is in it depends on the ``fields``
+    argument the search passed — this is where a search differs from a query, which
+    splits the same information across ``values`` and ``metadata``.
 
     Attributes:
-        id_ (str): The record identifier (wire name ``_id``).
-        score_ (float): The similarity score (wire name ``_score``).
-        fields (dict[str, Any]): Record fields included in the result.
+        id_ (str): The record identifier; read it as ``hit.id``. Wire name ``_id``.
+        score_ (float): How well the record matched; read it as ``hit.score``. Higher is
+            better, and after reranking the scale is the reranker's, not the index's.
+            Wire name ``_score``.
+        fields (dict[str, Any]): The record fields the search returned, keyed by field
+            name. Omitting the search's ``fields`` argument returns every field the record
+            has, so narrow it when you only need one or two.
+
+    Examples:
+        .. code-block:: python
+
+            response = idx.search(
+                namespace="articles-en",
+                top_k=5,
+                inputs={"text": "how do sparse indexes score matches"},
+                fields=["title", "chunk"],
+            )
+            for hit in response.result.hits:
+                print(hit.id, hit.score, hit.fields["title"])
     """
 
     id_: str
@@ -102,16 +156,20 @@ class Hit(StructDictMixin, Struct, kw_only=True, rename={"id_": "_id", "score_":
 
     @property
     def id(self) -> str:
-        """Alias for ``id_`` to provide a cleaner API."""
+        """The record identifier. Prefer this over the wire-shaped ``id_``."""
         return self.id_
 
     @property
     def score(self) -> float:
-        """Alias for ``score_`` to provide a cleaner API."""
+        """How well the record matched. Prefer this over the wire-shaped ``score_``."""
         return self.score_
 
     def __getitem__(self, key: str) -> Any:
-        """Support bracket access (e.g. ``hit['id']``)."""
+        """Read a field by name, accepting ``"id"`` and ``"score"`` for the properties.
+
+        Raises:
+            KeyError: If *key* is neither of those nor one of this model's fields.
+        """
         if key == "id":
             return self.id_
         if key == "score":
@@ -121,7 +179,7 @@ class Hit(StructDictMixin, Struct, kw_only=True, rename={"id_": "_id", "score_":
         return getattr(self, key)
 
     def __contains__(self, key: object) -> bool:
-        """Support ``in`` operator (e.g. ``'id' in hit``)."""
+        """Report whether *key* is readable here; ``"id"`` and ``"score"`` always are."""
         if key in ("id", "score"):
             return True
         return key in self.__struct_fields__
@@ -131,23 +189,49 @@ class Hit(StructDictMixin, Struct, kw_only=True, rename={"id_": "_id", "score_":
 
 
 class SearchResult(StructDictMixin, Struct, kw_only=True):
-    """The result wrapper containing hits.
+    """The one-field wrapper around a search's hits.
+
+    It exists because the response envelope nests them, which is why reading a search
+    result is ``response.result.hits`` and not ``response.hits``.
 
     Attributes:
-        hits (list[Hit]): List of search result hits.
+        hits (list[Hit]): The matching records, ordered best match first.
     """
 
     hits: list[Hit] = []
 
 
 class SearchRecordsResponse(StructDictMixin, Struct, kw_only=True):
-    """Response from a search records operation.
+    """What ``search`` returns: the hits, nested one level down, plus what the call cost.
+
+    The hits live at ``response.result.hits`` — the extra ``result`` step is the shape of
+    the response envelope, and forgetting it is the usual first stumble here. Each hit is
+    a :class:`Hit`, read as ``.id``, ``.score`` and ``.fields``. A search that matched
+    nothing returns an empty ``hits`` list rather than raising.
 
     Attributes:
-        result (SearchResult): Wrapper containing the list of hits.
-        usage (SearchUsage): Usage statistics for the search operation.
-        response_info (ResponseInfo | None): HTTP response metadata (request ID, LSN values), or
-            ``None`` if not populated.
+        result (SearchResult): The wrapper holding ``hits``.
+        usage (SearchUsage): What the search cost, broken out by stage.
+        response_info (ResponseInfo | None): HTTP response metadata (request ID, LSN
+            values), or ``None`` if not populated.
+
+    Examples:
+        .. code-block:: python
+
+            response = idx.search(
+                namespace="articles-en",
+                top_k=5,
+                inputs={"text": "how do sparse indexes score matches"},
+                fields=["title"],
+            )
+            for hit in response.result.hits:
+                print(hit.id, hit.score, hit.fields["title"])
+            print(response.usage.read_units)
+
+    .. seealso::
+       :class:`~pinecone.models.vectors.responses.QueryResponse` — what ``query`` returns
+       instead, where the matches are at ``response.matches`` and carry ``values`` and
+       ``metadata`` rather than ``fields``.
     """
 
     result: SearchResult
@@ -164,13 +248,17 @@ class SearchRecordsResponse(StructDictMixin, Struct, kw_only=True):
     def __getitem__(self, key: str) -> Any: ...
 
     def __getitem__(self, key: str) -> Any:
-        """Support bracket access (e.g. ``response['result']``)."""
+        """Read a field by name, so ``response["result"]`` works as well as ``.result``.
+
+        Raises:
+            KeyError: If *key* is not one of this response's fields.
+        """
         if key not in self.__struct_fields__:
             raise KeyError(key)
         return getattr(self, key)
 
     def __contains__(self, key: object) -> bool:
-        """Support ``in`` operator (e.g. ``'result' in response``)."""
+        """Report whether *key* names a field on this response."""
         return key in self.__struct_fields__
 
 
@@ -203,7 +291,7 @@ class SearchQuery(DictLikeStruct, Struct, kw_only=True, gc=False):
             when they are ``None``.
 
         Examples:
-            >>> from pinecone.db_data.dataclasses.search_query import SearchQuery
+            >>> from pinecone.models.vectors.search import SearchQuery
             >>> query = SearchQuery(inputs={"text": "hello"}, top_k=10)
             >>> query.to_dict()
             {'inputs': {'text': 'hello'}, 'top_k': 10}
@@ -242,7 +330,7 @@ class SearchQueryVector(DictLikeStruct, Struct, kw_only=True, gc=False):
             optional and omitted when ``None``.
 
         Examples:
-            >>> from pinecone.db_data.dataclasses.search_query_vector import SearchQueryVector
+            >>> from pinecone.models.vectors.search import SearchQueryVector
             >>> vec = SearchQueryVector(values=[0.1, 0.2, 0.3])
             >>> vec.to_dict()
             {'values': [0.1, 0.2, 0.3]}
@@ -285,7 +373,7 @@ class SearchRerank(DictLikeStruct, Struct, kw_only=True, gc=False):
             ``rank_fields``, ``parameters``, ``query``) are omitted when ``None``.
 
         Examples:
-            >>> from pinecone.db_data.dataclasses.search_rerank import SearchRerank
+            >>> from pinecone.models.vectors.search import SearchRerank
             >>> rerank = SearchRerank(model="bge-reranker-v2-m3")
             >>> rerank.to_dict()
             {'model': 'bge-reranker-v2-m3'}

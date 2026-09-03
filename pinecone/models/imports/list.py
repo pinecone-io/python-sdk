@@ -1,4 +1,4 @@
-"""ImportList wrapper for listing responses."""
+"""One page of bulk imports, wrapped so it reads like a list."""
 
 from __future__ import annotations
 
@@ -12,7 +12,25 @@ if TYPE_CHECKING:
 
 
 class ImportList:
-    """Wrapper around a list of ImportModel with convenience methods."""
+    """One page of :class:`ImportModel` objects, iterable and sized like a list.
+
+    What ``list_imports_paginated`` returns. Iterate it, index into it, or take
+    ``len()``; ``pagination`` carries the token for the next page, and is ``None`` when
+    this is the last one.
+
+    Attributes:
+        pagination: Token for the next page, or ``None`` when there are no more.
+
+    Examples:
+        .. code-block:: python
+
+            page = idx.list_imports_paginated()
+            for operation in page:
+                print(operation.id, operation.status, operation.percent_complete)
+
+    .. seealso::
+       :doc:`/guides/bulk-ingest` — starting and monitoring imports.
+    """
 
     def __init__(
         self,
@@ -20,13 +38,12 @@ class ImportList:
         *,
         pagination: Pagination | None = None,
     ) -> None:
-        """Initialize an ImportList.
+        """Wrap a page of imports.
 
         Args:
-            imports: List of :class:`ImportModel` instances representing
-                bulk import operations.
-            pagination: Optional :class:`Pagination` token for fetching
-                additional pages of results.
+            imports (list[ImportModel]): The imports on this page.
+            pagination (Pagination | None): Token for the next page, or ``None`` when this
+                is the last page. Keyword-only.
         """
         self._imports = imports
         self.pagination = pagination
@@ -41,21 +58,17 @@ class ImportList:
         return self._imports[index]
 
     def to_dict(self) -> dict[str, Any]:
-        """Return the list as a serializable dict.
+        """Return the page as a plain, JSON-serializable dict.
 
         Returns:
-            dict[str, Any]: A dict with a ``"data"`` key containing a list of
-            import dicts, each produced by :meth:`ImportModel.to_dict`. When the
-            wrapper has a pagination token, the dict also includes a
-            ``"pagination"`` key with the token for fetching the next page.
+            A dict whose ``"data"`` key holds one dict per import, each from
+            :meth:`ImportModel.to_dict`. A ``"pagination"`` key is present only when
+            there is a next page.
 
         Examples:
-            >>> from pinecone import Pinecone
-            >>> pc = Pinecone(api_key="your-api-key")
-            >>> index = pc.Index("product-search")
-            >>> imports = index.list_imports_paginated()
-            >>> imports.to_dict()  # doctest: +SKIP
-            {'data': [{'id': 'import-abc123', ...}, {'id': 'import-def456', ...}]}
+            >>> idx = pc.index(name="article-search")
+            >>> idx.list_imports_paginated().to_dict()
+            {'data': []}
         """
         result: dict[str, Any] = {"data": [i.to_dict() for i in self._imports]}
         if self.pagination is not None:

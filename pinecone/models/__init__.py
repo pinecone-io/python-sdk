@@ -1,4 +1,8 @@
-"""msgspec.Struct models for the Pinecone SDK."""
+"""Every model type SDK methods return, re-exported and lazily imported.
+
+Names resolve on first access, so importing ``pinecone`` does not pay for
+every model module.
+"""
 
 from __future__ import annotations
 

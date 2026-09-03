@@ -13,7 +13,13 @@ if TYPE_CHECKING:
 
 
 class BackupList:
-    """Wrapper around a list of BackupModel with convenience methods."""
+    """One page of backups, plus the token for the next page.
+
+    Returned by :meth:`~pinecone.client.backups.Backups.list`; not constructed
+    directly. Iteration, ``len()`` and index access all read the page in hand
+    only — :meth:`~pinecone.client.indexes.Indexes.list_backups` is the shape
+    that walks every page for you.
+    """
 
     def __init__(
         self,
@@ -62,9 +68,11 @@ class BackupList:
         Examples:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
-            >>> backups = pc.list_backups(index_name="movie-recommendations")
-            >>> backups.to_dict()  # doctest: +SKIP
-            {'data': [{'backup_id': 'bkp-abc123', ...}, {'backup_id': 'bkp-def456', ...}]}
+            >>> backups = pc.backups.list(index_name="product-search")
+            >>> [b["backup_id"] for b in backups.to_dict()["data"]]
+            ['bk-abc123']
+            >>> "pagination" in backups.to_dict()
+            False
         """
         result: dict[str, Any] = {"data": [b.to_dict() for b in self._backups]}
         if self.pagination is not None:
@@ -82,9 +90,9 @@ class BackupList:
         Examples:
             >>> from pinecone import Pinecone
             >>> pc = Pinecone(api_key="your-api-key")
-            >>> backups = pc.list_backups(index_name="movie-recommendations")
-            >>> backups.names()  # doctest: +SKIP
-            ['daily-2025-01-01', 'weekly-2024-12-29']
+            >>> backups = pc.backups.list(index_name="product-search")
+            >>> backups.names()
+            ['daily-20240115']
         """
         return [b.name or b.backup_id for b in self._backups]
 
@@ -98,7 +106,13 @@ class BackupList:
 
 
 class RestoreJobList:
-    """Wrapper around a list of RestoreJobModel with convenience methods."""
+    """One page of restore jobs, plus the token for the next page.
+
+    Returned by :meth:`~pinecone.client.restore_jobs.RestoreJobs.list`; not
+    constructed directly. Iteration, ``len()`` and index access all read the
+    page in hand only, and the listing itself is best-effort — see that
+    method's warning before treating it as an inventory.
+    """
 
     def __init__(
         self,
@@ -151,8 +165,7 @@ class RestoreJobList:
 
                 pc = Pinecone(api_key="your-api-key")
                 jobs = pc.restore_jobs.list()
-                jobs.to_dict()
-                # {'data': [{'restore_job_id': 'rj-abc123', ...}, ...]}
+                print([r["restore_job_id"] for r in jobs.to_dict()["data"]])
         """
         result: dict[str, Any] = {"data": [r.to_dict() for r in self._restore_jobs]}
         if self.pagination is not None:
@@ -168,7 +181,15 @@ class RestoreJobList:
 
 
 class BackupScheduleList:
-    """Wrapper around a list of BackupScheduleModel with convenience methods."""
+    """One page of an index's backup schedules, plus its next-page token.
+
+    Returned by
+    :meth:`~pinecone.client.backup_schedules.BackupSchedules.list`; not
+    constructed directly. Iteration, ``len()``, :meth:`names` and
+    :meth:`enabled_schedules` all read the page in hand only —
+    :meth:`~pinecone.client.backup_schedules.BackupSchedules.iter_schedules`
+    walks every page instead.
+    """
 
     def __init__(
         self,
@@ -214,6 +235,13 @@ class BackupScheduleList:
             :meth:`BackupScheduleModel.to_dict`. When the wrapper has a
             pagination token, the dict also includes a ``"pagination"``
             key with the token for fetching the next page.
+
+        Examples:
+            >>> from pinecone import Pinecone
+            >>> pc = Pinecone(api_key="your-api-key")
+            >>> schedules = pc.backup_schedules.list(index_name="product-search")
+            >>> schedules.to_dict()["data"][0]["frequency"]
+            'daily'
         """
         result: dict[str, Any] = {"data": [s.to_dict() for s in self._schedules]}
         if self.pagination is not None:
@@ -225,17 +253,27 @@ class BackupScheduleList:
 
         Returns:
             list[str]: Schedule names, in the order the API returned them.
+
+        Examples:
+            >>> from pinecone import Pinecone
+            >>> pc = Pinecone(api_key="your-api-key")
+            >>> pc.backup_schedules.list(index_name="product-search").names()
+            ['compliance-snapshots']
         """
         return [s.name for s in self._schedules]
 
     def enabled_schedules(self) -> list[BackupScheduleModel]:
-        """Return only the enabled schedules.
+        """Return only the enabled schedules on this page.
 
-        At most one schedule per index can be enabled, so this is the
-        answer to "which schedule is actually running". Named to avoid
-        reading like the ``enabled`` *flag* on
-        :class:`~pinecone.models.backups.schedules.BackupScheduleModel`,
-        which a bare ``enabled`` method would shadow at a glance.
+        At most one schedule per index can be enabled, so this answers "which
+        schedule is actually running" — as long as the listing fits one page.
+
+        Examples:
+            >>> from pinecone import Pinecone
+            >>> pc = Pinecone(api_key="your-api-key")
+            >>> schedules = pc.backup_schedules.list(index_name="product-search")
+            >>> [s.name for s in schedules.enabled_schedules()]
+            ['compliance-snapshots']
         """
         return [s for s in self._schedules if s.enabled]
 
@@ -248,7 +286,15 @@ class BackupScheduleList:
 
 
 class BackupScheduleHistoryList:
-    """Wrapper around a list of BackupScheduleHistoryItem with convenience methods."""
+    """One page of the backups a schedule has produced, plus its next-page token.
+
+    Returned by
+    :meth:`~pinecone.client.backup_schedules.BackupSchedules.history`; not
+    constructed directly. Iteration, ``len()`` and :meth:`scheduled` all read
+    the page in hand only —
+    :meth:`~pinecone.client.backup_schedules.BackupSchedules.iter_history`
+    walks every page instead.
+    """
 
     def __init__(
         self,
@@ -294,6 +340,15 @@ class BackupScheduleHistoryList:
             :meth:`BackupScheduleHistoryItem.to_dict`. When the wrapper has
             a pagination token, the dict also includes a ``"pagination"``
             key with the token for fetching the next page.
+
+        Examples:
+            >>> from pinecone import Pinecone
+            >>> pc = Pinecone(api_key="your-api-key")
+            >>> runs = pc.backup_schedules.history(
+            ...     schedule_id="e88f7273-42aa-47e9-af73-593827136867"
+            ... )
+            >>> runs.to_dict()["data"][0]["status"]
+            'Scheduled'
         """
         result: dict[str, Any] = {"data": [item.to_dict() for item in self._items]}
         if self.pagination is not None:
@@ -301,7 +356,17 @@ class BackupScheduleHistoryList:
         return result
 
     def scheduled(self) -> list[BackupScheduleHistoryItem]:
-        """Return only the rows for runs that have not started yet."""
+        """Return only the rows for runs that have not started yet.
+
+        Examples:
+            >>> from pinecone import Pinecone
+            >>> pc = Pinecone(api_key="your-api-key")
+            >>> runs = pc.backup_schedules.history(
+            ...     schedule_id="e88f7273-42aa-47e9-af73-593827136867"
+            ... )
+            >>> [r.backup_id for r in runs.scheduled()]
+            ['b2c3d4e5-f6a7-8901-bcde-f12345678901']
+        """
         return [item for item in self._items if item.is_scheduled]
 
     def __repr__(self) -> str:

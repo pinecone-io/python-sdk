@@ -1,4 +1,4 @@
-"""Sparse vector values model."""
+"""The sparse half of a vector: the non-zero dimensions, named one by one."""
 
 from __future__ import annotations
 
@@ -10,11 +10,26 @@ from pinecone.models._mixin import DictLikeStruct
 
 
 class SparseValues(DictLikeStruct, Struct, rename="camel", gc=False):
-    """Sparse vector representation with indices and values.
+    """A sparse vector, given as its non-zero dimensions and their weights.
+
+    A dense vector lists a float for every ``dimension``; a sparse vector lists only the
+    dimensions that are not zero, as two parallel lists of the same length. Sparse vectors
+    have no declared ``dimension``, so any index is legal and two sparse vectors in the
+    same field need not name the same ones. Use one wherever a sparse component is asked
+    for: :attr:`Vector.sparse_values <pinecone.models.vectors.vector.Vector.sparse_values>`
+    when upserting, and the ``sparse_vector`` argument when querying.
 
     Attributes:
-        indices (list[int]): Non-zero dimension indices of the sparse vector.
-        values (list[float]): Values corresponding to each index in ``indices``.
+        indices (list[int]): The dimensions that carry a weight, typically the term slots a
+            sparse embedding model or BM25 encoder produced.
+        values (list[float]): The weight for each entry of ``indices``, positionally. The
+            two lists must be the same length.
+
+    Examples:
+        >>> from pinecone import SparseValues
+        >>> sparse = SparseValues(indices=[10, 42, 913], values=[0.4, 0.9, 0.2])
+        >>> dict(zip(sparse.indices, sparse.values))
+        {10: 0.4, 42: 0.9, 913: 0.2}
     """
 
     indices: list[int]
@@ -22,7 +37,23 @@ class SparseValues(DictLikeStruct, Struct, rename="camel", gc=False):
 
     @staticmethod
     def from_dict(sparse_values_dict: dict[str, Any]) -> SparseValues:
-        """Construct a ``SparseValues`` from a plain dict representation."""
+        """Build a :class:`SparseValues` from a plain dict.
+
+        Args:
+            sparse_values_dict (dict[str, Any]): Dict with ``indices`` and ``values`` keys,
+                both required.
+
+        Returns:
+            :class:`SparseValues` carrying those two lists.
+
+        Raises:
+            KeyError: If either ``indices`` or ``values`` is absent.
+
+        Examples:
+            >>> from pinecone import SparseValues
+            >>> SparseValues.from_dict({"indices": [10, 42], "values": [0.4, 0.9]}).indices
+            [10, 42]
+        """
         return SparseValues(
             indices=sparse_values_dict["indices"],
             values=sparse_values_dict["values"],

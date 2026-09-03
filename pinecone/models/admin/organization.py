@@ -13,13 +13,31 @@ from pinecone.models._mixin import StructDictMixin
 class OrganizationModel(StructDictMixin, Struct, kw_only=True):
     """Response model for a Pinecone organization.
 
+    The organization is the top of Pinecone's hierarchy: projects, users,
+    service accounts, and invites all belong to one. An :class:`~pinecone.Admin`
+    client's credentials resolve to exactly one organization, so most admin
+    operations never need this ``id``.
+
     Attributes:
-        id: Unique identifier for the organization.
-        name: Name of the organization.
-        plan: The organization's plan tier, as the server names it.
-        payment_status: Current payment status.
-        created_at: Timestamp when the organization was created.
-        support_tier: Support tier for the organization.
+        id (str): Unique identifier for the organization. Also what an
+            organization-scoped role binding reports as its ``resource_id``.
+        name (str): Name of the organization.
+        plan (str): The organization's plan tier, as the server names it. Which
+            features and roles are available depends on it, so a
+            :exc:`~pinecone.errors.exceptions.ForbiddenError` naming a plan is
+            about this field.
+        payment_status (str): Current payment status.
+        created_at (str): Timestamp when the organization was created.
+        support_tier (str): Support tier for the organization.
+
+    Examples:
+        >>> from pinecone import Admin
+        >>> admin = Admin(client_id="your-client-id", client_secret="your-client-secret")
+        >>> org = admin.organizations.describe(organization_id="org-abc123")
+        >>> org.name
+        'Acme Corp'
+        >>> org["plan"]
+        'Standard'
     """
 
     id: str
@@ -41,7 +59,35 @@ class OrganizationModel(StructDictMixin, Struct, kw_only=True):
 
 
 class OrganizationList:
-    """Wrapper around a list of OrganizationModel with convenience methods."""
+    """The organizations reachable with the current credentials.
+
+    A sequence of :class:`OrganizationModel` — iterable, indexable, and sized —
+    with :meth:`names` and :meth:`to_dict` on top. Not constructed directly; it
+    is what :meth:`Organizations.list() <pinecone.admin.organizations.Organizations.list>` returns.
+
+    This listing is not paginated: the organizations arrive in one response, so
+    there is no cursor to follow.
+
+    Examples:
+        >>> from pinecone.models.admin.organization import (
+        ...     OrganizationList,
+        ...     OrganizationModel,
+        ... )
+        >>> orgs = OrganizationList(
+        ...     [
+        ...         OrganizationModel(
+        ...             id="org-abc123",
+        ...             name="Acme Corp",
+        ...             plan="Standard",
+        ...             payment_status="Active",
+        ...             created_at="2026-01-01T00:00:00Z",
+        ...             support_tier="Standard",
+        ...         )
+        ...     ]
+        ... )
+        >>> orgs.names()
+        ['Acme Corp']
+    """
 
     def __init__(self, organizations: list[OrganizationModel]) -> None:
         """Initialize an OrganizationList.

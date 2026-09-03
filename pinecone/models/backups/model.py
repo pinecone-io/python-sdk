@@ -36,7 +36,11 @@ _REMOVED_FIELD_HINTS: dict[str, str] = {
 
 
 class BackupModel(Struct, kw_only=True):
-    """Response model for a Pinecone backup (2026-07 API).
+    """One stored, point-in-time snapshot of an index.
+
+    Returned by :meth:`~pinecone.client.backups.Backups.create`,
+    :meth:`~pinecone.client.backups.Backups.describe` and the backup
+    listings; not constructed directly.
 
     Attributes:
         backup_id: Unique identifier for the backup.
@@ -47,8 +51,9 @@ class BackupModel(Struct, kw_only=True):
         cloud: Cloud provider where the backup is stored.
         region: Region where the backup is stored.
         source_index_deleted_at: Timestamp at which the source index was
-            deleted, or ``None`` when the source index is still active.
-            Only populated by ``list_index_backups(include_deleted=True)``.
+            deleted, or ``None`` while the source index is still active. An
+            index-scoped listing only surfaces these rows when it is passed
+            ``include_deleted=True``.
         name: User-provided name for the backup.
         description: User-provided description for the backup.
         schema: Schema captured from the source index, or ``None`` when the
@@ -99,7 +104,7 @@ class BackupModel(Struct, kw_only=True):
             raise AttributeError(
                 f"BackupModel.{name} was removed in the 2026-07 Pinecone API: "
                 f"{_REMOVED_FIELD_HINTS[name]}. "
-                "See docs/migration/v10-migration.md."
+                "See https://sdk.pinecone.io/python/migration/v10-migration.html."
             )
         raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
 
@@ -256,18 +261,27 @@ def _to_builtins_stripped(value: Any) -> Any:
 
 
 class RestoreJobModel(Struct, kw_only=True):
-    """Response model for a Pinecone restore job.
+    """One attempt at turning a backup back into an index.
+
+    Returned by :meth:`~pinecone.client.restore_jobs.RestoreJobs.describe` and
+    :meth:`~pinecone.client.restore_jobs.RestoreJobs.list`; not constructed
+    directly.
 
     Attributes:
         restore_job_id: Unique identifier for the restore job.
         backup_id: Identifier of the backup being restored.
         target_index_name: Name of the index being restored to.
         target_index_id: Unique identifier of the target index.
-        status: Current status of the restore job.
+        status: ``"Pending"``, ``"Completed"``, ``"Failed"``, or
+            ``"Cancelled"``. There is no in-progress value: a restore that is
+            actively running reports ``"Pending"``.
         created_at: Timestamp when the restore job was created, or ``None`` if the
             backend has not yet assigned a creation timestamp.
-        completed_at: Timestamp when the restore job completed.
-        percent_complete: Percentage of the restore job that has completed.
+        completed_at: Timestamp when the restore job completed, or ``None``
+            until then.
+        percent_complete: ``100`` once ``status`` is ``"Completed"``, and
+            ``None`` at every other point — it reports completion rather than
+            progress, so it cannot drive a progress bar.
     """
 
     restore_job_id: str
@@ -308,7 +322,7 @@ class RestoreJobModel(Struct, kw_only=True):
             ...     backup_id="bkp-1",
             ...     target_index_name="my-index",
             ...     target_index_id="idx-abc",
-            ...     status="Running",
+            ...     status="Pending",
             ...     created_at="2024-01-01T00:00:00Z",
             ... )
             >>> d = job.to_dict()
@@ -323,14 +337,15 @@ class RestoreJobModel(Struct, kw_only=True):
 class CreateIndexFromBackupRequest(Struct, kw_only=True, omit_defaults=True):
     """Request model for creating an index from a backup.
 
-    ``omit_defaults=True`` keeps unset optionals off the wire, so a request
-    built with only ``name`` serialises to ``{"name": ...}`` and the server
-    applies its own defaults (on-demand read capacity, deletion protection
-    disabled, the backup's own tags).
+    Optionals you leave unset stay off the wire, so a request built with only
+    ``name`` serialises to ``{"name": ...}`` and the server applies its own
+    defaults: on-demand read capacity, deletion protection disabled, and the
+    backup's own tags.
 
     Attributes:
-        name: Name for the restored index (required). 1-45 characters,
-            starting and ending with an alphanumeric character.
+        name: Name for the restored index (required). Subject to the same
+            naming rules as a new index, which the server rather than the
+            client enforces on this path.
         tags: Optional key-value tags for the restored index. When omitted,
             the server copies the backup's tags.
         deletion_protection: Optional deletion protection setting

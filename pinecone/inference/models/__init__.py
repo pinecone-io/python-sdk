@@ -1,8 +1,9 @@
 """Backwards-compatibility shim for :mod:`pinecone.inference.models`.
 
-Re-exports classes that used to live at :mod:`pinecone.inference.models` before
-the `python-sdk2` rewrite. Preserved to keep pre-rewrite callers working.
-New code should import from the canonical module.
+Kept as an importable package so that ``import pinecone.inference.models``
+still succeeds for callers written against earlier releases. It re-exports
+nothing: the names that used to live here have canonical homes under
+:mod:`pinecone.models`.
 
 :meta private:
 """

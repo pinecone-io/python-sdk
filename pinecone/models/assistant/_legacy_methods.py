@@ -42,6 +42,13 @@ class AssistantModelLegacyMethodsMixin:
     ``assistant_name``. Call them on an assistant object returned by
     :meth:`Assistants.describe`, :meth:`Assistants.create`, or
     :meth:`Assistants.list`.
+
+    Sync only: a model obtained from ``AsyncAssistants`` raises
+    :exc:`TypeError` here.
+
+    .. deprecated:: 9.0.0
+        Call the :class:`Assistants` namespace method directly, passing
+        ``assistant_name=``.
     """
 
     # Declared ClassVar so msgspec ignores it when reading __struct_fields__.
@@ -294,9 +301,6 @@ class AssistantModelLegacyMethodsMixin:
                 (default) polls indefinitely. Use ``-1`` to return as soon
                 as the request is accepted — the file may still exist when
                 this returns.
-
-        Returns:
-            ``None``
 
         Raises:
             :exc:`PineconeTimeoutError`: If the deletion has not finished
