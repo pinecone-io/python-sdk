@@ -52,6 +52,8 @@ docs = [
     "myst-parser>=4.0",
     "sphinx-copybutton",
     "sphinx-tabs",
+    "sphinx-reredirects>=0.1.6",
+    "sphinx-sitemap>=2.9.0",
 ]
 
 [project.urls]
