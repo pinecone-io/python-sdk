@@ -51,8 +51,15 @@ redirects = {
     "client-configuration": "getting-started/authentication.html",
     "working-with-indexes": "how-to/indexes/serverless.html",
     "db_control/collections": "../how-to/collections.html",
+    "db_control/serverless-indexes": "../how-to/indexes/serverless.html",
+    "db_control/pod-indexes": "../how-to/indexes/pod.html",
+    "db_control/shared-index-actions": "../how-to/indexes/serverless.html",
+    "db_control/shared-index-configs": "../how-to/indexes/serverless.html",
     "db_data/index-usage-byov": "../how-to/vectors/upsert-and-query.html",
     "inference/inference-api": "../how-to/inference/embeddings.html",
+    # Published with the 10.0 release candidates, removed when the preview
+    # namespace graduated.
+    "reference/preview": "../migration/v10-migration.html#preview-namespace-removed",
 }
 
 exclude_patterns = [

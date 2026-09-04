@@ -10,10 +10,10 @@
   var target = "${to_uri}";
   var hash = window.location.hash;
   // Classes that were renamed or moved to a different page in 10.0. Each row is
-  // the old autodoc id, the page the class now lives on, and its new id. A hash
-  // is either the class id itself or that id followed by ".<member>", and the
-  // member name is kept. Old ids are unique across the old pages, so one table
-  // serves every redirect stub.
+  // the old autodoc id, the reference/ page the class now lives on, and its new
+  // id. A hash is either the class id itself or that id followed by ".<member>",
+  // and the member name is kept. Old ids are unique across the old pages, so
+  // one table serves every stub that forwards into reference/.
   var classes = [
     ["pinecone.db_data.Index", "sync-index.html", "pinecone.index.Index"],
     ["pinecone.db_data.IndexAsyncio", "async-index.html", "pinecone.async_client.async_index.AsyncIndex"],
@@ -34,12 +34,15 @@
     "grpc.html#db-data-plane": "grpc.html"
   };
   var page = window.location.pathname.split("/").pop();
-  var dir = target.substring(0, target.lastIndexOf("/") + 1);
+  var dir = "reference/";
   var moved = sections[page + hash];
-  if (moved) {
+  if (target.indexOf("#") !== -1) {
+    // The target names its own section; the old fragment has nothing to add.
+    hash = "";
+  } else if (moved) {
     target = dir + moved;
     hash = "";
-  } else if (hash) {
+  } else if (hash && target.indexOf(dir) === 0) {
     var id = hash.substring(1);
     for (var i = 0; i < classes.length; i++) {
       var oldId = classes[i][0];
