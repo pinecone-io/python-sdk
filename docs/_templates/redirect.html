@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>This page has moved</title>
+<link rel="canonical" href="${to_uri}">
+<meta http-equiv="refresh" content="0; url=${to_uri}">
+<script>
+(function () {
+  var target = "${to_uri}";
+  var hash = window.location.hash;
+  // Autodoc anchors that were renamed or moved to a different page in 10.0.
+  // Keys are the old anchor prefixes; values are the page they now live on and
+  // the prefix that replaces the key. Prefixes are unique across the old pages,
+  // so one table serves every redirect stub.
+  var anchors = [
+    ["pinecone.db_data.Index.", "sync-index.html", "pinecone.index.Index."],
+    ["pinecone.db_data.IndexAsyncio.", "async-index.html", "pinecone.async_client.async_index.AsyncIndex."],
+    ["pinecone.inference.Inference.", "pinecone.html", "pinecone.client.inference.Inference."],
+    ["pinecone.inference.AsyncioInference.", "async-pinecone.html", "pinecone.async_client.inference.AsyncInference."],
+    ["pinecone.PineconeAsyncio.", "async-pinecone.html", "pinecone.async_client.pinecone.AsyncPinecone."],
+    ["pinecone.grpc.PineconeGRPC.", "pinecone.html", "pinecone.Pinecone."],
+    ["pinecone.grpc.GRPCIndex.", "grpc.html", "pinecone.grpc.GrpcIndex."],
+    ["pinecone.Admin.", "admin.html", "pinecone.admin.Admin."],
+    ["pinecone.admin.resources.ApiKeyResource.", "admin.html", "pinecone.admin.api_keys.ApiKeys."],
+    ["pinecone.admin.resources.ProjectResource.", "admin.html", "pinecone.admin.projects.Projects."]
+  ];
+  // Section anchors the old landing page linked to, which now map to a whole page.
+  var sections = {
+    "rest.html#db-data-plane": "sync-index.html",
+    "asyncio.html#db-data-plane": "async-index.html",
+    "grpc.html#db-data-plane": "grpc.html"
+  };
+  var page = window.location.pathname.split("/").pop();
+  var dir = target.substring(0, target.lastIndexOf("/") + 1);
+  var moved = sections[page + hash];
+  if (moved) {
+    target = dir + moved;
+    hash = "";
+  } else if (hash) {
+    var id = hash.substring(1);
+    for (var i = 0; i < anchors.length; i++) {
+      if (id.indexOf(anchors[i][0]) === 0) {
+        target = dir + anchors[i][1];
+        hash = "#" + anchors[i][2] + id.substring(anchors[i][0].length);
+        break;
+      }
+    }
+  }
+  window.location.replace(target + hash);
+})();
+</script>
+</head>
+<body>
+<p>This page has moved to <a href="${to_uri}">${to_uri}</a>.</p>
+</body>
+</html>

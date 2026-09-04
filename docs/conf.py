@@ -19,6 +19,8 @@ extensions = [
     "sphinx_copybutton",
     "sphinx_tabs.tabs",
     "myst_parser",
+    "sphinx_reredirects",
+    "sphinx_sitemap",
 ]
 
 html_theme = "furo"
@@ -26,6 +28,32 @@ html_logo = "_static/pinecone-logo.svg"
 html_favicon = "_static/favicon-32x32.png"
 html_static_path = ["_static"]
 html_title = "Python SDK documentation"
+
+# Published at this URL by .github/workflows/build-and-publish-docs.yaml. Sphinx
+# emits <link rel="canonical"> on every page from it and sphinx-sitemap needs it
+# to write absolute URLs.
+html_baseurl = "https://sdk.pinecone.io/python/"
+sitemap_url_scheme = "{link}"
+# Viewcode source listings and the generated index pages carry no content of
+# their own; keep the sitemap to pages worth a search result.
+sitemap_excludes = ["_modules/*", "search.html", "genindex.html", "py-modindex.html"]
+
+# Pages the 10.0 restructure removed. Each becomes a stub that forwards to its
+# replacement and carries autodoc anchors across, so search results, bookmarks,
+# and blog links written against the flat pre-10.0 layout keep resolving.
+redirect_html_template_file = "_templates/redirect.html"
+redirects = {
+    "rest": "reference/pinecone.html",
+    "asyncio": "reference/async-pinecone.html",
+    "grpc": "reference/grpc.html",
+    "admin": "reference/admin.html",
+    "upgrading": "migration/v10-migration.html",
+    "client-configuration": "getting-started/authentication.html",
+    "working-with-indexes": "how-to/indexes/serverless.html",
+    "db_control/collections": "../how-to/collections.html",
+    "db_data/index-usage-byov": "../how-to/vectors/upsert-and-query.html",
+    "inference/inference-api": "../how-to/inference/embeddings.html",
+}
 
 exclude_patterns = [
     "_build",
