@@ -65,6 +65,21 @@ response = index.start_import(
 ```
 
 
+## Use a storage integration
+
+If your project uses a configured storage integration for the import source, pass the
+integration ID with `integration_id`:
+
+```python
+response = index.start_import(
+    uri="s3://my-bucket/embeddings/",
+    integration_id="integration-id",
+)
+```
+
+You can combine integration_id with error_mode when needed.
+
+
 ## Check import status
 
 {meth}`~pinecone.index.Index.describe_import` returns an {class}`~pinecone.models.imports.model.ImportModel`
