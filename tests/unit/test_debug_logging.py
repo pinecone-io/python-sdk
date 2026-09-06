@@ -82,9 +82,11 @@ class TestLogCurl:
         assert "my-secret-key-12345" not in caplog.text
         assert "Api-Key: ***" in caplog.text
 
-    def test_curl_logging_includes_body(
+    def test_curl_logging_omits_body_contents(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
+        # The raw request body must never be logged: it can carry user vector
+        # and metadata payloads (potentially PII). Only the byte count is shown.
         monkeypatch.setenv("PINECONE_DEBUG_CURL", "1")
         body = b'{"vectors": [{"id": "v1"}]}'
         with caplog.at_level(logging.DEBUG, logger="pinecone._internal.http_client"):
@@ -94,8 +96,8 @@ class TestLogCurl:
                 {"Api-Key": "test-key", "Content-Type": "application/json"},
                 body=body,
             )
-        assert "-d " in caplog.text
-        assert '{"vectors": [{"id": "v1"}]}' in caplog.text
+        assert '{"vectors": [{"id": "v1"}]}' not in caplog.text
+        assert f"{len(body)} byte body omitted" in caplog.text
 
     def test_curl_logging_includes_all_headers(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -144,7 +146,9 @@ class TestHTTPClientCurlLogging:
             finally:
                 client.close()
         assert "curl -X POST" in caplog.text
-        assert "-d " in caplog.text
+        assert "byte body omitted" in caplog.text
+        # Raw request payload must not appear in logs.
+        assert '"id": "v1"' not in caplog.text
 
     @respx.mock
     def test_no_curl_output_when_disabled(
