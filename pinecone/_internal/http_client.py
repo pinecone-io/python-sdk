@@ -385,7 +385,9 @@ def _log_curl(
     for key, value in safe_headers.items():
         parts.append(f"-H '{key}: {value}'")
     if body is not None:
-        parts.append(f"-d '{body.decode('utf-8', errors='replace')}'")
+        # Emit body size only; the raw payload may contain vector data that
+        # CodeQL flags as cleartext-logging of potentially sensitive content.
+        parts.append(f"-d '<{len(body)} bytes>'")
     curl_cmd = " ".join(parts)
     logger.debug("curl equivalent:\n%s", curl_cmd)
 

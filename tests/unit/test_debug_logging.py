@@ -82,7 +82,7 @@ class TestLogCurl:
         assert "my-secret-key-12345" not in caplog.text
         assert "Api-Key: ***" in caplog.text
 
-    def test_curl_logging_includes_body(
+    def test_curl_logging_omits_body_content(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         monkeypatch.setenv("PINECONE_DEBUG_CURL", "1")
@@ -94,8 +94,12 @@ class TestLogCurl:
                 {"Api-Key": "test-key", "Content-Type": "application/json"},
                 body=body,
             )
+        # The request body may carry vector data / user content, so the debug
+        # curl output logs only its size, never the raw payload (CodeQL
+        # cleartext-logging remediation — see _log_curl).
         assert "-d " in caplog.text
-        assert '{"vectors": [{"id": "v1"}]}' in caplog.text
+        assert f"<{len(body)} bytes>" in caplog.text
+        assert '{"vectors": [{"id": "v1"}]}' not in caplog.text
 
     def test_curl_logging_includes_all_headers(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
