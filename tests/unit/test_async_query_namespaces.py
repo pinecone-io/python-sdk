@@ -15,6 +15,20 @@ from pinecone.models.vectors.vector import ScoredVector
 INDEX_HOST = "test-index-abc1234.svc.us-east1-gcp.pinecone.io"
 
 
+class _BoolAmbiguousVector:
+    def __init__(self, values: list[float]) -> None:
+        self._values = values
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __getitem__(self, index: int) -> float:
+        return self._values[index]
+
+    def __bool__(self) -> bool:
+        raise ValueError("truth value is ambiguous")
+
+
 def _make_index() -> AsyncIndex:
     return AsyncIndex(host=INDEX_HOST, api_key="test-key")
 
@@ -102,6 +116,23 @@ class TestAsyncQueryNamespacesValidation:
                 namespaces=["ns1"],
                 metric="cosine",
             )
+
+    @pytest.mark.asyncio
+    async def test_query_namespaces_does_not_bool_check_vector(self) -> None:
+        idx = _make_index()
+        response = _make_query_response([_scored("v1", 0.9)])
+        vector = _BoolAmbiguousVector([0.1, 0.2])
+
+        mock_query = AsyncMock(return_value=response)
+        with patch.object(idx, "query", mock_query):
+            await idx.query_namespaces(
+                vector=vector,
+                namespaces=["ns1"],
+                metric="cosine",
+            )
+
+        assert mock_query.await_count == 1
+        assert mock_query.call_args.kwargs["vector"] is vector
 
     @pytest.mark.asyncio
     async def test_query_namespaces_invalid_metric_raises(self) -> None:

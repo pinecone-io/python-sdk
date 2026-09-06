@@ -904,7 +904,7 @@ class Index:
         """
         if not namespaces:
             raise ValidationError("namespaces must be a non-empty list")
-        if not vector and not sparse_vector:
+        if (vector is None or len(vector) == 0) and not sparse_vector:
             raise ValidationError("at least one of 'vector' or 'sparse_vector' must be provided")
 
         valid_metrics = {"cosine", "euclidean", "dotproduct"}
