@@ -35,6 +35,29 @@ class TestHit:
         with pytest.raises(KeyError, match="nonexistent"):
             hit["nonexistent"]
 
+    def test_hit_bracket_missing_key_lists_available_keys(self) -> None:
+        hit = Hit(id_="r1", score_=0.5)
+        with pytest.raises(KeyError) as excinfo:
+            hit["nonexistent"]
+        assert "available keys" in str(excinfo.value)
+
+    def test_hit_bracket_wire_name_id_teaches_alias(self) -> None:
+        """The wire format calls the field '_id'; the error must point at hit['id']."""
+        hit = Hit(id_="r1", score_=0.5)
+        with pytest.raises(KeyError) as excinfo:
+            hit["_id"]
+        message = str(excinfo.value)
+        assert "wire name" in message
+        assert "hit['id']" in message
+
+    def test_hit_bracket_wire_name_score_teaches_alias(self) -> None:
+        hit = Hit(id_="r1", score_=0.5)
+        with pytest.raises(KeyError) as excinfo:
+            hit["_score"]
+        message = str(excinfo.value)
+        assert "wire name" in message
+        assert "hit['score']" in message
+
 
 class TestSearchUsage:
     def test_search_usage_required_only(self) -> None:
