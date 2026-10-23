@@ -51,6 +51,24 @@ response = support.documents.search(
 )
 ```
 
+`EmbedQuery` embeds the query with the field's `read_parameters`. To override them for one
+search, pass `parameters`. Only `task_type` can be set, and `GET /models` lists the models
+that accept it, such as `gemini-embedding-2`. `SparseEmbedQuery` takes no `parameters`.
+
+```python
+response = support.documents.search(
+    namespace="articles-en",
+    top_k=5,
+    score_by=[
+        EmbedQuery(
+            field="body",
+            query="Is the Eiffel Tower taller than 300 m?",
+            parameters={"task_type": "fact_verification"},
+        )
+    ],
+)
+```
+
 `TextQuery` matches the words literally across the fields you list. `QueryStringQuery`
 takes a Lucene expression with the fields named inside it:
 
