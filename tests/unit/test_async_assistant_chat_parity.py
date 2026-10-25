@@ -633,3 +633,42 @@ async def test_backend_400_error_parity(
     assert async_type is sync_type
     assert async_message == sync_message
     assert BACKEND_400_MESSAGE in async_message
+
+
+@pytest.mark.parametrize("method_name", _STREAMING_METHODS)
+@pytest.mark.parametrize("transport", ["sync", "async"])
+async def test_multiline_sse_data(
+    method_name: str,
+    transport: str,
+    sync_assistants: Assistants,
+    async_assistants: AsyncAssistants,
+    respx_mock: respx.MockRouter,
+) -> None:
+    body = CHAT_SSE if method_name == "chat" else COMPLETION_SSE
+    events = []
+    for line in body.decode().splitlines():
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            events.append("data: [DONE]\n\n")
+        else:
+            pretty = orjson.dumps(orjson.loads(data), option=orjson.OPT_INDENT_2).decode()
+            events.append(
+                ": heartbeat\nevent: message\n"
+                + "".join(f"data: {part}\n" for part in pretty.splitlines())
+                + "\n"
+            )
+    route = _register_routes(respx_mock)[method_name]
+    kwargs = {**_CALLS[method_name], "stream": True}
+
+    async def collect(content: str | bytes) -> list[Any]:
+        route.mock(return_value=httpx.Response(200, content=content))
+        if transport == "sync":
+            return list(getattr(sync_assistants, method_name)(**kwargs))
+        stream = await getattr(async_assistants, method_name)(**kwargs)
+        return [chunk async for chunk in stream]
+
+    expected = await collect(body)
+    assert expected
+    assert await collect("".join(events)) == expected

@@ -22,6 +22,7 @@ from pinecone._internal.constants import (
     ASSISTANT_EVALUATION_BASE_URL,
     DEFAULT_BASE_URL,
 )
+from pinecone._internal.sse import aiter_sse_data
 from pinecone._internal.validation import require_str
 from pinecone.async_client._assistants_legacy import AsyncAssistantsLegacyNamespaceMixin
 from pinecone.errors.exceptions import (
@@ -1785,14 +1786,7 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             headers={"Content-Type": "application/json"},
             timeout=_stream_timeout(self._config.timeout, timeout),
         ) as response:
-            async for line in response.aiter_lines():
-                if not line:
-                    continue
-                if not line.startswith("data:"):
-                    continue
-                line = line[5:].lstrip()
-                if not line:
-                    continue
+            async for line in aiter_sse_data(response.aiter_lines()):
                 # Unreachable against the 2026-07 backend, which ends the stream
                 # by closing it. Kept because an intermediary that terminates the
                 # SSE conventionally would otherwise reach orjson.loads and raise.
@@ -1976,14 +1970,7 @@ class AsyncAssistants(AsyncAssistantsLegacyNamespaceMixin):
             headers={"Content-Type": "application/json"},
             timeout=_stream_timeout(self._config.timeout, timeout),
         ) as response:
-            async for line in response.aiter_lines():
-                if not line:
-                    continue
-                if not line.startswith("data:"):
-                    continue
-                line = line[5:].lstrip()
-                if not line:
-                    continue
+            async for line in aiter_sse_data(response.aiter_lines()):
                 # Unreachable against the 2026-07 backend, which ends the stream
                 # by closing it. Kept because an intermediary that terminates the
                 # SSE conventionally would otherwise reach orjson.loads and raise.
