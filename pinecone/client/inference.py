@@ -235,6 +235,9 @@ class Inference:
                 (e.g., ``{"input_type": "passage", "truncate": "END"}``).
                 Call :meth:`get_model` and read ``supported_parameters`` to
                 discover the keys a given model accepts.
+                ``processing_location`` sets where the model processes your
+                data. Supported values depend on the model and your plan. See
+                the `processing locations guide <LINK_TBD>`_.
 
         Returns:
             :class:`~pinecone.models.inference.embed.EmbeddingsList` with one
@@ -285,6 +288,15 @@ class Inference:
             ... )
             >>> len(query.data)
             1
+
+            Process the data in the US with ``processing_location``, on a
+            model that supports it:
+
+            >>> embeddings = pc.inference.embed(
+            ...     model="text-embedding-3-large",
+            ...     inputs=["Vector databases index embeddings for similarity search."],
+            ...     parameters={"processing_location": "us"},
+            ... )
 
         .. note::
            To store these vectors, upsert each embedding's ``values`` into a

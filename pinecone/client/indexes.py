@@ -496,6 +496,22 @@ class Indexes:
             ...     tags={"env": "prod"},
             ... )
 
+            A ``string`` field Pinecone embeds for you, with the model
+            processing the data in the US both when embedding documents and
+            when embedding queries:
+
+            >>> index = pc.indexes.create(
+            ...     name="support-articles-us",
+            ...     schema={"fields": {"body": {
+            ...         "type": "string",
+            ...         "embed": {
+            ...             "model": "text-embedding-3-large",
+            ...             "write_parameters": {"processing_location": "us"},
+            ...             "read_parameters": {"processing_location": "us"},
+            ...         },
+            ...     }}},
+            ... )
+
         .. note::
            A **hybrid** index must declare its ``sparse_vector`` field
            explicitly. A dense field with ``metric="dotproduct"`` does not

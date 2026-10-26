@@ -275,9 +275,15 @@ class FieldEmbedConfig(Struct, kw_only=True):
         write_parameters: Model parameters used when embedding document text,
             e.g. ``{"dimension": 1024}``. Describe reports them merged with the
             model's defaults.
+            ``processing_location`` sets where the model processes your
+            data. Supported values depend on the model and your plan. See the
+            `processing locations guide <LINK_TBD>`_.
         read_parameters: Model parameters used when embedding query text,
             e.g. ``{"dimension": 1024}``. Describe reports them merged with the
             model's defaults.
+            ``processing_location`` sets where the model processes your
+            data. Supported values depend on the model and your plan. See the
+            `processing locations guide <LINK_TBD>`_.
 
     Examples:
         A ``schema=`` that declares one:
