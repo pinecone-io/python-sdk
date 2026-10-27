@@ -352,6 +352,40 @@ def _prepare_path(path: str) -> str:
     return encoded + suffix
 
 
+def _fold_params_into_path(path: str, kwargs: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Move ``params=`` from *kwargs* into the query string of *path*.
+
+    httpx encodes a space in a query value as ``+``, and Pinecone's API reads a
+    ``+`` as a literal plus sign. A namespace or ID such as ``"my doc"`` therefore
+    reached the server as ``"my+doc"`` and matched nothing. A space must go on
+    the wire as ``%20``.
+
+    httpx offers no way to choose that encoding for ``params=``, so the
+    parameters are encoded here instead and attached to the path, which httpx
+    leaves as written. The encoding is httpx's own with the one difference:
+    ``urlencode`` already writes a literal ``+`` as ``%2B``, so every ``+`` in
+    its output stands for a space and can be rewritten safely.
+
+    Enum members are resolved first (see :func:`_prepare_params`). Without a
+    ``params`` entry, or with one that encodes to nothing, *path* is returned
+    as it came in.
+    """
+    kwargs = _prepare_params(kwargs)
+    if "params" not in kwargs:
+        return path, kwargs
+    params = kwargs.pop("params")
+    if params is None:
+        return path, kwargs
+    query = str(httpx.QueryParams(params)).replace("+", "%20")
+    if not query:
+        return path, kwargs
+    head, suffix = _split_off_query_and_fragment(path)
+    hash_at = suffix.find("#")
+    existing, fragment = (suffix, "") if hash_at == -1 else (suffix[:hash_at], suffix[hash_at:])
+    joiner = "&" if len(existing) > 1 else "?"
+    return f"{head}{existing.rstrip('?')}{joiner}{query}{fragment}", kwargs
+
+
 def _build_headers(config: PineconeConfig, api_version: str) -> dict[str, str]:
     headers: dict[str, str] = {
         API_VERSION_HEADER: api_version,
@@ -1011,6 +1045,7 @@ class HTTPClient:
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
         path = _prepare_path(path)
+        path, kwargs = _fold_params_into_path(path, kwargs)
         _log_curl("GET", self._build_url(path), dict(self._headers))
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
@@ -1084,7 +1119,7 @@ class HTTPClient:
             return response
 
         # Slow path: caller passed params=, files=, headers=, content=, etc.
-        kwargs = _prepare_params(_prepare_json_kwargs(kwargs))
+        path, kwargs = _fold_params_into_path(path, _prepare_json_kwargs(kwargs))
         body = kwargs.get("content") if isinstance(kwargs.get("content"), bytes) else None
         merged_headers = {**self._headers, **kwargs.get("headers", {})}
         _log_curl("POST", self._build_url(path), merged_headers, body=body)
@@ -1108,6 +1143,7 @@ class HTTPClient:
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
         path = _prepare_path(path)
+        path, kwargs = _fold_params_into_path(path, kwargs)
         kwargs = _prepare_json_kwargs(kwargs)
         body = kwargs.get("content") if isinstance(kwargs.get("content"), bytes) else None
         merged_headers = {**self._headers, **kwargs.get("headers", {})}
@@ -1125,6 +1161,7 @@ class HTTPClient:
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
         path = _prepare_path(path)
+        path, kwargs = _fold_params_into_path(path, kwargs)
         kwargs = _prepare_json_kwargs(kwargs)
         body = kwargs.get("content") if isinstance(kwargs.get("content"), bytes) else None
         merged_headers = {**self._headers, **kwargs.get("headers", {})}
@@ -1144,6 +1181,7 @@ class HTTPClient:
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
         path = _prepare_path(path)
+        path, kwargs = _fold_params_into_path(path, kwargs)
         _log_curl("DELETE", self._build_url(path), dict(self._headers))
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
@@ -1245,6 +1283,7 @@ class AsyncHTTPClient:
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
         path = _prepare_path(path)
+        path, kwargs = _fold_params_into_path(path, kwargs)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = await self._ensure_client().get(
@@ -1260,6 +1299,7 @@ class AsyncHTTPClient:
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
         path = _prepare_path(path)
+        path, kwargs = _fold_params_into_path(path, kwargs)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = await self._ensure_client().post(
@@ -1275,6 +1315,7 @@ class AsyncHTTPClient:
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
         path = _prepare_path(path)
+        path, kwargs = _fold_params_into_path(path, kwargs)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = await self._ensure_client().put(
@@ -1290,6 +1331,7 @@ class AsyncHTTPClient:
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
         path = _prepare_path(path)
+        path, kwargs = _fold_params_into_path(path, kwargs)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = await self._ensure_client().patch(
@@ -1305,6 +1347,7 @@ class AsyncHTTPClient:
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
         path = _prepare_path(path)
+        path, kwargs = _fold_params_into_path(path, kwargs)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
             response = await self._ensure_client().delete(
