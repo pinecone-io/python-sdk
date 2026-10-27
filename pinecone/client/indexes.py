@@ -496,9 +496,8 @@ class Indexes:
             ...     tags={"env": "prod"},
             ... )
 
-            A ``string`` field Pinecone embeds for you, with the model
-            processing the data in the US both when embedding documents and
-            when embedding queries:
+            Integrated embedding on a ``string`` field, processed in the US
+            for both documents and queries:
 
             >>> index = pc.indexes.create(
             ...     name="support-articles-us",
