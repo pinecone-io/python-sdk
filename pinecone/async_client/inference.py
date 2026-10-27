@@ -309,18 +309,6 @@ class AsyncInference:
                     )
                     print(len(query.data))
 
-            Process the data in the US with ``processing_location``, on a
-            model that supports it:
-
-            .. code-block:: python
-
-                async with AsyncPinecone(api_key="your-api-key") as pc:
-                    embeddings = await pc.inference.embed(
-                        model="text-embedding-3-large",
-                        inputs=["Vector databases index embeddings for similarity search."],
-                        parameters={"processing_location": "us"},
-                    )
-
         .. note::
            To store these vectors, upsert each embedding's ``values`` into a
            ``dense_vector`` field of a document index (here ``embedding``)

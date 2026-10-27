@@ -289,15 +289,6 @@ class Inference:
             >>> len(query.data)
             1
 
-            Process the data in the US with ``processing_location``, on a
-            model that supports it:
-
-            >>> embeddings = pc.inference.embed(
-            ...     model="text-embedding-3-large",
-            ...     inputs=["Vector databases index embeddings for similarity search."],
-            ...     parameters={"processing_location": "us"},
-            ... )
-
         .. note::
            To store these vectors, upsert each embedding's ``values`` into a
            ``dense_vector`` field of a document index (here ``embedding``)
