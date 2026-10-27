@@ -253,9 +253,6 @@ class AsyncInference:
                 (e.g., ``{"input_type": "passage", "truncate": "END"}``).
                 Call :meth:`get_model` and read ``supported_parameters`` to
                 discover the keys a given model accepts.
-                ``processing_location`` sets where the model processes your
-                data. Supported values depend on the model and your plan. See
-                the `processing locations guide <LINK_TBD>`_.
 
         Returns:
             :class:`~pinecone.models.inference.embed.EmbeddingsList` with one
