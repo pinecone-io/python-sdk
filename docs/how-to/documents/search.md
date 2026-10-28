@@ -3,7 +3,7 @@
 {meth}`~pinecone.client.documents.Documents.search` ranks the documents in one namespace
 by the clauses in `score_by` and returns the `top_k` best. The examples continue the
 `article-search` index from [Declare a schema and upsert documents](schema-and-upsert.md):
-a `dense_vector` field `embedding`, a full-text `title`, and `category` and `year`
+a `dense_vector` field `your_vector`, a full-text `title`, and `category` and `year`
 metadata.
 
 ```python
@@ -15,7 +15,7 @@ index = pc.index("article-search")
 response = index.documents.search(
     namespace="articles-en",
     top_k=10,
-    score_by=[DenseVectorQuery(field="embedding", values=[0.012, -0.087, 0.153])],
+    score_by=[DenseVectorQuery(field="your_vector", values=[0.012, -0.087, 0.153])],
     include_fields=["title", "year"],
 )
 for doc in response.matches:
@@ -63,7 +63,7 @@ response = support.documents.search(
 
 On a `dense_vector` field, use `DenseVectorQuery` and pass a query embedding you
 computed. It must come from the same model, with the same dimension, as the document
-embeddings. The `embedding` field of `article-search` holds them:
+embeddings. The `your_vector` field of `article-search` holds them:
 
 ```python
 from pinecone import DenseVectorQuery
@@ -71,7 +71,7 @@ from pinecone import DenseVectorQuery
 response = index.documents.search(
     namespace="articles-en",
     top_k=10,
-    score_by=[DenseVectorQuery(field="embedding", values=[0.012, -0.087, 0.153])],
+    score_by=[DenseVectorQuery(field="your_vector", values=[0.012, -0.087, 0.153])],
 )
 ```
 
@@ -244,7 +244,7 @@ Combine the two kinds under `$and`:
 response = index.documents.search(
     namespace="articles-en",
     top_k=10,
-    score_by=[DenseVectorQuery(field="embedding", values=[0.012, -0.087, 0.153])],
+    score_by=[DenseVectorQuery(field="your_vector", values=[0.012, -0.087, 0.153])],
     filter={
         "$and": [
             {"year": {"$gte": 2020}},
@@ -265,7 +265,7 @@ condition = Field("year").gte(2020) & Field("title").match_any("aqueduct irrigat
 response = index.documents.search(
     namespace="articles-en",
     top_k=10,
-    score_by=[DenseVectorQuery(field="embedding", values=[0.012, -0.087, 0.153])],
+    score_by=[DenseVectorQuery(field="your_vector", values=[0.012, -0.087, 0.153])],
     filter=condition.to_dict(),
 )
 ```

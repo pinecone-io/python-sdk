@@ -81,7 +81,7 @@ async def main() -> None:
             results = await index.documents.search(
                 namespace="products-en",
                 top_k=5,
-                score_by=[DenseVectorQuery(field="embedding", values=[0.12, 0.34, 0.56])],
+                score_by=[DenseVectorQuery(field="your_vector", values=[0.12, 0.34, 0.56])],
             )
             for doc in results.matches:
                 print(doc.id, doc.score)

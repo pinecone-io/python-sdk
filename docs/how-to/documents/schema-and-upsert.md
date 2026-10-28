@@ -45,7 +45,7 @@ pc = Pinecone(api_key="your-api-key")
 
 schema = (
     SchemaBuilder()
-    .add_dense_vector_field("embedding", dimension=1536, metric="cosine")
+    .add_dense_vector_field("your_vector", dimension=1536, metric="cosine")
     .add_string_field("title", full_text_search={"language": "en", "stemming": True})
     .build()
 )
@@ -89,14 +89,14 @@ response = index.documents.upsert(
     documents=[
         {
             "_id": "article-101",
-            "embedding": [0.012, -0.087, 0.153],  # 1536 floats in practice
+            "your_vector": [0.012, -0.087, 0.153],  # 1536 floats in practice
             "title": "How Roman aqueducts carried water",
             "category": "history",
             "year": 2024,
         },
         {
             "_id": "article-102",
-            "embedding": [0.045, 0.021, -0.064],
+            "your_vector": [0.045, 0.021, -0.064],
             "title": "Gravity-fed irrigation today",
             "category": "engineering",
             "year": 2023,
