@@ -25,22 +25,28 @@ for doc in response.matches:
 ## Choose a scoring clause
 
 Each clause scores against fields of one kind, so the schema decides which clauses an
-index can use:
+index can use. The clauses fall into three kinds of search. Semantic and sparse search
+each come as a pair: one clause takes query text and Pinecone embeds it with the field's
+model, the other takes a query vector you computed yourself.
 
-| To find documents by | Use | Against |
+| Kind of search | Pass query text | Pass a query vector you computed |
 |---|---|---|
-| meaning, with a query embedding you computed | {class}`~pinecone.models.documents.score_by.DenseVectorQuery` | a `dense_vector` field |
-| meaning, from query text Pinecone embeds | {class}`~pinecone.models.documents.score_by.EmbedQuery` | a `string` field with `embed` |
-| the words in the query (BM25 keyword relevance) | {class}`~pinecone.models.documents.score_by.TextQuery` | full-text `string` fields |
-| a boolean expression: required, excluded, or weighted terms | {class}`~pinecone.models.documents.score_by.QueryStringQuery` | full-text `string` fields |
-| term overlap, with a sparse query vector you computed | {class}`~pinecone.models.documents.score_by.SparseVectorQuery` | a `sparse_vector` field |
-| term overlap, from query text Pinecone encodes | {class}`~pinecone.models.documents.score_by.SparseEmbedQuery` | a `string` field with `sparse_embed` |
+| [Semantic](#semantic-search): by meaning | {class}`~pinecone.models.documents.score_by.EmbedQuery`, on a `string` field with `embed` | {class}`~pinecone.models.documents.score_by.DenseVectorQuery`, on a `dense_vector` field |
+| [Sparse](#sparse-search): by weighted term overlap | {class}`~pinecone.models.documents.score_by.SparseEmbedQuery`, on a `string` field with `sparse_embed` | {class}`~pinecone.models.documents.score_by.SparseVectorQuery`, on a `sparse_vector` field |
+| [Keyword](#keyword-search): by the words themselves | {class}`~pinecone.models.documents.score_by.TextQuery` (BM25 relevance) or {class}`~pinecone.models.documents.score_by.QueryStringQuery` (a boolean expression), on full-text `string` fields | |
 
-A dense query embedding must come from the same model, with the same dimension, as the
-document embeddings. With `EmbedQuery` and `SparseEmbedQuery`, Pinecone uses the field's
-own model, so you never handle a vector. These clauses need a `string` field declared with
-`embed` or `sparse_embed`, which `article-search` does not have; this example searches the
-`support-articles` index from
+`score_by` also accepts each clause as a plain dict with a `type` key, such as
+`{"type": "text", "query": "roman aqueduct", "fields": ["title"]}`.
+
+### Semantic search
+
+Semantic search finds documents by meaning, so a query can match documents that share
+none of its words. It scores against the index's dense field, which is either a `string`
+field with `embed` or a `dense_vector` field.
+
+On a `string` field with `embed`, use `EmbedQuery` and pass the query as text. Pinecone
+embeds it with the field's own model, so you never handle a vector. `article-search` has
+no such field; this example searches the `support-articles` index from
 [Declare a schema and upsert documents](schema-and-upsert.md), whose `body` field embeds
 with the default models:
 
@@ -55,10 +61,27 @@ response = support.documents.search(
 )
 ```
 
+On a `dense_vector` field, use `DenseVectorQuery` and pass a query embedding you
+computed. It must come from the same model, with the same dimension, as the document
+embeddings. The `embedding` field of `article-search` holds them:
+
+```python
+from pinecone import DenseVectorQuery
+
+response = index.documents.search(
+    namespace="articles-en",
+    top_k=10,
+    score_by=[DenseVectorQuery(field="embedding", values=[0.012, -0.087, 0.153])],
+)
+```
+
+#### Optional: set the task type for `EmbedQuery`
+
 `EmbedQuery` embeds the query with the field's `read_parameters`. To override them for one
 search, pass `parameters`. Only `task_type` can be set, and only on a field whose model
 accepts it; {meth}`pc.inference.list_models() <pinecone.client.inference.Inference.list_models>`
-lists the models. `SparseEmbedQuery` takes no `parameters`.
+lists the models. See {class}`~pinecone.models.documents.score_by.EmbedQuery` for the
+parameter reference.
 
 The default model takes no `task_type`, so this example uses its own `fact-checks` index,
 whose `body` field embeds with `gemini-embedding-2` for retrieval:
@@ -98,8 +121,67 @@ response = facts.documents.search(
 )
 ```
 
-`TextQuery` matches the words literally across the fields you list. `QueryStringQuery`
-takes a Lucene expression with the fields named inside it:
+### Sparse search
+
+Sparse search scores documents by the terms they share with the query, each weighted by
+how much it matters, as a sparse embedding model or a keyword-weighting scheme encodes
+them. It scores against the index's sparse field, which is either a `string` field with
+`sparse_embed` or a `sparse_vector` field.
+
+On a `string` field with `sparse_embed`, use `SparseEmbedQuery` and pass the query as
+text. Pinecone encodes it with the field's own sparse model and `read_parameters`; unlike
+`EmbedQuery`, it takes no `parameters`. The `body` field of `support-articles` declares
+`sparse_embed` as well as `embed`:
+
+```python
+from pinecone import SparseEmbedQuery
+
+response = support.documents.search(
+    namespace="articles-en",
+    top_k=5,
+    score_by=[SparseEmbedQuery(field="body", query="aqueduct gradient")],
+)
+```
+
+On a `sparse_vector` field, use `SparseVectorQuery` and pass a
+{class}`~pinecone.models.vectors.sparse.SparseValues` you encoded yourself, the same way
+as the document vectors, so its indices name the same terms. Neither index above has a
+`sparse_vector` field, so this example uses its own `term-search` index:
+
+```python
+from pinecone import SchemaBuilder, SparseValues, SparseVectorQuery
+
+schema = SchemaBuilder().add_sparse_vector_field("keywords").build()
+pc.indexes.create(name="term-search", schema=schema)
+
+terms = pc.index("term-search")
+terms.documents.upsert(
+    namespace="articles-en",
+    documents=[{"_id": "article-101", "keywords": {"indices": [10, 42], "values": [0.5, 0.3]}}],
+)
+
+response = terms.documents.search(
+    namespace="articles-en",
+    top_k=10,
+    score_by=[
+        SparseVectorQuery(
+            field="keywords",
+            sparse_values=SparseValues(indices=[10, 42], values=[0.4, 0.9]),
+        )
+    ],
+)
+```
+
+### Keyword search
+
+Keyword search matches the words themselves, which suits exact terms, names, and codes.
+It scores against full-text `string` fields, such as `title` in `article-search`. The text
+of an `embed` or `sparse_embed` field is full-text searchable too, unless the field was
+declared with `store_text=False`.
+
+`TextQuery` matches the words literally across the fields you list and scores them by
+BM25 relevance. `QueryStringQuery` takes a Lucene expression with the fields named inside
+it, for when the query needs `AND`, `OR`, or `NOT`:
 
 ```python
 from pinecone import QueryStringQuery, TextQuery
@@ -116,8 +198,7 @@ structured = index.documents.search(
 )
 ```
 
-`score_by` also accepts each clause as a plain dict with a `type` key, such as
-`{"type": "text", "query": "roman aqueduct", "fields": ["title"]}`.
+To weight terms or combine several keyword clauses, see [Combine clauses](#combine-clauses).
 
 ## Combine clauses
 
