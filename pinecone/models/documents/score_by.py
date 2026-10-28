@@ -329,9 +329,10 @@ class EmbedQuery(
             ``field``. It is moved into ``field`` and reads back as ``None``.
         parameters: Model parameters for embedding the query in this search, e.g.
             ``{"task_type": "fact_verification"}``. They override the field's
-            ``read_parameters``. Only ``task_type`` can be set, and ``GET /models`` lists
-            the models that accept it. The dict is sent as given and the server checks
-            it; leave it unset to embed with the field's ``read_parameters``.
+            ``read_parameters``. Only ``task_type`` can be set, and
+            :meth:`pc.inference.list_models() <pinecone.client.inference.Inference.list_models>`
+            lists the models that accept it. The dict is sent as given and the server
+            checks it; leave it unset to embed with the field's ``read_parameters``.
 
     Raises:
         ValueError: If ``field`` or ``query`` is empty, ``fields`` does not hold exactly

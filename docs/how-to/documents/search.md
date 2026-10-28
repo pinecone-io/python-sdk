@@ -38,7 +38,11 @@ index can use:
 
 A dense query embedding must come from the same model, with the same dimension, as the
 document embeddings. With `EmbedQuery` and `SparseEmbedQuery`, Pinecone uses the field's
-own model, so you never handle a vector:
+own model, so you never handle a vector. These clauses need a `string` field declared with
+`embed` or `sparse_embed`, which `article-search` does not have; this example searches the
+`support-articles` index from
+[Declare a schema and upsert documents](schema-and-upsert.md), whose `body` field embeds
+with the default models:
 
 ```python
 from pinecone import EmbedQuery
@@ -52,12 +56,37 @@ response = support.documents.search(
 ```
 
 `EmbedQuery` embeds the query with the field's `read_parameters`. To override them for one
-search, pass `parameters`. Only `task_type` can be set, and `GET /models` lists the models
-that accept it, such as `gemini-embedding-2`. `SparseEmbedQuery` takes no `parameters`.
+search, pass `parameters`. Only `task_type` can be set, and only on a field whose model
+accepts it; {meth}`pc.inference.list_models() <pinecone.client.inference.Inference.list_models>`
+lists the models. `SparseEmbedQuery` takes no `parameters`.
+
+The default model takes no `task_type`, so this example uses its own `fact-checks` index,
+whose `body` field embeds with `gemini-embedding-2` for retrieval:
 
 ```python
-response = support.documents.search(
-    namespace="articles-en",
+from pinecone import EmbedQuery, SchemaBuilder
+
+schema = (
+    SchemaBuilder()
+    .add_string_field(
+        "body",
+        embed={
+            "model": "gemini-embedding-2",
+            "write_parameters": {"task_type": "retrieval_document"},
+        },
+    )
+    .build()
+)
+pc.indexes.create(name="fact-checks", schema=schema)
+
+facts = pc.index("fact-checks")
+facts.documents.upsert(
+    namespace="claims-en",
+    documents=[{"_id": "fact-1", "body": "The Eiffel Tower is 330 m tall."}],
+)
+
+response = facts.documents.search(
+    namespace="claims-en",
     top_k=5,
     score_by=[
         EmbedQuery(
