@@ -131,9 +131,9 @@ how much it matters, as a sparse embedding model or a keyword-weighting scheme e
 them. It scores against the index's sparse field, which is either a `string` field with
 `sparse_embed` or a `sparse_vector` field.
 
-On a `string` field with `sparse_embed`, `SparseEmbedQuery` works like `EmbedQuery`: pass
-the query as text, and Pinecone encodes it with the field's sparse model. It takes no
-`parameters`.
+On a `string` field with `sparse_embed`, such as `body` in `support-articles`,
+`SparseEmbedQuery` works like `EmbedQuery`: pass the query as text, and Pinecone encodes it
+with the field's sparse model. It takes no `parameters`.
 
 On a `sparse_vector` field, use `SparseVectorQuery` and pass a
 {class}`~pinecone.models.vectors.sparse.SparseValues` you encoded yourself, the same way
