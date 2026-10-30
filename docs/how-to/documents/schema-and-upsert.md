@@ -19,9 +19,9 @@ supports and the `score_by` clause that runs it:
 | Kind of search | `score_by` clause | Field type | Your documents carry |
 |---|---|---|---|
 | [Semantic](search.md#semantic-search) | {class}`~pinecone.models.documents.score_by.DenseVectorQuery` | `dense_vector` | a list of floats from your embedding model |
-| [Semantic](search.md#semantic-search) | {class}`~pinecone.models.documents.score_by.EmbedQuery` | `string` with `embed` | text; Pinecone embeds it with a provided dense model |
+| [Semantic](search.md#semantic-search) | {class}`~pinecone.models.documents.score_by.EmbedQuery` | `string` with `embed` | text; Pinecone embeds it with a hosted dense model |
 | [Sparse](search.md#sparse-search) | {class}`~pinecone.models.documents.score_by.SparseVectorQuery` | `sparse_vector` | a sparse vector, `{"indices": [...], "values": [...]}` |
-| [Sparse](search.md#sparse-search) | {class}`~pinecone.models.documents.score_by.SparseEmbedQuery` | `string` with `sparse_embed` | text; Pinecone embeds it with a provided sparse model |
+| [Sparse](search.md#sparse-search) | {class}`~pinecone.models.documents.score_by.SparseEmbedQuery` | `string` with `sparse_embed` | text; Pinecone embeds it with a hosted sparse model |
 | [Keyword](search.md#keyword-search) | {class}`~pinecone.models.documents.score_by.TextQuery` or {class}`~pinecone.models.documents.score_by.QueryStringQuery` | `string` with full-text search | text |
 
 An index holds at most one dense field (a `dense_vector`, or a `string` with `embed`) and
@@ -62,7 +62,7 @@ region.
 `support-articles` is the same kind of index, with Pinecone embedding `body` instead of
 you supplying a vector. Give the `string` field `embed`; `True` takes the default model.
 Here `body` is also declared full-text, so the index has two full-text fields, `title` and
-`body`. A field can also set `sparse_embed`, which embeds it with a provided sparse model
+`body`. A field can also set `sparse_embed`, which embeds it with a hosted sparse model
 and is searched with {class}`~pinecone.models.documents.score_by.SparseEmbedQuery`.
 
 ```python
