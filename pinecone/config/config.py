@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
+from pinecone._internal.config import _redact_url_userinfo
 from pinecone._internal.http_client import _redact_headers
 
 __all__ = ["Config"]
@@ -41,11 +42,12 @@ class Config(NamedTuple):
         redacted_proxy = (
             _redact_headers(self.proxy_headers) if self.proxy_headers is not None else None
         )
+        proxy_url = _redact_url_userinfo(self.proxy_url) if self.proxy_url is not None else None
         return (
             f"Config("
             f"api_key={masked_key!r}, "
             f"host={self.host!r}, "
-            f"proxy_url={self.proxy_url!r}, "
+            f"proxy_url={proxy_url!r}, "
             f"proxy_headers={redacted_proxy!r}, "
             f"ssl_ca_certs={self.ssl_ca_certs!r}, "
             f"ssl_verify={self.ssl_verify!r}, "

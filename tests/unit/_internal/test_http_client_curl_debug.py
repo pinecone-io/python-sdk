@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 from unittest.mock import patch
 
 import httpx
@@ -56,3 +57,33 @@ def test_http_client_post_logs_content_type_in_curl(caplog: pytest.LogCaptureFix
     ):
         client.post("/test", json={"hello": "world"})
     assert "Content-Type: application/json" in caplog.text
+
+
+def test_log_curl_quotes_single_quotes_in_url_headers_and_body(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    body = b"""{"text": "it's here'; touch /tmp/pwned; echo '"}"""
+    url = "https://idx.svc.pinecone.io/vectors/fetch?ids=a'b"
+    with (
+        patch.dict(os.environ, {"PINECONE_DEBUG_CURL": "1"}),
+        caplog.at_level(logging.DEBUG, logger="pinecone._internal.http_client"),
+    ):
+        _log_curl(
+            "POST",
+            url,
+            headers={"Api-Key": "secret", "X-Note": "o'clock"},
+            body=body,
+        )
+    curl_cmd = caplog.records[-1].getMessage().split("\n", 1)[1]
+    assert shlex.split(curl_cmd) == [
+        "curl",
+        "-X",
+        "POST",
+        url,
+        "-H",
+        "Api-Key: ***",
+        "-H",
+        "X-Note: o'clock",
+        "-d",
+        body.decode(),
+    ]

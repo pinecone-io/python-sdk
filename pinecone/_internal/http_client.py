@@ -374,6 +374,11 @@ def _redact_headers(headers: dict[str, str]) -> dict[str, str]:
     return {k: "***" if k.lower() in _SENSITIVE_HEADERS else v for k, v in headers.items()}
 
 
+def _shell_single_quote(value: str) -> str:
+    """Wrap *value* in single quotes so a pasted curl line cannot break out of it."""
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
 def _log_curl(
     method: str,
     url: str,
@@ -384,11 +389,11 @@ def _log_curl(
     if not os.environ.get("PINECONE_DEBUG_CURL"):
         return
     safe_headers = _redact_headers(headers)
-    parts = [f"curl -X {method} '{url}'"]
+    parts = [f"curl -X {method} {_shell_single_quote(url)}"]
     for key, value in safe_headers.items():
-        parts.append(f"-H '{key}: {value}'")
+        parts.append(f"-H {_shell_single_quote(f'{key}: {value}')}")
     if body is not None:
-        parts.append(f"-d '{body.decode('utf-8', errors='replace')}'")
+        parts.append(f"-d {_shell_single_quote(body.decode('utf-8', errors='replace'))}")
     curl_cmd = " ".join(parts)
     logger.debug("curl equivalent:\n%s", curl_cmd)
 

@@ -15,6 +15,17 @@ use crate::retry::{retry_on_transient_request, RetryConfig, ThrottleCallback};
 /// Maximum gRPC message size for both send and receive (128 MB).
 const MAX_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
 
+fn redact_url_userinfo(url: &str) -> String {
+    let start = url.find("://").map_or(0, |i| i + 3);
+    let end = url[start..]
+        .find(['/', '?', '#'])
+        .map_or(url.len(), |i| start + i);
+    match url[start..end].rfind('@') {
+        Some(at) => format!("{}***{}", &url[..start], &url[start + at..]),
+        None => url.to_string(),
+    }
+}
+
 /// Normalize a source tag string.
 ///
 /// - Lowercase the input.
@@ -659,7 +670,13 @@ impl GrpcChannel {
             let _guard = runtime.enter();
             if let Some(proxy_url_str) = proxy_url {
                 let proxy_dst: http::Uri = proxy_url_str.parse().map_err(|e| {
-                    pinecone_value_error(py, &format!("Invalid proxy URL '{proxy_url_str}': {e}"))
+                    pinecone_value_error(
+                        py,
+                        &format!(
+                            "Invalid proxy URL '{}': {e}",
+                            redact_url_userinfo(proxy_url_str)
+                        ),
+                    )
                 })?;
                 let mut http_connector = HttpConnector::new();
                 http_connector.enforce_http(false);
@@ -1531,6 +1548,22 @@ mod tests {
     use std::collections::HashSet;
     use std::time::Duration;
     use tonic::service::Interceptor;
+
+    #[test]
+    fn redact_url_userinfo_masks_credentials() {
+        assert_eq!(
+            redact_url_userinfo("http://user:SENTINEL-SECRET-1234@proxy:8080/path"),
+            "http://***@proxy:8080/path"
+        );
+        assert_eq!(
+            redact_url_userinfo("http://proxy:8080/a@b"),
+            "http://proxy:8080/a@b"
+        );
+        assert_eq!(
+            redact_url_userinfo("http://proxy:8080"),
+            "http://proxy:8080"
+        );
+    }
 
     fn size_bytes_through_converter(size_bytes: u64) -> u64 {
         Python::initialize();

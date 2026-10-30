@@ -119,6 +119,21 @@ def normalize_source_tag(tag: str | None) -> str:
     return cleaned.replace(" ", "_")
 
 
+def _redact_url_userinfo(url: str) -> str:
+    """Return *url* with any ``user:password@`` userinfo replaced by ``***``."""
+    scheme_end = url.find("://")
+    start = scheme_end + 3 if scheme_end != -1 else 0
+    end = len(url)
+    for sep in "/?#":
+        idx = url.find(sep, start)
+        if idx != -1:
+            end = min(end, idx)
+    at = url.rfind("@", start, end)
+    if at == -1:
+        return url
+    return f"{url[:start]}***{url[at:]}"
+
+
 def _parse_additional_headers_env() -> dict[str, str]:
     """Parse PINECONE_ADDITIONAL_HEADERS env var as JSON."""
     raw = os.environ.get("PINECONE_ADDITIONAL_HEADERS", "")
@@ -226,7 +241,7 @@ class PineconeConfig:
             f"timeout={self.timeout}, "
             f"additional_headers={self._redact_headers(self.additional_headers)!r}, "
             f"source_tag='{self.source_tag}', "
-            f"proxy_url='{self.proxy_url}', "
+            f"proxy_url='{_redact_url_userinfo(self.proxy_url)}', "
             f"proxy_headers={self._redact_headers(self.proxy_headers)!r}, "
             f"ssl_ca_certs={self.ssl_ca_certs!r}, "
             f"ssl_verify={self.ssl_verify}, "
