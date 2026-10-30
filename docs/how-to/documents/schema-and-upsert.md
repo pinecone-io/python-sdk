@@ -60,8 +60,9 @@ index is serverless on AWS `us-east-1`; see
 [Working with serverless indexes](../indexes/serverless.md) to choose another cloud or
 region.
 
-`support-articles` is the same kind of index, with Pinecone embedding `body` instead of
-you supplying a vector. Give the `string` field `embed`; `True` takes the default model.
+`support-articles` is the same kind of index, except that instead of vectors it has a
+`body` field configured for integrated embedding, so Pinecone embeds the text for you.
+Give the `string` field `embed`; `True` takes the default model.
 Here `body` is also declared full-text, so the index has two full-text fields, `title` and
 `body`. A field can also set `sparse_embed`, which embeds it with a hosted sparse model
 and is searched with {class}`~pinecone.models.documents.score_by.SparseEmbedQuery`.
