@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::prelude::{Engine as _, BASE64_STANDARD};
+use http::header::HeaderValue;
 use hyper_util::client::legacy::connect::{proxy::Tunnel, HttpConnector};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -28,6 +30,29 @@ fn redact_url_userinfo(url: &str) -> String {
         Some(at) => format!("{}***{}", &url[..start], &url[start + at..]),
         None => url.to_string(),
     }
+}
+
+/// `Basic` credentials for the CONNECT request, decoded from the proxy URL's
+/// userinfo. `None` when the URL has no userinfo.
+fn proxy_basic_auth(proxy_dst: &http::Uri) -> Option<HeaderValue> {
+    let (userinfo, _) = proxy_dst.authority()?.as_str().rsplit_once('@')?;
+    let (user, password) = userinfo.split_once(':').unwrap_or((userinfo, ""));
+    let mut credentials: Vec<u8> = percent_encoding::percent_decode_str(user).collect();
+    credentials.push(b':');
+    credentials.extend(percent_encoding::percent_decode_str(password));
+    HeaderValue::from_str(&format!("Basic {}", BASE64_STANDARD.encode(credentials))).ok()
+}
+
+/// CONNECT tunnel through `proxy_dst`, sending any credentials in its userinfo.
+fn proxy_tunnel(proxy_dst: http::Uri) -> Tunnel<HttpConnector> {
+    let auth = proxy_basic_auth(&proxy_dst);
+    let mut http_connector = HttpConnector::new();
+    http_connector.enforce_http(false);
+    let mut tunnel = Tunnel::new(proxy_dst, http_connector);
+    if let Some(auth) = auth {
+        tunnel = tunnel.with_auth(auth);
+    }
+    tunnel
 }
 
 /// Normalize a source tag string.
@@ -613,6 +638,8 @@ impl GrpcChannel {
     ///     source_tag: Optional source tag appended to the User-Agent string.
     ///     proxy_url: Optional HTTP proxy URL (e.g. "http://proxy.example.com:8080").
     ///                When set, gRPC traffic is tunnelled through the proxy via HTTP CONNECT.
+    ///                Percent-encoded userinfo ("http://user:pass@host:port") is sent as
+    ///                `Proxy-Authorization: Basic ...`.
     ///     on_throttle: Optional Python callable invoked with the host string on every
     ///                  retryable error. Signature: ``(host: str) -> None``. Used by the
     ///                  SDK's adaptive concurrency limiter to self-tune bulk-operation
@@ -682,10 +709,7 @@ impl GrpcChannel {
                         ),
                     )
                 })?;
-                let mut http_connector = HttpConnector::new();
-                http_connector.enforce_http(false);
-                let tunnel_connector = Tunnel::new(proxy_dst, http_connector);
-                endpoint_builder.connect_with_connector_lazy(tunnel_connector)
+                endpoint_builder.connect_with_connector_lazy(proxy_tunnel(proxy_dst))
             } else {
                 endpoint_builder.connect_lazy()
             }
@@ -2100,6 +2124,100 @@ mod tests {
         http_connector.enforce_http(false);
         // Constructing the Tunnel connector must not panic or error.
         let _tunnel = Tunnel::new(proxy_dst, http_connector);
+    }
+
+    fn basic_auth(proxy_url: &str) -> Option<String> {
+        proxy_basic_auth(&proxy_url.parse().unwrap()).map(|v| v.to_str().unwrap().to_string())
+    }
+
+    #[test]
+    fn proxy_basic_auth_decodes_userinfo() {
+        // base64("proxyuser:s3cret")
+        assert_eq!(
+            basic_auth("http://proxyuser:s3cret@proxy:8080").as_deref(),
+            Some("Basic cHJveHl1c2VyOnMzY3JldA==")
+        );
+        // base64("us@r:p:ss w") — percent-decoded, split on the first ':'
+        assert_eq!(
+            basic_auth("http://us%40r:p%3Ass%20w@proxy:8080").as_deref(),
+            Some("Basic dXNAcjpwOnNzIHc=")
+        );
+        // base64("proxyuser:")
+        assert_eq!(
+            basic_auth("http://proxyuser@proxy:8080").as_deref(),
+            Some("Basic cHJveHl1c2VyOg==")
+        );
+        assert_eq!(basic_auth("http://proxy:8080"), None);
+    }
+
+    /// Open a tunnel through a one-shot fake proxy and return the CONNECT request it saw.
+    async fn captured_connect(proxy_userinfo: &str) -> String {
+        use std::io::{BufRead, BufReader, Write};
+        use tonic::codegen::Service;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let proxy = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut request = String::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                request.push_str(&line);
+            }
+            reader
+                .get_mut()
+                .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                .unwrap();
+            request
+        });
+
+        let proxy_dst = format!("http://{proxy_userinfo}127.0.0.1:{port}")
+            .parse()
+            .unwrap();
+        let mut tunnel = proxy_tunnel(proxy_dst);
+        tunnel
+            .call("http://idx.svc.example.test:443".parse().unwrap())
+            .await
+            .expect("tunnel established");
+        proxy.join().unwrap()
+    }
+
+    fn proxy_authorization(request: &str) -> Vec<&str> {
+        request
+            .lines()
+            .filter_map(|line| {
+                let (name, value) = line.split_once(": ")?;
+                name.eq_ignore_ascii_case("proxy-authorization")
+                    .then_some(value)
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn tunnel_sends_basic_auth_from_proxy_url() {
+        let request = captured_connect("proxyuser:s3cret@").await;
+        assert!(request.starts_with("CONNECT idx.svc.example.test:443 HTTP/1.1\r\n"));
+        assert_eq!(
+            proxy_authorization(&request),
+            ["Basic cHJveHl1c2VyOnMzY3JldA=="]
+        );
+    }
+
+    #[tokio::test]
+    async fn tunnel_decodes_percent_encoded_credentials() {
+        let request = captured_connect("us%40r:p%3Ass%20w@").await;
+        assert_eq!(proxy_authorization(&request), ["Basic dXNAcjpwOnNzIHc="]);
+    }
+
+    #[tokio::test]
+    async fn tunnel_without_userinfo_sends_no_auth() {
+        let request = captured_connect("").await;
+        assert!(proxy_authorization(&request).is_empty(), "{request}");
     }
 
     #[test]

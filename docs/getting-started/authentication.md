@@ -114,6 +114,9 @@ pc = Pinecone(
 )
 ```
 
+Credentials in the URL itself, `http://user:pass@proxy.corp.internal:3128`, are
+percent-decoded and sent as `Basic` proxy auth.
+
 `ssl_ca_certs` takes a path to a CA bundle file or a directory of them, for a
 corporate root or a self-signed endpoint. It wins over `ssl_verify=False`: pass both
 and verification stays on. A path that does not exist raises `FileNotFoundError`

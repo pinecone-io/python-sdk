@@ -26,6 +26,8 @@ rand = "0.9"
 tracing = "0.1"
 http = "1"
 hyper-util = { version = "0.1", features = ["client-legacy"] }
+base64 = "0.22"
+percent-encoding = "2"
 
 [dev-dependencies]
 # `test-util` gives tests paused/virtual time, so a 30s backoff assertion costs

@@ -403,7 +403,9 @@ class GrpcIndex:
             `Retries and resilience <https://sdk.pinecone.io/python/guides/retries.html>`__.
         proxy_url (str | None): HTTP proxy URL, e.g.
             ``"http://proxy.internal:3128"``. gRPC traffic is tunnelled through it
-            with HTTP CONNECT.
+            with HTTP CONNECT. Credentials in the URL, e.g.
+            ``"http://user:pass@proxy.internal:3128"``, are percent-decoded and sent
+            as ``Proxy-Authorization: Basic ...``.
         on_throttle (Callable[[str], None] | None): Called with the bare host name
             each time a request fails with a retryable gRPC status, whether or not
             it is retried. Use it for observability, e.g. counting throttles per
