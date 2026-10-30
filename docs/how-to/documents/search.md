@@ -209,10 +209,8 @@ response = index.documents.search(
 ```
 
 A `dense_vector`, `sparse_vector`, `embed`, or `sparse_embed` clause must be the only
-clause in `score_by`, and the client raises
-{exc}`~pinecone.errors.exceptions.PineconeValueError` before sending a search that mixes
-one with anything else. To rank by both meaning and keywords, run one search per clause
-and merge the results in your code.
+clause in `score_by`. To rank by both meaning and keywords, run one search per clause and
+merge the results in your code.
 
 ## Choose what comes back
 
