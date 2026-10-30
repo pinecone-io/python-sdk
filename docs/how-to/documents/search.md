@@ -3,8 +3,9 @@
 {meth}`~pinecone.client.documents.Documents.search` ranks the documents in one namespace
 by the clauses in `score_by` and returns the `top_k` best. The examples continue the
 `article-search` index from [Declare a schema and upsert documents](schema-and-upsert.md):
-a `dense_vector` field `your_vector`, a full-text `title`, and `category` and `year`
-metadata.
+a `dense_vector` field `your_vector`, a `sparse_vector` field `your_sparse_vector`, a
+full-text `title`, and `category` and `year` metadata. Searches that have Pinecone embed
+the query use `support-articles`, the same kind of index with Pinecone embedding `body`.
 
 ```python
 from pinecone import DenseVectorQuery, Pinecone
@@ -48,7 +49,7 @@ On a `string` field with `embed`, use `EmbedQuery` and pass the query as text. P
 embeds it with the field's own model, so you never handle a vector. `article-search` has
 no such field; this example searches the `support-articles` index from
 [Declare a schema and upsert documents](schema-and-upsert.md), whose `body` field embeds
-with the default models:
+with the default model:
 
 ```python
 from pinecone import EmbedQuery
@@ -128,44 +129,24 @@ how much it matters, as a sparse embedding model or a keyword-weighting scheme e
 them. It scores against the index's sparse field, which is either a `string` field with
 `sparse_embed` or a `sparse_vector` field.
 
-On a `string` field with `sparse_embed`, use `SparseEmbedQuery` and pass the query as
-text. Pinecone encodes it with the field's own sparse model and `read_parameters`; unlike
-`EmbedQuery`, it takes no `parameters`. The `body` field of `support-articles` declares
-`sparse_embed` as well as `embed`:
-
-```python
-from pinecone import SparseEmbedQuery
-
-response = support.documents.search(
-    namespace="articles-en",
-    top_k=5,
-    score_by=[SparseEmbedQuery(field="body", query="aqueduct gradient")],
-)
-```
+On a `string` field with `sparse_embed`, `SparseEmbedQuery` works like `EmbedQuery`: pass
+the query as text, and Pinecone encodes it with the field's sparse model. It takes no
+`parameters`.
 
 On a `sparse_vector` field, use `SparseVectorQuery` and pass a
 {class}`~pinecone.models.vectors.sparse.SparseValues` you encoded yourself, the same way
-as the document vectors, so its indices name the same terms. Neither index above has a
-`sparse_vector` field, so this example uses its own `term-search` index:
+as the document vectors, so its indices name the same terms. The `your_sparse_vector` field
+of `article-search` holds them:
 
 ```python
-from pinecone import SchemaBuilder, SparseValues, SparseVectorQuery
+from pinecone import SparseValues, SparseVectorQuery
 
-schema = SchemaBuilder().add_sparse_vector_field("keywords").build()
-pc.indexes.create(name="term-search", schema=schema)
-
-terms = pc.index("term-search")
-terms.documents.upsert(
-    namespace="articles-en",
-    documents=[{"_id": "article-101", "keywords": {"indices": [10, 42], "values": [0.5, 0.3]}}],
-)
-
-response = terms.documents.search(
+response = index.documents.search(
     namespace="articles-en",
     top_k=10,
     score_by=[
         SparseVectorQuery(
-            field="keywords",
+            field="your_sparse_vector",
             sparse_values=SparseValues(indices=[10, 42], values=[0.4, 0.9]),
         )
     ],
@@ -175,9 +156,10 @@ response = terms.documents.search(
 ### Keyword search
 
 Keyword search matches the words themselves, which suits exact terms, names, and codes.
-It scores against full-text `string` fields, such as `title` in `article-search`. The text
-of an `embed` or `sparse_embed` field is full-text searchable too, unless the field was
-declared with `store_text=False`.
+It scores against full-text `string` fields. `title` is full-text in both indexes, and
+`body` is too in `support-articles`; see
+[Create the index](schema-and-upsert.md#create-the-index) for how full-text fields are
+declared.
 
 `TextQuery` matches the words literally across the fields you list and scores them by
 BM25 relevance. `QueryStringQuery` takes a Lucene expression with the fields named inside
