@@ -243,7 +243,7 @@ dev = [
     # real embedding frame.
     "pandas>=2.0",
     "numpy>=1.26",
-    "ipykernel>=7.2.0",
+    "ipython",
     "pytest>=9.0.3",
     "pytest-anyio>=0.0.0",
     "pytest-asyncio>=0.23",
