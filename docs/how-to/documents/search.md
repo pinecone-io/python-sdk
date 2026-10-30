@@ -192,6 +192,22 @@ sum of its scores. Repeating a clause does not up-weight it; to weight a term, g
 `^N` boost inside a `QueryStringQuery`, such as `title:aqueduct^3`. To require terms
 together, use `AND` inside one `QueryStringQuery`.
 
+This search matches "roman aqueduct" in `title` or `body`, and ranks documents whose
+title mentions "aqueduct" higher:
+
+```python
+from pinecone import QueryStringQuery, TextQuery
+
+response = index.documents.search(
+    namespace="articles-en",
+    top_k=10,
+    score_by=[
+        TextQuery(query="roman aqueduct", fields=["title", "body"]),
+        QueryStringQuery(query="title:aqueduct^3"),
+    ],
+)
+```
+
 A `dense_vector`, `sparse_vector`, `embed`, or `sparse_embed` clause must be the only
 clause in `score_by`, and the client raises
 {exc}`~pinecone.errors.exceptions.PineconeValueError` before sending a search that mixes
