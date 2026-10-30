@@ -63,7 +63,8 @@ region.
 
 `support-articles` is the same kind of index, except that instead of vectors it has a
 `body` field configured for integrated embedding, so Pinecone embeds the text for you.
-Give the `string` field `embed`; `True` takes the default model.
+Give the `string` field `embed` with the model to use, here `text-embedding-3-small`;
+`embed=True` takes the default model instead.
 As in `article-search`, `body` is also declared full-text, so the index has two full-text
 fields, `title` and `body`. A field can also set `sparse_embed`, which embeds it with a
 hosted sparse model and is searched with
@@ -75,7 +76,7 @@ schema = (
     .add_string_field("title", full_text_search={"language": "en", "stemming": True})
     .add_string_field(
         "body",
-        embed=True,
+        embed={"model": "text-embedding-3-small"},
         full_text_search={"language": "en", "stemming": True},
     )
     .build()

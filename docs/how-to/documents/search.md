@@ -50,7 +50,7 @@ On a `string` field with `embed`, use `EmbedQuery` and pass the query as text. P
 embeds it with the field's own model, so you never handle a vector. `article-search` has
 no such field; this example searches the `support-articles` index from
 [Declare a schema and upsert documents](schema-and-upsert.md), whose `body` field embeds
-with the default model:
+with `text-embedding-3-small`:
 
 ```python
 from pinecone import EmbedQuery
@@ -86,8 +86,8 @@ accepts it; {meth}`pc.inference.list_models() <pinecone.client.inference.Inferen
 lists the models. See {class}`~pinecone.models.documents.score_by.EmbedQuery` for the
 parameter reference.
 
-The default model takes no `task_type`, so this example uses its own `fact-checks` index,
-whose `body` field embeds with `gemini-embedding-2` for retrieval:
+`text-embedding-3-small` takes no `task_type`, so this example uses its own `fact-checks`
+index, whose `body` field embeds with `gemini-embedding-2` for retrieval:
 
 ```python
 from pinecone import EmbedQuery, SchemaBuilder
