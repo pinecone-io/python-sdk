@@ -133,15 +133,32 @@ Sparse fields, full-text-only fields, and metadata such as `category` are option
 server rejects a document that is missing a required field with a `400` naming the
 document and the field.
 
-For the `support-articles` index above, a document is just its `_id`, its text, and any
-metadata:
+The `support-articles` index above takes the same documents without the vectors, since
+Pinecone embeds `body` for you:
 
 ```python
-{
-    "_id": "article-101",
-    "title": "How a Roman aqueduct carried water",
-    "body": "Roman aqueducts carried water by gravity",
-}
+support = pc.index("support-articles")
+
+response = support.documents.upsert(
+    namespace="articles-en",
+    documents=[
+        {
+            "_id": "article-101",
+            "title": "How a Roman aqueduct carried water",
+            "body": "Roman aqueducts carried water by gravity",
+            "category": "history",
+            "year": 2024,
+        },
+        {
+            "_id": "article-102",
+            "title": "Gravity-fed irrigation today",
+            "body": "Farms still move water downhill without pumps",
+            "category": "engineering",
+            "year": 2023,
+        },
+    ],
+)
+print(response.upserted_count)
 ```
 
 Documents can also be built as {class}`~pinecone.models.documents.document.DocumentRecord`
