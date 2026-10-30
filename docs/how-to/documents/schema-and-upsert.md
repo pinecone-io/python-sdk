@@ -25,9 +25,10 @@ supports and the `score_by` clause that runs it:
 | [Keyword](search.md#keyword-search) | {class}`~pinecone.models.documents.score_by.TextQuery` or {class}`~pinecone.models.documents.score_by.QueryStringQuery` | `string` with full-text search | text |
 
 An index holds at most one dense field (a `dense_vector`, or a `string` with `embed`) and
-at most one sparse field (a `sparse_vector`, or a `string` with `sparse_embed`). Values
-you only filter on, such as a category or a year, stay out of the schema: put them on
-the documents and they are indexed for filtering when first written.
+at most one sparse field (a `sparse_vector`, or a `string` with `sparse_embed`). Fields
+you only use for filtering, such as a category or a year, don't need to be specified in
+the schema. Include them in your documents and they're automatically indexed for filtering
+when first written.
 
 The schema cannot change after the index is created, so declare every searched field up
 front.
