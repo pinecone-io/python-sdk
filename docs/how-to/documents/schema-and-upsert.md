@@ -112,7 +112,7 @@ response = index.documents.upsert(
             "_id": "article-101",
             "body_vector": [0.012, -0.087, 0.153],  # 1536 floats in practice
             "body_sparse_vector": {"indices": [10, 42], "values": [0.5, 0.3]},
-            "title": "How Roman aqueducts carried water",
+            "title": "How a Roman aqueduct carried water",
             "body": "Roman aqueducts carried water by gravity",
             "category": "history",
             "year": 2024,
@@ -141,7 +141,7 @@ metadata:
 ```python
 {
     "_id": "article-101",
-    "title": "How Roman aqueducts carried water",
+    "title": "How a Roman aqueduct carried water",
     "body": "Roman aqueducts carried water by gravity",
 }
 ```
