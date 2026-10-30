@@ -158,9 +158,11 @@ jobs:
 
       - name: Compute target version
         id: bump
+        env:
+          RELEASE_LEVEL: ${{ inputs.releaseLevel }}
         run: |
           python scripts/bump_version.py \
-            --level "${{ inputs.releaseLevel }}" \
+            --level "$RELEASE_LEVEL" \
             --suffix ""
 
       - name: Confirm computed version is a final release (no a/b/rc)
@@ -202,15 +204,18 @@ jobs:
           echo "tag ${tag} is free"
 
       - name: Render plan summary
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          RELEASE_LEVEL: ${{ inputs.releaseLevel }}
         run: |
           {
             echo "## Release plan"
             echo ""
             echo "| Field | Value |"
             echo "|-------|-------|"
-            echo "| ref (input)      | \`${{ inputs.ref }}\` |"
+            echo "| ref (input)      | \`${INPUT_REF}\` |"
             echo "| ref (resolved)   | \`${{ steps.resolve.outputs.sha }}\` |"
-            echo "| releaseLevel     | \`${{ inputs.releaseLevel }}\` |"
+            echo "| releaseLevel     | \`${RELEASE_LEVEL}\` |"
             echo "| target version   | **\`${{ steps.bump.outputs.pep440_version }}\`** |"
             echo "| cargo version    | \`${{ steps.bump.outputs.cargo_version }}\` |"
             echo "| git tag          | \`${{ steps.bump.outputs.tag_name }}\` |"
@@ -258,10 +263,12 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
 
       - name: Apply version bump (write)
+        env:
+          RELEASE_LEVEL: ${{ inputs.releaseLevel }}
         run: |
           set -euo pipefail
           python scripts/bump_version.py \
-            --level "${{ inputs.releaseLevel }}" \
+            --level "$RELEASE_LEVEL" \
             --suffix "" \
             --write
           grep '^version' pyproject.toml rust/Cargo.toml

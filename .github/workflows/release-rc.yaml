@@ -140,13 +140,15 @@ jobs:
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Validate prereleaseSuffix
+        env:
+          PRERELEASE_SUFFIX: ${{ inputs.prereleaseSuffix }}
         run: |
-          if [[ -z "${{ inputs.prereleaseSuffix }}" ]]; then
+          if [[ -z "$PRERELEASE_SUFFIX" ]]; then
             echo "::error::prereleaseSuffix is required (this workflow is RC-only; final releases use release-prod.yaml)"
             exit 1
           fi
-          if [[ ! "${{ inputs.prereleaseSuffix }}" =~ ^(a|b|rc)[0-9]+$ ]]; then
-            echo "::error::prereleaseSuffix must match aN|bN|rcN (got '${{ inputs.prereleaseSuffix }}')"
+          if [[ ! "$PRERELEASE_SUFFIX" =~ ^(a|b|rc)[0-9]+$ ]]; then
+            echo "::error::prereleaseSuffix must match aN|bN|rcN (got '$PRERELEASE_SUFFIX')"
             exit 1
           fi
 
@@ -157,10 +159,13 @@ jobs:
 
       - name: Compute target version
         id: bump
+        env:
+          RELEASE_LEVEL: ${{ inputs.releaseLevel }}
+          PRERELEASE_SUFFIX: ${{ inputs.prereleaseSuffix }}
         run: |
           python scripts/bump_version.py \
-            --level "${{ inputs.releaseLevel }}" \
-            --suffix "${{ inputs.prereleaseSuffix }}"
+            --level "$RELEASE_LEVEL" \
+            --suffix "$PRERELEASE_SUFFIX"
 
       - name: Confirm version is not already on PyPI
         run: |
@@ -190,16 +195,20 @@ jobs:
           echo "tag ${tag} is free"
 
       - name: Render plan summary
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          RELEASE_LEVEL: ${{ inputs.releaseLevel }}
+          PRERELEASE_SUFFIX: ${{ inputs.prereleaseSuffix }}
         run: |
           {
             echo "## Release plan"
             echo ""
             echo "| Field | Value |"
             echo "|-------|-------|"
-            echo "| ref (input)      | \`${{ inputs.ref }}\` |"
+            echo "| ref (input)      | \`${INPUT_REF}\` |"
             echo "| ref (resolved)   | \`${{ steps.resolve.outputs.sha }}\` |"
-            echo "| releaseLevel     | \`${{ inputs.releaseLevel }}\` |"
-            echo "| prereleaseSuffix | \`${{ inputs.prereleaseSuffix }}\` |"
+            echo "| releaseLevel     | \`${RELEASE_LEVEL}\` |"
+            echo "| prereleaseSuffix | \`${PRERELEASE_SUFFIX}\` |"
             echo "| target version   | **\`${{ steps.bump.outputs.pep440_version }}\`** |"
             echo "| cargo version    | \`${{ steps.bump.outputs.cargo_version }}\` |"
             echo "| git tag          | \`${{ steps.bump.outputs.tag_name }}\` |"
@@ -247,11 +256,14 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
 
       - name: Apply version bump (write)
+        env:
+          RELEASE_LEVEL: ${{ inputs.releaseLevel }}
+          PRERELEASE_SUFFIX: ${{ inputs.prereleaseSuffix }}
         run: |
           set -euo pipefail
           python scripts/bump_version.py \
-            --level "${{ inputs.releaseLevel }}" \
-            --suffix "${{ inputs.prereleaseSuffix }}" \
+            --level "$RELEASE_LEVEL" \
+            --suffix "$PRERELEASE_SUFFIX" \
             --write
           grep '^version' pyproject.toml rust/Cargo.toml
 
