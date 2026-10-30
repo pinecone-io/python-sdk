@@ -48,7 +48,7 @@ schema = (
     SchemaBuilder()
     .add_dense_vector_field("body_vector", dimension=1536, metric="cosine")
     .add_sparse_vector_field("body_sparse_vector")
-    .add_string_field("title", full_text_search={"language": "en", "stemming": True})
+    .add_string_field("title", full_text_search=True)
     .add_string_field("body", full_text_search={"language": "en", "stemming": True})
     .build()
 )
@@ -73,7 +73,7 @@ hosted sparse model and is searched with
 ```python
 schema = (
     SchemaBuilder()
-    .add_string_field("title", full_text_search={"language": "en", "stemming": True})
+    .add_string_field("title", full_text_search=True)
     .add_string_field(
         "body",
         embed={"model": "text-embedding-3-small"},
@@ -84,12 +84,13 @@ schema = (
 pc.indexes.create(name="support-articles", schema=schema)
 ```
 
-The stored text of an `embed` field is full-text searchable with default settings even
-without `full_text_search`; declaring `full_text_search`, as `body` does here, sets the
-language and stemming. A `string` field
-can set `store_text=False` to skip storing its text, which also turns off full-text search
-on it. See [Integrated embedding](../../guides/concepts.md#integrated-embedding) for
-choosing a model and what else `store_text=False` gives up.
+`full_text_search=True` gives a field the default full-text settings, as `title` has in
+both indexes. The stored text of an `embed` field is full-text searchable with those
+defaults even without `full_text_search`; declaring a settings dict, as `body` does here,
+sets the language and stemming. A `string` field can set `store_text=False` to skip storing
+its text, which also turns off full-text search on it. See
+[Integrated embedding](../../guides/concepts.md#integrated-embedding) for choosing a model
+and what else `store_text=False` gives up.
 
 `build()` returns a plain `{"fields": {...}}` dict, and writing that dict yourself is
 equally supported. The builder does not decide what the server accepts: an invalid
