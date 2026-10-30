@@ -30,8 +30,8 @@ you only use for filtering, such as a category or a year, don't need to be speci
 the schema. Include them in your documents and they're automatically indexed for filtering
 when first written.
 
-The schema cannot change after the index is created, so declare every searched field up
-front.
+Currently, the schema cannot change after the index is created, so declare every searched
+field up front.
 
 ## Create the index
 
