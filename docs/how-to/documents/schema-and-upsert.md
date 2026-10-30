@@ -72,12 +72,10 @@ fields, `title` and `body`.
 schema = (
     SchemaBuilder()
     .add_string_field("title", full_text_search=True)
-    .add_string_field(
-        "body",
-        embed={"model": "text-embedding-3-small"},
-        sparse_embed=True,
-        full_text_search={"language": "en", "stemming": True},
-    )
+    .add_string_field("body",
+                      embed={"model": "text-embedding-3-small"},
+                      sparse_embed=True,
+                      full_text_search={"language": "en", "stemming": True})
     .build()
 )
 pc.indexes.create(name="support-articles", schema=schema)
