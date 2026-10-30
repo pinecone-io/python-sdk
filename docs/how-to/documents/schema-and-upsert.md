@@ -36,8 +36,8 @@ field up front.
 ## Create the index
 
 {class}`~pinecone.schema_builder.SchemaBuilder` lays out the field types and their
-options. This index stores your own dense and sparse vectors and also supports keyword
-search on the title:
+options. This index stores dense and sparse vectors that your embedding model computes
+from `body`, and supports keyword search on `title` and `body`:
 
 ```python
 from pinecone import Pinecone, SchemaBuilder
@@ -46,9 +46,10 @@ pc = Pinecone(api_key="your-api-key")
 
 schema = (
     SchemaBuilder()
-    .add_dense_vector_field("your_vector", dimension=1536, metric="cosine")
-    .add_sparse_vector_field("your_sparse_vector")
+    .add_dense_vector_field("body_vector", dimension=1536, metric="cosine")
+    .add_sparse_vector_field("body_sparse_vector")
     .add_string_field("title", full_text_search={"language": "en", "stemming": True})
+    .add_string_field("body", full_text_search={"language": "en", "stemming": True})
     .build()
 )
 pc.indexes.create(name="article-search", schema=schema)
@@ -63,9 +64,10 @@ region.
 `support-articles` is the same kind of index, except that instead of vectors it has a
 `body` field configured for integrated embedding, so Pinecone embeds the text for you.
 Give the `string` field `embed`; `True` takes the default model.
-Here `body` is also declared full-text, so the index has two full-text fields, `title` and
-`body`. A field can also set `sparse_embed`, which embeds it with a hosted sparse model
-and is searched with {class}`~pinecone.models.documents.score_by.SparseEmbedQuery`.
+As in `article-search`, `body` is also declared full-text, so the index has two full-text
+fields, `title` and `body`. A field can also set `sparse_embed`, which embeds it with a
+hosted sparse model and is searched with
+{class}`~pinecone.models.documents.score_by.SparseEmbedQuery`.
 
 ```python
 schema = (
@@ -106,16 +108,18 @@ response = index.documents.upsert(
     documents=[
         {
             "_id": "article-101",
-            "your_vector": [0.012, -0.087, 0.153],  # 1536 floats in practice
-            "your_sparse_vector": {"indices": [10, 42], "values": [0.5, 0.3]},
+            "body_vector": [0.012, -0.087, 0.153],  # 1536 floats in practice
+            "body_sparse_vector": {"indices": [10, 42], "values": [0.5, 0.3]},
             "title": "How Roman aqueducts carried water",
+            "body": "Roman aqueducts carried water by gravity",
             "category": "history",
             "year": 2024,
         },
         {
             "_id": "article-102",
-            "your_vector": [0.045, 0.021, -0.064],
+            "body_vector": [0.045, 0.021, -0.064],
             "title": "Gravity-fed irrigation today",
+            "body": "Farms still move water downhill without pumps",
             "category": "engineering",
             "year": 2023,
         },

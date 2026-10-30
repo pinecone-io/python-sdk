@@ -3,8 +3,9 @@
 {meth}`~pinecone.client.documents.Documents.search` ranks the documents in one namespace
 by the clauses in `score_by` and returns the `top_k` best. The examples continue the
 `article-search` index from [Declare a schema and upsert documents](schema-and-upsert.md):
-a `dense_vector` field `your_vector`, a `sparse_vector` field `your_sparse_vector`, a
-full-text `title`, and `category` and `year` metadata. Searches that have Pinecone embed
+a `dense_vector` field `body_vector` and a `sparse_vector` field `body_sparse_vector`,
+computed from `body` by your embedding model; full-text `title` and `body` fields; and
+`category` and `year` metadata. Searches that have Pinecone embed
 the query use `support-articles`, the same kind of index with Pinecone embedding `body`.
 
 ```python
@@ -16,7 +17,7 @@ index = pc.index("article-search")
 response = index.documents.search(
     namespace="articles-en",
     top_k=10,
-    score_by=[DenseVectorQuery(field="your_vector", values=[0.012, -0.087, 0.153])],
+    score_by=[DenseVectorQuery(field="body_vector", values=[0.012, -0.087, 0.153])],
     include_fields=["title", "year"],
 )
 for doc in response.matches:
@@ -64,7 +65,8 @@ response = support.documents.search(
 
 On a `dense_vector` field, use `DenseVectorQuery` and pass a query embedding you
 computed. It must come from the same model, with the same dimension, as the document
-embeddings. The `your_vector` field of `article-search` holds them:
+embeddings. The `body_vector` field of `article-search` holds them, computed from `body`
+by your embedding model:
 
 ```python
 from pinecone import DenseVectorQuery
@@ -72,7 +74,7 @@ from pinecone import DenseVectorQuery
 response = index.documents.search(
     namespace="articles-en",
     top_k=10,
-    score_by=[DenseVectorQuery(field="your_vector", values=[0.012, -0.087, 0.153])],
+    score_by=[DenseVectorQuery(field="body_vector", values=[0.012, -0.087, 0.153])],
 )
 ```
 
@@ -135,8 +137,8 @@ the query as text, and Pinecone encodes it with the field's sparse model. It tak
 
 On a `sparse_vector` field, use `SparseVectorQuery` and pass a
 {class}`~pinecone.models.vectors.sparse.SparseValues` you encoded yourself, the same way
-as the document vectors, so its indices name the same terms. The `your_sparse_vector` field
-of `article-search` holds them:
+as the document vectors, so its indices name the same terms. The `body_sparse_vector`
+field of `article-search` holds them, computed from `body` by your sparse embedding model:
 
 ```python
 from pinecone import SparseValues, SparseVectorQuery
@@ -146,7 +148,7 @@ response = index.documents.search(
     top_k=10,
     score_by=[
         SparseVectorQuery(
-            field="your_sparse_vector",
+            field="body_sparse_vector",
             sparse_values=SparseValues(indices=[10, 42], values=[0.4, 0.9]),
         )
     ],
@@ -156,8 +158,8 @@ response = index.documents.search(
 ### Keyword search
 
 Keyword search matches the words themselves, which suits exact terms, names, and codes.
-It scores against full-text `string` fields. `title` is full-text in both indexes, and
-`body` is too in `support-articles`; see
+It scores against full-text `string` fields. `title` and `body` are full-text in both
+indexes; see
 [Create the index](schema-and-upsert.md#create-the-index) for how full-text fields are
 declared.
 
@@ -226,7 +228,7 @@ Combine the two kinds under `$and`:
 response = index.documents.search(
     namespace="articles-en",
     top_k=10,
-    score_by=[DenseVectorQuery(field="your_vector", values=[0.012, -0.087, 0.153])],
+    score_by=[DenseVectorQuery(field="body_vector", values=[0.012, -0.087, 0.153])],
     filter={
         "$and": [
             {"year": {"$gte": 2020}},
@@ -247,7 +249,7 @@ condition = Field("year").gte(2020) & Field("title").match_any("aqueduct irrigat
 response = index.documents.search(
     namespace="articles-en",
     top_k=10,
-    score_by=[DenseVectorQuery(field="your_vector", values=[0.012, -0.087, 0.153])],
+    score_by=[DenseVectorQuery(field="body_vector", values=[0.012, -0.087, 0.153])],
     filter=condition.to_dict(),
 )
 ```
