@@ -85,10 +85,11 @@ pc.indexes.create(name="support-articles", schema=schema)
 `full_text_search=True` gives a field the default full-text settings, as `title` has in
 both indexes. The stored text of an `embed` field is full-text searchable with those
 defaults even without `full_text_search`; declaring a settings dict, as `body` does here,
-sets the language and stemming. A `string` field can set `store_text=False` to skip storing
-its text, which also turns off full-text search on it. See
+sets the language and stemming. A field with `embed` or `sparse_embed` can set
+`store_text=False` to embed its text without storing it; the field is then searched only
+with its embed clauses. See
 [Integrated embedding](../../guides/concepts.md#integrated-embedding) for choosing a model
-and what else `store_text=False` gives up.
+and what `store_text=False` gives up.
 
 `build()` returns a plain `{"fields": {...}}` dict, and writing that dict yourself is
 equally supported. The builder does not decide what the server accepts: an invalid
@@ -213,5 +214,15 @@ from pinecone import AsyncPinecone
 async with AsyncPinecone(api_key="your-api-key") as pc:
     index = await pc.index(name="article-search")
     async with index:
-        await index.documents.upsert(namespace="articles-en", documents=documents)
+        await index.documents.upsert(
+            namespace="articles-en",
+            documents=[
+                {
+                    "_id": "article-102",
+                    "body_vector": [0.045, 0.021, -0.064],  # 1536 floats in practice
+                    "title": "Gravity-fed irrigation today",
+                    "body": "Farms still move water downhill without pumps",
+                },
+            ],
+        )
 ```
