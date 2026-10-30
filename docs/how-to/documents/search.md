@@ -208,9 +208,9 @@ response = index.documents.search(
 )
 ```
 
-A `dense_vector`, `sparse_vector`, `embed`, or `sparse_embed` clause must be the only
-clause in `score_by`. To rank by both meaning and keywords, run one search per clause and
-merge the results in your code.
+Currently, a `dense_vector`, `sparse_vector`, `embed`, or `sparse_embed` clause must be
+the only clause in `score_by`. For now, to rank by both meaning and keywords, run one
+search per clause and merge the results in your code.
 
 ## Choose what comes back
 
