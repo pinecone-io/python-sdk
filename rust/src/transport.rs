@@ -16,11 +16,15 @@ use crate::retry::{retry_on_transient_request, RetryConfig, ThrottleCallback};
 const MAX_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
 
 fn redact_url_userinfo(url: &str) -> String {
-    let start = url.find("://").map_or(0, |i| i + 3);
-    let end = url[start..]
-        .find(['/', '?', '#'])
-        .map_or(url.len(), |i| start + i);
-    match url[start..end].rfind('@') {
+    let start = url
+        .find("://")
+        .filter(|&i| {
+            let mut scheme = url[..i].chars();
+            scheme.next().is_some_and(|c| c.is_ascii_alphabetic())
+                && scheme.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+        })
+        .map_or(0, |i| i + 3);
+    match url[start..].rfind('@') {
         Some(at) => format!("{}***{}", &url[..start], &url[start + at..]),
         None => url.to_string(),
     }
@@ -1555,14 +1559,39 @@ mod tests {
             redact_url_userinfo("http://user:SENTINEL-SECRET-1234@proxy:8080/path"),
             "http://***@proxy:8080/path"
         );
-        assert_eq!(
-            redact_url_userinfo("http://proxy:8080/a@b"),
-            "http://proxy:8080/a@b"
-        );
+        assert_eq!(redact_url_userinfo("http://proxy:8080/a@b"), "http://***@b");
         assert_eq!(
             redact_url_userinfo("http://proxy:8080"),
             "http://proxy:8080"
         );
+    }
+
+    #[test]
+    fn redact_url_userinfo_edge_cases() {
+        for (url, expected) in [
+            ("http://user:pa#ss@proxy:8080", "http://***@proxy:8080"),
+            ("http://user:pa/ss@proxy:8080", "http://***@proxy:8080"),
+            ("http://user:pa?ss@proxy:8080", "http://***@proxy:8080"),
+            ("http://user:pa ss/x@proxy:8080", "http://***@proxy:8080"),
+            (
+                "user:pass@proxy:8080/?next=http://x",
+                "***@proxy:8080/?next=http://x",
+            ),
+            ("http://user:p@ss@proxy:8080", "http://***@proxy:8080"),
+            ("http://user:p%40ss@proxy:8080", "http://***@proxy:8080"),
+            ("http://user@proxy:8080", "http://***@proxy:8080"),
+            ("user:pass@proxy:8080", "***@proxy:8080"),
+            ("http://user:pass@[::1]:8080", "http://***@[::1]:8080"),
+            (
+                "http://user:pass@[fe80::1%25en0]:8080",
+                "http://***@[fe80::1%25en0]:8080",
+            ),
+            ("HTTP://user:pass@proxy:8080", "HTTP://***@proxy:8080"),
+            ("socks5://user:pass@proxy:1080", "socks5://***@proxy:1080"),
+            ("http://[::1]:8080", "http://[::1]:8080"),
+        ] {
+            assert_eq!(redact_url_userinfo(url), expected, "input: {url}");
+        }
     }
 
     fn size_bytes_through_converter(size_bytes: u64) -> u64 {

@@ -120,15 +120,14 @@ def normalize_source_tag(tag: str | None) -> str:
 
 
 def _redact_url_userinfo(url: str) -> str:
-    """Return *url* with any ``user:password@`` userinfo replaced by ``***``."""
-    scheme_end = url.find("://")
-    start = scheme_end + 3 if scheme_end != -1 else 0
-    end = len(url)
-    for sep in "/?#":
-        idx = url.find(sep, start)
-        if idx != -1:
-            end = min(end, idx)
-    at = url.rfind("@", start, end)
+    """Return *url* with everything between the scheme and the last ``@`` replaced by ``***``.
+
+    Masking up to the last ``@`` covers passwords containing an unencoded ``/``, ``?``
+    or ``#``; over-redacting an ``@`` in a path or query is acceptable.
+    """
+    scheme = re.match(r"[A-Za-z][A-Za-z0-9+.-]*://", url)
+    start = scheme.end() if scheme else 0
+    at = url.rfind("@", start)
     if at == -1:
         return url
     return f"{url[:start]}***{url[at:]}"
