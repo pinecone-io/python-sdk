@@ -5,24 +5,24 @@ You write and read it through `index.documents`, and each record is a JSON docum
 reserved `_id` plus your own fields. This page covers choosing fields, creating the
 index, and loading data.
 
-If your index was created another way, it uses a different interface: top-level
-`dimension=`/`metric=` indexes take {meth}`~pinecone.index.Index.upsert` (see
-[Upserting and querying vectors](../vectors/upsert-and-query.md)), and indexes from
-{meth}`~pinecone.client.indexes.Indexes.create_for_model` take the legacy Records API (see
-[Legacy integrated indexes](../integrated-records.md)).
+If your index was created another way, it uses a different interface. For an index
+created with top-level `dimension=`/`metric=`, use {meth}`~pinecone.index.Index.upsert`
+(see [Upserting and querying vectors](../vectors/upsert-and-query.md)). For one created
+with {meth}`~pinecone.client.indexes.Indexes.create_for_model`, use the legacy Records API
+(see [Legacy integrated indexes](../integrated-records.md)).
 
 ## Choose your fields
 
-Declare only the fields you search. Each kind of field is searched with its own
-`score_by` clause:
+Declare only the fields you search. The table shows the kind of search each field type
+supports and the `score_by` clause that runs it:
 
-| Field | Your documents carry | Search it with |
+| Kind of search | Field type | Your documents carry |
 |---|---|---|
-| `dense_vector` | a list of floats from your embedding model | {class}`~pinecone.models.documents.score_by.DenseVectorQuery` |
-| `string` with `embed` | text; Pinecone embeds it with a hosted dense model | {class}`~pinecone.models.documents.score_by.EmbedQuery` |
-| `sparse_vector` | `{"indices": [...], "values": [...]}` | {class}`~pinecone.models.documents.score_by.SparseVectorQuery` |
-| `string` with `sparse_embed` | text; Pinecone embeds it with a hosted sparse model | {class}`~pinecone.models.documents.score_by.SparseEmbedQuery` |
-| `string` with full-text search | text | {class}`~pinecone.models.documents.score_by.TextQuery`, {class}`~pinecone.models.documents.score_by.QueryStringQuery` |
+| [Semantic](search.md#semantic-search), with {class}`~pinecone.models.documents.score_by.DenseVectorQuery` | `dense_vector` | a list of floats from your embedding model |
+| [Semantic](search.md#semantic-search), with {class}`~pinecone.models.documents.score_by.EmbedQuery` | `string` with `embed` | text; Pinecone embeds it with a provided dense model |
+| [Sparse](search.md#sparse-search), with {class}`~pinecone.models.documents.score_by.SparseVectorQuery` | `sparse_vector` | a sparse vector, `{"indices": [...], "values": [...]}` |
+| [Sparse](search.md#sparse-search), with {class}`~pinecone.models.documents.score_by.SparseEmbedQuery` | `string` with `sparse_embed` | text; Pinecone embeds it with a provided sparse model |
+| [Keyword](search.md#keyword-search), with {class}`~pinecone.models.documents.score_by.TextQuery` or {class}`~pinecone.models.documents.score_by.QueryStringQuery` | `string` with full-text search | text |
 
 An index holds at most one dense field (a `dense_vector`, or a `string` with `embed`) and
 at most one sparse field (a `sparse_vector`, or a `string` with `sparse_embed`). Values
@@ -62,7 +62,7 @@ region.
 `support-articles` is the same kind of index, with Pinecone embedding `body` instead of
 you supplying a vector. Give the `string` field `embed`; `True` takes the default model.
 Here `body` is also declared full-text, so the index has two full-text fields, `title` and
-`body`. A field can also take `sparse_embed`, which embeds it with a hosted sparse model
+`body`. A field can also set `sparse_embed`, which embeds it with a provided sparse model
 and is searched with {class}`~pinecone.models.documents.score_by.SparseEmbedQuery`.
 
 ```python
