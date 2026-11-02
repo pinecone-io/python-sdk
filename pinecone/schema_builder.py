@@ -490,10 +490,10 @@ class SchemaBuilder:
                 model at its default dimension and metric, or a dict or
                 :class:`~pinecone.models.indexes.schema.FieldEmbedConfig` of
                 ``model``, ``dimension``, ``metric`` (lowercased, as for a
-                dense vector field), ``write_parameters`` and
-                ``read_parameters``. A dict is sent as given, so a misspelled
-                key fails only on create; the typed config rejects it when
-                constructed. The field takes the index's one dense slot.
+                dense vector field), ``processing_location``,
+                ``write_parameters`` and ``read_parameters``. A dict is sent
+                as given, so a misspelled key fails only on create; the typed
+                config rejects it when constructed. The field takes the index's one dense slot.
                 Fixed at creation.
             sparse_embed: ``True`` or ``{}`` to embed the text with the
                 default sparse model, or a dict or

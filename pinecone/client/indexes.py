@@ -496,6 +496,20 @@ class Indexes:
             ...     tags={"env": "prod"},
             ... )
 
+            Integrated embedding on a ``string`` field, processed in the US
+            for both documents and queries:
+
+            >>> index = pc.indexes.create(
+            ...     name="support-articles-us",
+            ...     schema={"fields": {"body": {
+            ...         "type": "string",
+            ...         "embed": {
+            ...             "model": "text-embedding-3-large",
+            ...             "processing_location": "us",
+            ...         },
+            ...     }}},
+            ... )
+
         .. note::
            A **hybrid** index must declare its ``sparse_vector`` field
            explicitly. A dense field with ``metric="dotproduct"`` does not

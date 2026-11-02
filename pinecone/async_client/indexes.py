@@ -469,6 +469,23 @@ class AsyncIndexes:
                     )
                     print(index.host)
 
+            Integrated embedding on a ``string`` field, processed in the US
+            for both documents and queries:
+
+            .. code-block:: python
+
+                async with AsyncPinecone(api_key="your-api-key") as pc:
+                    await pc.indexes.create(
+                        name="support-articles-us",
+                        schema={"fields": {"body": {
+                            "type": "string",
+                            "embed": {
+                                "model": "text-embedding-3-large",
+                                "processing_location": "us",
+                            },
+                        }}},
+                    )
+
         .. note::
            A **hybrid** index must declare its ``sparse_vector`` field
            explicitly. A dense field with ``metric="dotproduct"`` does not

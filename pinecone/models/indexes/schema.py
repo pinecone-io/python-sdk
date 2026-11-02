@@ -272,6 +272,11 @@ class FieldEmbedConfig(Struct, kw_only=True):
             ``"multilingual-e5-large"`` takes ``"cosine"`` and
             ``"euclidean"``. ``None`` on create takes the model's default
             (``"cosine"`` for those two).
+        processing_location: Where the model processes your data, e.g.
+            ``"us"``. Supported values depend on the model and your plan. See
+            the `processing locations guide
+            <https://docs.pinecone.io/guides/index-data/processing-locations>`_.
+            ``None`` on create takes the model's default.
         write_parameters: Model parameters used when embedding document text,
             e.g. ``{"dimension": 1024}``. Describe reports them merged with the
             model's defaults.
@@ -292,6 +297,7 @@ class FieldEmbedConfig(Struct, kw_only=True):
     model: str | None = None
     dimension: int | None = None
     metric: str | None = None
+    processing_location: str | None = None
     write_parameters: dict[str, Any] | None = None
     read_parameters: dict[str, Any] | None = None
 
