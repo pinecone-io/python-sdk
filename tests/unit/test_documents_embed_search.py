@@ -149,6 +149,70 @@ class TestClauses:
             SearchDocumentsRequest(score_by=[other, clause], top_k=5)
 
 
+class TestSearchParameters:
+    """``parameters`` on an ``embed`` clause overrides the field's read parameters."""
+
+    def test_set_is_sent_alongside_the_other_fields(self) -> None:
+        clause = EmbedQuery(
+            fields=["body"],
+            query="Is the Eiffel Tower taller than 300 m?",
+            parameters={"task_type": "fact_verification"},
+        )
+
+        assert msgspec.to_builtins(clause) == {
+            "type": "embed",
+            "field": "body",
+            "query": "Is the Eiffel Tower taller than 300 m?",
+            "parameters": {"task_type": "fact_verification"},
+        }
+
+    def test_unset_is_omitted(self) -> None:
+        clause = EmbedQuery(field="body", query="fox")
+
+        assert clause.parameters is None
+        assert "parameters" not in msgspec.to_builtins(clause)
+
+    def test_dict_form_converts(self) -> None:
+        raw = {
+            "type": "embed",
+            "field": "body",
+            "query": "fox",
+            "parameters": {"task_type": "question_answering"},
+        }
+
+        clause = msgspec.convert(raw, type=DocumentScoringMethod)
+
+        assert isinstance(clause, EmbedQuery)
+        assert clause.parameters == {"task_type": "question_answering"}
+        assert msgspec.to_builtins(clause) == raw
+
+    def test_values_are_left_to_the_server(self) -> None:
+        """Neither the task nor the key is checked here; the server owns that."""
+        parameters = {"task_type": "summarization", "truncate": "NONE"}
+
+        clause = EmbedQuery(field="body", query="fox", parameters=parameters)
+
+        assert msgspec.to_builtins(clause)["parameters"] == parameters
+
+    def test_sparse_embed_takes_none(self) -> None:
+        with pytest.raises(TypeError, match="parameters"):
+            SparseEmbedQuery(  # type: ignore[call-arg]
+                field="body", query="fox", parameters={"task_type": "retrieval_query"}
+            )
+        with pytest.raises(msgspec.ValidationError, match="unknown field `parameters`"):
+            SearchDocumentsRequest(
+                score_by=[
+                    {
+                        "type": "sparse_embed",
+                        "field": "body",
+                        "query": "fox",
+                        "parameters": {"task_type": "retrieval_query"},
+                    }
+                ],
+                top_k=4,
+            )
+
+
 class TestUsage:
     def test_embed_total_tokens_read_when_present(self) -> None:
         payload = {**EMBED_SEARCH_RESPONSE, "usage": {"read_units": 1, "embed_total_tokens": 4}}
@@ -194,6 +258,38 @@ class TestSyncSearch:
         assert result.matches[0].genre == "animal"
         assert result.usage is not None
         assert result.usage.embed_total_tokens == 4
+
+    @respx.mock
+    def test_embed_search_with_parameters(self, index: Index) -> None:
+        route = respx.post(SEARCH_URL).mock(
+            return_value=httpx.Response(200, json=EMBED_SEARCH_RESPONSE)
+        )
+
+        index.documents.search(
+            namespace=NS,
+            top_k=5,
+            score_by=[
+                EmbedQuery(
+                    field="body",
+                    query="Is the Eiffel Tower taller than 300 m?",
+                    parameters={"task_type": "fact_verification"},
+                )
+            ],
+            include_fields=["body"],
+        )
+
+        assert _body(route) == {
+            "score_by": [
+                {
+                    "type": "embed",
+                    "field": "body",
+                    "query": "Is the Eiffel Tower taller than 300 m?",
+                    "parameters": {"task_type": "fact_verification"},
+                }
+            ],
+            "top_k": 5,
+            "include_fields": ["body"],
+        }
 
     @respx.mock
     def test_sparse_embed_search_from_a_dict(self, index: Index) -> None:
@@ -282,6 +378,22 @@ class TestAsyncSearch:
         }
         assert result.matches[0].id == "d1"
         assert result.usage is not None and result.usage.embed_total_tokens == 4
+
+    @respx.mock
+    async def test_embed_search_with_parameters_from_a_dict(self, async_index: AsyncIndex) -> None:
+        route = respx.post(SEARCH_URL).mock(
+            return_value=httpx.Response(200, json=EMBED_SEARCH_RESPONSE)
+        )
+        clause = {
+            "type": "embed",
+            "field": "body",
+            "query": "how does the router pick a shard",
+            "parameters": {"task_type": "code_retrieval_query"},
+        }
+
+        await async_index.documents.search(namespace=NS, top_k=3, score_by=[clause])
+
+        assert _body(route) == {"score_by": [clause], "top_k": 3}
 
     async def test_combined_clause_rejected_before_the_request(
         self, async_index: AsyncIndex

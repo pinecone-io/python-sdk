@@ -5,38 +5,39 @@ You write and read it through `index.documents`, and each record is a JSON docum
 reserved `_id` plus your own fields. This page covers choosing fields, creating the
 index, and loading data.
 
-If your index was created another way, it uses a different interface: top-level
-`dimension=`/`metric=` indexes take {meth}`~pinecone.index.Index.upsert` (see
-[Upserting and querying vectors](../vectors/upsert-and-query.md)), and indexes from
-{meth}`~pinecone.client.indexes.Indexes.create_for_model` take the legacy Records API (see
-[Legacy integrated indexes](../integrated-records.md)).
+If your index was created another way, it uses a different interface. For an index
+created with top-level `dimension=`/`metric=`, use {meth}`~pinecone.index.Index.upsert`
+(see [Upserting and querying vectors](../vectors/upsert-and-query.md)). For one created
+with {meth}`~pinecone.client.indexes.Indexes.create_for_model`, use the legacy Records API
+(see [Legacy integrated indexes](../integrated-records.md)).
 
 ## Choose your fields
 
-Declare only the fields you search. Each kind of field is searched with its own
-`score_by` clause:
+Declare only the fields you search. The table shows the kind of search each field type
+supports and the `score_by` clause that runs it:
 
-| Field | Your documents carry | Search it with |
-|---|---|---|
-| `dense_vector` | a list of floats from your embedding model | {class}`~pinecone.models.documents.score_by.DenseVectorQuery` |
-| `sparse_vector` | `{"indices": [...], "values": [...]}` | {class}`~pinecone.models.documents.score_by.SparseVectorQuery` |
-| `string` with full-text search | text | {class}`~pinecone.models.documents.score_by.TextQuery`, {class}`~pinecone.models.documents.score_by.QueryStringQuery` |
-| `string` with `embed` | text; Pinecone embeds it with a hosted dense model | {class}`~pinecone.models.documents.score_by.EmbedQuery` |
-| `string` with `sparse_embed` | text; Pinecone embeds it with a hosted sparse model | {class}`~pinecone.models.documents.score_by.SparseEmbedQuery` |
+| Kind of search | `score_by` clause | Field type | Your documents carry |
+|---|---|---|---|
+| [Semantic](search.md#semantic-search) | {class}`~pinecone.models.documents.score_by.DenseVectorQuery` | `dense_vector` | a list of floats from your embedding model |
+| [Semantic](search.md#semantic-search) | {class}`~pinecone.models.documents.score_by.EmbedQuery` | `string` with `embed` | text; Pinecone embeds it with a hosted dense model |
+| [Sparse](search.md#sparse-search) | {class}`~pinecone.models.documents.score_by.SparseVectorQuery` | `sparse_vector` | a sparse vector, `{"indices": [...], "values": [...]}` |
+| [Sparse](search.md#sparse-search) | {class}`~pinecone.models.documents.score_by.SparseEmbedQuery` | `string` with `sparse_embed` | text; Pinecone embeds it with a hosted sparse model |
+| [Keyword](search.md#keyword-search) | {class}`~pinecone.models.documents.score_by.TextQuery` or {class}`~pinecone.models.documents.score_by.QueryStringQuery` | `string` with full-text search | text |
 
 An index holds at most one dense field (a `dense_vector`, or a `string` with `embed`) and
-at most one sparse field (a `sparse_vector`, or a `string` with `sparse_embed`). Values
-you only filter on, such as a category or a year, stay out of the schema: put them on
-the documents and they are indexed for filtering when first written.
+at most one sparse field (a `sparse_vector`, or a `string` with `sparse_embed`). Fields
+you only use for filtering, such as a category or a year, don't need to be specified in
+the schema. Include them in your documents and they're automatically indexed for filtering
+when first written.
 
-The schema cannot change after the index is created, so declare every searched field up
-front.
+Currently, the schema cannot change after the index is created, so declare every searched
+field up front.
 
 ## Create the index
 
 {class}`~pinecone.schema_builder.SchemaBuilder` lays out the field types and their
-options. This index stores your own embeddings and also supports keyword search on the
-title:
+options. This index stores dense and sparse vectors that your embedding model computes
+from `body`, and supports keyword search on `title` and `body`:
 
 ```python
 from pinecone import Pinecone, SchemaBuilder
@@ -45,8 +46,10 @@ pc = Pinecone(api_key="your-api-key")
 
 schema = (
     SchemaBuilder()
-    .add_dense_vector_field("embedding", dimension=1536, metric="cosine")
-    .add_string_field("title", full_text_search={"language": "en", "stemming": True})
+    .add_dense_vector_field("body_vector", dimension=1536, metric="cosine")
+    .add_sparse_vector_field("body_sparse_vector")
+    .add_string_field("title", full_text_search=True)
+    .add_string_field("body", full_text_search={"language": "en", "stemming": True})
     .build()
 )
 pc.indexes.create(name="article-search", schema=schema)
@@ -58,18 +61,34 @@ index is serverless on AWS `us-east-1`; see
 [Working with serverless indexes](../indexes/serverless.md) to choose another cloud or
 region.
 
-To have Pinecone embed text for you, give a `string` field `embed`, `sparse_embed`, or
-both. `True` takes the default model:
+`support-articles` is the same kind of index, except that instead of vectors it has a
+`body` field configured for integrated embedding, so Pinecone embeds the text for you.
+Give the `string` field `embed` for a dense embedding, here with `text-embedding-3-small`,
+and `sparse_embed` for a sparse one; `True` takes the default model. As in
+`article-search`, `body` is also declared full-text, so the index has two full-text
+fields, `title` and `body`.
 
 ```python
-schema = SchemaBuilder().add_string_field("body", embed=True, sparse_embed=True).build()
+schema = (
+    SchemaBuilder()
+    .add_string_field("title", full_text_search=True)
+    .add_string_field("body",
+        embed={"model": "text-embedding-3-small"},
+        sparse_embed=True,
+        full_text_search={"language": "en", "stemming": True},
+    )
+    .build()
+)
 pc.indexes.create(name="support-articles", schema=schema)
 ```
 
-The text of an embed field is stored and full-text searchable unless you pass
-`store_text=False`. See
-[Integrated embedding](../../guides/concepts.md#integrated-embedding) for choosing a model
-and what `store_text=False` gives up.
+`full_text_search=True` gives a field the default full-text settings, as `title` has in
+both indexes. The stored text of an `embed` field is full-text searchable with those
+defaults even without `full_text_search`; declaring a settings dict, as `body` does here,
+sets the language and stemming. When `embed` or `sparse_embed` is configured, a field can
+set `store_text=False` to skip storing its text, but note that this also disables
+full-text search on it. See
+[Integrated embedding](../../guides/concepts.md#integrated-embedding) for choosing a model.
 
 `build()` returns a plain `{"fields": {...}}` dict, and writing that dict yourself is
 equally supported. The builder does not decide what the server accepts: an invalid
@@ -89,15 +108,18 @@ response = index.documents.upsert(
     documents=[
         {
             "_id": "article-101",
-            "embedding": [0.012, -0.087, 0.153],  # 1536 floats in practice
-            "title": "How Roman aqueducts carried water",
+            "body_vector": [0.012, -0.087, 0.153],  # 1536 floats in practice
+            "body_sparse_vector": {"indices": [10, 42], "values": [0.5, 0.3]},
+            "title": "How a Roman aqueduct carried water",
+            "body": "Roman aqueducts carried water by gravity",
             "category": "history",
             "year": 2024,
         },
         {
             "_id": "article-102",
-            "embedding": [0.045, 0.021, -0.064],
+            "body_vector": [0.045, 0.021, -0.064],
             "title": "Gravity-fed irrigation today",
+            "body": "Farms still move water downhill without pumps",
             "category": "engineering",
             "year": 2023,
         },
@@ -111,8 +133,33 @@ Sparse fields, full-text-only fields, and metadata such as `category` are option
 server rejects a document that is missing a required field with a `400` naming the
 document and the field.
 
-For the `support-articles` index above, a document is just its `_id`, its text, and any
-metadata: `{"_id": "article-101", "body": "Roman aqueducts carried water by gravity"}`.
+The `support-articles` index above takes the same documents without the vectors, since
+Pinecone embeds `body` for you:
+
+```python
+support = pc.index("support-articles")
+
+response = support.documents.upsert(
+    namespace="articles-en",
+    documents=[
+        {
+            "_id": "article-101",
+            "title": "How a Roman aqueduct carried water",
+            "body": "Roman aqueducts carried water by gravity",
+            "category": "history",
+            "year": 2024,
+        },
+        {
+            "_id": "article-102",
+            "title": "Gravity-fed irrigation today",
+            "body": "Farms still move water downhill without pumps",
+            "category": "engineering",
+            "year": 2023,
+        },
+    ],
+)
+print(response.upserted_count)
+```
 
 Documents can also be built as {class}`~pinecone.models.documents.document.DocumentRecord`
 objects, which check the `_id` where you construct them.
@@ -166,5 +213,15 @@ from pinecone import AsyncPinecone
 async with AsyncPinecone(api_key="your-api-key") as pc:
     index = await pc.index(name="article-search")
     async with index:
-        await index.documents.upsert(namespace="articles-en", documents=documents)
+        await index.documents.upsert(
+            namespace="articles-en",
+            documents=[
+                {
+                    "_id": "article-102",
+                    "body_vector": [0.045, 0.021, -0.064],  # 1536 floats in practice
+                    "title": "Gravity-fed irrigation today",
+                    "body": "Farms still move water downhill without pumps",
+                },
+            ],
+        )
 ```

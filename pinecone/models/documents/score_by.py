@@ -327,6 +327,12 @@ class EmbedQuery(
         query: The text to search for, e.g. ``"how do vector indexes scale"``.
         fields: The same field as a one-element list, e.g. ``["body"]``, in place of
             ``field``. It is moved into ``field`` and reads back as ``None``.
+        parameters: Model parameters for embedding the query in this search, e.g.
+            ``{"task_type": "fact_verification"}``. They override the field's
+            ``read_parameters``. Only ``task_type`` can be set, and
+            :meth:`pc.inference.list_models() <pinecone.client.inference.Inference.list_models>`
+            lists the models that accept it. The dict is sent as given and the server
+            checks it; leave it unset to embed with the field's ``read_parameters``.
 
     Raises:
         ValueError: If ``field`` or ``query`` is empty, ``fields`` does not hold exactly
@@ -337,6 +343,16 @@ class EmbedQuery(
         >>> EmbedQuery(field="body", query="how do vector indexes scale").field
         'body'
 
+        Choose the query task for one search on a field that embeds with a model that
+        takes ``task_type``, such as ``gemini-embedding-2``:
+
+        >>> EmbedQuery(
+        ...     field="body",
+        ...     query="Is the Eiffel Tower taller than 300 m?",
+        ...     parameters={"task_type": "fact_verification"},
+        ... ).parameters
+        {'task_type': 'fact_verification'}
+
     .. seealso::
        :class:`DenseVectorQuery`: to score a ``dense_vector`` field with a vector you
        embedded yourself.
@@ -345,6 +361,7 @@ class EmbedQuery(
     query: str
     field: str | None = None
     fields: list[str] | None = None
+    parameters: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         self.field = _single_field("embed", self.field, self.fields)
