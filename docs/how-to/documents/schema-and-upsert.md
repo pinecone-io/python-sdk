@@ -85,11 +85,10 @@ pc.indexes.create(name="support-articles", schema=schema)
 `full_text_search=True` gives a field the default full-text settings, as `title` has in
 both indexes. The stored text of an `embed` field is full-text searchable with those
 defaults even without `full_text_search`; declaring a settings dict, as `body` does here,
-sets the language and stemming. A field with `embed` or `sparse_embed` can set
-`store_text=False` to embed its text without storing it; the field is then searched only
-with its embed clauses. See
-[Integrated embedding](../../guides/concepts.md#integrated-embedding) for choosing a model
-and what `store_text=False` gives up.
+sets the language and stemming. When `embed` or `sparse_embed` is configured, a field can
+set `store_text=False` to skip storing its text, but note that this also disables
+full-text search on it. See
+[Integrated embedding](../../guides/concepts.md#integrated-embedding) for choosing a model.
 
 `build()` returns a plain `{"fields": {...}}` dict, and writing that dict yourself is
 equally supported. The builder does not decide what the server accepts: an invalid
