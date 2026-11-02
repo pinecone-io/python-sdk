@@ -15,6 +15,8 @@ from pinecone.errors.exceptions import PineconeValueError
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    import httpx
+
 logger = logging.getLogger(__name__)
 
 GrpcScheme = Literal["http", "https"]
@@ -131,6 +133,102 @@ def _redact_url_userinfo(url: str) -> str:
     if at == -1:
         return url
     return f"{url[:start]}***{url[at:]}"
+
+
+_PROXY_SCHEMES = ("http", "https", "socks5", "socks5h")
+_SCHEME = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*)://")
+_PERCENT_ENCODE_HINT = (
+    "percent-encode reserved characters in the username and password "
+    "(e.g. '#' as %23, '/' as %2F, '?' as %3F, '@' as %40)"
+)
+_GRPC_PROXY_REMEDY = (
+    "use an http:// proxy URL (traffic inside the tunnel is still TLS) or use REST "
+    "(grpc=False), which also supports https:// and SOCKS proxies"
+)
+
+
+def _try_parse_url(url: str) -> httpx.URL | None:
+    import httpx
+
+    try:
+        return httpx.URL(url)
+    except Exception:
+        return None
+
+
+def _redact_proxy_url(proxy_url: str, parsed: httpx.URL | None) -> str:
+    """Return *proxy_url* fit for an error message, with any credentials masked.
+
+    A URL that does not parse may hide its password anywhere (httpx reads
+    ``http://u:p%40ss@host`` with no ``@`` as host ``u`` and port ``p%40ss...``),
+    so only its scheme is shown. So is a URL that parsed without userinfo but
+    carries an encoded or look-alike ``@`` (``%40``, or any non-ASCII character).
+    """
+    scheme = _SCHEME.match(proxy_url)
+    prefix = scheme.group(0) if scheme else ""
+    if parsed is None:
+        return f"{prefix}***"
+    if parsed.userinfo:
+        return f"{prefix}***@{parsed.netloc.decode('ascii')}"
+    if "%40" in proxy_url or not proxy_url.isascii():
+        return f"{prefix}***"
+    return _redact_url_userinfo(proxy_url)
+
+
+def _unparseable_reason(after_scheme: str) -> str:
+    """Name what is wrong with a proxy URL httpx could not parse, without echoing it."""
+    has_userinfo = "@" in after_scheme
+    if not has_userinfo and ("%40" in after_scheme or not after_scheme.isascii()):
+        return "it could not be parsed; separate the credentials from the host with a plain '@'"
+    host_port = re.split(r"[/?#]", after_scheme.rsplit("@", 1)[-1], maxsplit=1)[0]
+    if not host_port.startswith("[") and host_port.count(":") > 1:
+        return "an IPv6 address must be in brackets, e.g. http://[::1]:3128"
+    if ":" in host_port and not host_port.endswith("]"):
+        port = host_port.rsplit(":", 1)[1]
+        if not (port.isdigit() and 1 <= int(port) <= 65535):
+            return "the port must be a number from 1 to 65535"
+    if has_userinfo:
+        return f"it could not be parsed; {_PERCENT_ENCODE_HINT}"
+    return "it could not be parsed"
+
+
+def validate_proxy_url(proxy_url: str, *, grpc: bool = False) -> None:
+    """Raise :class:`PineconeValueError` unless *proxy_url* is a usable proxy URL.
+
+    REST accepts ``http``, ``https``, ``socks5`` and ``socks5h``. With *grpc*, only
+    ``http://`` is accepted, since the gRPC transport cannot speak TLS or SOCKS to
+    the proxy. Every reason comes from our own checks: the parser's exception
+    text can contain the password, so it is never shown or chained.
+    """
+    parsed = _try_parse_url(proxy_url)
+    redacted = _redact_proxy_url(proxy_url, parsed)
+
+    def invalid(reason: str) -> PineconeValueError:
+        return PineconeValueError(f"Invalid proxy URL {redacted!r}: {reason}")
+
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in proxy_url.strip()):
+        raise invalid("it contains a control character such as a newline; remove it")
+    if proxy_url != proxy_url.strip():
+        raise invalid("it has leading or trailing whitespace; remove it")
+    scheme = _SCHEME.match(proxy_url)
+    if grpc and (scheme is None or scheme.group(1).lower() != "http"):
+        raise PineconeValueError(
+            f"gRPC supports only http:// proxies; got {redacted!r}; {_GRPC_PROXY_REMEDY}"
+        )
+    if scheme is None:
+        raise invalid("it has no scheme; start it with http:// or https://")
+    if scheme.group(1).lower() not in _PROXY_SCHEMES:
+        raise invalid(
+            f"scheme must be 'http', 'https', 'socks5' or 'socks5h', got {scheme.group(1)!r}"
+        )
+    if parsed is None:
+        raise invalid(_unparseable_reason(proxy_url[scheme.end() :]))
+    if not parsed.host:
+        raise invalid("it has no host")
+    if parsed.port is not None and not 1 <= parsed.port <= 65535:
+        raise invalid("the port must be a number from 1 to 65535")
+    if b"@" in parsed.raw_path or "@" in parsed.fragment:
+        raise invalid(f"it has an '@' after the host; {_PERCENT_ENCODE_HINT}")
 
 
 def _parse_additional_headers_env() -> dict[str, str]:
@@ -251,6 +349,8 @@ class PineconeConfig:
 
     def __post_init__(self) -> None:
         validate_timeout("timeout", self.timeout)
+        if self.proxy_url:
+            validate_proxy_url(self.proxy_url)
         if not self.api_key:
             env_key = os.environ.get("PINECONE_API_KEY", "")
             object.__setattr__(self, "api_key", env_key)

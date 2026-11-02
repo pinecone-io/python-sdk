@@ -25,6 +25,7 @@ from pinecone._internal.config import (
     RetryConfig,
     check_api_key_is_header_safe,
     resolve_grpc_scheme,
+    validate_proxy_url,
 )
 from pinecone._internal.constants import DATA_PLANE_API_VERSION, DEFAULT_MAX_CONCURRENCY
 from pinecone._internal.data_plane_helpers import (
@@ -405,7 +406,10 @@ class GrpcIndex:
             ``"http://proxy.internal:3128"``. gRPC traffic is tunnelled through it
             with HTTP CONNECT. Credentials in the URL, e.g.
             ``"http://user:pass@proxy.internal:3128"``, are percent-decoded and sent
-            as ``Proxy-Authorization: Basic ...``.
+            as ``Proxy-Authorization: Basic ...``. Only ``http://`` proxies are
+            supported: the CONNECT request always goes to the proxy in plaintext,
+            so any other scheme (``https://``, ``socks5://``, ...) or a URL without
+            a scheme raises :exc:`PineconeValueError`.
         on_throttle (Callable[[str], None] | None): Called with the bare host name
             each time a request fails with a retryable gRPC status, whether or not
             it is retried. Use it for observability, e.g. counting throttles per
@@ -421,7 +425,11 @@ class GrpcIndex:
             contains a control or non-ASCII character (leading and trailing spaces and
             tabs are allowed and sent as given), the host is invalid,
             ``grpc_scheme`` names a scheme other than ``http`` or ``https``, or
-            ``grpc_scheme="https"`` is combined with ``secure=False``.
+            ``grpc_scheme="https"`` is combined with ``secure=False``, or
+            ``proxy_url`` is not an ``http://`` URL (gRPC does not support
+            ``https://`` or SOCKS proxies; REST does), has no host or an invalid port,
+            has surrounding whitespace, or has an unencoded ``#``, ``/`` or ``?`` in
+            the username or password.
 
     Examples:
 
@@ -505,6 +513,8 @@ class GrpcIndex:
             )
         # gRPC metadata carries edge spaces and tabs, and the server accepts them.
         check_api_key_is_header_safe(resolved_key.strip(" \t") or resolved_key)
+        if proxy_url:
+            validate_proxy_url(proxy_url, grpc=True)
 
         # Validate and normalize host
         self._request_timeout = timeout

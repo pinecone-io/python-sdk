@@ -115,7 +115,14 @@ pc = Pinecone(
 ```
 
 Credentials in the URL itself, `http://user:pass@proxy.corp.internal:3128`, are
-percent-decoded and sent as `Basic` proxy auth.
+percent-decoded and sent as `Basic` proxy auth. Percent-encode reserved characters
+in them (`#` as `%23`, `/` as `%2F`, `?` as `%3F`, `@` as `%40`).
+
+The URL is checked before any request is sent. REST accepts `http://`,
+`https://`, `socks5://` and `socks5h://` proxies; gRPC (`pc.index(..., grpc=True)` or
+`GrpcIndex`) accepts only `http://`, since it always sends its CONNECT request to the
+proxy in plaintext. Anything else raises `PineconeValueError`, with the username and
+password masked in the message.
 
 `ssl_ca_certs` takes a path to a CA bundle file or a directory of them, for a
 corporate root or a self-signed endpoint. It wins over `ssl_verify=False`: pass both

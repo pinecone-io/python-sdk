@@ -120,7 +120,10 @@ class Index:
 
     Raises:
         :exc:`PineconeValueError`: If no API key can be resolved or the host is invalid,
-            or the key is not a valid HTTP header value (blank, or with a trailing newline).
+            or the key is not a valid HTTP header value (blank, or with a trailing newline),
+            or ``proxy_url`` has a scheme other than ``http``, ``https``, ``socks5`` or
+            ``socks5h``, no host, an invalid port, surrounding whitespace, or an
+            unencoded ``#``, ``/`` or ``?`` in the username or password.
         :exc:`FileNotFoundError`: If ``ssl_ca_certs`` names a path that does not
             exist, raised when the client is constructed, so a mistyped path
             cannot leave you silently verifying against the default trust store

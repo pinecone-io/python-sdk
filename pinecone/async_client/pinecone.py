@@ -125,6 +125,10 @@ class AsyncPinecone:
             is unset, since nothing would authenticate the first request. Also raised when the
             key is not a valid HTTP header value, such as a blank key or one with a
             trailing newline, so the failure is local and never echoes the key.
+        :exc:`PineconeValueError`: If ``proxy_url`` has a scheme other than ``http``,
+            ``https``, ``socks5`` or ``socks5h``, no host, an invalid port, surrounding
+            whitespace, or an unencoded ``#``, ``/`` or ``?`` in the username or
+            password; the message masks the username and password.
         :exc:`NotImplementedError`: If *proxy_headers* is non-empty.
         :exc:`PineconeTypeError`: If a keyword argument other than those listed
             above is passed, which is how a misspelled parameter name surfaces.

@@ -52,13 +52,13 @@ def test_redact_url_userinfo(url: str, expected: str) -> None:
 @pytest.mark.parametrize("password", ["pa#ss", "pa/ss", "pa?ss"])
 def test_config_reprs_redact_password_with_delimiter(password: str) -> None:
     proxy_url = f"http://user:{password}@proxy:8080"
-    for config in (
-        PineconeConfig(api_key="pcsk_abc123", proxy_url=proxy_url),
-        Config(proxy_url=proxy_url),
-    ):
-        result = repr(config)
-        assert password not in result
-        assert "proxy_url='http://***@proxy:8080'" in result
+    result = repr(Config(proxy_url=proxy_url))
+    assert password not in result
+    assert "proxy_url='http://***@proxy:8080'" in result
+    with pytest.raises(PineconeValueError) as exc_info:
+        PineconeConfig(api_key="pcsk_abc123", proxy_url=proxy_url)
+    assert password not in str(exc_info.value)
+    assert "Invalid proxy URL 'http://***'" in str(exc_info.value)
 
 
 def test_config_shim_repr_redacts_proxy_userinfo() -> None:
@@ -78,11 +78,11 @@ def test_config_shim_repr_none_proxy_url() -> None:
         (
             f"http://proxyuser:{_SECRET}@proxy example.com:8080",
             _SECRET,
-            "http://***@proxy example.com:8080",
+            "http://***",
         ),
-        ("http://proxyuser:pa ss/x@proxy:8080", "pa ss/x", "http://***@proxy:8080"),
-        ("http://proxyuser:pa ss?x@proxy:8080", "pa ss?x", "http://***@proxy:8080"),
-        ("http://proxyuser:pa ss#x@proxy:8080", "pa ss#x", "http://***@proxy:8080"),
+        ("http://proxyuser:pa ss/x@proxy:8080", "pa ss/x", "http://***"),
+        ("http://proxyuser:pa ss?x@proxy:8080", "pa ss?x", "http://***"),
+        ("http://proxyuser:pa ss#x@proxy:8080", "pa ss#x", "http://***"),
     ],
 )
 def test_grpc_invalid_proxy_url_error_redacts_userinfo(

@@ -8,7 +8,12 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, overload
 from urllib.parse import quote
 
 from pinecone._internal.adaptive import _AdaptiveLimiterRegistry
-from pinecone._internal.config import PineconeConfig, RetryConfig, check_api_key_is_header_safe
+from pinecone._internal.config import (
+    PineconeConfig,
+    RetryConfig,
+    check_api_key_is_header_safe,
+    validate_proxy_url,
+)
 from pinecone._internal.constants import CONTROL_PLANE_API_VERSION, DEFAULT_BASE_URL
 from pinecone._internal.index_migration import (
     MIGRATION_GUIDE,
@@ -163,6 +168,10 @@ class Pinecone:
             is unset, since nothing would authenticate the first request. Also raised when the
             key is not a valid HTTP header value, such as a blank key or one with a
             trailing newline, so the failure is local and never echoes the key.
+        :exc:`PineconeValueError`: If ``proxy_url`` has a scheme other than ``http``,
+            ``https``, ``socks5`` or ``socks5h``, no host, an invalid port, surrounding
+            whitespace, or an unencoded ``#``, ``/`` or ``?`` in the username or
+            password; the message masks the username and password.
         :exc:`PineconeTypeError`: If a keyword argument other than those listed
             above is passed, which is how a misspelled parameter name surfaces.
             It derives from :exc:`TypeError`, so ``except TypeError`` catches it
@@ -589,6 +598,8 @@ class Pinecone:
                 initializing, so wait for its status to reach ``Ready``.
             :exc:`~pinecone.errors.NotFoundError`: If *name* names no index in this
                 project.
+            :exc:`PineconeValueError`: If ``grpc=True`` and the client's ``proxy_url``
+                is not an ``http://`` URL, raised before any describe request.
 
         Examples:
 
@@ -609,6 +620,8 @@ class Pinecone:
            describing, configuring, and deleting indexes rather than reading from
            one.
         """
+        if grpc and self._config.proxy_url:
+            validate_proxy_url(self._config.proxy_url, grpc=True)
         resolved_host = self._resolve_index_host(name=name, host=host)
 
         if grpc:

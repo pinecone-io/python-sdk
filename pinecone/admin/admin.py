@@ -13,7 +13,7 @@ import orjson
 
 from pinecone import __version__
 from pinecone._internal.adapters._decode import decode_response
-from pinecone._internal.config import PineconeConfig, normalize_host
+from pinecone._internal.config import PineconeConfig, normalize_host, validate_proxy_url
 from pinecone._internal.constants import ADMIN_API_VERSION, API_VERSION_HEADER, DEFAULT_BASE_URL
 from pinecone._internal.http_client import (
     HTTPClient,
@@ -221,7 +221,11 @@ class Admin:
     Raises:
         :exc:`~pinecone.errors.exceptions.PineconeValueError`: If *client_id* or
             *client_secret* resolves to nothing, from either the argument or the
-            environment.
+            environment, or if ``proxy_url`` has a scheme other than ``http``,
+            ``https``, ``socks5`` or ``socks5h``, no host, an invalid port, surrounding
+            whitespace, or an unencoded ``#``, ``/`` or ``?`` in the username or
+            password.
+            Raised before the credential exchange is attempted.
         :exc:`~pinecone.errors.exceptions.ApiError`: If the credential exchange is
             rejected, usually because the ``client_secret`` is wrong or was rotated.
 
@@ -302,6 +306,9 @@ class Admin:
                 "No client_secret provided. Pass client_secret='...' or set the "
                 "PINECONE_CLIENT_SECRET environment variable."
             )
+
+        if proxy_url:
+            validate_proxy_url(proxy_url)
 
         resolved_source_tag = source_tag or ""
 
