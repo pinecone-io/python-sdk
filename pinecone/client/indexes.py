@@ -505,8 +505,7 @@ class Indexes:
             ...         "type": "string",
             ...         "embed": {
             ...             "model": "text-embedding-3-large",
-            ...             "write_parameters": {"processing_location": "us"},
-            ...             "read_parameters": {"processing_location": "us"},
+            ...             "processing_location": "us",
             ...         },
             ...     }}},
             ... )

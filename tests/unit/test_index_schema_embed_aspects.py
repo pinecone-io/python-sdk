@@ -128,6 +128,16 @@ class TestDescribeDecode:
         )
         assert field.embed is None
 
+    def test_embed_processing_location_is_decoded(self) -> None:
+        raw = {
+            **DESCRIBED_EMBED_STORED,
+            "embed": {**DESCRIBED_EMBED_STORED["embed"], "processing_location": "us"},
+        }
+
+        field = _decode_field(raw)
+
+        assert field.embed is not None and field.embed.processing_location == "us"
+
     def test_one_field_carries_all_three_aspects(self) -> None:
         raw = {
             **DESCRIBED_EMBED_STORED,
@@ -182,6 +192,10 @@ class TestCreateEncoding:
                 {"type": "string", "embed": {"model": "llama-text-embed-v2", "dimension": 512}},
             ),
             (
+                StringField(embed=FieldEmbedConfig(processing_location="us")),
+                {"type": "string", "embed": {"processing_location": "us"}},
+            ),
+            (
                 StringField(sparse_embed=FieldSparseEmbedConfig()),
                 {"type": "string", "sparse_embed": {}},
             ),
@@ -195,7 +209,15 @@ class TestCreateEncoding:
             ),
             (StringField(store_text=False), {"type": "string", "store_text": False}),
         ],
-        ids=["embed", "embed model dimension", "sparse", "unstored", "stored fts", "flag only"],
+        ids=[
+            "embed",
+            "embed model dimension",
+            "embed processing location",
+            "sparse",
+            "unstored",
+            "stored fts",
+            "flag only",
+        ],
     )
     def test_search_keys_go_on_the_wire_without_filterable(
         self, field: StringField, expected: dict[str, Any]
@@ -236,6 +258,10 @@ class TestSchemaBuilder:
                     "embed": {"dimension": 512, "read_parameters": {"truncate": "START"}},
                 },
             ),
+            (
+                {"embed": FieldEmbedConfig(processing_location="us")},
+                {"type": "string", "embed": {"processing_location": "us"}},
+            ),
             ({"sparse_embed": True}, {"type": "string", "sparse_embed": {}}),
             (
                 {"sparse_embed": FieldSparseEmbedConfig(model="pinecone-sparse-english-v0")},
@@ -261,6 +287,7 @@ class TestSchemaBuilder:
             "embed true",
             "embed dict",
             "embed struct",
+            "embed processing location",
             "sparse true",
             "sparse struct",
             "unstored",
