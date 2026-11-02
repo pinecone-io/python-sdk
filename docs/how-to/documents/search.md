@@ -27,15 +27,15 @@ for doc in response.matches:
 ## Choose a scoring clause
 
 Each clause scores against fields of one kind, so the schema decides which clauses an
-index can use. The clauses fall into three kinds of search. Semantic and sparse search
-each come as a pair: one clause takes query text and Pinecone embeds it with the field's
+index can use. The clauses fall into three kinds of search. Semantic and sparse-vector
+search each come as a pair: one clause takes query text and Pinecone embeds it with the field's
 model, the other takes a query vector you computed yourself.
 
 | Kind of search | Pass query text | Pass a query vector you computed |
 |---|---|---|
 | [Semantic](#semantic-search): by meaning | {class}`~pinecone.models.documents.score_by.EmbedQuery`, on a `string` field with `embed` | {class}`~pinecone.models.documents.score_by.DenseVectorQuery`, on a `dense_vector` field |
-| [Sparse](#sparse-search): by weighted term overlap | {class}`~pinecone.models.documents.score_by.SparseEmbedQuery`, on a `string` field with `sparse_embed` | {class}`~pinecone.models.documents.score_by.SparseVectorQuery`, on a `sparse_vector` field |
-| [Keyword](#keyword-search): by the words themselves | {class}`~pinecone.models.documents.score_by.TextQuery` (BM25 relevance) or {class}`~pinecone.models.documents.score_by.QueryStringQuery` (a boolean expression), on full-text `string` fields | |
+| [Sparse-vector](#sparse-vector-search): by weighted term overlap | {class}`~pinecone.models.documents.score_by.SparseEmbedQuery`, on a `string` field with `sparse_embed` | {class}`~pinecone.models.documents.score_by.SparseVectorQuery`, on a `sparse_vector` field |
+| [Full-text](#full-text-search): by the words themselves | {class}`~pinecone.models.documents.score_by.TextQuery` (BM25 relevance) or {class}`~pinecone.models.documents.score_by.QueryStringQuery` (a boolean expression), on full-text `string` fields | |
 
 `score_by` also accepts each clause as a plain dict with a `type` key, such as
 `{"type": "text", "query": "roman aqueduct", "fields": ["title"]}`.
@@ -124,9 +124,9 @@ response = facts.documents.search(
 )
 ```
 
-### Sparse search
+### Sparse-vector search
 
-Sparse search scores documents by the terms they share with the query, each weighted by
+Sparse-vector search scores documents by the terms they share with the query, each weighted by
 how much it matters, as a sparse embedding model or a keyword-weighting scheme encodes
 them. It scores against the index's sparse field, which is either a `string` field with
 `sparse_embed` or a `sparse_vector` field.
@@ -155,9 +155,9 @@ response = index.documents.search(
 )
 ```
 
-### Keyword search
+### Full-text search
 
-Keyword search matches the words themselves, which suits exact terms, names, and codes.
+Full-text search matches the words themselves, which suits exact terms, names, and codes.
 It scores against full-text `string` fields. `title` and `body` are full-text in both
 indexes; see
 [Create the index](schema-and-upsert.md#create-the-index) for how full-text fields are
@@ -182,7 +182,7 @@ structured = index.documents.search(
 )
 ```
 
-To weight terms or combine several keyword clauses, see [Combine clauses](#combine-clauses).
+To weight terms or combine several full-text clauses, see [Combine clauses](#combine-clauses).
 
 ## Combine clauses
 
@@ -209,8 +209,11 @@ response = index.documents.search(
 ```
 
 Currently, a `dense_vector`, `sparse_vector`, `embed`, or `sparse_embed` clause must be
-the only clause in `score_by`. To rank by both meaning and keywords, run one search per
-clause and merge the results in your code.
+the only clause in `score_by`. To rank by meaning and keep only documents that contain
+certain words, add a text-match filter, as in [Filter the search](#filter-the-search).
+To rank by both meaning and keywords, run one search per clause and merge the results in
+your code, for example with
+[reciprocal rank fusion](https://docs.pinecone.io/guides/search/reciprocal-rank-fusion).
 
 ## Choose what comes back
 

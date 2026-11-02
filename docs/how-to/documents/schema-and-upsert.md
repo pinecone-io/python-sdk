@@ -20,9 +20,9 @@ supports and the `score_by` clause that runs it:
 |---|---|---|---|
 | [Semantic](search.md#semantic-search) | {class}`~pinecone.models.documents.score_by.DenseVectorQuery` | `dense_vector` | a list of floats from your embedding model |
 | [Semantic](search.md#semantic-search) | {class}`~pinecone.models.documents.score_by.EmbedQuery` | `string` with `embed` | text; Pinecone embeds it with a hosted dense model |
-| [Sparse](search.md#sparse-search) | {class}`~pinecone.models.documents.score_by.SparseVectorQuery` | `sparse_vector` | a sparse vector, `{"indices": [...], "values": [...]}` |
-| [Sparse](search.md#sparse-search) | {class}`~pinecone.models.documents.score_by.SparseEmbedQuery` | `string` with `sparse_embed` | text; Pinecone embeds it with a hosted sparse model |
-| [Keyword](search.md#keyword-search) | {class}`~pinecone.models.documents.score_by.TextQuery` or {class}`~pinecone.models.documents.score_by.QueryStringQuery` | `string` with full-text search | text |
+| [Sparse-vector](search.md#sparse-vector-search) | {class}`~pinecone.models.documents.score_by.SparseVectorQuery` | `sparse_vector` | a sparse vector, `{"indices": [...], "values": [...]}` |
+| [Sparse-vector](search.md#sparse-vector-search) | {class}`~pinecone.models.documents.score_by.SparseEmbedQuery` | `string` with `sparse_embed` | text; Pinecone embeds it with a hosted sparse model |
+| [Full-text](search.md#full-text-search) | {class}`~pinecone.models.documents.score_by.TextQuery` or {class}`~pinecone.models.documents.score_by.QueryStringQuery` | `string` with full-text search | text |
 
 An index holds at most one dense field (a `dense_vector`, or a `string` with `embed`) and
 at most one sparse field (a `sparse_vector`, or a `string` with `sparse_embed`). Fields
@@ -37,7 +37,7 @@ field up front.
 
 {class}`~pinecone.schema_builder.SchemaBuilder` lays out the field types and their
 options. This index stores dense and sparse vectors that your embedding model computes
-from `body`, and supports keyword search on `title` and `body`:
+from `body`, and supports full-text search on `title` and `body`:
 
 ```python
 from pinecone import Pinecone, SchemaBuilder
