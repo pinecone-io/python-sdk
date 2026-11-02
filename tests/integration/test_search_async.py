@@ -596,14 +596,14 @@ async def test_search_with_match_terms_async(async_client: AsyncPinecone, client
             ],
         )
 
-        # Poll until at least 1 hit appears for any query (eventual consistency)
+        # Poll until all three records score, so the mt-r2 exclusion below is not vacuous.
         await async_poll_until(
             query_fn=lambda: index.search(
                 namespace=namespace,
                 top_k=10,
-                inputs={"text": "space exploration"},
+                inputs={"text": "astronaut navigation"},
             ),
-            check_fn=lambda r: len(r.result.hits) > 0,
+            check_fn=lambda r: len(r.result.hits) == 3,
             timeout=120,
             description="records searchable after upsert (match_terms async test)",
         )
@@ -612,7 +612,7 @@ async def test_search_with_match_terms_async(async_client: AsyncPinecone, client
         match_resp = await index.search(
             namespace=namespace,
             top_k=10,
-            inputs={"text": "space exploration"},
+            inputs={"text": "astronaut navigation"},
             match_terms={"strategy": "all", "terms": ["astronaut"]},
         )
         assert isinstance(match_resp, SearchRecordsResponse)

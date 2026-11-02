@@ -830,14 +830,14 @@ def test_search_with_match_terms_rest(client: Pinecone, api_key: str) -> None:
         assert isinstance(resp, UpsertRecordsResponse)
         assert resp.record_count == 3
 
-        # Poll until at least 1 hit appears for any query (eventual consistency)
+        # Poll until all three records score, so the mt-r2 exclusion below is not vacuous.
         poll_until(
             query_fn=lambda: index.search(
                 namespace=namespace,
                 top_k=10,
-                inputs={"text": "space exploration"},
+                inputs={"text": "astronaut navigation"},
             ),
-            check_fn=lambda r: len(r.result.hits) > 0,
+            check_fn=lambda r: len(r.result.hits) == 3,
             timeout=120,
             description="records searchable after upsert (match_terms test)",
         )
@@ -846,7 +846,7 @@ def test_search_with_match_terms_rest(client: Pinecone, api_key: str) -> None:
         match_resp = index.search(
             namespace=namespace,
             top_k=10,
-            inputs={"text": "space exploration"},
+            inputs={"text": "astronaut navigation"},
             match_terms={"strategy": "all", "terms": ["astronaut"]},
         )
         assert isinstance(match_resp, SearchRecordsResponse)

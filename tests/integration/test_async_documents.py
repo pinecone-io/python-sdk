@@ -27,7 +27,7 @@ import contextlib
 import time
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -39,6 +39,7 @@ from pinecone.models.documents.responses import (
     SearchDocumentsResponse,
 )
 from pinecone.models.documents.score_by import DenseVectorQuery, TextQuery
+from tests.integration.conftest import async_poll_until
 
 pytestmark = [pytest.mark.integration]
 
@@ -97,9 +98,10 @@ async def _wait_until_searchable(
 ) -> None:
     """Wait for search to see ``expected``, the namespace's full contents.
 
-    Fetch by id reads its own writes; search and filters lag several seconds
-    behind, and the first few searches to see the documents can alternate with
-    ones that miss them. Wait for three consecutive complete results.
+    Fetch by id and search see a write within about a second, but the first
+    few searches to see the documents can alternate with ones that miss them.
+    Wait for three consecutive complete results. A filtered fetch lags further;
+    see ``_fetch_by_filter_until``.
     """
     deadline = time.time() + timeout
     streak = 0
@@ -137,6 +139,29 @@ async def _search_until(
         await asyncio.sleep(1)
 
 
+async def _fetch_by_filter_until(
+    index: AsyncIndex, namespace: str, filter: dict[str, Any], expected: set[str]
+) -> FetchDocumentsResponse:
+    """Run a filtered fetch until it returns exactly the ``expected`` ids, and return that response.
+
+    A filtered fetch reads only flushed data, about 7 s after a write. A
+    filtered delete or update sent before the flush applies but reports
+    ``matched_records=0``, so tests gate filter writes on this wait too.
+    """
+    return cast(
+        FetchDocumentsResponse,
+        await async_poll_until(
+            query_fn=lambda: index.documents.fetch(
+                namespace=namespace, filter=filter, include_fields=["category"]
+            ),
+            check_fn=lambda r: set(r.documents) == expected,
+            timeout=60,
+            interval=1,
+            description=f"fetch by filter {filter} returns {expected} in {namespace!r}",
+        ),
+    )
+
+
 async def test_upsert_fetch_by_ids_and_filter(index: AsyncIndex, namespace: str) -> None:
     result = await index.documents.upsert(namespace=namespace, documents=DOCS)
     assert result.upserted_count == 3
@@ -151,10 +176,8 @@ async def test_upsert_fetch_by_ids_and_filter(index: AsyncIndex, namespace: str)
     )
     assert set(missing_tolerated.documents) == {"doc-1"}
 
-    filtered = await index.documents.fetch(
-        namespace=namespace,
-        filter={"category": {"$eq": "tech"}},
-        include_fields=["category"],
+    filtered = await _fetch_by_filter_until(
+        index, namespace, {"category": {"$eq": "tech"}}, {"doc-1"}
     )
     assert set(filtered.documents) == {"doc-1"}
 
@@ -231,6 +254,7 @@ async def test_delete_documents_by_ids_filter_and_all(index: AsyncIndex, namespa
     by_ids = await index.documents.delete(namespace=namespace, ids=["doc-3"])
     assert by_ids.matched_records is None
 
+    await _fetch_by_filter_until(index, namespace, {"category": {"$eq": "research"}}, {"doc-2"})
     by_filter = await index.documents.delete(
         namespace=namespace, filter={"category": {"$eq": "research"}}
     )
@@ -287,6 +311,7 @@ async def test_update_documents_per_id_and_by_filter(index: AsyncIndex, namespac
     assert patched.documents["doc-1"].get("category") == "tech-updated"
     assert patched.documents["doc-2"].get("category") is None
 
+    await _fetch_by_filter_until(index, namespace, {"category": {"$eq": "history"}}, {"doc-3"})
     by_filter = await index.documents.update(
         namespace=namespace,
         filter={"category": {"$eq": "history"}},

@@ -48,7 +48,7 @@ DENSE_VECTORS = {
 
 SPARSE_VECTORS = {
     "ssa-a": {"indices": [0, 5, 10], "values": [0.5, 0.8, 0.3]},
-    "ssa-b": {"indices": [2, 7], "values": [0.3, 0.9]},
+    "ssa-b": {"indices": [0, 7], "values": [0.1, 0.9]},
 }
 
 HYBRID_DENSE_VALUES = {
