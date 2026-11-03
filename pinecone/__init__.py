@@ -359,7 +359,7 @@ if TYPE_CHECKING:
     from pinecone.schema_builder import SchemaBuilder
     from pinecone.utils.filter_builder import Condition, Field, FilterBuilder
 
-__version__ = "10.2.0"
+__version__ = "10.3.0"
 
 if _os.environ.get("PINECONE_DEBUG"):
     import logging as _logging

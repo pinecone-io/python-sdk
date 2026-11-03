@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.abspath(".."))
 
 project = "Pinecone"
 author = "Pinecone"
-release = "10.2.0"
+release = "10.3.0"
 
 extensions = [
     "sphinx.ext.autodoc",
