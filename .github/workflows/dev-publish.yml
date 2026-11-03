@@ -185,6 +185,9 @@ jobs:
           # Windows x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+          # Windows arm64
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -408,9 +411,9 @@ jobs:
           whl_count=$(ls dist/*.whl 2>/dev/null | wc -l)
           sdist_count=$(ls dist/*.tar.gz 2>/dev/null | wc -l)
           echo "Wheels: $whl_count, Sdists: $sdist_count"
-          # 7 platforms × 1 abi3 wheel (cp310-abi3, covers Python 3.10+) = 7 wheels
-          if [ "$whl_count" -lt 7 ]; then
-            echo "::error::expected at least 7 wheels but got $whl_count — one or more matrix legs may be missing"
+          # 8 platforms × 1 abi3 wheel (cp310-abi3, covers Python 3.10+) = 8 wheels
+          if [ "$whl_count" -lt 8 ]; then
+            echo "::error::expected at least 8 wheels but got $whl_count — one or more matrix legs may be missing"
             exit 1
           fi
           if [ "$sdist_count" -lt 1 ]; then

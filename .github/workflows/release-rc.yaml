@@ -322,6 +322,8 @@ jobs:
             target: aarch64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -532,9 +534,9 @@ jobs:
           whl_count=$(ls dist/*.whl 2>/dev/null | wc -l)
           sdist_count=$(ls dist/*.tar.gz 2>/dev/null | wc -l)
           echo "Wheels: ${whl_count}, sdist: ${sdist_count}"
-          # 7 platforms × 1 abi3 wheel = 7
-          if [ "$whl_count" -lt 7 ]; then
-            echo "::error::expected at least 7 wheels, got ${whl_count}"
+          # 8 platforms × 1 abi3 wheel = 8
+          if [ "$whl_count" -lt 8 ]; then
+            echo "::error::expected at least 8 wheels, got ${whl_count}"
             exit 1
           fi
           if [ "$sdist_count" -lt 1 ]; then

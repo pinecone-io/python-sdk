@@ -35,8 +35,8 @@ There are no user-facing extras. `pip install pinecone` gives you the whole SDK:
 The `dev` and `docs` extras exist for working on the SDK itself, not for using it.
 
 Wheels are published for Linux (glibc and musl, x86-64 and arm64), macOS (Intel and
-Apple silicon), and Windows x86-64. Installing from the source distribution instead
-builds the gRPC extension from Rust and needs a Rust toolchain.
+Apple silicon), and Windows (x86-64 and arm64). Installing from the source
+distribution instead builds the gRPC extension from Rust and needs a Rust toolchain.
 
 ## pandas is not installed for you
 
