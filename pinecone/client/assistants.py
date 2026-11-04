@@ -19,6 +19,7 @@ from pinecone._internal.constants import (
     ASSISTANT_EVALUATION_BASE_URL,
     DEFAULT_BASE_URL,
 )
+from pinecone._internal.sse import iter_sse_data
 from pinecone._internal.validation import require_str
 from pinecone.client._assistants_legacy import AssistantsLegacyNamespaceMixin
 from pinecone.errors.exceptions import (
@@ -1883,14 +1884,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             headers={"Content-Type": "application/json"},
             timeout=_stream_timeout(self._config.timeout, timeout),
         ) as response:
-            for line in response.iter_lines():
-                if not line:
-                    continue
-                if not line.startswith("data:"):
-                    continue
-                line = line[5:].lstrip()
-                if not line:
-                    continue
+            for line in iter_sse_data(response.iter_lines()):
                 # Unreachable against the 2026-07 backend, which ends the stream
                 # by closing it. Kept because an intermediary that terminates the
                 # SSE conventionally would otherwise reach orjson.loads and raise.
@@ -1941,14 +1935,7 @@ class Assistants(AssistantsLegacyNamespaceMixin):
             headers={"Content-Type": "application/json"},
             timeout=_stream_timeout(self._config.timeout, timeout),
         ) as response:
-            for line in response.iter_lines():
-                if not line:
-                    continue
-                if not line.startswith("data:"):
-                    continue
-                line = line[5:].lstrip()
-                if not line:
-                    continue
+            for line in iter_sse_data(response.iter_lines()):
                 # Unreachable against the 2026-07 backend, which ends the stream
                 # by closing it. Kept because an intermediary that terminates the
                 # SSE conventionally would otherwise reach orjson.loads and raise.
