@@ -116,6 +116,9 @@ class SearchUsage(StructDictMixin, Struct, kw_only=True):
     rerank_units: int | None = None
 
 
+_WIRE_KEY_ALIASES = {"_id": "id", "_score": "score"}
+
+
 class Hit(StructDictMixin, Struct, kw_only=True, rename={"id_": "_id", "score_": "_score"}):
     """One search result: which record matched, how well, and the fields you asked for.
 
@@ -175,7 +178,15 @@ class Hit(StructDictMixin, Struct, kw_only=True, rename={"id_": "_id", "score_":
         if key == "score":
             return self.score_
         if key not in self.__struct_fields__:
-            raise KeyError(key)
+            alias = _WIRE_KEY_ALIASES.get(key)
+            if alias is not None:
+                raise KeyError(
+                    f"{key!r} is the wire name for this field; use hit[{alias!r}] or hit.{alias}"
+                )
+            raise KeyError(
+                f"{key!r}; available keys are 'id', 'score', and 'fields' "
+                "(record fields live in hit['fields'])"
+            )
         return getattr(self, key)
 
     def __contains__(self, key: object) -> bool:
