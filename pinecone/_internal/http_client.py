@@ -16,7 +16,7 @@ from collections import OrderedDict
 from collections.abc import AsyncGenerator, Generator, Mapping, Sequence
 from enum import Enum
 from typing import Any, NoReturn
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
 import orjson
@@ -299,6 +299,48 @@ def _prepare_params(kwargs: dict[str, Any]) -> dict[str, Any]:
     elif isinstance(params, (list, tuple)):
         kwargs["params"] = [(key, _resolve_query_value(value)) for key, value in params]
     return kwargs
+
+
+def _encode_query_params(params: Any) -> str:
+    """Serialize query parameters with RFC 3986 percent-encoding (``%20`` for spaces).
+
+    httpx's default query serializer uses ``application/x-www-form-urlencoded``
+    (``quote_plus``), which encodes spaces as ``+``. Pinecone endpoints such as
+    ``/vectors/fetch``, ``/vectors/list``, and ``/namespaces`` expect ``%20``
+    so IDs, namespaces, and prefixes containing spaces match on the server
+    (issue #705).
+
+    Normalizing through ``httpx.QueryParams`` first preserves httpx's exact
+    scalar coercion (e.g. ``True`` -> ``"true"``, ``None`` -> ``""``, repeated
+    keys for sequence values) before re-encoding each key/value pair with
+    ``urllib.parse.quote`` (``safe=""``).
+    """
+    items = httpx.QueryParams(params).multi_items()
+    if not items:
+        return ""
+    return urlencode(items, quote_via=quote, safe="")
+
+
+def _prepare_url_and_params(path: str, kwargs: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Normalize *path* and attach RFC 3986-encoded ``params=`` directly onto *path*.
+
+    Attaching the pre-encoded query string onto *path* prevents httpx from
+    re-encoding ``%20`` back into ``+`` while leaving callers that pass an
+    already-encoded ``str`` or ``bytes`` query string untouched.
+    """
+    path = _prepare_path(path)
+    kwargs = _prepare_params(kwargs)
+    params = kwargs.get("params")
+    if params is None or isinstance(params, (str, bytes)):
+        return path, kwargs
+    kwargs = dict(kwargs)
+    kwargs.pop("params", None)
+    encoded = _encode_query_params(params)
+    if not encoded:
+        return path, kwargs
+    head, sep, fragment = path.partition("#")
+    joined = f"{head}&{encoded}" if "?" in head else f"{head}?{encoded}"
+    return f"{joined}{sep}{fragment}", kwargs
 
 
 _DOT_SEGMENT_WIRE_FORMS = {".": "%2E", "..": "%2E%2E"}
@@ -1015,11 +1057,11 @@ class HTTPClient:
     def get(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
-        path = _prepare_path(path)
+        path, kwargs = _prepare_url_and_params(path, kwargs)
         _log_curl("GET", self._build_url(path), dict(self._headers))
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = self._client.get(path, timeout=effective_timeout, **_prepare_params(kwargs))
+            response = self._client.get(path, timeout=effective_timeout, **kwargs)
         except httpx.TransportError as exc:
             _raise_transport_error(exc)
         _raise_for_status(response)
@@ -1089,7 +1131,7 @@ class HTTPClient:
             return response
 
         # Slow path: caller passed params=, files=, headers=, content=, etc.
-        kwargs = _prepare_params(_prepare_json_kwargs(kwargs))
+        path, kwargs = _prepare_url_and_params(path, _prepare_json_kwargs(kwargs))
         body = kwargs.get("content") if isinstance(kwargs.get("content"), bytes) else None
         merged_headers = {**self._headers, **kwargs.get("headers", {})}
         _log_curl("POST", self._build_url(path), merged_headers, body=body)
@@ -1112,14 +1154,13 @@ class HTTPClient:
     def put(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
-        path = _prepare_path(path)
-        kwargs = _prepare_json_kwargs(kwargs)
+        path, kwargs = _prepare_url_and_params(path, _prepare_json_kwargs(kwargs))
         body = kwargs.get("content") if isinstance(kwargs.get("content"), bytes) else None
         merged_headers = {**self._headers, **kwargs.get("headers", {})}
         _log_curl("PUT", self._build_url(path), merged_headers, body=body)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = self._client.put(path, timeout=effective_timeout, **_prepare_params(kwargs))
+            response = self._client.put(path, timeout=effective_timeout, **kwargs)
         except httpx.TransportError as exc:
             _raise_transport_error(exc)
         _raise_for_status(response)
@@ -1129,16 +1170,13 @@ class HTTPClient:
     def patch(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
-        path = _prepare_path(path)
-        kwargs = _prepare_json_kwargs(kwargs)
+        path, kwargs = _prepare_url_and_params(path, _prepare_json_kwargs(kwargs))
         body = kwargs.get("content") if isinstance(kwargs.get("content"), bytes) else None
         merged_headers = {**self._headers, **kwargs.get("headers", {})}
         _log_curl("PATCH", self._build_url(path), merged_headers, body=body)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = self._client.patch(
-                path, timeout=effective_timeout, **_prepare_params(kwargs)
-            )
+            response = self._client.patch(path, timeout=effective_timeout, **kwargs)
         except httpx.TransportError as exc:
             _raise_transport_error(exc)
         _raise_for_status(response)
@@ -1148,13 +1186,11 @@ class HTTPClient:
     def delete(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
-        path = _prepare_path(path)
+        path, kwargs = _prepare_url_and_params(path, kwargs)
         _log_curl("DELETE", self._build_url(path), dict(self._headers))
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = self._client.delete(
-                path, timeout=effective_timeout, **_prepare_params(kwargs)
-            )
+            response = self._client.delete(path, timeout=effective_timeout, **kwargs)
         except httpx.TransportError as exc:
             _raise_transport_error(exc)
         _raise_for_status(response)
@@ -1249,12 +1285,10 @@ class AsyncHTTPClient:
     async def get(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
-        path = _prepare_path(path)
+        path, kwargs = _prepare_url_and_params(path, kwargs)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = await self._ensure_client().get(
-                path, timeout=effective_timeout, **_prepare_params(kwargs)
-            )
+            response = await self._ensure_client().get(path, timeout=effective_timeout, **kwargs)
         except httpx.TransportError as exc:
             _raise_transport_error(exc)
         _raise_for_status(response)
@@ -1264,12 +1298,10 @@ class AsyncHTTPClient:
     async def post(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
-        path = _prepare_path(path)
+        path, kwargs = _prepare_url_and_params(path, _prepare_json_kwargs(kwargs))
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = await self._ensure_client().post(
-                path, timeout=effective_timeout, **_prepare_params(_prepare_json_kwargs(kwargs))
-            )
+            response = await self._ensure_client().post(path, timeout=effective_timeout, **kwargs)
         except httpx.TransportError as exc:
             _raise_transport_error(exc)
         _raise_for_status(response)
@@ -1279,12 +1311,10 @@ class AsyncHTTPClient:
     async def put(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
-        path = _prepare_path(path)
+        path, kwargs = _prepare_url_and_params(path, _prepare_json_kwargs(kwargs))
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = await self._ensure_client().put(
-                path, timeout=effective_timeout, **_prepare_params(_prepare_json_kwargs(kwargs))
-            )
+            response = await self._ensure_client().put(path, timeout=effective_timeout, **kwargs)
         except httpx.TransportError as exc:
             _raise_transport_error(exc)
         _raise_for_status(response)
@@ -1294,12 +1324,10 @@ class AsyncHTTPClient:
     async def patch(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
-        path = _prepare_path(path)
+        path, kwargs = _prepare_url_and_params(path, _prepare_json_kwargs(kwargs))
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = await self._ensure_client().patch(
-                path, timeout=effective_timeout, **_prepare_params(_prepare_json_kwargs(kwargs))
-            )
+            response = await self._ensure_client().patch(path, timeout=effective_timeout, **kwargs)
         except httpx.TransportError as exc:
             _raise_transport_error(exc)
         _raise_for_status(response)
@@ -1309,12 +1337,10 @@ class AsyncHTTPClient:
     async def delete(
         self, path: str, timeout: float | httpx.Timeout | None = None, **kwargs: Any
     ) -> httpx.Response:
-        path = _prepare_path(path)
+        path, kwargs = _prepare_url_and_params(path, kwargs)
         effective_timeout = timeout if timeout is not None else self._config.timeout
         try:
-            response = await self._ensure_client().delete(
-                path, timeout=effective_timeout, **_prepare_params(kwargs)
-            )
+            response = await self._ensure_client().delete(path, timeout=effective_timeout, **kwargs)
         except httpx.TransportError as exc:
             _raise_transport_error(exc)
         _raise_for_status(response)
