@@ -16,6 +16,20 @@ from pinecone.models.vectors.vector import ScoredVector
 INDEX_HOST = "test-index-abc1234.svc.us-east1-gcp.pinecone.io"
 
 
+class _BoolAmbiguousVector:
+    def __init__(self, values: list[float]) -> None:
+        self._values = values
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __getitem__(self, index: int) -> float:
+        return self._values[index]
+
+    def __bool__(self) -> bool:
+        raise ValueError("truth value is ambiguous")
+
+
 def _make_index() -> Index:
     return Index(host=INDEX_HOST, api_key="test-key")
 
@@ -136,6 +150,21 @@ class TestQueryNamespacesValidation:
                 namespaces=["ns1"],
                 metric="cosine",
             )
+
+    def test_query_namespaces_does_not_bool_check_vector(self) -> None:
+        idx = _make_index()
+        response = _make_query_response([_scored("v1", 0.9)])
+        vector = _BoolAmbiguousVector([0.1, 0.2])
+
+        with patch.object(idx, "query", return_value=response) as mock_query:
+            idx.query_namespaces(
+                vector=vector,
+                namespaces=["ns1"],
+                metric="cosine",
+            )
+
+        assert mock_query.call_count == 1
+        assert mock_query.call_args.kwargs["vector"] is vector
 
     def test_query_namespaces_no_vector_no_sparse_raises(self) -> None:
         idx = _make_index()
