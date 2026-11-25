@@ -215,6 +215,10 @@ class Field:
 
     # -- set operators --------------------------------------------------------
 
+    def _require_list(self, op: str, values: Any) -> None:
+        if not isinstance(values, (list, tuple)):
+            raise TypeError(f"{op} requires a list of values, got {type(values).__name__}")
+
     def is_in(self, values: list[str | int | float | bool]) -> Condition:
         """``$in``: the field's value is one of *values*.
 
@@ -223,6 +227,7 @@ class Field:
             >>> Field("genre").is_in(["drama", "thriller"]).to_dict()
             {'genre': {'$in': ['drama', 'thriller']}}
         """
+        self._require_list("is_in", values)
         return Condition({self._name: {"$in": values}})
 
     def not_in(self, values: list[str | int | float | bool]) -> Condition:
@@ -233,6 +238,7 @@ class Field:
             >>> Field("genre").not_in(["horror"]).to_dict()
             {'genre': {'$nin': ['horror']}}
         """
+        self._require_list("not_in", values)
         return Condition({self._name: {"$nin": values}})
 
     # -- exists operator ------------------------------------------------------
